@@ -1,0 +1,3 @@
+[target.wasm32-unknown-unknown]
+# web-sys gates WebCodecs (VideoDecoder, VideoFrame, …) behind this cfg.
+rustflags = ["--cfg=web_sys_unstable_apis"]

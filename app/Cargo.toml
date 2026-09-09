@@ -1,0 +1,53 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = { workspace = true }
+leptos_meta = { workspace = true }
+leptos_router = { workspace = true }
+leptos_axum = { workspace = true, optional = true }
+console_error_panic_hook = { workspace = true, optional = true }
+console_log = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = [
+    "Window",
+    "Document",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "File",
+    "FileList",
+    "Blob",
+    "Response",
+] }
+webmedia = { path = "../media", optional = true }
+
+[features]
+default = []
+csr = [
+    "leptos/csr",
+    "dep:console_error_panic_hook",
+    "dep:console_log",
+    "dep:log",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:web-sys",
+    "dep:webmedia",
+    "webmedia/webcodecs",
+]
+ssr = [
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+    "dep:leptos_axum",
+]

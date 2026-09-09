@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+:root {
+  --wm-bg: #e8e4dc;
+  --wm-ink: #1a1a1a;
+  --wm-muted: #5a5a5a;
+  --wm-accent: #0b6e4f;
+  --wm-panel: #f6f3ec;
+  --wm-border: #cfc8ba;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font: 15px/1.4 "Segoe UI", system-ui, sans-serif;
+  color: var(--wm-ink);
+  background:
+    radial-gradient(ellipse at 20% 0%, #dfe9e2 0%, transparent 55%),
+    radial-gradient(ellipse at 90% 10%, #e7dfd0 0%, transparent 45%),
+    var(--wm-bg);
+}
+
+.wm-page {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.wm-header {
+  margin-bottom: 1rem;
+}
+
+.wm-brand {
+  margin: 0;
+  font-size: 1.75rem;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+}
+
+.wm-sub {
+  margin: 0.25rem 0 0;
+  color: var(--wm-muted);
+  font-size: 0.95rem;
+}
+
+.wm-player {
+  background: var(--wm-panel);
+  border: 1px solid var(--wm-border);
+  padding: 1.25rem;
+}
+
+.wm-canvas {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  background: #111;
+  object-fit: contain;
+}
+
+.wm-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.85rem;
+}
+
+.wm-btn,
+.wm-file {
+  appearance: none;
+  border: 1px solid #b7b0a3;
+  background: #fff;
+  color: var(--wm-ink);
+  padding: 0.4rem 0.75rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.wm-btn:hover:not(:disabled),
+.wm-file:hover {
+  border-color: var(--wm-accent);
+}
+
+.wm-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.wm-btn-primary {
+  background: var(--wm-accent);
+  border-color: var(--wm-accent);
+  color: #fff;
+}
+
+.wm-file input[type="file"] {
+  display: none;
+}
+
+.wm-frame-input {
+  width: 5.5rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #b7b0a3;
+  font: inherit;
+}
+
+.wm-status {
+  margin-top: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--wm-muted);
+  min-height: 1.4em;
+}
+
+.wm-error {
+  color: #9b1c1c;
+  margin-top: 0.5rem;
+  white-space: pre-wrap;
+  min-height: 1.2em;
+}

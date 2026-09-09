@@ -1,0 +1,21 @@
+# .agentignore — webmedia
+#
+# Tells AI agents which paths to skip when reading or indexing the project.
+# Syntax mirrors .gitignore (glob patterns, leading / = repo root).
+#
+
+# Build output
+/target/
+
+# Generated lock files (too large, not useful to read)
+Cargo.lock
+
+# Third-party packages
+**/node_modules/
+
+# Binary / media assets
+public/
+media/tests/fixtures/*.mp4
+
+# Rust editor artefacts
+**/*.rs.bk
