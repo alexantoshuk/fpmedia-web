@@ -44,3 +44,4 @@ Only classes that appear **literally** in `.rs` / `.css` are emitted. Do not bui
 1. Open / seek / step are **async** and need `&mut WebPlayer` — hold the player behind `Rc<RefCell<…>>` or a single owner task; serialize operations with a `busy` signal.
 2. Do not call `pause` / `is_playing` on the Rust player while another async method is awaiting (aliasing). Mirror play state in a Leptos signal for the UI.
 3. Canvas: pass `HtmlCanvasElement` from `NodeRef` after mount; open player once canvas exists.
+4. Status **fps** is measured display rate (presents / wall time over ~1s), not container/`1/duration` — that stays near source fps even when decode lags.

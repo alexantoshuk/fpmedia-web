@@ -56,14 +56,18 @@ impl WebPlayer {
     }
 
     /// Duration of the current frame in seconds (for playback pacing).
-    pub fn frame_duration_seconds(&self) -> f64 {
-        self.player
+    pub fn frame_duration_seconds(&self) -> Result<f64, MediaError> {
+        let frame = self.state().frame;
+        let entry = self
+            .player
             .track()
             .index()
-            .get(self.state().frame)
-            .map(|e| e.duration_ticks as f64 / e.timescale.max(1) as f64)
-            .or_else(|| self.metadata().fps.map(|fps| 1.0 / fps.max(1.0)))
-            .unwrap_or(1.0 / 24.0)
+            .get(frame)
+            .ok_or(MediaError::FrameOutOfRange(frame, self.state().frame_count))?;
+        if entry.duration_ticks == 0 || entry.timescale == 0 {
+            return Err(MediaError::MissingFrameDuration(frame));
+        }
+        Ok(entry.duration_ticks as f64 / entry.timescale as f64)
     }
 
     pub async fn seek_frame(&mut self, frame: FrameId) -> Result<(), MediaError> {

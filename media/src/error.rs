@@ -19,6 +19,9 @@ pub enum MediaError {
     #[error("empty video track")]
     EmptyTrack,
 
+    #[error("frame {0} has no duration")]
+    MissingFrameDuration(u64),
+
     #[error("webcodecs: {0}")]
     WebCodecs(String),
 

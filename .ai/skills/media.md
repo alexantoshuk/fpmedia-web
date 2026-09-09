@@ -53,7 +53,7 @@ Ideas from [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny) — por
 3. **B-frames** — index is presentation order; `nearest_keyframe` / `decode_window` use **`decode_order`** (not DTS range). Fixture `with_b_frames.mp4` covers this.
 4. **WebCodecs target match** — pick the sample with `frame == target_frame`. Never use `samples.last()`.
 5. **Decoder lifecycle** — warm decoder for forward steps in the same GOP (`fed_through_order`). Do **not** `flush()` between playback frames. Flush only as last resort (then invalidate).
-6. **Playback** — `WebPlayer::play` / `pause` / `step_playback`; UI paces with `frame_duration_seconds`. No audio yet.
+6. **Playback** — `WebPlayer::play` / `pause` / `step_playback`; UI paces with `frame_duration_seconds()` (`Result`, no fps/24 fallback). No audio yet.
 7. **Commit position after decode** — `window_at` + `commit_frame` so a failed decode does not advance the frame counter.
 8. **`web_sys_unstable_apis`** — required. Set in `.cargo/config.toml`.
 9. **`VideoDecoderInit::new` argument order** in current `web-sys` is `(error, output)`.

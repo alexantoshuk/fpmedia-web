@@ -13,17 +13,54 @@ use webmedia::WebPlayer;
 
 type PlayerHandle = Rc<RefCell<Option<WebPlayer>>>;
 
+/// Rolling window of canvas presents → measured display FPS.
+struct FpsMeter {
+    /// `performance.now()` timestamps (ms) of recent presents.
+    presents: Vec<f64>,
+}
+
+impl FpsMeter {
+    fn new() -> Self {
+        Self {
+            presents: Vec::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.presents.clear();
+    }
+
+    /// Record a present and return FPS over the last ~1s (needs ≥2 samples).
+    fn note_present(&mut self) -> Option<f64> {
+        let now = performance_now_ms()?;
+        self.presents.push(now);
+        let cutoff = now - 1000.0;
+        self.presents.retain(|&t| t >= cutoff);
+        if self.presents.len() < 2 {
+            return None;
+        }
+        let first = *self.presents.first()?;
+        let span_ms = now - first;
+        if span_ms <= 0.0 {
+            return None;
+        }
+        Some((self.presents.len() - 1) as f64 * 1000.0 / span_ms)
+    }
+}
+
 #[component]
 pub fn PlayerDemo() -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let player: PlayerHandle = Rc::new(RefCell::new(None));
+    let fps_meter = Rc::new(RefCell::new(FpsMeter::new()));
 
     let busy = RwSignal::new(false);
     let error = RwSignal::new(Option::<String>::None);
     let frame = RwSignal::new(0_u32);
     let frame_count = RwSignal::new(0_u32);
     let timestamp = RwSignal::new(0.0_f64);
-    let fps = RwSignal::new(0.0_f64);
+    // Measured display FPS while playing (`None` when idle / not enough samples).
+    let fps = RwSignal::new(Option::<f64>::None);
     let playing = RwSignal::new(false);
     let ready = RwSignal::new(false);
 
@@ -35,7 +72,6 @@ pub fn PlayerDemo() -> impl IntoView {
                 frame.set(st.frame.min(u32::MAX as u64) as u32);
                 frame_count.set(st.frame_count.min(u32::MAX as u64) as u32);
                 timestamp.set(st.timestamp.seconds);
-                fps.set(1.0 / p.frame_duration_seconds().max(1e-9));
                 playing.set(st.playing);
             }
         }) as Rc<dyn Fn()>
@@ -44,6 +80,7 @@ pub fn PlayerDemo() -> impl IntoView {
     let open_bytes = {
         let player = Rc::clone(&player);
         let sync_ui = Rc::clone(&sync_ui);
+        let fps_meter = Rc::clone(&fps_meter);
         Rc::new(move |bytes: Vec<u8>| {
             let Some(canvas_el) = canvas_ref.get() else {
                 error.set(Some("canvas not mounted".into()));
@@ -56,6 +93,8 @@ pub fn PlayerDemo() -> impl IntoView {
             busy.set(true);
             error.set(None);
             playing.set(false);
+            fps.set(None);
+            fps_meter.borrow_mut().reset();
             let player = Rc::clone(&player);
             let sync_ui = Rc::clone(&sync_ui);
             spawn_local(async move {
@@ -138,6 +177,7 @@ pub fn PlayerDemo() -> impl IntoView {
                     on:click={
                         let player = Rc::clone(&player);
                         let sync_ui = Rc::clone(&sync_ui);
+                        let fps_meter = Rc::clone(&fps_meter);
                         move |_| {
                             if busy.get_untracked() || !ready.get_untracked() || playing.get_untracked() {
                                 return;
@@ -145,9 +185,12 @@ pub fn PlayerDemo() -> impl IntoView {
                             if let Some(p) = player.borrow_mut().as_mut() {
                                 p.play();
                             }
+                            fps_meter.borrow_mut().reset();
+                            fps.set(None);
                             playing.set(true);
                             let player = Rc::clone(&player);
                             let sync_ui = Rc::clone(&sync_ui);
+                            let fps_meter = Rc::clone(&fps_meter);
                             spawn_local(async move {
                                 loop {
                                     if !playing.get_untracked() {
@@ -156,7 +199,14 @@ pub fn PlayerDemo() -> impl IntoView {
                                     let duration = {
                                         let borrow = player.borrow();
                                         match borrow.as_ref() {
-                                            Some(p) => p.frame_duration_seconds(),
+                                            Some(p) => match p.frame_duration_seconds() {
+                                                Ok(d) => d,
+                                                Err(e) => {
+                                                    error.set(Some(e.to_string()));
+                                                    playing.set(false);
+                                                    break;
+                                                }
+                                            },
                                             None => break,
                                         }
                                     };
@@ -165,22 +215,29 @@ pub fn PlayerDemo() -> impl IntoView {
                                         break;
                                     }
                                     busy.set(true);
-                                    let cont = {
+                                    let presented = {
                                         let mut borrow = player.borrow_mut();
                                         match borrow.as_mut() {
                                             Some(p) => match p.step_playback().await {
-                                                Ok(more) => more,
+                                                Ok(more) => Some(more),
                                                 Err(e) => {
                                                     error.set(Some(e.to_string()));
-                                                    false
+                                                    None
                                                 }
                                             },
-                                            None => false,
+                                            None => None,
                                         }
                                     };
+                                    if presented.is_some() {
+                                        if let Some(measured) =
+                                            fps_meter.borrow_mut().note_present()
+                                        {
+                                            fps.set(Some(measured));
+                                        }
+                                    }
                                     sync_ui();
                                     busy.set(false);
-                                    if !cont {
+                                    if !presented.unwrap_or(false) {
                                         playing.set(false);
                                         break;
                                     }
@@ -189,6 +246,8 @@ pub fn PlayerDemo() -> impl IntoView {
                                     p.pause();
                                 }
                                 playing.set(false);
+                                fps_meter.borrow_mut().reset();
+                                fps.set(None);
                                 sync_ui();
                             });
                         }
@@ -273,12 +332,16 @@ pub fn PlayerDemo() -> impl IntoView {
                     if !ready.get() {
                         "Load an MP4 to begin.".to_string()
                     } else {
+                        let fps_part = match fps.get() {
+                            Some(v) => format!(" · {v:.1} fps"),
+                            None => String::new(),
+                        };
                         format!(
-                            "frame {} / {} · {:.3}s · {:.1} fps{}",
+                            "frame {} / {} · {:.3}s{}{}",
                             frame.get(),
                             frame_count.get().saturating_sub(1),
                             timestamp.get(),
-                            fps.get(),
+                            fps_part,
                             if playing.get() { " · playing" } else { "" }
                         )
                     }
@@ -378,4 +441,8 @@ async fn sleep_ms(ms: i32) {
             .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+fn performance_now_ms() -> Option<f64> {
+    web_sys::window()?.performance().map(|p| p.now())
 }
