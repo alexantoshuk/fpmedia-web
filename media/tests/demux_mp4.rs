@@ -1,15 +1,16 @@
-//! Integration tests: demux + frame index against a short-GOP H.264 fixture.
+//! Integration tests: demux + frame index against short-GOP H.264 fixtures.
 
 use webmedia::{Player, VideoCodec, open_mp4_path};
 
-fn fixture_path() -> std::path::PathBuf {
+fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/short_gop.mp4")
+        .join("tests/fixtures")
+        .join(name)
 }
 
 #[test]
 fn demux_short_gop_metadata_and_frames() {
-    let path = fixture_path();
+    let path = fixture("short_gop.mp4");
     if !path.exists() {
         eprintln!("skip: missing fixture {}", path.display());
         return;
@@ -58,4 +59,48 @@ fn demux_short_gop_metadata_and_frames() {
     let win = player.window_at(14).expect("cascade");
     assert_eq!(win.target_frame, 14);
     assert!(win.samples.first().is_some_and(|s| s.is_keyframe));
+}
+
+#[test]
+fn demux_with_b_frames_reorder_windows() {
+    let path = fixture("with_b_frames.mp4");
+    if !path.exists() {
+        eprintln!("skip: missing fixture {}", path.display());
+        return;
+    }
+    let track = open_mp4_path(&path).expect("open fixture");
+    let index = track.index();
+    assert_eq!(track.frame_count(), 48);
+
+    // Presentation frame 1 is a B (decode after the upcoming P).
+    let f1 = index.get(1).expect("frame 1");
+    let f3 = index.get(3).expect("frame 3");
+    assert!(
+        f1.decode_order > f3.decode_order,
+        "B before P in presentation"
+    );
+    assert_eq!(f1.decode_order, 2);
+    assert_eq!(f3.decode_order, 1);
+
+    // Window for B1 must include the later P (presentation id 3).
+    let w1 = index.decode_window(1).expect("window 1");
+    assert_eq!(w1, vec![0, 3, 1]);
+
+    // Seeking to P alone only needs I + P.
+    let w3 = index.decode_window(3).expect("window 3");
+    assert_eq!(w3, vec![0, 3]);
+
+    let player = Player::from_track(track).expect("player");
+    let cascade = player.window_at(1).expect("cascade");
+    assert_eq!(cascade.target_frame, 1);
+    assert_eq!(
+        cascade
+            .samples
+            .iter()
+            .map(|s| s.frame)
+            .collect::<Vec<_>>(),
+        vec![0, 3, 1]
+    );
+    assert!(cascade.samples[0].is_keyframe);
+    assert!(!cascade.samples[1].is_keyframe);
 }

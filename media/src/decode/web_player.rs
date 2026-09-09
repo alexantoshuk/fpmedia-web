@@ -73,8 +73,7 @@ impl WebPlayer {
     pub async fn seek_frame(&mut self, frame: FrameId) -> Result<(), MediaError> {
         self.player.pause();
         self.decoder.invalidate();
-        let window = self.player.window_at(frame)?;
-        let video_frame = self.decoder.decode_window(&window).await?;
+        let video_frame = self.decoder.decode_frame(self.player.track(), frame).await?;
         self.present(video_frame)?;
         self.player.commit_frame(frame)?;
         Ok(())
@@ -114,8 +113,7 @@ impl WebPlayer {
     }
 
     async fn goto_frame(&mut self, frame: FrameId) -> Result<(), MediaError> {
-        let window = self.player.window_at(frame)?;
-        let video_frame = self.decoder.decode_window(&window).await?;
+        let video_frame = self.decoder.decode_frame(self.player.track(), frame).await?;
         self.present(video_frame)?;
         self.player.commit_frame(frame)?;
         Ok(())

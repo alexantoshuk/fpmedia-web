@@ -5,7 +5,12 @@
 | `short_gop.mp4` | 320×240, 24 fps, 48 frames, H.264, GOP 12, **no B-frames**, no audio |
 | `with_b_frames.mp4` | same as above but `-bf 2` (B-frames / reordering) |
 
-Also copy `short_gop.mp4` to `public/` so the Leptos demo can fetch `/short_gop.mp4`.
+Also copy both fixtures into `public/` so the Leptos demo can fetch them:
+
+```sh
+cp media/tests/fixtures/short_gop.mp4 public/short_gop.mp4
+cp media/tests/fixtures/with_b_frames.mp4 public/with_b_frames.mp4
+```
 
 Regenerate:
 
@@ -19,4 +24,5 @@ ffmpeg -y -f lavfi -i testsrc=duration=2:size=320x240:rate=24 \
   media/tests/fixtures/with_b_frames.mp4
 
 cp media/tests/fixtures/short_gop.mp4 public/short_gop.mp4
+cp media/tests/fixtures/with_b_frames.mp4 public/with_b_frames.mp4
 ```

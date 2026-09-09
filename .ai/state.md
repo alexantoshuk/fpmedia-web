@@ -2,7 +2,7 @@
 
 ## In progress
 
-- Confirm play/pause/seek on a real Resolve export (sample `short_gop.mp4` plays at ~24 fps with deadline pacing).
+- Confirm play/pause/seek on a real Resolve export (fixtures `short_gop` / `with_b_frames` play ~24 fps with deadline pacing + B-frame held buffer).
 
 ---
 

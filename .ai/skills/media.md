@@ -46,8 +46,8 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 ### Patterns already / still to adapt
 
 - Wall-clock deadline pacing (sleep remainder after decode) — done in demo play loop.
-- Promise-driven decode pump + `decodeQueueSize` backpressure (replace busy-poll `wait_for_timestamp`).
-- Flush on GOP change / backward seek; warm continue within GOP.
+- Decode-order pump + held buffer + PTS remap + output-callback wait (`decode_frame`) — done; prefer feed-ahead over flush.
+- Promise/`decodeQueueSize` backpressure polish still open if needed.
 - Bitstream keyframe verification (`verifyKeyPackets`).
 - Later: packet / sample / canvas sink layering; sparse samples-at-timestamps for filmstrip.
 
@@ -57,8 +57,9 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 2. **AVCC vs Annex-B** — MP4 `avc1` samples are length-prefixed; WebCodecs wants that plus `avcC` in `VideoDecoderConfig.description`.
 3. **B-frames** — index is presentation order; `nearest_keyframe` / `decode_window` use **`decode_order`** (not DTS range). Fixture `with_b_frames.mp4` covers this.
 4. **WebCodecs target match** — pick the sample with `frame == target_frame`. Never use `samples.last()`.
-5. **Decoder lifecycle** — warm decoder for forward steps in the same GOP (`fed_through_order`). Do **not** `flush()` between playback frames. Flush only as last resort (then invalidate).
-6. **Playback** — `WebPlayer::play` / `pause` / `step_playback`; UI paces with a wall-clock deadline (`next_at += frame_duration_seconds()`), sleeping only the remainder after decode (mediabunny-style). No audio yet.
+5. **Decoder lifecycle** — warm decode-order pump (`decode_frame`): feed next packets in the GOP until the target PTS is in `held`. Prefer feeding ahead over `flush()`. Do **not** `flush()` between playback frames.
+5b. **B-frame held buffer + PTS remap** — park not-yet-presented frames in `held`. Assign PTS from sorted `input_timestamps` as frames emerge (mediabunny `VideoDecoderWrapper`). Wait on decoder `output` callbacks when `decodeQueueSize > 0`; if the queue is idle with no output, feed the next packet (reorder needs more input). `optimizeForLatency` on configure.
+6. **Playback** — `WebPlayer::play` / `pause` / `step_playback` → `decode_frame` pump; UI paces with a wall-clock deadline. No audio yet.
 7. **Commit position after decode** — `window_at` + `commit_frame` so a failed decode does not advance the frame counter.
 8. **`web_sys_unstable_apis`** — required. Set in `.cargo/config.toml`.
 9. **`VideoDecoderInit::new` argument order** in current `web-sys` is `(error, output)`.

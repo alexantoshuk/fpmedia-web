@@ -82,7 +82,7 @@ pub fn PlayerDemo() -> impl IntoView {
         let sync_ui = Rc::clone(&sync_ui);
         let fps_meter = Rc::clone(&fps_meter);
         Rc::new(move |bytes: Vec<u8>| {
-            let Some(canvas_el) = canvas_ref.get() else {
+            let Some(canvas_el) = canvas_ref.get_untracked() else {
                 error.set(Some("canvas not mounted".into()));
                 return;
             };
@@ -169,6 +169,29 @@ pub fn PlayerDemo() -> impl IntoView {
                     }
                 >
                     "Load sample"
+                </button>
+                <button
+                    type="button"
+                    class="wm-btn"
+                    prop:disabled=move || busy.get()
+                    on:click={
+                        let open_bytes = Rc::clone(&open_bytes);
+                        move |_| {
+                            if busy.get_untracked() {
+                                return;
+                            }
+                            error.set(None);
+                            let open_bytes = Rc::clone(&open_bytes);
+                            spawn_local(async move {
+                                match fetch_bytes("/with_b_frames.mp4").await {
+                                    Ok(bytes) => open_bytes(bytes),
+                                    Err(e) => error.set(Some(e)),
+                                }
+                            });
+                        }
+                    }
+                >
+                    "Load B-frames"
                 </button>
                 <button
                     type="button"
