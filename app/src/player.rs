@@ -508,7 +508,7 @@ pub fn PlayerDemo() -> impl IntoView {
                                                     }
                                                 }
                                             }
-                                            // Side decoder: prime next wrap while the end still plays.
+                                            // End already queued: decode start into loop_prime (same decoder).
                                             {
                                                 let prepare = {
                                                     let borrow = player.borrow();

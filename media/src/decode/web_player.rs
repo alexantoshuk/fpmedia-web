@@ -17,8 +17,7 @@ use crate::types::{FrameId, VideoMetadata};
 
 /// Decoded frames held ready for canvas present (mediabunny-style prefetch).
 pub const PRESENTATION_QUEUE_CAP: usize = 16;
-/// Frames (incl. frame 0) decoded on a side decoder before the loop seam.
-/// Prepared in parallel with end-of-clip playback so `loop_to_start` is a swap.
+/// Start-of-clip frames prepared into `loop_prime` before EOF (one decoder).
 const LOOP_PRIME_FRAMES: usize = 8;
 /// Wall-clock lag above this → skip to nearest keyframe instead of exact frame.
 const BIG_LAG_SECONDS: f64 = 0.5;
@@ -33,15 +32,14 @@ struct QueuedFrame {
 struct Shared {
     player: RefCell<Player>,
     presentation: RefCell<VecDeque<QueuedFrame>>,
-    /// Start-of-clip frames ready for the next loop wrap (side decoder).
+    /// Start frames decoded ahead of the loop seam (same decoder, while end plays).
     loop_prime: RefCell<Option<VecDeque<QueuedFrame>>>,
     canvas: HtmlCanvasElement,
     ctx: CanvasRenderingContext2d,
     frames_skipped: Cell<u64>,
     last_behind_ms: Cell<Option<f64>>,
-    /// Prefetch must idle while seek/loop restart owns the main decoder.
+    /// Prefetch must idle while seek/loop prepare owns the decoder.
     restarting: Cell<bool>,
-    /// Side-decoder loop prepare in flight.
     preparing_loop: Cell<bool>,
 }
 
@@ -71,8 +69,6 @@ pub struct WebPlayer {
     shared: Rc<Shared>,
     /// `None` only while an async decode owns the decoder (must not re-enter).
     decoder: RefCell<Option<WebCodecsDecoder>>,
-    /// Optional second decoder used to prime the next loop wrap off the hot path.
-    loop_decoder: RefCell<Option<WebCodecsDecoder>>,
 }
 
 impl WebPlayer {
@@ -101,7 +97,6 @@ impl WebPlayer {
         Ok(Self {
             shared,
             decoder: RefCell::new(Some(decoder)),
-            loop_decoder: RefCell::new(None),
         })
     }
 
@@ -317,6 +312,19 @@ impl WebPlayer {
         self.shared.presentation.borrow().len()
     }
 
+    /// True when the presentation queue already holds through the last frame.
+    fn presentation_reaches_eof(&self) -> bool {
+        let count = self.state().frame_count;
+        if count == 0 {
+            return false;
+        }
+        self.shared
+            .presentation
+            .borrow()
+            .back()
+            .is_some_and(|q| q.frame + 1 >= count)
+    }
+
     /// Sync present — safe to call while [`Self::prefetch_one`] is awaiting.
     pub fn present_due(&self, media_time_secs: f64) -> Result<DuePresent, MediaError> {
         if !self.is_playing() {
@@ -395,8 +403,11 @@ impl WebPlayer {
         Ok(DuePresent::Playing { did_draw })
     }
 
+    /// Apply a prepared loop buffer if ready; otherwise cold-restart at frame 0.
+    ///
+    /// Prefer [`Self::prepare_loop_if_needed`] while the end still plays (same
+    /// decoder, end frames already queued) so this is only a buffer swap.
     pub async fn loop_to_start(&self) -> Result<(), MediaError> {
-        // Finish an in-flight parallel prepare rather than starting a cold seek.
         let mut waits = 0_u32;
         while self.shared.preparing_loop.get() && waits < 500 {
             sleep_ms(5).await;
@@ -410,8 +421,9 @@ impl WebPlayer {
         self.loop_to_start_cold().await
     }
 
-    /// Decode the next loop wrap on a side decoder while the main path still
-    /// plays the end of the clip. No-op if not looping, already primed, or busy.
+    /// When the end of the clip is already in the presentation queue, reuse the
+    /// main decoder to decode the start into `loop_prime` while presents drain
+    /// the tail — no second `VideoDecoder`.
     pub async fn prepare_loop_if_needed(&self) -> Result<(), MediaError> {
         if !self.is_looping() || !self.is_playing() {
             return Ok(());
@@ -419,13 +431,14 @@ impl WebPlayer {
         if self.shared.loop_prime.borrow().is_some() || self.shared.preparing_loop.get() {
             return Ok(());
         }
-        // Wait until the main queue has content so we don't contend with Play prime.
-        if self.presentation_len() == 0 {
+        if !self.presentation_reaches_eof() {
             return Ok(());
         }
 
         self.shared.preparing_loop.set(true);
-        let result = self.fill_loop_prime_parallel().await;
+        self.shared.restarting.set(true);
+        let result = self.fill_loop_prime().await;
+        self.shared.restarting.set(false);
         self.shared.preparing_loop.set(false);
         result
     }
@@ -442,39 +455,12 @@ impl WebPlayer {
         self.present(first.video)?;
         self.shared.player.borrow_mut().commit_frame(first.frame)?;
         *self.shared.presentation.borrow_mut() = buf;
-        self.swap_in_loop_decoder();
+        // Decoder is already warm past the primed start frames.
         Ok(true)
     }
 
-    fn swap_in_loop_decoder(&self) {
-        let primed = self.loop_decoder.borrow_mut().take();
-        let main = self.decoder.borrow_mut().take();
-        match (primed, main) {
-            (Some(primed), Some(mut old)) => {
-                *self.decoder.borrow_mut() = Some(primed);
-                old.invalidate();
-                *self.loop_decoder.borrow_mut() = Some(old);
-            }
-            (Some(primed), None) => {
-                *self.decoder.borrow_mut() = Some(primed);
-            }
-            (None, Some(main)) => {
-                *self.decoder.borrow_mut() = Some(main);
-            }
-            (None, None) => {}
-        }
-    }
-
-    async fn fill_loop_prime_parallel(&self) -> Result<(), MediaError> {
-        let meta = self.metadata();
-        let mut dec = match self.loop_decoder.borrow_mut().take() {
-            Some(mut d) => {
-                d.invalidate();
-                d
-            }
-            None => WebCodecsDecoder::create(&meta).await?,
-        };
-
+    async fn fill_loop_prime(&self) -> Result<(), MediaError> {
+        self.invalidate_decoder();
         let track = self.shared.player.borrow().track_rc();
         let count = self.state().frame_count;
         let n = (LOOP_PRIME_FRAMES as FrameId).clamp(1, count.max(1));
@@ -485,22 +471,19 @@ impl WebPlayer {
                 for q in buf.drain(..) {
                     q.video.close();
                 }
-                *self.loop_decoder.borrow_mut() = Some(dec);
                 return Ok(());
             }
-            match dec.decode_frame(track.as_ref(), frame).await {
+            match self.decode_frame(track.as_ref(), frame).await {
                 Ok(video) => buf.push_back(QueuedFrame { frame, video }),
                 Err(e) => {
                     for q in buf.drain(..) {
                         q.video.close();
                     }
-                    *self.loop_decoder.borrow_mut() = Some(dec);
                     return Err(e);
                 }
             }
         }
 
-        *self.loop_decoder.borrow_mut() = Some(dec);
         *self.shared.loop_prime.borrow_mut() = Some(buf);
         Ok(())
     }
@@ -525,8 +508,8 @@ impl WebPlayer {
 
     /// Decode one frame into the queue. May run concurrently with [`Self::present_due`].
     ///
-    /// No-ops while [`Self::is_restarting`] — the restart/seek path owns the decoder and
-    /// fills via [`Self::prime_presentation`] (which bypasses this gate).
+    /// No-ops while [`Self::is_restarting`] — the restart/prepare path owns the decoder and
+    /// fills via [`Self::prime_presentation`] / [`Self::fill_loop_prime`].
     pub async fn prefetch_one(&self) -> Result<bool, MediaError> {
         if !self.is_playing() || self.shared.restarting.get() {
             return Ok(false);
