@@ -16,7 +16,7 @@ use crate::player::{Player, PlayerState};
 use crate::types::{FrameId, VideoMetadata};
 
 /// Decoded frames held ready for canvas present (mediabunny-style prefetch).
-pub const PRESENTATION_QUEUE_CAP: usize = 8;
+pub const PRESENTATION_QUEUE_CAP: usize = 16;
 /// Wall-clock lag above this → skip to nearest keyframe instead of exact frame.
 const BIG_LAG_SECONDS: f64 = 0.5;
 /// Stop prefetching this many ms before the present deadline.
@@ -62,7 +62,8 @@ pub enum DuePresent {
 /// Frame-accurate player that decodes with WebCodecs and draws to a canvas.
 pub struct WebPlayer {
     shared: Rc<Shared>,
-    decoder: RefCell<WebCodecsDecoder>,
+    /// `None` only while an async decode owns the decoder (must not re-enter).
+    decoder: RefCell<Option<WebCodecsDecoder>>,
 }
 
 impl WebPlayer {
@@ -84,12 +85,12 @@ impl WebPlayer {
             last_behind_ms: Cell::new(None),
             restarting: Cell::new(false),
         });
-        let web = Self {
+        // Do not seek here — first-frame decode can be slow; let the host show
+        // metadata first and call `seek_frame(0)` with its own progress UI.
+        Ok(Self {
             shared,
-            decoder: RefCell::new(decoder),
-        };
-        web.seek_frame(0).await?;
-        Ok(web)
+            decoder: RefCell::new(Some(decoder)),
+        })
     }
 
     pub fn metadata(&self) -> VideoMetadata {
@@ -102,6 +103,12 @@ impl WebPlayer {
 
     pub fn canvas(&self) -> &HtmlCanvasElement {
         &self.shared.canvas
+    }
+
+    /// Recompute canvas buffer from current CSS layout × DPR (call on container resize).
+    pub fn relayout(&self) -> Result<(), MediaError> {
+        let meta = self.metadata();
+        configure_canvas_for_video(&self.shared.canvas, meta.width, meta.height)
     }
 
     pub fn is_playing(&self) -> bool {
@@ -132,9 +139,10 @@ impl WebPlayer {
 
     pub fn pipeline_stats(&self) -> PipelineStats {
         let presentation = self.shared.presentation.borrow();
-        let (held_len, decode_queue_size) = match self.decoder.try_borrow() {
-            Ok(d) => (d.held_len(), d.browser_decode_queue_size()),
-            Err(_) => (0, 0),
+        // While decode owns the decoder (`None` in the slot), report busy.
+        let (held_len, decode_queue_size) = match self.decoder.borrow().as_ref() {
+            Some(d) => (d.held_len(), d.browser_decode_queue_size()),
+            None => (usize::MAX, u32::MAX),
         };
         PipelineStats {
             presentation_len: presentation.len(),
@@ -170,7 +178,7 @@ impl WebPlayer {
         let result = async {
             self.shared.player.borrow_mut().pause();
             self.clear_presentation();
-            self.decoder.borrow_mut().invalidate();
+            self.invalidate_decoder();
             self.goto_frame(frame).await
         }
         .await;
@@ -192,7 +200,7 @@ impl WebPlayer {
         if cur == 0 {
             return Err(MediaError::FrameOutOfRange(0, self.state().frame_count));
         }
-        self.decoder.borrow_mut().invalidate();
+        self.invalidate_decoder();
         self.goto_frame(cur - 1).await
     }
 
@@ -246,7 +254,7 @@ impl WebPlayer {
 
         self.clear_presentation();
         if behind_seconds >= BIG_LAG_SECONDS {
-            self.decoder.borrow_mut().invalidate();
+            self.invalidate_decoder();
         }
         self.goto_frame(target).await?;
         Ok(self.has_more_playback())
@@ -259,7 +267,7 @@ impl WebPlayer {
             return Ok(false);
         }
         self.clear_presentation();
-        self.decoder.borrow_mut().invalidate();
+        self.invalidate_decoder();
         self.goto_frame(0).await?;
         Ok(true)
     }
@@ -374,7 +382,7 @@ impl WebPlayer {
         self.shared.restarting.set(true);
         let result = async {
             self.clear_presentation();
-            self.decoder.borrow_mut().invalidate();
+            self.invalidate_decoder();
             self.goto_frame(0).await?;
             if self.is_playing() {
                 self.fill_presentation_queue().await?;
@@ -410,11 +418,7 @@ impl WebPlayer {
             (player.track_rc(), next, count)
         };
         let _ = count;
-        let video = self
-            .decoder
-            .borrow_mut()
-            .decode_frame(track.as_ref(), next)
-            .await?;
+        let video = self.decode_frame(track.as_ref(), next).await?;
         if !self.is_playing() {
             video.close();
             return Ok(false);
@@ -526,13 +530,32 @@ impl WebPlayer {
         }
     }
 
-    async fn goto_frame(&self, frame: FrameId) -> Result<(), MediaError> {
-        let track = self.shared.player.borrow().track_rc();
-        let video_frame = self
+    fn invalidate_decoder(&self) {
+        if let Some(decoder) = self.decoder.borrow_mut().as_mut() {
+            decoder.invalidate();
+        }
+    }
+
+    /// Take the decoder out of the slot for the duration of an async decode so
+    /// we never hold `RefMut` across `.await` (avoids freezes / panics).
+    async fn decode_frame(
+        &self,
+        track: &crate::demux::Mp4VideoTrack,
+        frame: FrameId,
+    ) -> Result<VideoFrame, MediaError> {
+        let mut decoder = self
             .decoder
             .borrow_mut()
-            .decode_frame(track.as_ref(), frame)
-            .await?;
+            .take()
+            .ok_or_else(|| MediaError::WebCodecs("decoder busy".into()))?;
+        let result = decoder.decode_frame(track, frame).await;
+        *self.decoder.borrow_mut() = Some(decoder);
+        result
+    }
+
+    async fn goto_frame(&self, frame: FrameId) -> Result<(), MediaError> {
+        let track = self.shared.player.borrow().track_rc();
+        let video_frame = self.decode_frame(track.as_ref(), frame).await?;
         self.present(video_frame)?;
         self.shared.player.borrow_mut().commit_frame(frame)?;
         Ok(())

@@ -22,13 +22,13 @@ web-sys = { workspace = true, optional = true, features = [
     "Window",
     "Document",
     "HtmlCanvasElement",
-    "HtmlElement",
     "HtmlInputElement",
     "File",
     "FileList",
     "Blob",
     "AudioContext",
     "BaseAudioContext",
+    "Performance",
 ] }
 webmedia = { path = "../media", optional = true }
 

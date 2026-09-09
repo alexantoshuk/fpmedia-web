@@ -1,15 +1,18 @@
 //! Leptos demo controls over [`webmedia::WebPlayer`].
+//!
+//! Frame-oriented transport (seek/step by `FrameId`) with a `<video>`-like
+//! media stage: fixed viewport, contain layout, and source metadata.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use js_sys::Uint8Array;
-use leptos::html::Canvas;
+use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, HtmlInputElement};
-use webmedia::{DuePresent, PipelineStats, WebPlayer};
+use webmedia::{DuePresent, PipelineStats, VideoMetadata, WebPlayer};
 
 type PlayerHandle = Rc<RefCell<Option<WebPlayer>>>;
 
@@ -51,6 +54,7 @@ impl FpsMeter {
 #[component]
 pub fn PlayerDemo() -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
+    let viewport_ref = NodeRef::<Div>::new();
     let player: PlayerHandle = Rc::new(RefCell::new(None));
     let fps_meter = Rc::new(RefCell::new(FpsMeter::new()));
 
@@ -62,9 +66,11 @@ pub fn PlayerDemo() -> impl IntoView {
     // Measured display FPS while playing (`None` when idle / not enough samples).
     let fps = RwSignal::new(Option::<f64>::None);
     let pipeline = RwSignal::new(Option::<PipelineStats>::None);
+    let meta = RwSignal::new(Option::<VideoMetadata>::None);
     let playing = RwSignal::new(false);
     let looping = RwSignal::new(false);
     let ready = RwSignal::new(false);
+    let status = RwSignal::new(String::from("Load an MP4 to begin."));
 
     let sync_ui = {
         let player = Rc::clone(&player);
@@ -80,6 +86,7 @@ pub fn PlayerDemo() -> impl IntoView {
                 playing.set(st.playing);
                 looping.set(st.looping);
                 pipeline.set(Some(p.pipeline_stats()));
+                meta.set(Some(p.metadata()));
             }
         }) as Rc<dyn Fn()>
     };
@@ -91,6 +98,7 @@ pub fn PlayerDemo() -> impl IntoView {
         Rc::new(move |bytes: Vec<u8>| {
             let Some(canvas_el) = canvas_ref.get_untracked() else {
                 error.set(Some("canvas not mounted".into()));
+                status.set("Canvas missing — refresh the page.".into());
                 return;
             };
             let canvas: HtmlCanvasElement = canvas_el;
@@ -98,25 +106,56 @@ pub fn PlayerDemo() -> impl IntoView {
                 return;
             }
             busy.set(true);
+            ready.set(false);
             error.set(None);
             playing.set(false);
             looping.set(false);
             fps.set(None);
             pipeline.set(None);
+            meta.set(None);
+            status.set(format!("Opening ({} KB)…", bytes.len() / 1024));
             fps_meter.borrow_mut().reset();
             let player = Rc::clone(&player);
             let sync_ui = Rc::clone(&sync_ui);
             spawn_local(async move {
                 *player.borrow_mut() = None;
-                match WebPlayer::open_mp4_bytes(bytes, canvas).await {
+                status.set(format!("Demux + decoder ({} KB)…", bytes.len() / 1024));
+                let opened = open_with_timeout(bytes, canvas, 15_000).await;
+                match opened {
                     Ok(p) => {
+                        meta.set(Some(p.metadata()));
+                        let _ = p.relayout();
                         *player.borrow_mut() = Some(p);
-                        ready.set(true);
-                        sync_ui();
+                        status.set("Decoding frame 0…".into());
+                        let seek = {
+                            let Some(p) = player.borrow_mut().take() else {
+                                error.set(Some("player lost after open".into()));
+                                status.set("Open failed: player lost".into());
+                                busy.set(false);
+                                return;
+                            };
+                            let result = p.seek_frame(0).await;
+                            *player.borrow_mut() = Some(p);
+                            result
+                        };
+                        match seek {
+                            Ok(()) => {
+                                ready.set(true);
+                                status.set("Ready.".into());
+                                sync_ui();
+                            }
+                            Err(e) => {
+                                ready.set(false);
+                                error.set(Some(e.to_string()));
+                                status.set(format!("Seek 0 failed: {e}"));
+                            }
+                        }
                     }
                     Err(e) => {
                         ready.set(false);
-                        error.set(Some(e.to_string()));
+                        meta.set(None);
+                        error.set(Some(e.clone()));
+                        status.set(format!("Open failed: {e}"));
                     }
                 }
                 busy.set(false);
@@ -126,12 +165,17 @@ pub fn PlayerDemo() -> impl IntoView {
 
     view! {
         <div class="wm-player">
-            <canvas
-                node_ref=canvas_ref
-                class="wm-canvas"
-                width="320"
-                height="240"
-            />
+            <div class="wm-viewport" node_ref=viewport_ref>
+                <canvas
+                    node_ref=canvas_ref
+                    class="wm-canvas"
+                    width="320"
+                    height="240"
+                />
+            </div>
+            <p class="wm-meta">
+                {move || meta.get().as_ref().map(format_metadata).unwrap_or_default()}
+            </p>
             <div class="wm-controls">
                 <label class="wm-file">
                     "Open MP4"
@@ -190,6 +234,23 @@ pub fn PlayerDemo() -> impl IntoView {
                                     Err(_) => None,
                                 };
 
+                                {
+                                    let borrow = player.borrow();
+                                    if let Some(p) = borrow.as_ref() {
+                                        if let Err(e) = p.prime_playback().await {
+                                            error.set(Some(e.to_string()));
+                                            playing.set(false);
+                                            return;
+                                        }
+                                    } else {
+                                        playing.set(false);
+                                        return;
+                                    }
+                                }
+
+                                // Clock origins AFTER prime — priming can take hundreds of ms;
+                                // starting the media clock beforehand makes present_due skip
+                                // immediately and feels like start stutter (~15 fps).
                                 let mut media_origin = {
                                     let borrow = player.borrow();
                                     match borrow.as_ref() {
@@ -205,20 +266,6 @@ pub fn PlayerDemo() -> impl IntoView {
                                 let mut wall_origin =
                                     performance_now_ms().map(|t| t / 1000.0).unwrap_or(0.0);
 
-                                {
-                                    let borrow = player.borrow();
-                                    if let Some(p) = borrow.as_ref() {
-                                        if let Err(e) = p.prime_playback().await {
-                                            error.set(Some(e.to_string()));
-                                            playing.set(false);
-                                            return;
-                                        }
-                                    } else {
-                                        playing.set(false);
-                                        return;
-                                    }
-                                }
-
                                 // Background decode pump.
                                 {
                                     let player = Rc::clone(&player);
@@ -229,7 +276,8 @@ pub fn PlayerDemo() -> impl IntoView {
                                                 borrow.as_ref().is_some_and(|p| {
                                                     p.is_playing()
                                                         && !p.is_restarting()
-                                                        && p.presentation_len() <= 4
+                                                        && p.presentation_len()
+                                                            < webmedia::PRESENTATION_QUEUE_CAP
                                                 })
                                             };
                                             if need {
@@ -241,7 +289,7 @@ pub fn PlayerDemo() -> impl IntoView {
                                                     }
                                                 };
                                                 match decoded {
-                                                    Ok(true) => continue, // keep filling
+                                                    Ok(true) => continue, // keep filling to CAP
                                                     Ok(false) => {
                                                         // EOF / full / paused — must yield or we spin.
                                                     }
@@ -477,8 +525,8 @@ pub fn PlayerDemo() -> impl IntoView {
             </div>
             <p class="wm-status">
                 {move || {
-                    if !ready.get() {
-                        "Load an MP4 to begin.".to_string()
+                    if busy.get() || !ready.get() {
+                        status.get()
                     } else {
                         let fps_part = match fps.get() {
                             Some(v) => format!(" · {v:.1} fps"),
@@ -515,8 +563,16 @@ pub fn PlayerDemo() -> impl IntoView {
                         s.presentation_len,
                         s.presentation_cap,
                         range,
-                        s.held_len,
-                        s.decode_queue_size,
+                        if s.held_len == usize::MAX {
+                            "busy".into()
+                        } else {
+                            s.held_len.to_string()
+                        },
+                        if s.decode_queue_size == u32::MAX {
+                            "busy".into()
+                        } else {
+                            s.decode_queue_size.to_string()
+                        },
                         s.frames_skipped,
                         lag
                     )
@@ -525,6 +581,27 @@ pub fn PlayerDemo() -> impl IntoView {
             <p class="wm-error">{move || error.get().unwrap_or_default()}</p>
         </div>
     }
+}
+
+fn format_metadata(meta: &VideoMetadata) -> String {
+    let fps = meta
+        .fps
+        .map(|v| format!("{v:.3} fps"))
+        .unwrap_or_else(|| "fps —".into());
+    let codec = meta
+        .codec
+        .codec_string
+        .clone()
+        .unwrap_or_else(|| format!("{:?}", meta.codec.codec));
+    format!(
+        "{}×{} · {} · {} · {:.3}s · {} frames",
+        meta.width,
+        meta.height,
+        fps,
+        codec,
+        meta.duration().seconds,
+        meta.frame_count
+    )
 }
 
 fn step_frame(
@@ -543,17 +620,20 @@ fn step_frame(
     let player = Rc::clone(player);
     let sync_ui = Rc::clone(sync_ui);
     spawn_local(async move {
-        if let Some(p) = player.borrow().as_ref() {
-            p.pause();
-            let result = if forward {
-                p.next_frame().await
-            } else {
-                p.previous_frame().await
-            };
-            if let Err(e) = result {
-                error.set(Some(e.to_string()));
-            }
+        let Some(p) = player.borrow_mut().take() else {
+            busy.set(false);
+            return;
+        };
+        p.pause();
+        let result = if forward {
+            p.next_frame().await
+        } else {
+            p.previous_frame().await
+        };
+        if let Err(e) = &result {
+            error.set(Some(e.to_string()));
         }
+        *player.borrow_mut() = Some(p);
         sync_ui();
         busy.set(false);
     });
@@ -575,12 +655,15 @@ fn seek_frame(
     let player = Rc::clone(player);
     let sync_ui = Rc::clone(sync_ui);
     spawn_local(async move {
-        if let Some(p) = player.borrow().as_ref() {
-            p.pause();
-            if let Err(e) = p.seek_frame(u64::from(target)).await {
-                error.set(Some(e.to_string()));
-            }
+        let Some(p) = player.borrow_mut().take() else {
+            busy.set(false);
+            return;
+        };
+        p.pause();
+        if let Err(e) = p.seek_frame(u64::from(target)).await {
+            error.set(Some(e.to_string()));
         }
+        *player.borrow_mut() = Some(p);
         sync_ui();
         busy.set(false);
     });
@@ -590,6 +673,46 @@ fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> T {
     ev.target()
         .expect("event target")
         .unchecked_into::<T>()
+}
+
+async fn open_with_timeout(
+    bytes: Vec<u8>,
+    canvas: HtmlCanvasElement,
+    timeout_ms: i32,
+) -> Result<WebPlayer, String> {
+    let outcome: Rc<RefCell<Option<Result<WebPlayer, String>>>> = Rc::new(RefCell::new(None));
+    {
+        let outcome = Rc::clone(&outcome);
+        spawn_local(async move {
+            let result = WebPlayer::open_mp4_bytes(bytes, canvas)
+                .await
+                .map_err(|e| e.to_string());
+            *outcome.borrow_mut() = Some(result);
+        });
+    }
+
+    let start = performance_now_ms().unwrap_or(0.0);
+    loop {
+        if let Some(result) = outcome.borrow_mut().take() {
+            return result;
+        }
+        let now = performance_now_ms().unwrap_or(start);
+        if now - start >= f64::from(timeout_ms) {
+            return Err(format!(
+                "timed out after {timeout_ms}ms (open/decode hung — hard-refresh and check console)"
+            ));
+        }
+        sleep_ms(50).await;
+    }
+}
+
+async fn sleep_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let _ = web_sys::window()
+            .expect("window")
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 async fn wait_animation_frame() {

@@ -12,6 +12,13 @@ leptos = { version = "0.8" }
 leptos_meta = { version = "0.8" }
 leptos_router = { version = "0.8" }
 leptos_axum = { version = "0.8" }
+leptos-use = { version = "0.19", default-features = false, features = [
+    "use_resize_observer",
+    "use_raf_fn",
+    "use_event_listener",
+    "use_element_size",
+    "use_timeout_fn",
+] }
 axum = "0.8.9"
 console_error_panic_hook = "0.1.7"
 console_log = "1.1.0"

@@ -14,7 +14,9 @@ const PLAYBACK_MAX_EDGE: u32 = 1280;
 
 /// Pin CSS aspect-ratio and allocate the bitmap buffer once for this video.
 ///
-/// Call on open (and on window resize if you add that later) — not per frame.
+/// Call on open (and on container resize via [`crate::WebPlayer::relayout`]) —
+/// not per frame. Layout follows CSS **contain** inside the parent box (like
+/// `<video>` + `object-fit: contain`).
 pub fn configure_canvas_for_video(
     canvas: &HtmlCanvasElement,
     src_w: u32,
@@ -80,30 +82,53 @@ pub fn canvas_2d(canvas: &HtmlCanvasElement) -> Result<CanvasRenderingContext2d,
         .map_err(|_| MediaError::WebCodecs("canvas 2d cast failed".into()))
 }
 
-fn buffer_size_for_layout(
-    canvas: &HtmlCanvasElement,
-    src_w: u32,
-    src_h: u32,
-) -> (u32, u32) {
+/// Parent media stage when present; otherwise the canvas itself.
+fn layout_box_css(canvas: &HtmlCanvasElement) -> (f64, f64) {
+    if let Some(parent) = canvas.parent_element() {
+        let w = parent.client_width();
+        let h = parent.client_height();
+        if w > 0 && h > 0 {
+            return (w as f64, h as f64);
+        }
+    }
+    let w = canvas.client_width();
+    let h = canvas.client_height();
+    (
+        if w > 0 { w as f64 } else { 640.0 },
+        if h > 0 { h as f64 } else { 360.0 },
+    )
+}
+
+/// CSS contain size of the video inside `box_w` × `box_h`.
+fn contain_css_size(box_w: f64, box_h: f64, src_aspect: f64) -> (f64, f64) {
+    let box_w = box_w.max(1.0);
+    let box_h = box_h.max(1.0);
+    let box_aspect = box_w / box_h;
+    if src_aspect > box_aspect {
+        (box_w, box_w / src_aspect)
+    } else {
+        (box_h * src_aspect, box_h)
+    }
+}
+
+fn buffer_size_for_layout(canvas: &HtmlCanvasElement, src_w: u32, src_h: u32) -> (u32, u32) {
     let src_aspect = src_w as f64 / src_h as f64;
     let dpr = web_sys::window()
         .map(|w| w.device_pixel_ratio())
         .unwrap_or(1.0)
         .clamp(1.0, 2.0);
 
-    // Size from width only — height follows aspect. Using clientHeight here
-    // feedback-loops with canvas attribute changes (±1px jitter).
-    let mut css_w = canvas.client_width();
-    if css_w <= 0 {
-        css_w = 640;
-    }
+    let (box_w, box_h) = layout_box_css(canvas);
+    let (css_w, css_h) = contain_css_size(box_w, box_h, src_aspect);
 
-    let max_w = src_w.min(PLAYBACK_MAX_EDGE) as f64;
-    let buf_w = ((css_w as f64) * dpr)
-        .round()
-        .clamp(1.0, max_w) as u32;
-    let buf_h = ((buf_w as f64) / src_aspect)
-        .round()
-        .clamp(1.0, src_h as f64) as u32;
-    (buf_w, buf_h)
+    let max_edge = src_w.max(src_h).min(PLAYBACK_MAX_EDGE) as f64;
+    let mut buf_w = (css_w * dpr).round().clamp(1.0, max_edge);
+    let mut buf_h = (css_h * dpr).round().clamp(1.0, max_edge);
+    // Keep buffer aspect aligned with source after clamping.
+    if buf_w / buf_h > src_aspect {
+        buf_w = (buf_h * src_aspect).round().max(1.0);
+    } else {
+        buf_h = (buf_w / src_aspect).round().max(1.0);
+    }
+    (buf_w as u32, buf_h as u32)
 }

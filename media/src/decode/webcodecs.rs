@@ -5,7 +5,7 @@
 //! frame when ready. Prefer feeding further ahead in the GOP over `flush()`.
 //! Apply `decodeQueueSize` backpressure before feeding more packets.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use js_sys::Uint8Array;
@@ -28,6 +28,7 @@ const MAX_DECODE_QUEUE_WITH_HELD: u32 = 8;
 /// encoded queue before emitting reordered frames.
 const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
 
+#[derive(Clone)]
 struct DecoderConfig {
     codec: String,
     width: u32,
@@ -49,13 +50,19 @@ impl DecoderConfig {
         })
     }
 
-    fn to_web_config(&self) -> VideoDecoderConfig {
+    /// Build a WebCodecs config.
+    ///
+    /// Do **not** set `hardwareAcceleration: prefer-hardware` on the support
+    /// check — many browsers report `supported: false` even when software
+    /// (or opportunistic HW) decode works, which blocks open entirely.
+    fn to_web_config(&self, optimize_for_latency: bool) -> VideoDecoderConfig {
         let config = VideoDecoderConfig::new(&self.codec);
         config.set_coded_width(self.width);
         config.set_coded_height(self.height);
         config.set_description(&Uint8Array::from(self.description.as_slice()));
-        // Ask the browser to emit frames ASAP (important with B-frame reorder).
-        config.set_optimize_for_latency(true);
+        // Prefer low-latency configure for reliable open / first-frame seek.
+        // (Throughput-oriented `false` can be revisited once open is stable.)
+        config.set_optimize_for_latency(optimize_for_latency);
         config
     }
 }
@@ -69,6 +76,9 @@ struct HeldFrame {
 pub struct WebCodecsDecoder {
     decoder: VideoDecoder,
     config: DecoderConfig,
+    optimize_for_latency: bool,
+    /// Bumped on teardown so late browser callbacks become no-ops.
+    generation: Rc<Cell<u64>>,
     frames: Rc<RefCell<Vec<VideoFrame>>>,
     error: Rc<RefCell<Option<String>>>,
     /// Resolvers waiting for the next `output` callback (mediabunny-style).
@@ -88,8 +98,10 @@ pub struct WebCodecsDecoder {
 impl WebCodecsDecoder {
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
         let config = DecoderConfig::from_meta(meta)?;
-        let web_config = config.to_web_config();
-
+        // Keep the previously working open path (`optimizeForLatency: true`).
+        // Throughput tweaks must not block `isConfigSupported` / first seek.
+        let optimize_for_latency = true;
+        let web_config = config.to_web_config(optimize_for_latency);
         let support = JsFuture::from(VideoDecoder::is_config_supported(&web_config))
             .await
             .map_err(MediaError::from)?;
@@ -100,13 +112,16 @@ impl WebCodecsDecoder {
         if !supported {
             return Err(MediaError::CodecUnsupported(config.codec.clone()));
         }
-
-        Self::from_config(config)
+        Self::from_config(config, optimize_for_latency)
     }
 
-    fn from_config(config: DecoderConfig) -> Result<Self, MediaError> {
-        let web_config = config.to_web_config();
+    fn from_config(
+        config: DecoderConfig,
+        optimize_for_latency: bool,
+    ) -> Result<Self, MediaError> {
+        let web_config = config.to_web_config(optimize_for_latency);
 
+        let generation = Rc::new(Cell::new(0));
         let frames: Rc<RefCell<Vec<VideoFrame>>> = Rc::new(RefCell::new(Vec::new()));
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let output_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
@@ -114,20 +129,34 @@ impl WebCodecsDecoder {
         let dequeue_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
             Rc::new(RefCell::new(Vec::new()));
 
+        let gen_cb = Rc::clone(&generation);
+        let my_gen = gen_cb.get();
         let frames_cb = Rc::clone(&frames);
         let waiters_cb = Rc::clone(&output_waiters);
         let on_output = Closure::wrap(Box::new(move |value: JsValue| {
+            if gen_cb.get() != my_gen {
+                if let Ok(frame) = value.dyn_into::<VideoFrame>() {
+                    frame.close();
+                }
+                return;
+            }
             if let Ok(frame) = value.dyn_into::<VideoFrame>() {
                 frames_cb.borrow_mut().push(frame);
             }
             let waiting = std::mem::take(&mut *waiters_cb.borrow_mut());
-            for resolve in waiting {
-                let _ = resolve.call0(&JsValue::NULL);
-            }
+            // Defer resolves — sync wake from inside this Closure re-enters Rust
+            // (decode → recreate → drop Closure) and panics with
+            // "closure invoked recursively or after being dropped".
+            wake_waiters_deferred(waiting);
         }) as Box<dyn FnMut(JsValue)>);
 
+        let gen_err = Rc::clone(&generation);
+        let my_gen_err = gen_err.get();
         let error_cb = Rc::clone(&error);
         let on_error = Closure::wrap(Box::new(move |value: JsValue| {
+            if gen_err.get() != my_gen_err {
+                return;
+            }
             let msg = value
                 .as_string()
                 .or_else(|| {
@@ -139,12 +168,15 @@ impl WebCodecsDecoder {
             *error_cb.borrow_mut() = Some(msg);
         }) as Box<dyn FnMut(JsValue)>);
 
+        let gen_dq = Rc::clone(&generation);
+        let my_gen_dq = gen_dq.get();
         let dequeue_cb = Rc::clone(&dequeue_waiters);
         let on_dequeue = Closure::wrap(Box::new(move |_value: JsValue| {
-            let waiting = std::mem::take(&mut *dequeue_cb.borrow_mut());
-            for resolve in waiting {
-                let _ = resolve.call0(&JsValue::NULL);
+            if gen_dq.get() != my_gen_dq {
+                return;
             }
+            let waiting = std::mem::take(&mut *dequeue_cb.borrow_mut());
+            wake_waiters_deferred(waiting);
         }) as Box<dyn FnMut(JsValue)>);
 
         let init = VideoDecoderInit::new(
@@ -158,6 +190,8 @@ impl WebCodecsDecoder {
         Ok(Self {
             decoder,
             config,
+            optimize_for_latency,
+            generation,
             frames,
             error,
             output_waiters,
@@ -172,23 +206,37 @@ impl WebCodecsDecoder {
         })
     }
 
-    fn recreate(&mut self) -> Result<(), MediaError> {
+    /// Close the browser decoder and retire callbacks without dropping Closures
+    /// that JS may still invoke (would panic inside wasm-bindgen).
+    fn detach_decoder(&mut self) {
+        self.generation.set(self.generation.get().wrapping_add(1));
+        let _ = self.decoder.set_ondequeue(None);
         let _ = self.decoder.close();
         for frame in self.frames.borrow_mut().drain(..) {
             frame.close();
         }
         self.clear_held();
         self.input_timestamps.clear();
-        self.output_waiters.borrow_mut().clear();
-        self.dequeue_waiters.borrow_mut().clear();
+        let waiting = std::mem::take(&mut *self.output_waiters.borrow_mut());
+        wake_waiters_deferred(waiting);
+        let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
+        wake_waiters_deferred(waiting);
         *self.error.borrow_mut() = None;
-        let config = DecoderConfig {
-            codec: self.config.codec.clone(),
-            width: self.config.width,
-            height: self.config.height,
-            description: self.config.description.clone(),
-        };
-        *self = Self::from_config(config)?;
+    }
+
+    fn recreate(&mut self) -> Result<(), MediaError> {
+        self.detach_decoder();
+        let config = self.config.clone();
+        let optimize_for_latency = self.optimize_for_latency;
+        // Retire Closures before `*self = …` Drop — JS may still invoke them.
+        let old_output = std::mem::replace(&mut self._on_output, Closure::new(|_| {}));
+        let old_error = std::mem::replace(&mut self._on_error, Closure::new(|_| {}));
+        let old_dequeue = std::mem::replace(&mut self._on_dequeue, Closure::new(|_| {}));
+        std::mem::forget(old_output);
+        std::mem::forget(old_error);
+        std::mem::forget(old_dequeue);
+
+        *self = Self::from_config(config, optimize_for_latency)?;
         Ok(())
     }
 
@@ -197,8 +245,10 @@ impl WebCodecsDecoder {
         self.key_order = None;
         self.input_timestamps.clear();
         self.clear_held();
-        self.output_waiters.borrow_mut().clear();
-        self.dequeue_waiters.borrow_mut().clear();
+        let waiting = std::mem::take(&mut *self.output_waiters.borrow_mut());
+        wake_waiters_deferred(waiting);
+        let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
+        wake_waiters_deferred(waiting);
         for frame in self.frames.borrow_mut().drain(..) {
             frame.close();
         }
@@ -287,6 +337,7 @@ impl WebCodecsDecoder {
         }
 
         if self.key_order != Some(key_do) {
+            // Hard reset on new sync — soft flush path hung open on some clips.
             self.recreate()?;
             self.key_order = Some(key_do);
             let key_sample = track.encoded_sample(key_id)?;
@@ -427,7 +478,7 @@ impl WebCodecsDecoder {
         let dequeue = js_sys::Promise::new(&mut |resolve, _reject| {
             waiters.borrow_mut().push(resolve);
         });
-        let _ = JsFuture::from(promise_race(dequeue, delay_ms(0))).await;
+        let _ = JsFuture::from(promise_race(dequeue, yield_microtask())).await;
     }
 
     async fn wait_for_output_or_tick(&self) {
@@ -441,7 +492,7 @@ impl WebCodecsDecoder {
             }
             waiters.borrow_mut().push(resolve);
         });
-        let _ = JsFuture::from(promise_race(output, delay_ms(0))).await;
+        let _ = JsFuture::from(promise_race(output, yield_microtask())).await;
     }
 
     fn check_error(&self) -> Result<(), MediaError> {
@@ -455,20 +506,28 @@ impl WebCodecsDecoder {
 
 impl Drop for WebCodecsDecoder {
     fn drop(&mut self) {
-        let _ = self.decoder.close();
-        for frame in self.frames.borrow_mut().drain(..) {
-            frame.close();
-        }
-        self.clear_held();
-        // Wake any waiters so awaiters don't hang on drop.
-        let waiting = std::mem::take(&mut *self.output_waiters.borrow_mut());
-        for resolve in waiting {
+        self.detach_decoder();
+        // Leak Closures — same reason as `recreate` (late JS invokes after close).
+        let output = std::mem::replace(&mut self._on_output, Closure::new(|_| {}));
+        let error = std::mem::replace(&mut self._on_error, Closure::new(|_| {}));
+        let dequeue = std::mem::replace(&mut self._on_dequeue, Closure::new(|_| {}));
+        std::mem::forget(output);
+        std::mem::forget(error);
+        std::mem::forget(dequeue);
+    }
+}
+
+fn wake_waiters_deferred(waiting: Vec<js_sys::Function>) {
+    if waiting.is_empty() {
+        return;
+    }
+    // Leave the WebCodecs Closure stack before waking Rust waiters (reentrancy).
+    // `spawn_local` is reliable; raw `queueMicrotask(promiseResolve)` can fail to
+    // run and leave `open` / decode stuck with `busy=true` and no error.
+    for resolve in waiting {
+        wasm_bindgen_futures::spawn_local(async move {
             let _ = resolve.call0(&JsValue::NULL);
-        }
-        let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
-        for resolve in waiting {
-            let _ = resolve.call0(&JsValue::NULL);
-        }
+        });
     }
 }
 
@@ -477,11 +536,13 @@ fn ticks_to_micros(ticks: i64, timescale: u64) -> i64 {
     ((ticks as i128) * 1_000_000 / timescale) as i64
 }
 
-fn delay_ms(ms: i32) -> js_sys::Promise {
+/// One event-loop turn. Prefer `setTimeout(0)` — `Promise.resolve` + some
+/// waiter bridges hung `open`/`seek` on Chromium + wasm-bindgen-futures.
+fn yield_microtask() -> js_sys::Promise {
     js_sys::Promise::new(&mut |resolve, _reject| {
         let _ = web_sys::window()
             .expect("window")
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
     })
 }
 

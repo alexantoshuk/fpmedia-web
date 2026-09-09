@@ -31,6 +31,7 @@ Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCode
 - **Primary position** = presentation `FrameId` (0-based), not `time * fps`.
 - Exact frame N uses keyframe cascade (nearest sync → decode → target), including B-frame / decode-order windows.
 - Player layout/state must allow **1–2 media sources** later (compare) — never hard-assume a single source forever.
+- Demo stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, source metadata (size / fps / codec) via `WebPlayer::metadata()`.
 - No audio in the first alpha slice; continuous play + audio come next.
 
 ---
