@@ -499,13 +499,30 @@ pub fn PlayerDemo() -> impl IntoView {
                                                 match decoded {
                                                     Ok(true) => continue, // keep filling to CAP
                                                     Ok(false) => {
-                                                        // EOF / full / paused — must yield or we spin.
+                                                        // EOF / full / paused — fall through to loop prepare.
                                                     }
                                                     Err(e) => {
                                                         error.set(Some(e.to_string()));
                                                         stop_playback();
                                                         break;
                                                     }
+                                                }
+                                            }
+                                            // Side decoder: prime next wrap while the end still plays.
+                                            {
+                                                let prepare = {
+                                                    let borrow = player.borrow();
+                                                    match borrow.as_ref() {
+                                                        Some(p) if p.is_looping() => {
+                                                            Some(p.prepare_loop_if_needed().await)
+                                                        }
+                                                        _ => None,
+                                                    }
+                                                };
+                                                if let Some(Err(e)) = prepare {
+                                                    error.set(Some(e.to_string()));
+                                                    stop_playback();
+                                                    break;
                                                 }
                                             }
                                             wait_animation_frame().await;

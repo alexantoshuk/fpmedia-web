@@ -17,6 +17,9 @@ use crate::types::{FrameId, VideoMetadata};
 
 /// Decoded frames held ready for canvas present (mediabunny-style prefetch).
 pub const PRESENTATION_QUEUE_CAP: usize = 16;
+/// Frames (incl. frame 0) decoded on a side decoder before the loop seam.
+/// Prepared in parallel with end-of-clip playback so `loop_to_start` is a swap.
+const LOOP_PRIME_FRAMES: usize = 8;
 /// Wall-clock lag above this → skip to nearest keyframe instead of exact frame.
 const BIG_LAG_SECONDS: f64 = 0.5;
 /// Stop prefetching this many ms before the present deadline.
@@ -30,12 +33,16 @@ struct QueuedFrame {
 struct Shared {
     player: RefCell<Player>,
     presentation: RefCell<VecDeque<QueuedFrame>>,
+    /// Start-of-clip frames ready for the next loop wrap (side decoder).
+    loop_prime: RefCell<Option<VecDeque<QueuedFrame>>>,
     canvas: HtmlCanvasElement,
     ctx: CanvasRenderingContext2d,
     frames_skipped: Cell<u64>,
     last_behind_ms: Cell<Option<f64>>,
-    /// Prefetch must idle while seek/loop restart owns the decoder.
+    /// Prefetch must idle while seek/loop restart owns the main decoder.
     restarting: Cell<bool>,
+    /// Side-decoder loop prepare in flight.
+    preparing_loop: Cell<bool>,
 }
 
 /// Live decode / prefetch counters for the demo UI (and host apps).
@@ -64,6 +71,8 @@ pub struct WebPlayer {
     shared: Rc<Shared>,
     /// `None` only while an async decode owns the decoder (must not re-enter).
     decoder: RefCell<Option<WebCodecsDecoder>>,
+    /// Optional second decoder used to prime the next loop wrap off the hot path.
+    loop_decoder: RefCell<Option<WebCodecsDecoder>>,
 }
 
 impl WebPlayer {
@@ -79,17 +88,20 @@ impl WebPlayer {
         let shared = Rc::new(Shared {
             player: RefCell::new(player),
             presentation: RefCell::new(VecDeque::new()),
+            loop_prime: RefCell::new(None),
             canvas,
             ctx,
             frames_skipped: Cell::new(0),
             last_behind_ms: Cell::new(None),
             restarting: Cell::new(false),
+            preparing_loop: Cell::new(false),
         });
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
         Ok(Self {
             shared,
             decoder: RefCell::new(Some(decoder)),
+            loop_decoder: RefCell::new(None),
         })
     }
 
@@ -123,10 +135,14 @@ impl WebPlayer {
 
     pub fn pause(&self) {
         self.shared.player.borrow_mut().pause();
+        self.clear_loop_prime();
     }
 
     pub fn set_loop(&self, looping: bool) {
         self.shared.player.borrow_mut().set_loop(looping);
+        if !looping {
+            self.clear_loop_prime();
+        }
     }
 
     pub fn is_looping(&self) -> bool {
@@ -177,6 +193,7 @@ impl WebPlayer {
         self.shared.restarting.set(true);
         let result = async {
             self.shared.player.borrow_mut().pause();
+            self.clear_loop_prime();
             self.clear_presentation();
             self.invalidate_decoder();
             self.goto_frame(frame).await
@@ -379,13 +396,125 @@ impl WebPlayer {
     }
 
     pub async fn loop_to_start(&self) -> Result<(), MediaError> {
+        // Finish an in-flight parallel prepare rather than starting a cold seek.
+        let mut waits = 0_u32;
+        while self.shared.preparing_loop.get() && waits < 500 {
+            sleep_ms(5).await;
+            waits += 1;
+        }
+
+        if self.apply_loop_prime()? {
+            return Ok(());
+        }
+
+        self.loop_to_start_cold().await
+    }
+
+    /// Decode the next loop wrap on a side decoder while the main path still
+    /// plays the end of the clip. No-op if not looping, already primed, or busy.
+    pub async fn prepare_loop_if_needed(&self) -> Result<(), MediaError> {
+        if !self.is_looping() || !self.is_playing() {
+            return Ok(());
+        }
+        if self.shared.loop_prime.borrow().is_some() || self.shared.preparing_loop.get() {
+            return Ok(());
+        }
+        // Wait until the main queue has content so we don't contend with Play prime.
+        if self.presentation_len() == 0 {
+            return Ok(());
+        }
+
+        self.shared.preparing_loop.set(true);
+        let result = self.fill_loop_prime_parallel().await;
+        self.shared.preparing_loop.set(false);
+        result
+    }
+
+    fn apply_loop_prime(&self) -> Result<bool, MediaError> {
+        let Some(mut buf) = self.shared.loop_prime.borrow_mut().take() else {
+            return Ok(false);
+        };
+        let Some(first) = buf.pop_front() else {
+            return Ok(false);
+        };
+
+        self.clear_presentation();
+        self.present(first.video)?;
+        self.shared.player.borrow_mut().commit_frame(first.frame)?;
+        *self.shared.presentation.borrow_mut() = buf;
+        self.swap_in_loop_decoder();
+        Ok(true)
+    }
+
+    fn swap_in_loop_decoder(&self) {
+        let primed = self.loop_decoder.borrow_mut().take();
+        let main = self.decoder.borrow_mut().take();
+        match (primed, main) {
+            (Some(primed), Some(mut old)) => {
+                *self.decoder.borrow_mut() = Some(primed);
+                old.invalidate();
+                *self.loop_decoder.borrow_mut() = Some(old);
+            }
+            (Some(primed), None) => {
+                *self.decoder.borrow_mut() = Some(primed);
+            }
+            (None, Some(main)) => {
+                *self.decoder.borrow_mut() = Some(main);
+            }
+            (None, None) => {}
+        }
+    }
+
+    async fn fill_loop_prime_parallel(&self) -> Result<(), MediaError> {
+        let meta = self.metadata();
+        let mut dec = match self.loop_decoder.borrow_mut().take() {
+            Some(mut d) => {
+                d.invalidate();
+                d
+            }
+            None => WebCodecsDecoder::create(&meta).await?,
+        };
+
+        let track = self.shared.player.borrow().track_rc();
+        let count = self.state().frame_count;
+        let n = (LOOP_PRIME_FRAMES as FrameId).clamp(1, count.max(1));
+        let mut buf: VecDeque<QueuedFrame> = VecDeque::new();
+
+        for frame in 0..n {
+            if !self.is_playing() || !self.is_looping() {
+                for q in buf.drain(..) {
+                    q.video.close();
+                }
+                *self.loop_decoder.borrow_mut() = Some(dec);
+                return Ok(());
+            }
+            match dec.decode_frame(track.as_ref(), frame).await {
+                Ok(video) => buf.push_back(QueuedFrame { frame, video }),
+                Err(e) => {
+                    for q in buf.drain(..) {
+                        q.video.close();
+                    }
+                    *self.loop_decoder.borrow_mut() = Some(dec);
+                    return Err(e);
+                }
+            }
+        }
+
+        *self.loop_decoder.borrow_mut() = Some(dec);
+        *self.shared.loop_prime.borrow_mut() = Some(buf);
+        Ok(())
+    }
+
+    async fn loop_to_start_cold(&self) -> Result<(), MediaError> {
         self.shared.restarting.set(true);
         let result = async {
+            self.clear_loop_prime();
             self.clear_presentation();
             self.invalidate_decoder();
             self.goto_frame(0).await?;
             if self.is_playing() {
-                self.fill_presentation_queue().await?;
+                self.prime_presentation(LOOP_PRIME_FRAMES.saturating_sub(1))
+                    .await?;
             }
             Ok(())
         }
@@ -395,14 +524,22 @@ impl WebPlayer {
     }
 
     /// Decode one frame into the queue. May run concurrently with [`Self::present_due`].
+    ///
+    /// No-ops while [`Self::is_restarting`] — the restart/seek path owns the decoder and
+    /// fills via [`Self::prime_presentation`] (which bypasses this gate).
     pub async fn prefetch_one(&self) -> Result<bool, MediaError> {
-        if !self.is_playing()
-            || self.shared.restarting.get()
-            || self.presentation_len() >= PRESENTATION_QUEUE_CAP
-        {
+        if !self.is_playing() || self.shared.restarting.get() {
             return Ok(false);
         }
-        let (track, next, count) = {
+        self.enqueue_next_presentation_frame().await
+    }
+
+    /// Push the next presentation-order frame (ignores the restarting gate).
+    async fn enqueue_next_presentation_frame(&self) -> Result<bool, MediaError> {
+        if self.presentation_len() >= PRESENTATION_QUEUE_CAP {
+            return Ok(false);
+        }
+        let (track, next) = {
             let player = self.shared.player.borrow();
             let count = player.state().frame_count;
             let next = self
@@ -415,9 +552,8 @@ impl WebPlayer {
             if next >= count {
                 return Ok(false);
             }
-            (player.track_rc(), next, count)
+            (player.track_rc(), next)
         };
-        let _ = count;
         let video = self.decode_frame(track.as_ref(), next).await?;
         if !self.is_playing() {
             video.close();
@@ -510,7 +646,17 @@ impl WebPlayer {
     }
 
     async fn fill_presentation_queue(&self) -> Result<(), MediaError> {
-        while self.prefetch_one().await? {}
+        self.prime_presentation(PRESENTATION_QUEUE_CAP).await
+    }
+
+    /// Decode up to `min_frames` into the presentation queue (bypasses restarting gate).
+    async fn prime_presentation(&self, min_frames: usize) -> Result<(), MediaError> {
+        let target = min_frames.min(PRESENTATION_QUEUE_CAP);
+        while self.presentation_len() < target {
+            if !self.enqueue_next_presentation_frame().await? {
+                break;
+            }
+        }
         Ok(())
     }
 
@@ -527,6 +673,14 @@ impl WebPlayer {
         let mut presentation = self.shared.presentation.borrow_mut();
         while let Some(q) = presentation.pop_front() {
             q.video.close();
+        }
+    }
+
+    fn clear_loop_prime(&self) {
+        if let Some(buf) = self.shared.loop_prime.borrow_mut().take() {
+            for q in buf {
+                q.video.close();
+            }
         }
     }
 
@@ -571,10 +725,20 @@ impl WebPlayer {
 
 impl Drop for WebPlayer {
     fn drop(&mut self) {
+        self.clear_loop_prime();
         self.clear_presentation();
     }
 }
 
 fn performance_now_ms() -> Option<f64> {
     web_sys::window()?.performance().map(|p| p.now())
+}
+
+async fn sleep_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let _ = web_sys::window()
+            .expect("window")
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
