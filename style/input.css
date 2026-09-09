@@ -52,9 +52,9 @@ body {
 .wm-canvas {
   display: block;
   width: 100%;
+  height: auto;
   max-height: 420px;
   background: #111;
-  object-fit: contain;
 }
 
 .wm-controls {
@@ -92,6 +92,12 @@ body {
   color: #fff;
 }
 
+.wm-btn-toggle.is-on {
+  background: var(--wm-ink);
+  border-color: var(--wm-ink);
+  color: #fff;
+}
+
 .wm-file input[type="file"] {
   display: none;
 }
@@ -108,6 +114,14 @@ body {
   font-variant-numeric: tabular-nums;
   color: var(--wm-muted);
   min-height: 1.4em;
+}
+
+.wm-pipeline {
+  margin-top: 0.25rem;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9em;
+  color: var(--wm-muted);
+  min-height: 1.2em;
 }
 
 .wm-error {

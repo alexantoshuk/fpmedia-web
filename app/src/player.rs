@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, HtmlInputElement};
-use webmedia::WebPlayer;
+use webmedia::{DuePresent, PipelineStats, WebPlayer};
 
 type PlayerHandle = Rc<RefCell<Option<WebPlayer>>>;
 
@@ -61,18 +61,25 @@ pub fn PlayerDemo() -> impl IntoView {
     let timestamp = RwSignal::new(0.0_f64);
     // Measured display FPS while playing (`None` when idle / not enough samples).
     let fps = RwSignal::new(Option::<f64>::None);
+    let pipeline = RwSignal::new(Option::<PipelineStats>::None);
     let playing = RwSignal::new(false);
+    let looping = RwSignal::new(false);
     let ready = RwSignal::new(false);
 
     let sync_ui = {
         let player = Rc::clone(&player);
         Rc::new(move || {
-            if let Some(p) = player.borrow().as_ref() {
+            let Ok(borrow) = player.try_borrow() else {
+                return;
+            };
+            if let Some(p) = borrow.as_ref() {
                 let st = p.state();
                 frame.set(st.frame.min(u32::MAX as u64) as u32);
                 frame_count.set(st.frame_count.min(u32::MAX as u64) as u32);
                 timestamp.set(st.timestamp.seconds);
                 playing.set(st.playing);
+                looping.set(st.looping);
+                pipeline.set(Some(p.pipeline_stats()));
             }
         }) as Rc<dyn Fn()>
     };
@@ -93,7 +100,9 @@ pub fn PlayerDemo() -> impl IntoView {
             busy.set(true);
             error.set(None);
             playing.set(false);
+            looping.set(false);
             fps.set(None);
+            pipeline.set(None);
             fps_meter.borrow_mut().reset();
             let player = Rc::clone(&player);
             let sync_ui = Rc::clone(&sync_ui);
@@ -148,53 +157,6 @@ pub fn PlayerDemo() -> impl IntoView {
                 </label>
                 <button
                     type="button"
-                    class="wm-btn"
-                    prop:disabled=move || busy.get()
-                    on:click={
-                        let open_bytes = Rc::clone(&open_bytes);
-                        move |_| {
-                            if busy.get_untracked() {
-                                return;
-                            }
-                            error.set(None);
-                            let open_bytes = Rc::clone(&open_bytes);
-                            spawn_local(async move {
-                                // Fetch without holding `busy` — `open_bytes` owns that flag.
-                                match fetch_bytes("/short_gop.mp4").await {
-                                    Ok(bytes) => open_bytes(bytes),
-                                    Err(e) => error.set(Some(e)),
-                                }
-                            });
-                        }
-                    }
-                >
-                    "Load sample"
-                </button>
-                <button
-                    type="button"
-                    class="wm-btn"
-                    prop:disabled=move || busy.get()
-                    on:click={
-                        let open_bytes = Rc::clone(&open_bytes);
-                        move |_| {
-                            if busy.get_untracked() {
-                                return;
-                            }
-                            error.set(None);
-                            let open_bytes = Rc::clone(&open_bytes);
-                            spawn_local(async move {
-                                match fetch_bytes("/with_b_frames.mp4").await {
-                                    Ok(bytes) => open_bytes(bytes),
-                                    Err(e) => error.set(Some(e)),
-                                }
-                            });
-                        }
-                    }
-                >
-                    "Load B-frames"
-                </button>
-                <button
-                    type="button"
                     class="wm-btn wm-btn-primary"
                     prop:disabled=move || busy.get() || !ready.get() || playing.get()
                     on:click={
@@ -205,7 +167,7 @@ pub fn PlayerDemo() -> impl IntoView {
                             if busy.get_untracked() || !ready.get_untracked() || playing.get_untracked() {
                                 return;
                             }
-                            if let Some(p) = player.borrow_mut().as_mut() {
+                            if let Some(p) = player.borrow().as_ref() {
                                 p.play();
                             }
                             fps_meter.borrow_mut().reset();
@@ -215,91 +177,193 @@ pub fn PlayerDemo() -> impl IntoView {
                             let sync_ui = Rc::clone(&sync_ui);
                             let fps_meter = Rc::clone(&fps_meter);
                             spawn_local(async move {
-                                // Deadline pacing (mediabunny-style): sleep only the
-                                // remainder after decode so wall rate tracks media fps.
-                                let Some(mut next_at_ms) = performance_now_ms() else {
-                                    error.set(Some("performance.now unavailable".into()));
-                                    playing.set(false);
-                                    return;
+                                // Mediabunny-style: AudioContext clock + rAF present,
+                                // with decode on a *separate* task so presents never
+                                // wait on WebCodecs.
+                                let audio = match web_sys::AudioContext::new() {
+                                    Ok(ctx) => {
+                                        if let Ok(p) = ctx.resume() {
+                                            let _ = wasm_bindgen_futures::JsFuture::from(p).await;
+                                        }
+                                        Some(ctx)
+                                    }
+                                    Err(_) => None,
                                 };
-                                {
+
+                                let mut media_origin = {
                                     let borrow = player.borrow();
                                     match borrow.as_ref() {
-                                        Some(p) => match p.frame_duration_seconds() {
-                                            Ok(d) => next_at_ms += d * 1000.0,
-                                            Err(e) => {
-                                                error.set(Some(e.to_string()));
-                                                playing.set(false);
-                                                return;
-                                            }
-                                        },
+                                        Some(p) => p.state().timestamp.seconds,
                                         None => {
                                             playing.set(false);
                                             return;
                                         }
                                     }
+                                };
+                                let mut audio_origin =
+                                    audio.as_ref().map(|a| a.current_time()).unwrap_or(0.0);
+                                let mut wall_origin =
+                                    performance_now_ms().map(|t| t / 1000.0).unwrap_or(0.0);
+
+                                {
+                                    let borrow = player.borrow();
+                                    if let Some(p) = borrow.as_ref() {
+                                        if let Err(e) = p.prime_playback().await {
+                                            error.set(Some(e.to_string()));
+                                            playing.set(false);
+                                            return;
+                                        }
+                                    } else {
+                                        playing.set(false);
+                                        return;
+                                    }
                                 }
+
+                                // Background decode pump.
+                                {
+                                    let player = Rc::clone(&player);
+                                    spawn_local(async move {
+                                        while playing.get_untracked() {
+                                            let need = {
+                                                let borrow = player.borrow();
+                                                borrow.as_ref().is_some_and(|p| {
+                                                    p.is_playing()
+                                                        && !p.is_restarting()
+                                                        && p.presentation_len() <= 4
+                                                })
+                                            };
+                                            if need {
+                                                let decoded = {
+                                                    let borrow = player.borrow();
+                                                    match borrow.as_ref() {
+                                                        Some(p) => p.prefetch_one().await,
+                                                        None => break,
+                                                    }
+                                                };
+                                                match decoded {
+                                                    Ok(true) => continue, // keep filling
+                                                    Ok(false) => {
+                                                        // EOF / full / paused — must yield or we spin.
+                                                    }
+                                                    Err(e) => {
+                                                        error.set(Some(e.to_string()));
+                                                        playing.set(false);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            wait_animation_frame().await;
+                                        }
+                                    });
+                                }
+
+                                let media_time = |media_origin: f64,
+                                                  audio_origin: f64,
+                                                  wall_origin: f64|
+                                 -> f64 {
+                                    if let Some(a) = audio.as_ref() {
+                                        a.current_time() - audio_origin + media_origin
+                                    } else if let Some(now) = performance_now_ms() {
+                                        now / 1000.0 - wall_origin + media_origin
+                                    } else {
+                                        media_origin
+                                    }
+                                };
+
+                                let mut last_ui_ms = performance_now_ms().unwrap_or(0.0);
                                 loop {
                                     if !playing.get_untracked() {
                                         break;
                                     }
-                                    if let Some(now) = performance_now_ms() {
-                                        let wait_ms = next_at_ms - now;
-                                        if wait_ms >= 1.0 {
-                                            sleep_ms(wait_ms as i32).await;
-                                        }
-                                    }
+                                    wait_animation_frame().await;
                                     if !playing.get_untracked() {
                                         break;
                                     }
-                                    busy.set(true);
-                                    let presented = {
-                                        let mut borrow = player.borrow_mut();
-                                        match borrow.as_mut() {
-                                            Some(p) => match p.step_playback().await {
-                                                Ok(more) => Some(more),
-                                                Err(e) => {
-                                                    error.set(Some(e.to_string()));
-                                                    None
-                                                }
-                                            },
-                                            None => None,
-                                        }
-                                    };
-                                    if presented.is_some() {
-                                        if let Some(measured) =
-                                            fps_meter.borrow_mut().note_present()
-                                        {
-                                            fps.set(Some(measured));
+
+                                    {
+                                        let want = looping.get_untracked();
+                                        if let Ok(borrow) = player.try_borrow() {
+                                            if let Some(p) = borrow.as_ref() {
+                                                p.set_loop(want);
+                                            }
                                         }
                                     }
-                                    sync_ui();
-                                    busy.set(false);
-                                    if !presented.unwrap_or(false) {
-                                        playing.set(false);
-                                        break;
-                                    }
-                                    let duration = {
+
+                                    let t = media_time(media_origin, audio_origin, wall_origin);
+                                    let outcome = {
                                         let borrow = player.borrow();
                                         match borrow.as_ref() {
-                                            Some(p) => match p.frame_duration_seconds() {
-                                                Ok(d) => d,
-                                                Err(e) => {
+                                            Some(p) => p.present_due(t),
+                                            None => break,
+                                        }
+                                    };
+
+                                    match outcome {
+                                        Ok(DuePresent::Ended) => {
+                                            playing.set(false);
+                                            break;
+                                        }
+                                        Ok(DuePresent::NeedsLoop) => {
+                                            // Drop the RefCell borrow before awaiting restart.
+                                            let restarted = {
+                                                let borrow = player.borrow();
+                                                match borrow.as_ref() {
+                                                    Some(p) => Some(p.loop_to_start().await),
+                                                    None => None,
+                                                }
+                                            };
+                                            match restarted {
+                                                Some(Ok(())) => {
+                                                    media_origin = 0.0;
+                                                    audio_origin = audio
+                                                        .as_ref()
+                                                        .map(|a| a.current_time())
+                                                        .unwrap_or(0.0);
+                                                    wall_origin = performance_now_ms()
+                                                        .map(|n| n / 1000.0)
+                                                        .unwrap_or(0.0);
+                                                }
+                                                Some(Err(e)) => {
                                                     error.set(Some(e.to_string()));
                                                     playing.set(false);
                                                     break;
                                                 }
-                                            },
-                                            None => {
-                                                playing.set(false);
-                                                break;
+                                                None => break,
+                                            }
+                                            continue;
+                                        }
+                                        Ok(DuePresent::Playing { did_draw }) => {
+                                            if did_draw {
+                                                if let Some(measured) =
+                                                    fps_meter.borrow_mut().note_present()
+                                                {
+                                                    let now_ms = performance_now_ms();
+                                                    if now_ms
+                                                        .is_some_and(|n| n - last_ui_ms >= 100.0)
+                                                    {
+                                                        fps.set(Some(measured));
+                                                    }
+                                                }
                                             }
                                         }
-                                    };
-                                    next_at_ms += duration * 1000.0;
+                                        Err(e) => {
+                                            error.set(Some(e.to_string()));
+                                            playing.set(false);
+                                            break;
+                                        }
+                                    }
+
+                                    if let Some(now) = performance_now_ms() {
+                                        if now - last_ui_ms >= 100.0 {
+                                            sync_ui();
+                                            last_ui_ms = now;
+                                        }
+                                    }
                                 }
-                                if let Some(p) = player.borrow_mut().as_mut() {
-                                    p.pause();
+                                if let Ok(borrow) = player.try_borrow() {
+                                    if let Some(p) = borrow.as_ref() {
+                                        p.pause();
+                                    }
                                 }
                                 playing.set(false);
                                 fps_meter.borrow_mut().reset();
@@ -319,8 +383,8 @@ pub fn PlayerDemo() -> impl IntoView {
                         let player = Rc::clone(&player);
                         move |_| {
                             playing.set(false);
-                            if !busy.get_untracked() {
-                                if let Some(p) = player.borrow_mut().as_mut() {
+                            if let Ok(borrow) = player.try_borrow() {
+                                if let Some(p) = borrow.as_ref() {
                                     p.pause();
                                 }
                             }
@@ -328,6 +392,34 @@ pub fn PlayerDemo() -> impl IntoView {
                     }
                 >
                     "Pause"
+                </button>
+                <button
+                    type="button"
+                    class=move || {
+                        if looping.get() {
+                            "wm-btn wm-btn-toggle is-on"
+                        } else {
+                            "wm-btn wm-btn-toggle"
+                        }
+                    }
+                    prop:disabled=move || !ready.get()
+                    prop:aria-pressed=move || looping.get()
+                    on:click={
+                        let player = Rc::clone(&player);
+                        let sync_ui = Rc::clone(&sync_ui);
+                        move |_| {
+                            let next = !looping.get_untracked();
+                            looping.set(next);
+                            if let Ok(borrow) = player.try_borrow() {
+                                if let Some(p) = borrow.as_ref() {
+                                    p.set_loop(next);
+                                }
+                            }
+                            sync_ui();
+                        }
+                    }
+                >
+                    "Loop"
                 </button>
                 <button
                     type="button"
@@ -393,14 +485,41 @@ pub fn PlayerDemo() -> impl IntoView {
                             None => String::new(),
                         };
                         format!(
-                            "frame {} / {} · {:.3}s{}{}",
+                            "frame {} / {} · {:.3}s{}{}{}",
                             frame.get(),
                             frame_count.get().saturating_sub(1),
                             timestamp.get(),
                             fps_part,
-                            if playing.get() { " · playing" } else { "" }
+                            if playing.get() { " · playing" } else { "" },
+                            if looping.get() { " · loop" } else { "" }
                         )
                     }
+                }}
+            </p>
+            <p class="wm-pipeline">
+                {move || {
+                    let Some(s) = pipeline.get() else {
+                        return String::new();
+                    };
+                    let range = match (s.presentation_from, s.presentation_to) {
+                        (Some(a), Some(b)) if a == b => format!(" [{a}]"),
+                        (Some(a), Some(b)) => format!(" [{a}–{b}]"),
+                        _ => String::new(),
+                    };
+                    let lag = match s.last_behind_ms {
+                        Some(ms) => format!(" · lag {ms:.0}ms"),
+                        None => String::new(),
+                    };
+                    format!(
+                        "prefetch {}/{}{} · held {} · decodeQ {} · skipped {}{}",
+                        s.presentation_len,
+                        s.presentation_cap,
+                        range,
+                        s.held_len,
+                        s.decode_queue_size,
+                        s.frames_skipped,
+                        lag
+                    )
                 }}
             </p>
             <p class="wm-error">{move || error.get().unwrap_or_default()}</p>
@@ -424,7 +543,7 @@ fn step_frame(
     let player = Rc::clone(player);
     let sync_ui = Rc::clone(sync_ui);
     spawn_local(async move {
-        if let Some(p) = player.borrow_mut().as_mut() {
+        if let Some(p) = player.borrow().as_ref() {
             p.pause();
             let result = if forward {
                 p.next_frame().await
@@ -456,7 +575,7 @@ fn seek_frame(
     let player = Rc::clone(player);
     let sync_ui = Rc::clone(sync_ui);
     spawn_local(async move {
-        if let Some(p) = player.borrow_mut().as_mut() {
+        if let Some(p) = player.borrow().as_ref() {
             p.pause();
             if let Err(e) = p.seek_frame(u64::from(target)).await {
                 error.set(Some(e.to_string()));
@@ -473,28 +592,15 @@ fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> T {
         .unchecked_into::<T>()
 }
 
-async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let window = web_sys::window().ok_or("no window")?;
-    let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url))
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let resp: web_sys::Response = resp_value.dyn_into().map_err(|_| "bad response")?;
-    if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    let buf = wasm_bindgen_futures::JsFuture::from(
-        resp.array_buffer().map_err(|e| format!("{e:?}"))?,
-    )
-    .await
-    .map_err(|e| format!("{e:?}"))?;
-    Ok(Uint8Array::new(&buf).to_vec())
-}
-
-async fn sleep_ms(ms: i32) {
+async fn wait_animation_frame() {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let _ = web_sys::window()
-            .expect("window")
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        let window = web_sys::window().expect("window");
+        let cb = wasm_bindgen::closure::Closure::once(move |_: f64| {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        });
+        let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
+        // Kept until the browser invokes it (once).
+        cb.forget();
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }

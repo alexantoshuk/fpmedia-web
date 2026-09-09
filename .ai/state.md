@@ -2,7 +2,7 @@
 
 ## In progress
 
-- Confirm play/pause/seek on a real Resolve export (fixtures `short_gop` / `with_b_frames` play ~24 fps with deadline pacing + B-frame held buffer).
+- Smoke-test play/pause/seek on a real Resolve export (1080p+, longer GOPs, B-frames) — fixtures alone are not production-proof.
 
 ---
 
@@ -10,9 +10,9 @@
 
 ### Media engine
 
-- Promise-driven decode pump (mediabunny-style `decodeQueueSize` backpressure) instead of busy-poll `wait_for_timestamp`.
 - `verifyKeyPackets`-style bitstream keyframe check for lying containers.
-- Audio track + catch-up/skip when decode falls far behind deadline.
+- Seek/pause cancellation — abort or ignore in-flight decode when seeking/pausing mid-pump (busy gate exists; make cancel intentional).
+- Audio track + shared A/V media clock (video slaves to audio once audio exists).
 
 ### Later
 

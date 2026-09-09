@@ -4,6 +4,8 @@
 //! Frame state is updated only through explicit methods; callers that decode
 //! asynchronously should build a window first, then commit on success.
 
+use std::rc::Rc;
+
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::types::{EncodedSample, FrameId, Timestamp, VideoMetadata};
@@ -13,6 +15,8 @@ pub struct PlayerState {
     pub frame: FrameId,
     pub timestamp: Timestamp,
     pub playing: bool,
+    /// When true, playback wraps to frame 0 at end (HTML `<video loop>`).
+    pub looping: bool,
     pub frame_count: u64,
 }
 
@@ -27,9 +31,10 @@ pub struct DecodeWindow {
 /// Frame-accurate player over [`Mp4VideoTrack`].
 #[derive(Debug)]
 pub struct Player {
-    track: Mp4VideoTrack,
+    track: Rc<Mp4VideoTrack>,
     frame: FrameId,
     playing: bool,
+    looping: bool,
 }
 
 impl Player {
@@ -49,9 +54,10 @@ impl Player {
             return Err(MediaError::EmptyTrack);
         }
         Ok(Self {
-            track,
+            track: Rc::new(track),
             frame: 0,
             playing: false,
+            looping: false,
         })
     }
 
@@ -61,6 +67,10 @@ impl Player {
 
     pub fn track(&self) -> &Mp4VideoTrack {
         &self.track
+    }
+
+    pub fn track_rc(&self) -> Rc<Mp4VideoTrack> {
+        Rc::clone(&self.track)
     }
 
     pub fn state(&self) -> PlayerState {
@@ -74,6 +84,7 @@ impl Player {
             frame: self.frame,
             timestamp,
             playing: self.playing,
+            looping: self.looping,
             frame_count: self.track.frame_count(),
         }
     }
@@ -84,6 +95,14 @@ impl Player {
 
     pub fn pause(&mut self) {
         self.playing = false;
+    }
+
+    pub fn set_loop(&mut self, looping: bool) {
+        self.looping = looping;
+    }
+
+    pub fn is_looping(&self) -> bool {
+        self.looping
     }
 
     /// Build a decode cascade for `frame` without changing current position.

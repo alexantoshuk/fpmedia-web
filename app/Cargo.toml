@@ -27,7 +27,8 @@ web-sys = { workspace = true, optional = true, features = [
     "File",
     "FileList",
     "Blob",
-    "Response",
+    "AudioContext",
+    "BaseAudioContext",
 ] }
 webmedia = { path = "../media", optional = true }
 

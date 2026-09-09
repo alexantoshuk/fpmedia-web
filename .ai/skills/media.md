@@ -47,8 +47,9 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 
 - Wall-clock deadline pacing (sleep remainder after decode) — done in demo play loop.
 - Decode-order pump + held buffer + PTS remap + output-callback wait (`decode_frame`) — done; prefer feed-ahead over flush.
-- Promise/`decodeQueueSize` backpressure polish still open if needed.
+- Bounded presentation queue (decode ~6 frames ahead) + `decodeQueueSize` backpressure + skip-when-behind — done on `WebPlayer` / demo loop.
 - Bitstream keyframe verification (`verifyKeyPackets`).
+- Seek/pause cancel of in-flight decode; audio + shared media clock.
 - Later: packet / sample / canvas sink layering; sparse samples-at-timestamps for filmstrip.
 
 ## Gotchas
@@ -58,15 +59,21 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 3. **B-frames** — index is presentation order; `nearest_keyframe` / `decode_window` use **`decode_order`** (not DTS range). Fixture `with_b_frames.mp4` covers this.
 4. **WebCodecs target match** — pick the sample with `frame == target_frame`. Never use `samples.last()`.
 5. **Decoder lifecycle** — warm decode-order pump (`decode_frame`): feed next packets in the GOP until the target PTS is in `held`. Prefer feeding ahead over `flush()`. Do **not** `flush()` between playback frames.
-5b. **B-frame held buffer + PTS remap** — park not-yet-presented frames in `held`. Assign PTS from sorted `input_timestamps` as frames emerge (mediabunny `VideoDecoderWrapper`). Wait on decoder `output` callbacks when `decodeQueueSize > 0`; if the queue is idle with no output, feed the next packet (reorder needs more input). `optimizeForLatency` on configure.
-6. **Playback** — `WebPlayer::play` / `pause` / `step_playback` → `decode_frame` pump; UI paces with a wall-clock deadline. No audio yet.
+5b. **B-frame held buffer + PTS remap** — park not-yet-presented frames in `held`. Assign PTS from sorted `input_timestamps` as frames emerge (mediabunny `VideoDecoderWrapper`). After each feed: if `decodeQueueSize == 0` and no output, **feed more** (reorder). If queue > 0, wait for output **raced with a tick** — never await output alone (hangs open on B-frames). `optimizeForLatency` on configure.
+5c. **`decodeQueueSize` backpressure** — before `decode()`, wait while `decodeQueueSize` alone exceeds caps (8 with buffered frames, 40 when empty), raced with a tick. **Do not** count `held` toward the wait condition — held-full + idle queue deadlocks (no `dequeue` ever fires).
+5d. **Presentation queue** — `WebPlayer` keeps a bounded decode-ahead queue (~8 `VideoFrame`s). **Present path must not refill** — `step_playback` / `skip_behind` only present. The demo loop calls `prefetch_until(deadline)` in spare time before each present. Full `prime_playback` only at Play start. Seek/step/pause clear the queue and close frames.
+5e. **Behind-deadline skip** — demo loop calls `skip_behind(lag)` when wall clock is past the next present deadline: jump to the frame at the catch-up media time (nearest keyframe if lag ≥ ~0.5s), then snap the deadline to now. Do not try to catch up by decoding every skipped present.
+5f. **Freeze cause** — filling the whole prefetch queue *after* each present blocks the deadline (feels like short freezes on long/heavy clips). Prefetch must use wall-clock spare time instead.
+6. **Playback** — demo: **AudioContext clock + rAF present task** and a **separate prefetch task**. `present_due` / `prefetch_one` take `&self` with interior mutability so decode awaits never block presents. Track is `Rc` so decode can hold it across await without locking the playhead.
 7. **Commit position after decode** — `window_at` + `commit_frame` so a failed decode does not advance the frame counter.
 8. **`web_sys_unstable_apis`** — required. Set in `.cargo/config.toml`.
 9. **`VideoDecoderInit::new` argument order** in current `web-sys` is `(error, output)`.
 10. **Timestamps in web-sys** — `EncodedVideoChunkInit` uses `i32` µs / `u32` duration; clamp long timelines.
 11. **Workspace isolation** — do not import `app` / Leptos into `media/`.
 12. **Mobile / LAN HTTP** — WebCodecs needs a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). `http://localhost` OK; LAN IP HTTP is not.
-13. **Leptos + async WebPlayer** — while an async `&mut` decode is in flight, do not call other methods on the same player from another task (Rust aliasing / wasm re-entrancy). Gate UI with a busy flag; pause only after the in-flight future settles.
+14. **Playback canvas size** — blit at CSS width × DPR (cap edge 1280), not full coded res. **Lock** buffer size + CSS `aspect-ratio` on open — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px.
+15. **Throttle play UI** — do not `sync_ui` / update fps signals every frame; ~10 Hz is enough. Reactive status updates every present compete with decode/draw on the main thread.
+16. **Prefetch at EOF** — if `prefetch_one` returns `false` (end of track / full), the background pump **must** `await` rAF (or sleep). `continue` without yield spins the main thread and freezes the tab.
 
 ## Commands
 

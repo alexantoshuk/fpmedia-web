@@ -3,6 +3,7 @@
 //! Playback follows mediabunny's model: feed packets in **decode order**, park
 //! outputs in a presentation buffer with remapped PTS, and pull the target
 //! frame when ready. Prefer feeding further ahead in the GOP over `flush()`.
+//! Apply `decodeQueueSize` backpressure before feeding more packets.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,6 +20,13 @@ use web_sys::{
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::types::{EncodedSample, FrameId, VideoMetadata};
+
+/// Max in-flight encoded chunks when decoded frames are already buffered
+/// (mediabunny `computeMaxQueueSize` when `decodedSampleQueueSize > 0`).
+const MAX_DECODE_QUEUE_WITH_HELD: u32 = 8;
+/// Cap when the held/output buffers are empty — some browsers need a deeper
+/// encoded queue before emitting reordered frames.
+const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
 
 struct DecoderConfig {
     codec: String,
@@ -65,6 +73,8 @@ pub struct WebCodecsDecoder {
     error: Rc<RefCell<Option<String>>>,
     /// Resolvers waiting for the next `output` callback (mediabunny-style).
     output_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
+    /// Resolvers waiting for `dequeue` (decodeQueueSize decreased).
+    dequeue_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
     fed_through_order: Option<usize>,
     key_order: Option<usize>,
     /// Sorted PTS (µs) of fed chunks — shifted onto outputs in presentation order.
@@ -72,6 +82,7 @@ pub struct WebCodecsDecoder {
     held: Vec<HeldFrame>,
     _on_output: Closure<dyn FnMut(JsValue)>,
     _on_error: Closure<dyn FnMut(JsValue)>,
+    _on_dequeue: Closure<dyn FnMut(JsValue)>,
 }
 
 impl WebCodecsDecoder {
@@ -100,6 +111,8 @@ impl WebCodecsDecoder {
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let output_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
             Rc::new(RefCell::new(Vec::new()));
+        let dequeue_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
+            Rc::new(RefCell::new(Vec::new()));
 
         let frames_cb = Rc::clone(&frames);
         let waiters_cb = Rc::clone(&output_waiters);
@@ -126,11 +139,20 @@ impl WebCodecsDecoder {
             *error_cb.borrow_mut() = Some(msg);
         }) as Box<dyn FnMut(JsValue)>);
 
+        let dequeue_cb = Rc::clone(&dequeue_waiters);
+        let on_dequeue = Closure::wrap(Box::new(move |_value: JsValue| {
+            let waiting = std::mem::take(&mut *dequeue_cb.borrow_mut());
+            for resolve in waiting {
+                let _ = resolve.call0(&JsValue::NULL);
+            }
+        }) as Box<dyn FnMut(JsValue)>);
+
         let init = VideoDecoderInit::new(
             on_error.as_ref().unchecked_ref(),
             on_output.as_ref().unchecked_ref(),
         );
         let decoder = VideoDecoder::new(&init).map_err(MediaError::from)?;
+        decoder.set_ondequeue(Some(on_dequeue.as_ref().unchecked_ref()));
         decoder.configure(&web_config).map_err(MediaError::from)?;
 
         Ok(Self {
@@ -139,12 +161,14 @@ impl WebCodecsDecoder {
             frames,
             error,
             output_waiters,
+            dequeue_waiters,
             fed_through_order: None,
             key_order: None,
             input_timestamps: Vec::new(),
             held: Vec::new(),
             _on_output: on_output,
             _on_error: on_error,
+            _on_dequeue: on_dequeue,
         })
     }
 
@@ -156,6 +180,7 @@ impl WebCodecsDecoder {
         self.clear_held();
         self.input_timestamps.clear();
         self.output_waiters.borrow_mut().clear();
+        self.dequeue_waiters.borrow_mut().clear();
         *self.error.borrow_mut() = None;
         let config = DecoderConfig {
             codec: self.config.codec.clone(),
@@ -173,6 +198,7 @@ impl WebCodecsDecoder {
         self.input_timestamps.clear();
         self.clear_held();
         self.output_waiters.borrow_mut().clear();
+        self.dequeue_waiters.borrow_mut().clear();
         for frame in self.frames.borrow_mut().drain(..) {
             frame.close();
         }
@@ -219,6 +245,20 @@ impl WebCodecsDecoder {
         }
     }
 
+    fn decode_queue_size(&self) -> u32 {
+        self.decoder.decode_queue_size()
+    }
+
+    /// In-flight encoded chunks waiting in the browser decoder.
+    pub fn browser_decode_queue_size(&self) -> u32 {
+        self.decode_queue_size()
+    }
+
+    /// Decoded frames parked for presentation-order pull (B-frame reorder).
+    pub fn held_len(&self) -> usize {
+        self.held.len()
+    }
+
     /// Decode until `frame` is available, feeding decode-order packets as needed.
     pub async fn decode_frame(
         &mut self,
@@ -250,9 +290,9 @@ impl WebCodecsDecoder {
             self.recreate()?;
             self.key_order = Some(key_do);
             let key_sample = track.encoded_sample(key_id)?;
-            self.feed_sample(&key_sample, true)?;
+            self.feed_sample(&key_sample, true).await?;
             self.fed_through_order = Some(key_do);
-            self.await_outputs_if_pending().await;
+            self.await_outputs_if_pending().await?;
             self.collect_outputs_into_held()?;
             if let Some(ready) = self.take_held(target_us) {
                 self.drop_held_before(target_us);
@@ -275,7 +315,7 @@ impl WebCodecsDecoder {
             let next = track.samples_after_in_gop(key_do, fed, 1)?;
             if next.is_empty() {
                 if !self.frames.borrow().is_empty() || !self.input_timestamps.is_empty() {
-                    self.await_outputs_if_pending().await;
+                    self.await_outputs_if_pending().await?;
                     self.collect_outputs_into_held()?;
                     if let Some(ready) = self.take_held(target_us) {
                         self.drop_held_before(target_us);
@@ -306,11 +346,11 @@ impl WebCodecsDecoder {
             }
 
             let sample = &next[0];
-            self.feed_sample(sample, false)?;
+            self.feed_sample(sample, false).await?;
             self.fed_through_order = Some(sample.decode_order);
             // If the decoder is idle with no output, it is waiting for more input
             // (typical B-frame reorder) — do not block; feed the next packet.
-            self.await_outputs_if_pending().await;
+            self.await_outputs_if_pending().await?;
         }
 
         Err(MediaError::WebCodecs(format!(
@@ -318,7 +358,12 @@ impl WebCodecsDecoder {
         )))
     }
 
-    fn feed_sample(&mut self, sample: &EncodedSample, force_key: bool) -> Result<(), MediaError> {
+    async fn feed_sample(
+        &mut self,
+        sample: &EncodedSample,
+        force_key: bool,
+    ) -> Result<(), MediaError> {
+        self.await_decode_capacity().await?;
         let chunk_type = if force_key || sample.is_keyframe {
             EncodedVideoChunkType::Key
         } else {
@@ -341,19 +386,62 @@ impl WebCodecsDecoder {
         self.check_error()
     }
 
-    /// Block only while the browser still has in-flight decode work.
-    async fn await_outputs_if_pending(&self) {
+    /// Mediabunny-style backpressure on the **browser** encoded queue only.
+    /// Do not include `held` — a full held buffer with an idle decoder would
+    /// wait forever for `dequeue` that never comes (B-frame reorder deadlock).
+    async fn await_decode_capacity(&self) -> Result<(), MediaError> {
+        let max = if self.held.is_empty() && self.frames.borrow().is_empty() {
+            MAX_DECODE_QUEUE_EMPTY
+        } else {
+            MAX_DECODE_QUEUE_WITH_HELD
+        };
+        while self.decode_queue_size() > max {
+            self.check_error()?;
+            self.wait_for_dequeue_or_tick().await;
+        }
+        self.check_error()
+    }
+
+    /// After a feed: never block the pump when the decoder still needs more
+    /// input for B-frame reorder. Waiting forever on `output` while
+    /// `decodeQueueSize > 0` hangs open on `with_b_frames`.
+    async fn await_outputs_if_pending(&self) -> Result<(), MediaError> {
+        self.check_error()?;
         if !self.frames.borrow().is_empty() {
-            return;
+            return Ok(());
         }
         if self.input_timestamps.is_empty() {
-            return;
+            return Ok(());
         }
+        if self.decode_queue_size() == 0 {
+            // Idle queue + pending timestamps ⇒ reorder needs more input.
+            return Ok(());
+        }
+        // One event-loop turn so an already-queued output can land; then feed on.
         self.wait_for_output_or_tick().await;
+        self.check_error()
+    }
+
+    async fn wait_for_dequeue_or_tick(&self) {
+        let waiters = Rc::clone(&self.dequeue_waiters);
+        let dequeue = js_sys::Promise::new(&mut |resolve, _reject| {
+            waiters.borrow_mut().push(resolve);
+        });
+        let _ = JsFuture::from(promise_race(dequeue, delay_ms(0))).await;
     }
 
     async fn wait_for_output_or_tick(&self) {
-        yield_event_loop().await;
+        let frames = Rc::clone(&self.frames);
+        let waiters = Rc::clone(&self.output_waiters);
+        let output = js_sys::Promise::new(&mut |resolve, _reject| {
+            // Avoid missing an output that arrived between the empty-check and register.
+            if !frames.borrow().is_empty() {
+                let _ = resolve.call0(&JsValue::NULL);
+                return;
+            }
+            waiters.borrow_mut().push(resolve);
+        });
+        let _ = JsFuture::from(promise_race(output, delay_ms(0))).await;
     }
 
     fn check_error(&self) -> Result<(), MediaError> {
@@ -377,6 +465,10 @@ impl Drop for WebCodecsDecoder {
         for resolve in waiting {
             let _ = resolve.call0(&JsValue::NULL);
         }
+        let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
+        for resolve in waiting {
+            let _ = resolve.call0(&JsValue::NULL);
+        }
     }
 }
 
@@ -385,11 +477,14 @@ fn ticks_to_micros(ticks: i64, timescale: u64) -> i64 {
     ((ticks as i128) * 1_000_000 / timescale) as i64
 }
 
-async fn yield_event_loop() {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+fn delay_ms(ms: i32) -> js_sys::Promise {
+    js_sys::Promise::new(&mut |resolve, _reject| {
         let _ = web_sys::window()
             .expect("window")
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
-    });
-    let _ = JsFuture::from(promise).await;
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+    })
+}
+
+fn promise_race(a: js_sys::Promise, b: js_sys::Promise) -> js_sys::Promise {
+    js_sys::Promise::race(&js_sys::Array::of2(&a, &b))
 }
