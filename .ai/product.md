@@ -11,7 +11,9 @@
 
 Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCodecs → canvas. Not a generic `<video>` wrapper.
 
-**References**: Frame.io review player (precision scrub); [mediabunny](https://github.com/Vanilagy/mediabunny) (WebCodecs demux/decode patterns to adapt — not a dependency).
+**References**:
+- UX: Frame.io review player (precision scrub).
+- Implementation: **[mediabunny](https://github.com/Vanilagy/mediabunny)** is the standing reference for new media features and playback/decode bug fixes — adapt patterns into Rust; do **not** add it as a dependency.
 
 ---
 

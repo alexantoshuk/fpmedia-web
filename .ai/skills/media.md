@@ -37,10 +37,15 @@ nearest sync (by decode timestamp) → decode … → target
 
 `Player::seek_frame` returns a `DecodeWindow`; `WebPlayer` feeds it to WebCodecs, keeps the target `VideoFrame`, draws to canvas.
 
-## Mediabunny adaptations (planned)
+## Mediabunny reference (required)
 
-Ideas from [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny) — port patterns, not TS code:
+For **new media features** and **demux / decode / seek / playback bug fixes**, always consult [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny) (guide + `src/`) before inventing an approach. Port patterns into Rust; do **not** depend on the TS package.
 
+Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-order, `decodeQueueSize` backpressure, keyframe cascade / flush rules, playback clock pacing.
+
+### Patterns already / still to adapt
+
+- Wall-clock deadline pacing (sleep remainder after decode) — done in demo play loop.
 - Promise-driven decode pump + `decodeQueueSize` backpressure (replace busy-poll `wait_for_timestamp`).
 - Flush on GOP change / backward seek; warm continue within GOP.
 - Bitstream keyframe verification (`verifyKeyPackets`).
@@ -53,7 +58,7 @@ Ideas from [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny) — por
 3. **B-frames** — index is presentation order; `nearest_keyframe` / `decode_window` use **`decode_order`** (not DTS range). Fixture `with_b_frames.mp4` covers this.
 4. **WebCodecs target match** — pick the sample with `frame == target_frame`. Never use `samples.last()`.
 5. **Decoder lifecycle** — warm decoder for forward steps in the same GOP (`fed_through_order`). Do **not** `flush()` between playback frames. Flush only as last resort (then invalidate).
-6. **Playback** — `WebPlayer::play` / `pause` / `step_playback`; UI paces with `frame_duration_seconds()` (`Result`, no fps/24 fallback). No audio yet.
+6. **Playback** — `WebPlayer::play` / `pause` / `step_playback`; UI paces with a wall-clock deadline (`next_at += frame_duration_seconds()`), sleeping only the remainder after decode (mediabunny-style). No audio yet.
 7. **Commit position after decode** — `window_at` + `commit_frame` so a failed decode does not advance the frame counter.
 8. **`web_sys_unstable_apis`** — required. Set in `.cargo/config.toml`.
 9. **`VideoDecoderInit::new` argument order** in current `web-sys` is `(error, output)`.

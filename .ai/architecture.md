@@ -57,7 +57,7 @@ webmedia/
 | CSR SPA | Simple mental model; static shell + WASM mount |
 | Isolated `webmedia` crate | Engine reusable without UI; no Leptos in demux/decode |
 | WebCodecs + canvas | Frame-accurate decode; `<video>` may remain fallback later |
-| Adapt mediabunny ideas in Rust | Packet/sample sinks, decode-pump, GOP flush rules — not a TS dependency |
+| Adapt mediabunny ideas in Rust | [mediabunny](https://github.com/Vanilagy/mediabunny) is the required reference for media features and decode/playback fixes; port patterns, never depend on the TS package |
 
 ---
 
@@ -67,3 +67,4 @@ webmedia/
 - Gate client UI: `#[cfg(feature = "csr")]`.
 - Errors: `thiserror`; no `.unwrap()`/`.expect()` in production paths.
 - WebCodecs needs `web_sys_unstable_apis` (`.cargo/config.toml`).
+- **Mediabunny reference:** before implementing or fixing demux / decode / seek / playback pacing, check [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny) (docs + source) for the analogous approach; reimplement in Rust.

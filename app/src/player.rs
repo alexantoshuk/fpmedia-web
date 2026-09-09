@@ -192,25 +192,40 @@ pub fn PlayerDemo() -> impl IntoView {
                             let sync_ui = Rc::clone(&sync_ui);
                             let fps_meter = Rc::clone(&fps_meter);
                             spawn_local(async move {
+                                // Deadline pacing (mediabunny-style): sleep only the
+                                // remainder after decode so wall rate tracks media fps.
+                                let Some(mut next_at_ms) = performance_now_ms() else {
+                                    error.set(Some("performance.now unavailable".into()));
+                                    playing.set(false);
+                                    return;
+                                };
+                                {
+                                    let borrow = player.borrow();
+                                    match borrow.as_ref() {
+                                        Some(p) => match p.frame_duration_seconds() {
+                                            Ok(d) => next_at_ms += d * 1000.0,
+                                            Err(e) => {
+                                                error.set(Some(e.to_string()));
+                                                playing.set(false);
+                                                return;
+                                            }
+                                        },
+                                        None => {
+                                            playing.set(false);
+                                            return;
+                                        }
+                                    }
+                                }
                                 loop {
                                     if !playing.get_untracked() {
                                         break;
                                     }
-                                    let duration = {
-                                        let borrow = player.borrow();
-                                        match borrow.as_ref() {
-                                            Some(p) => match p.frame_duration_seconds() {
-                                                Ok(d) => d,
-                                                Err(e) => {
-                                                    error.set(Some(e.to_string()));
-                                                    playing.set(false);
-                                                    break;
-                                                }
-                                            },
-                                            None => break,
+                                    if let Some(now) = performance_now_ms() {
+                                        let wait_ms = next_at_ms - now;
+                                        if wait_ms >= 1.0 {
+                                            sleep_ms(wait_ms as i32).await;
                                         }
-                                    };
-                                    sleep_ms(((duration * 1000.0).max(1.0)) as i32).await;
+                                    }
                                     if !playing.get_untracked() {
                                         break;
                                     }
@@ -241,6 +256,24 @@ pub fn PlayerDemo() -> impl IntoView {
                                         playing.set(false);
                                         break;
                                     }
+                                    let duration = {
+                                        let borrow = player.borrow();
+                                        match borrow.as_ref() {
+                                            Some(p) => match p.frame_duration_seconds() {
+                                                Ok(d) => d,
+                                                Err(e) => {
+                                                    error.set(Some(e.to_string()));
+                                                    playing.set(false);
+                                                    break;
+                                                }
+                                            },
+                                            None => {
+                                                playing.set(false);
+                                                break;
+                                            }
+                                        }
+                                    };
+                                    next_at_ms += duration * 1000.0;
                                 }
                                 if let Some(p) = player.borrow_mut().as_mut() {
                                     p.pause();

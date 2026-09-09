@@ -9,6 +9,7 @@ Respect `.agentignore`.
 3. Read `.ai/state.md` — in progress + next up. No Done list.
 4. Scan `.ai/skills/` filenames.
 5. **Read the relevant skill file in full before touching code that imports its topic.**
+6. **Media work:** for new features or bug fixes in demux / decode / seek / playback, consult [mediabunny](https://github.com/Vanilagy/mediabunny) first (docs + source), then port patterns into Rust — never add it as a dependency.
 
 All `.ai/` documentation is English.
 

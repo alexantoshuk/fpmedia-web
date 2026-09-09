@@ -8,6 +8,8 @@ alwaysApply: false
 
 **Read `.ai/skills/media.md` before changing demux, frame index, Player, or WebCodecs code.**
 
+For new features or bug fixes in this area, consult [mediabunny](https://github.com/Vanilagy/mediabunny) first, then adapt patterns in Rust (not a dependency).
+
 - Primary position = presentation `FrameId`, not `time * fps`.
 - Decode windows use **decode_order** (B-frames).
 - Do not `flush()` between forward playback frames in the same GOP.

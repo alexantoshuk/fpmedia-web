@@ -2,7 +2,7 @@
 
 ## In progress
 
-- **Smoke-test Leptos demo** in Chrome (`cargo leptos watch` → Load sample / seek / step).
+- Confirm play/pause/seek on a real Resolve export (sample `short_gop.mp4` plays at ~24 fps with deadline pacing).
 
 ---
 
@@ -10,10 +10,9 @@
 
 ### Media engine
 
-- Confirm play/pause/seek on `short_gop.mp4` and a real Resolve export.
-- Promise-driven decode pump (mediabunny-style backpressure) instead of busy-poll `wait_for_timestamp`.
+- Promise-driven decode pump (mediabunny-style `decodeQueueSize` backpressure) instead of busy-poll `wait_for_timestamp`.
 - `verifyKeyPackets`-style bitstream keyframe check for lying containers.
-- Continuous play pacing polish + audio track.
+- Audio track + catch-up/skip when decode falls far behind deadline.
 
 ### Later
 
