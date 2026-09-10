@@ -225,8 +225,20 @@ impl WebPlayer {
     pub async fn next_frame(&self) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         self.shared.player.borrow_mut().pause();
-        self.clear_presentation();
         let next = self.state().frame.saturating_add(1);
+        // Reuse prefetch when present — clearing the queue would close the only
+        // copy of frames the warm decoder already emitted.
+        {
+            let mut presentation = self.shared.presentation.borrow_mut();
+            if presentation.front().is_some_and(|f| f.frame == next) {
+                let queued = presentation.pop_front().expect("front checked");
+                drop(presentation);
+                self.present(queued.video)?;
+                self.shared.player.borrow_mut().commit_frame(queued.frame)?;
+                return Ok(());
+            }
+        }
+        self.clear_presentation();
         self.goto_frame(next, epoch).await
     }
 

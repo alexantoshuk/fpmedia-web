@@ -336,7 +336,13 @@ impl WebCodecsDecoder {
             return Ok(ready);
         }
 
-        if self.key_order != Some(key_do) {
+        // Restart when the GOP changes, or when the target was already emitted and
+        // discarded (e.g. presentation queue cleared after prefetch) — WebCodecs
+        // cannot re-emit a consumed frame without cascading from the key again.
+        let target_consumed = self.fed_through_order.is_some_and(|fed| {
+            entry.decode_order <= fed && !self.input_timestamps.contains(&target_us)
+        });
+        if self.key_order != Some(key_do) || target_consumed {
             // Hard reset on new sync — soft flush path hung open on some clips.
             self.recreate()?;
             self.key_order = Some(key_do);
@@ -354,7 +360,9 @@ impl WebCodecsDecoder {
         // Pump decode-order samples until the target PTS lands in `held`.
         // Feeding past the target (next B/P) is intentional — some browsers only
         // emit reordered frames once more packets arrive (mediabunny insight).
-        for _ in 0..64 {
+        // Cap at track length: Resolve / Telegram exports often use GOPs ≫ 64.
+        let max_feeds = (track.frame_count() as usize).saturating_add(32).max(64);
+        for _ in 0..max_feeds {
             self.check_error()?;
             self.collect_outputs_into_held()?;
             if let Some(ready) = self.take_held(target_us) {
@@ -388,7 +396,10 @@ impl WebCodecsDecoder {
                             return Ok(ready);
                         }
                     }
-                    continue;
+                    return Err(MediaError::WebCodecs(format!(
+                        "flush/idle without pts={target_us}µs (held={})",
+                        self.held.len()
+                    )));
                 }
                 return Err(MediaError::WebCodecs(format!(
                     "exhausted GOP before pts={target_us}µs (held={})",
