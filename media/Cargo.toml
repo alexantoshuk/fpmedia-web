@@ -17,6 +17,7 @@ webcodecs = [
 [dependencies]
 re_mp4 = { workspace = true }
 thiserror = { workspace = true }
+lru = { workspace = true }
 
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }

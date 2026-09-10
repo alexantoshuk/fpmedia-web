@@ -148,10 +148,13 @@ pub fn DemoPlayer() -> impl IntoView {
                         None => String::new(),
                     };
                     format!(
-                        "prefetch {}/{}{} · held {} · decodeQ {} · skipped {}{}",
+                        "prefetch {}/{}{} · cache {}f/{}c{} · held {} · decodeQ {} · skipped {}{}",
                         s.presentation_len,
                         s.presentation_cap,
                         range,
+                        s.cache_frames,
+                        s.cache_chunks,
+                        if s.scrub_busy { " · scrub" } else { "" },
                         if s.held_len == usize::MAX {
                             "busy".into()
                         } else {

@@ -2,7 +2,7 @@
 
 ## In progress
 
-- Chunked dense frame cache + scrub decoder (replace `step_history`; GOP LRU; caller-sized thumb cache shell).
+- (none)
 
 ---
 
@@ -10,6 +10,7 @@
 
 ### Media engine
 
+- Sparse `samplesAtTimestamps` / filmstrip thumbs via `ThumbCache` (caller-sized bitmaps).
 - Audio track + shared A/V media clock (video slaves to audio once audio exists). Wall-clock play works until then.
 - HEVC bitstream key verify + AVC Recovery Point SEI (IDR-only verify is in place).
 - After progressive open: coalesce adjacent sample ranges; optional background sync-verify for huge files if open latency matters.
@@ -19,7 +20,6 @@
 ### Later
 
 - Packet / sample / canvas sink layering (mediabunny mental model).
-- Sparse `samplesAtTimestamps` for filmstrip thumbnails.
 - Dual-source compare layout hooks.
 - Publish `webmedia` / `video` crates for reuse by host apps.
 - Production player chrome (demo controls in `app` stay for now).

@@ -80,6 +80,40 @@ impl FrameIndex {
             .map(|e| e.frame)
     }
 
+    /// Next sync sample strictly after `frame` in decode order (start of next GOP).
+    pub fn next_keyframe_after(&self, frame: FrameId) -> Option<FrameId> {
+        let entry = self.get(frame)?;
+        self.frames
+            .iter()
+            .filter(|e| e.is_sync && e.decode_order > entry.decode_order)
+            .min_by_key(|e| e.decode_order)
+            .map(|e| e.frame)
+    }
+
+    /// Presentation `FrameId`s in the GOP that begins at sync `key_frame`
+    /// (exclusive of the next sync). `key_frame` must be a sync sample.
+    pub fn gop_frame_ids(&self, key_frame: FrameId) -> Option<Vec<FrameId>> {
+        let key = self.get(key_frame)?;
+        if !key.is_sync {
+            return None;
+        }
+        let next_do = self
+            .next_keyframe_after(key_frame)
+            .and_then(|n| self.get(n))
+            .map(|e| e.decode_order);
+        let mut ids: Vec<FrameId> = self
+            .frames
+            .iter()
+            .filter(|e| {
+                e.decode_order >= key.decode_order
+                    && next_do.map(|nd| e.decode_order < nd).unwrap_or(true)
+            })
+            .map(|e| e.frame)
+            .collect();
+        ids.sort_unstable();
+        Some(ids)
+    }
+
     /// Decode-order window from nearest keyframe through `frame` (inclusive).
     ///
     /// Samples are ordered by `decode_order` so a decoder can be fed correctly
@@ -174,6 +208,9 @@ mod tests {
         assert_eq!(index.nearest_keyframe(4), Some(3));
         assert_eq!(index.decode_window(2), Some(vec![0, 1, 2]));
         assert_eq!(index.decode_window(4), Some(vec![3, 4]));
+        assert_eq!(index.next_keyframe_after(0), Some(3));
+        assert_eq!(index.gop_frame_ids(0), Some(vec![0, 1, 2]));
+        assert_eq!(index.gop_frame_ids(3), Some(vec![3, 4]));
     }
 
     #[test]

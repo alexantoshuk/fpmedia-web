@@ -1,6 +1,7 @@
 //! Browser decode / render (WebCodecs + canvas).
 
 mod canvas;
+mod frame_cache;
 mod webcodecs;
 mod web_player;
 

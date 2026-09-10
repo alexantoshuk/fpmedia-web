@@ -33,6 +33,9 @@ pub enum MediaError {
     #[error("operation cancelled")]
     Cancelled,
 
+    #[error("unsupported: {0}")]
+    Unsupported(&'static str),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

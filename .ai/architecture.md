@@ -67,6 +67,7 @@ webmedia/
 | `leptos-use` for browser helpers | Observers/events/rAF in `video/`; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | [mediabunny](https://github.com/Vanilagy/mediabunny) is the required reference; port patterns, never depend on the TS package |
 | Progressive open via `MediaSource` (planned) | Match `<video>` / mediabunny `BlobSource`: ranged reads, parse `moov` only, fetch `mdat` samples by file offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
+| Dual decoder + dense GOP cache | Main `VideoDecoder` for play/prefetch; scrub decoder fills `DenseFrameCache` (GOP LRU) without stealing playback. Mediabunny uses one decoder per session — dual decode is intentional for background window fill. |
 
 ---
 

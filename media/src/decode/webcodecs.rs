@@ -6,6 +6,7 @@
 //! Apply `decodeQueueSize` backpressure before feeding more packets.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use js_sys::Uint8Array;
@@ -499,6 +500,110 @@ impl WebCodecsDecoder {
         Err(MediaError::WebCodecs(format!(
             "decode pump gave up waiting for pts={target_us}µs"
         )))
+    }
+
+    /// Decode every presentation frame in the GOP starting at sync `key_frame`.
+    ///
+    /// Does **not** prune mid-GOP (unlike [`Self::decode_frame`]) so scrub fill can
+    /// populate the dense cache. Ends with flush + cleared warm state.
+    pub async fn decode_gop(
+        &mut self,
+        track: &Mp4VideoTrack,
+        key_frame: FrameId,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<HashMap<FrameId, VideoFrame>, MediaError> {
+        if is_cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+        let key_entry = track
+            .index()
+            .get(key_frame)
+            .ok_or(MediaError::FrameOutOfRange(key_frame, track.frame_count()))?;
+        if !key_entry.is_sync {
+            return Err(MediaError::WebCodecs(format!(
+                "decode_gop requires sync key (frame={key_frame})"
+            )));
+        }
+        let key_do = key_entry.decode_order;
+        let gop_ids = track
+            .index()
+            .gop_frame_ids(key_frame)
+            .ok_or(MediaError::FrameOutOfRange(key_frame, track.frame_count()))?;
+        let mut pts_to_id: HashMap<i64, FrameId> = HashMap::with_capacity(gop_ids.len());
+        for id in &gop_ids {
+            let e = track
+                .index()
+                .get(*id)
+                .ok_or(MediaError::FrameOutOfRange(*id, track.frame_count()))?;
+            pts_to_id.insert(
+                ticks_to_micros(e.composition_timestamp_ticks, e.timescale),
+                *id,
+            );
+        }
+
+        self.recreate()?;
+        self.key_order = Some(key_do);
+
+        let key_sample = track.encoded_sample(key_frame).await?;
+        if is_cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+        // i64::MIN → never prune; we want the whole GOP in `held`.
+        self.feed_sample(&key_sample, true, i64::MIN).await?;
+        self.fed_through_order = Some(key_do);
+        self.await_outputs_if_pending().await?;
+        self.collect_outputs_into_held()?;
+
+        let max_feeds = gop_ids.len().saturating_add(8).max(16);
+        for i in 0..max_feeds {
+            if is_cancelled() {
+                return Err(MediaError::Cancelled);
+            }
+            let fed = self.fed_through_order.unwrap_or(key_do);
+            let next = track.samples_after_in_gop(key_do, fed, 1).await?;
+            if next.is_empty() {
+                break;
+            }
+            self.feed_sample(&next[0], false, i64::MIN).await?;
+            self.fed_through_order = Some(next[0].decode_order);
+            self.await_outputs_if_pending().await?;
+            self.collect_outputs_into_held()?;
+            // Yield so paused UI / play start can cancel without a long stall.
+            if i % 4 == 3 {
+                let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+                    &wasm_bindgen::JsValue::UNDEFINED,
+                ))
+                .await;
+            }
+        }
+
+        for _ in 0..32 {
+            if is_cancelled() {
+                return Err(MediaError::Cancelled);
+            }
+            self.await_outputs_if_pending().await?;
+            self.collect_outputs_into_held()?;
+            if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
+                break;
+            }
+        }
+        if !self.input_timestamps.is_empty() || self.decode_queue_size() > 0 {
+            let _ = self.flush_with_timeout().await;
+            self.collect_outputs_into_held()?;
+        }
+
+        let mut out = HashMap::with_capacity(self.held.len());
+        for h in self.held.drain(..) {
+            if let Some(id) = pts_to_id.remove(&h.pts_us) {
+                out.insert(id, h.frame);
+            } else {
+                h.frame.close();
+            }
+        }
+        self.fed_through_order = None;
+        self.key_order = None;
+        self.input_timestamps.clear();
+        Ok(out)
     }
 
     /// End-of-input / reorder-slack: drain outputs, then flush once.
