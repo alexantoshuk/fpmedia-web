@@ -18,7 +18,7 @@ All `.ai/` documentation is English.
 | File | Read before touching |
 | ---- | -------------------- |
 | `.ai/skills/media.md` | demux, frame index, player API, WebCodecs |
-| `.ai/skills/leptos.md` | any Leptos UI / CSR mount / resources |
+| `.ai/skills/leptos.md` | Leptos UI / `<Video>` / CSR mount / resources |
 
 New gotcha → append to the relevant skill; add a skills-index row only if a new file is created.
 
@@ -65,5 +65,6 @@ cargo leptos watch                                      # dev → http://127.0.0
 cargo leptos build                                      # build → target/site/
 cargo check -p server                                   # server (ssr) type check
 cargo check --target wasm32-unknown-unknown -p frontend # CSR WASM client + UI
+cargo check --target wasm32-unknown-unknown -p video    # Video element crate
 cargo test -p webmedia                                  # media engine unit/integration tests
 ```

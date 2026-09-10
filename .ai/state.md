@@ -19,4 +19,5 @@
 - Packet / sample / canvas sink layering (mediabunny mental model).
 - Sparse `samplesAtTimestamps` for filmstrip thumbnails.
 - Dual-source compare layout hooks.
-- Publish `webmedia` crate for reuse by host apps.
+- Publish `webmedia` / `video` crates for reuse by host apps.
+- Production player chrome (demo controls in `app` stay for now).

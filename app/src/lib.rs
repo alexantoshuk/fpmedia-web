@@ -1,6 +1,8 @@
-//! webmedia demo app — Leptos CSR shell + frame-accurate player UI.
+//! Demo host — Leptos CSR shell + controls over [`video::Video`].
 
 use leptos::prelude::*;
+
+#[cfg(feature = "csr")]
 use leptos_meta::{Stylesheet, Title, provide_meta_context};
 
 #[cfg(feature = "csr")]
@@ -35,7 +37,7 @@ pub fn App() -> impl IntoView {
                 <h1 class="wm-brand">"webmedia"</h1>
                 <p class="wm-sub">"Frame-accurate WebCodecs player — alpha"</p>
             </header>
-            <player::PlayerDemo/>
+            <player::DemoPlayer/>
         </main>
     }
 }

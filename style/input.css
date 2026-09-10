@@ -49,6 +49,10 @@ body {
   padding: 1.25rem;
 }
 
+.wm-stage {
+  width: 100%;
+}
+
 /* Sized media stage (like <video width height>); canvas contains inside. */
 .wm-viewport {
   width: 100%;

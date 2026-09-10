@@ -18,7 +18,8 @@ media/src/                 ← package name: webmedia
     ├── canvas.rs          ← draw VideoFrame
     └── web_player.rs      ← WebPlayer façade
 
-app/                       ← Leptos CSR demo UI (uses WebPlayer)
+video/                     ← Leptos <Video> + VideoRef (HTML <video> analog)
+app/                       ← demo host UI (uses video::Video)
 public/                    ← sample MP4 fixtures
 ```
 
@@ -45,9 +46,9 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 
 ### Patterns already / still to adapt
 
-- Wall-clock deadline pacing (sleep remainder after decode) — done in demo play loop.
+- Wall-clock deadline pacing (sleep remainder after decode) — done in `video` play loop.
 - Decode-order pump + held buffer + PTS remap + output-callback wait (`decode_frame`) — done; prefer feed-ahead over flush.
-- Bounded presentation queue (decode ~6 frames ahead) + `decodeQueueSize` backpressure + skip-when-behind — done on `WebPlayer` / demo loop.
+- Bounded presentation queue (decode ~6 frames ahead) + `decodeQueueSize` backpressure + skip-when-behind — done on `WebPlayer` / `video` loop.
 - Bitstream keyframe verification (`verifyKeyPackets`).
 - Seek/pause cancel of in-flight decode; audio + shared media clock.
 - Later: packet / sample / canvas sink layering; sparse samples-at-timestamps for filmstrip.
@@ -62,17 +63,17 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 5b. **B-frame held buffer + PTS remap** — park not-yet-presented frames in `held`. Assign PTS from sorted `input_timestamps` as frames emerge (mediabunny `VideoDecoderWrapper`). After each feed: if `decodeQueueSize == 0` and no output, **feed more** (reorder). If queue > 0, wait for output **raced with `Promise.resolve` microtask** — never await output alone (hangs open on B-frames). Wake waiters via `spawn_local` (not raw `queueMicrotask(resolve)` — that can fail to run and freeze open with `busy=true`). Open uses `optimizeForLatency: true`. Do **not** require `prefer-hardware` in `isConfigSupported`.
 5c. **`decodeQueueSize` backpressure** — before `decode()`, wait while `decodeQueueSize` alone exceeds caps (8 with buffered frames, 40 when empty), raced with a microtask. **Do not** count `held` toward the wait condition — held-full + idle queue deadlocks (no `dequeue` ever fires).
 5c2. **WebCodecs Closure reentrancy** — never `resolve.call0()` synchronously inside `output`/`dequeue` callbacks. Defer with **`spawn_local`**. On teardown: bump generation, `set_ondequeue(None)`, `close()`, **forget** old Closures.
-5d. **Presentation queue** — `WebPlayer` keeps a bounded decode-ahead queue (~16 `VideoFrame`s). **Present path must not refill**. Demo: background `prefetch_one` to CAP. **Play** full-primes before the media clock. **Loop (one decoder):** once the queue holds EOF, `prepare_loop_if_needed` reuses the main decoder to fill `loop_prime` while the tail still presents; `loop_to_start` swaps buffers (cold `goto_frame(0)` only if prepare missed).
-5e. **Behind-deadline skip** — demo loop calls `skip_behind(lag)` when wall clock is past the next present deadline: jump to the frame at the catch-up media time (nearest keyframe if lag ≥ ~0.5s), then snap the deadline to now. Do not try to catch up by decoding every skipped present.
+5d. **Presentation queue** — `WebPlayer` keeps a bounded decode-ahead queue (~16 `VideoFrame`s). **Present path must not refill**. `video`: background `prefetch_one` to CAP. **Play** full-primes before the media clock. **Loop (one decoder):** once the queue holds EOF, `prepare_loop_if_needed` reuses the main decoder to fill `loop_prime` while the tail still presents; `loop_to_start` swaps buffers (cold `goto_frame(0)` only if prepare missed).
+5e. **Behind-deadline skip** — `video` loop calls `skip_behind(lag)` when wall clock is past the next present deadline: jump to the frame at the catch-up media time (nearest keyframe if lag ≥ ~0.5s), then snap the deadline to now. Do not try to catch up by decoding every skipped present.
 5f. **Freeze cause** — filling the whole prefetch queue *after* each present blocks the deadline (feels like short freezes on long/heavy clips). Prefetch must use wall-clock spare time instead.
-6. **Playback** — demo: **AudioContext clock + rAF present task** and a **separate prefetch task**. `present_due` / `prefetch_one` take `&self` with interior mutability so decode awaits never block presents. Track is `Rc` so decode can hold it across await without locking the playhead.
+6. **Playback** — `video`: **AudioContext clock + rAF present task** and a **separate prefetch task**. `present_due` / `prefetch_one` take `&self` with interior mutability so decode awaits never block presents. Track is `Rc` so decode can hold it across await without locking the playhead.
 7. **Commit position after decode** — `window_at` + `commit_frame` so a failed decode does not advance the frame counter.
 8. **`web_sys_unstable_apis`** — required. Set in `.cargo/config.toml`.
 9. **`VideoDecoderInit::new` argument order** in current `web-sys` is `(error, output)`.
 10. **Timestamps in web-sys** — `EncodedVideoChunkInit` uses `i32` µs / `u32` duration; clamp long timelines.
-11. **Workspace isolation** — do not import `app` / Leptos into `media/`.
+11. **Workspace isolation** — do not import `video` / `app` / Leptos into `media/`.
 12. **Mobile / LAN HTTP** — WebCodecs needs a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). `http://localhost` OK; LAN IP HTTP is not.
-14. **Playback canvas size** — blit at CSS contain size × DPR (cap edge 1280), measured from the **parent viewport** box (object-fit: contain), not full coded res. **Lock** buffer size + CSS `aspect-ratio` on open / `WebPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. Demo: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`.
+14. **Playback canvas size** — blit at CSS contain size × DPR (cap edge 1280), measured from the **parent viewport** box (object-fit: contain), not full coded res. **Lock** buffer size + CSS `aspect-ratio` on open / `WebPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. `video`: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`.
 15. **Throttle play UI** — do not `sync_ui` / update fps signals every frame; ~10 Hz is enough. Reactive status updates every present compete with decode/draw on the main thread.
 16. **Prefetch at EOF** — if `prefetch_one` returns `false` (end of track / full), the background pump **must** `await` rAF (or sleep). `continue` without yield spins the main thread and freezes the tab.
 

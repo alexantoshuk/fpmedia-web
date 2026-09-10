@@ -12,7 +12,6 @@ leptos = { workspace = true }
 leptos_meta = { workspace = true }
 leptos_router = { workspace = true }
 leptos_axum = { workspace = true, optional = true }
-leptos-use = { workspace = true, optional = true }
 console_error_panic_hook = { workspace = true, optional = true }
 console_log = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
@@ -20,18 +19,12 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
-    "Window",
-    "Document",
-    "HtmlCanvasElement",
     "HtmlInputElement",
     "File",
     "FileList",
     "Blob",
-    "AudioContext",
-    "BaseAudioContext",
-    "Performance",
 ] }
-webmedia = { path = "../media", optional = true }
+video = { path = "../video", optional = true }
 
 [features]
 default = []
@@ -44,9 +37,7 @@ csr = [
     "dep:wasm-bindgen-futures",
     "dep:js-sys",
     "dep:web-sys",
-    "dep:leptos-use",
-    "dep:webmedia",
-    "webmedia/webcodecs",
+    "dep:video",
 ]
 ssr = [
     "leptos/ssr",

@@ -13,16 +13,17 @@
 | Framework | Leptos CSR — `mount_to_body` SPA; static `index.html` shell |
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
-| App UI | `app` crate — shared CSR client + thin SSR shell |
+| App UI | `app` crate — demo host (controls) + thin SSR shell |
+| Media element | `video` crate — Leptos `<Video>` + `VideoRef` over `webmedia` |
 | Media engine | `webmedia` crate — demux + frame index + player; wasm WebCodecs |
-| Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF helpers — prefer over raw `web-sys` in `app/` |
+| Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `video/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
 
 ### Leptos UI rules
 
 Long-lived chrome lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Details: `skills/leptos.md`.
 
-**Browser APIs in `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media-specific surfaces (`AudioContext`, `HtmlCanvasElement`, File) and anything the media crate owns (WebCodecs).
+**Browser APIs in `video/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media-specific surfaces (`AudioContext`, `HtmlCanvasElement`, File) and anything the media crate owns (WebCodecs).
 
 ---
 
@@ -31,7 +32,8 @@ Long-lived chrome lives **outside** matched routes when routes are added. **Reso
 ```
 webmedia/
 ├── media/                 ← crate name `webmedia`: demux + FrameIndex + Player + WebPlayer
-├── app/                   ← Leptos App + shell() + demo player UI
+├── video/                 ← crate name `video`: Leptos <Video> + VideoRef
+├── app/                   ← demo host UI + shell()
 ├── frontend/              ← wasm mount (hydrate)
 ├── server/                ← Axum static site
 ├── style/input.css
@@ -43,8 +45,9 @@ webmedia/
 
 | Layer | Can import from |
 | ----- | --------------- |
-| `media/` (`webmedia`) | nothing in `app` / Leptos (leaf engine) |
-| `app/` | `webmedia` (with `webcodecs` on wasm), Leptos |
+| `media/` (`webmedia`) | nothing in `video` / `app` / Leptos (leaf engine) |
+| `video/` | `webmedia` (with `webcodecs`), Leptos, `leptos-use` |
+| `app/` | `video` (csr), Leptos — not `webmedia` directly |
 | `frontend/` | `app` |
 | `server/` | `app` (ssr shell only) |
 
@@ -59,9 +62,10 @@ webmedia/
 | Full-stack Rust (Leptos) | One language for engine + UI |
 | CSR SPA | Simple mental model; static shell + WASM mount |
 | Isolated `webmedia` crate | Engine reusable without UI; no Leptos in demux/decode |
-| WebCodecs + canvas | Frame-accurate decode; demo stage mirrors sized `<video>` (contain + metadata); native `<video>` may remain fallback later |
-| `leptos-use` for browser helpers in UI | Observers/events/rAF wrappers beat hand-rolled `web-sys` Closures in `app/`; media crate stays free of Leptos |
-| Adapt mediabunny ideas in Rust | [mediabunny](https://github.com/Vanilagy/mediabunny) is the required reference for media features and decode/playback fixes; port patterns, never depend on the TS package |
+| Isolated `video` crate | HTML `<video>` analog; reusable without demo chrome |
+| WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
+| `leptos-use` for browser helpers | Observers/events/rAF in `video/`; media crate stays free of Leptos |
+| Adapt mediabunny ideas in Rust | [mediabunny](https://github.com/Vanilagy/mediabunny) is the required reference; port patterns, never depend on the TS package |
 
 ---
 

@@ -9,7 +9,7 @@
 
 **webmedia** — frame-accurate custom web media player for precise frame-by-frame review in the browser.
 
-Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCodecs → canvas. Not a generic `<video>` wrapper.
+Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCodecs → canvas. Not a generic `<video>` wrapper — a Rust/Leptos analog with frame-primary control.
 
 **References**:
 - UX: Frame.io review player (precision scrub).
@@ -21,8 +21,9 @@ Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCode
 
 | Surface | Purpose |
 | ------- | ------- |
-| **Demo app** | Leptos CSR SPA — load file / sample fixture, canvas preview, transport controls |
-| **Library API** | `webmedia` crate — demux + frame index + `Player` / `WebPlayer` (consumable by other apps) |
+| **`video` crate** | Leptos `<Video>` + `VideoRef` — media element (canvas, open/play/seek/step); HTML `<video>` analog |
+| **Demo app** | `app` / `frontend` — file picker, transport buttons, status (not production chrome) |
+| **Library API** | `webmedia` crate — demux + frame index + `Player` / `WebPlayer` |
 
 ---
 
@@ -31,7 +32,7 @@ Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCode
 - **Primary position** = presentation `FrameId` (0-based), not `time * fps`.
 - Exact frame N uses keyframe cascade (nearest sync → decode → target), including B-frame / decode-order windows.
 - Player layout/state must allow **1–2 media sources** later (compare) — never hard-assume a single source forever.
-- Demo stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, source metadata (size / fps / codec) via `WebPlayer::metadata()`.
+- `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, source metadata via `VideoRef::metadata` / `WebPlayer::metadata()`.
 - No audio in the first alpha slice; continuous play + audio come next.
 
 ---
@@ -41,3 +42,4 @@ Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCode
 - Full FFmpeg-in-browser convert/mux toolkit (mediabunny’s full scope).
 - Multi-container write path; focus read + decode of MP4/H.264 first.
 - Production auth, storage, or collaboration UI (lives in host apps).
+- Production player chrome — demo controls in `app` are temporary.
