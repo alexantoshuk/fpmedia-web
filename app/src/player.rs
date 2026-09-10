@@ -102,7 +102,6 @@ pub fn PlayerDemo() -> impl IntoView {
                 playing.set(st.playing);
                 looping.set(st.looping);
                 pipeline.set(Some(p.pipeline_stats()));
-                meta.set(Some(p.metadata()));
             }
         }) as Rc<dyn Fn()>
     };
