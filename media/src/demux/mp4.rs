@@ -2,6 +2,7 @@
 
 use re_mp4::{Mp4, TrackKind};
 
+use crate::bitstream::{PacketType, avc_nal_length_size, determine_avc_packet_type};
 use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
 use crate::types::{
@@ -160,7 +161,7 @@ fn build_track(mp4: Mp4, bytes: Vec<u8>) -> Result<Mp4VideoTrack, MediaError> {
 
     let codec = classify_codec(codec_string.as_deref());
 
-    let entries: Vec<FrameEntry> = track
+    let mut entries: Vec<FrameEntry> = track
         .samples
         .iter()
         .enumerate()
@@ -176,6 +177,12 @@ fn build_track(mp4: Mp4, bytes: Vec<u8>) -> Result<Mp4VideoTrack, MediaError> {
             size: sample.size,
         })
         .collect();
+
+    // Mediabunny verifyKeyPackets: demote container "sync" samples that are
+    // not real keyframes in the bitstream (lying stss / sample flags).
+    if codec == VideoCodec::Avc {
+        verify_avc_sync_flags(&mut entries, &bytes, &description);
+    }
 
     let index = FrameIndex::from_entries(entries);
     let frame_count = index.len() as u64;
@@ -212,5 +219,23 @@ fn classify_codec(codec_string: Option<&str>) -> VideoCodec {
         Some(s) if s.starts_with("avc1") || s.starts_with("avc3") => VideoCodec::Avc,
         Some(s) if s.starts_with("hvc1") || s.starts_with("hev1") => VideoCodec::Hevc,
         _ => VideoCodec::Other,
+    }
+}
+
+/// Clear `is_sync` when the AVCC AU is not an IDR (or undecidable).
+fn verify_avc_sync_flags(entries: &mut [FrameEntry], bytes: &[u8], avcc: &[u8]) {
+    let Some(length_size) = avc_nal_length_size(avcc) else {
+        return;
+    };
+    for entry in entries.iter_mut().filter(|e| e.is_sync) {
+        let range = entry.byte_range();
+        let Some(sample) = bytes.get(range) else {
+            entry.is_sync = false;
+            continue;
+        };
+        match determine_avc_packet_type(sample, length_size) {
+            Some(PacketType::Key) => {}
+            Some(PacketType::Delta) | None => entry.is_sync = false,
+        }
     }
 }

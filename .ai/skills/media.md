@@ -10,8 +10,9 @@ No Leptos/`app` dependency.
 media/src/                 ← package name: webmedia
 ├── lib.rs
 ├── types.rs               ← FrameId, Timestamp, EncodedSample, VideoMetadata
+├── bitstream/             ← AVC packet type (verifyKeyPackets-style)
 ├── frame_index.rs         ← presentation order, nearest_keyframe, decode_window
-├── demux/mp4.rs           ← re_mp4 → Mp4VideoTrack
+├── demux/mp4.rs           ← re_mp4 → Mp4VideoTrack (+ sync-flag verify for AVC)
 ├── player.rs              ← play/pause/seek_frame/step → DecodeWindow
 └── decode/                ← cfg(wasm32 + webcodecs)
     ├── webcodecs.rs       ← VideoDecoder cascade
@@ -49,14 +50,15 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 - Wall-clock deadline pacing (sleep remainder after decode) — done in `video` play loop.
 - Decode-order pump + held buffer + PTS remap + output-callback wait (`decode_frame`) — done; prefer feed-ahead over flush.
 - Bounded presentation queue (decode ~6 frames ahead) + `decodeQueueSize` backpressure + skip-when-behind — done on `WebPlayer` / `video` loop.
-- Bitstream keyframe verification (`verifyKeyPackets`).
+- Bitstream keyframe verification (`verifyKeyPackets`) — AVC at demux: demote lying `stss` sync flags via IDR NAL check; HEVC / Recovery Point SEI still open.
 - Seek/pause cancel of in-flight decode; audio + shared media clock.
 - Later: packet / sample / canvas sink layering; sparse samples-at-timestamps for filmstrip.
 
 ## Gotchas
 
 1. **`re_mp4` sample ranges** refer to the **same** byte buffer passed to `open_mp4_bytes`. `Mp4VideoTrack` owns that buffer. `open_mp4_path` is native-only (`cfg(not(wasm32))`).
-2. **AVCC vs Annex-B** — MP4 `avc1` samples are length-prefixed; WebCodecs wants that plus `avcC` in `VideoDecoderConfig.description`.
+2. **AVCC vs Annex-B** — MP4 `avc1` samples are length-prefixed; WebCodecs wants that plus `avcC` in `VideoDecoderConfig.description`. Length size = `(avcC[4] & 0b11) + 1`.
+2b. **Lying sync samples** — on AVC open, demote `is_sync` when the AU is not an IDR (NAL type 5). Mediabunny `verifyKeyPackets`. Does not yet handle Recovery Point SEI or HEVC IRAP.
 3. **B-frames** — index is presentation order; `nearest_keyframe` / `decode_window` use **`decode_order`** (not DTS range). Fixture `with_b_frames.mp4` covers this.
 4. **WebCodecs target match** — pick the sample with `frame == target_frame`. Never use `samples.last()`.
 5. **Decoder lifecycle** — warm decode-order pump (`decode_frame`): feed next packets in the GOP until the target PTS is in `held`. Prefer feeding ahead over `flush()`. Do **not** `flush()` between playback frames in the same GOP. **New keyframe / GOP:** `recreate()` + feed key (soft-flush `begin_new_key` hung open on some Resolve clips — revisit later). Never hold `RefCell`/`borrow_mut` on the decoder across `.await` — **take** the decoder out of `Option` for the decode, then put it back.

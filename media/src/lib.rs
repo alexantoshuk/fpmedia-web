@@ -8,6 +8,7 @@
 //! Frame index (presentation order) is the primary position identifier —
 //! timestamps are derived from the sample table, not `time * fps`.
 
+mod bitstream;
 mod demux;
 mod error;
 mod frame_index;
@@ -17,6 +18,7 @@ mod types;
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod decode;
 
+pub use bitstream::{PacketType, avc_nal_length_size, determine_avc_packet_type};
 pub use demux::{Mp4VideoTrack, open_mp4_bytes};
 #[cfg(not(target_arch = "wasm32"))]
 pub use demux::open_mp4_path;

@@ -1,6 +1,8 @@
 //! Integration tests: demux + frame index against short-GOP H.264 fixtures.
 
-use webmedia::{Player, VideoCodec, open_mp4_path};
+use webmedia::{
+    PacketType, Player, VideoCodec, avc_nal_length_size, determine_avc_packet_type, open_mp4_path,
+};
 
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -43,6 +45,17 @@ fn demux_short_gop_metadata_and_frames() {
         .map(|e| e.frame)
         .collect();
     assert_eq!(syncs, vec![0, 12, 24, 36]);
+
+    // verifyKeyPackets: every remaining sync sample is a real IDR in the AU.
+    let length_size = avc_nal_length_size(&meta.codec.description).expect("avcC length");
+    for &frame in &syncs {
+        let sample = track.encoded_sample(frame).expect("sample");
+        assert_eq!(
+            determine_avc_packet_type(&sample.data, length_size),
+            Some(PacketType::Key),
+            "sync frame {frame} must be bitstream key"
+        );
+    }
 
     assert_eq!(index.nearest_keyframe(0), Some(0));
     assert_eq!(index.nearest_keyframe(11), Some(0));
