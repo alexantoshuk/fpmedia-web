@@ -9,9 +9,21 @@ Respect `.agentignore`.
 3. Read `.ai/state.md` — in progress + next up. No Done list.
 4. Scan `.ai/skills/` filenames.
 5. **Read the relevant skill file in full before touching code that imports its topic.**
-6. **Media work:** for new features or bug fixes in demux / decode / seek / playback, consult [mediabunny](https://github.com/Vanilagy/mediabunny) first (docs + source), then port patterns into Rust — never add it as a dependency.
+6. **Media work (mandatory):** see [Mediabunny-first](#mediabunny-first) below.
 
 All `.ai/` documentation is English.
+
+## Mediabunny-first
+
+For **any** media feature, bug fix, or behaviour change in demux / decode / seek / playback / sources / sinks:
+
+1. **Open [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny)** (guide + `src/`) and find the matching path **before** inventing a Rust approach.
+2. **Port that pattern** into this codebase (names, control flow, wait/wake rules, edge-case guards).
+3. **Do not** add mediabunny as a dependency — we reimplement in Rust/WASM.
+4. Invent only when mediabunny has **no** equivalent; then note why in the relevant `.ai/skills/*.md` gotcha.
+5. When a fix came from mediabunny, cite the file/symbol in the skill gotcha or commit body (`mediabunny: src/media-sink.ts queueDequeue`).
+
+Rust/WASM specifics (Closures, `spawn_local`, no Promise ergonomics) are **adapters**, not a reason to skip the port. Most playback hangs here have been divergences from mediabunny wait/wake rules, not inherent Rust limits.
 
 ## Skills index
 

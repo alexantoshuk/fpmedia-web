@@ -17,6 +17,8 @@ use crate::types::{FrameId, VideoMetadata};
 
 /// Decoded frames held ready for canvas present (mediabunny-style prefetch).
 pub const PRESENTATION_QUEUE_CAP: usize = 16;
+/// Frames to decode before starting the media clock (rest filled by prefetch).
+const PLAY_PRIME_FRAMES: usize = 2;
 /// Start-of-clip frames prepared into `loop_prime` before EOF (one decoder).
 const LOOP_PRIME_FRAMES: usize = 8;
 /// Wall-clock lag above this → skip to nearest keyframe instead of exact frame.
@@ -79,6 +81,41 @@ impl WebPlayer {
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
         let player = Player::open_mp4_bytes(bytes)?;
+        Self::from_player(player, canvas).await
+    }
+
+    /// Progressive open from a ranged [`crate::MediaSource`] (Blob / memory).
+    pub async fn open_mp4_source(
+        source: std::sync::Arc<dyn crate::MediaSource>,
+        canvas: HtmlCanvasElement,
+    ) -> Result<Self, MediaError> {
+        let track = crate::open_mp4_source_cached(
+            source,
+            crate::OpenMp4Options {
+                verify_avc_sync: true,
+            },
+        )
+        .await?;
+        Self::from_track(track, canvas).await
+    }
+
+    /// Progressive open from a browser [`web_sys::Blob`] / `File`.
+    pub async fn open_blob(blob: web_sys::Blob, canvas: HtmlCanvasElement) -> Result<Self, MediaError> {
+        let source: std::sync::Arc<dyn crate::MediaSource> =
+            std::sync::Arc::new(crate::BlobSource::new(blob));
+        Self::open_mp4_source(source, canvas).await
+    }
+
+    /// Build a player around an already-demuxed track (host can show stage status).
+    pub async fn from_track(
+        track: crate::demux::Mp4VideoTrack,
+        canvas: HtmlCanvasElement,
+    ) -> Result<Self, MediaError> {
+        let player = Player::from_track(track)?;
+        Self::from_player(player, canvas).await
+    }
+
+    async fn from_player(player: Player, canvas: HtmlCanvasElement) -> Result<Self, MediaError> {
         let meta = player.metadata().clone();
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
@@ -693,7 +730,8 @@ impl WebPlayer {
     }
 
     async fn fill_presentation_queue(&self, epoch: u64) -> Result<(), MediaError> {
-        self.prime_presentation(PRESENTATION_QUEUE_CAP, epoch).await
+        // Start playback after a couple of frames; background prefetch fills to CAP.
+        self.prime_presentation(PLAY_PRIME_FRAMES, epoch).await
     }
 
     /// Decode up to `min_frames` into the presentation queue (bypasses restarting gate).
@@ -745,20 +783,16 @@ impl WebPlayer {
 
     /// Take the decoder out of the slot for the duration of an async decode so
     /// we never hold `RefMut` across `.await` (avoids freezes / panics).
+    ///
+    /// Waits briefly if another op still holds the decoder (quick Pause→Play:
+    /// cancelled prefetch must put the decoder back before prime can run).
     async fn decode_frame(
         &self,
         track: &crate::demux::Mp4VideoTrack,
         frame: FrameId,
         epoch: u64,
     ) -> Result<VideoFrame, MediaError> {
-        if !self.is_current(epoch) {
-            return Err(MediaError::Cancelled);
-        }
-        let mut decoder = self
-            .decoder
-            .borrow_mut()
-            .take()
-            .ok_or_else(|| MediaError::WebCodecs("decoder busy".into()))?;
+        let mut decoder = self.take_decoder(epoch).await?;
         let result = decoder.decode_frame(track, frame).await;
         *self.decoder.borrow_mut() = Some(decoder);
         if !self.is_current(epoch) {
@@ -768,6 +802,22 @@ impl WebPlayer {
             return Err(MediaError::Cancelled);
         }
         result
+    }
+
+    async fn take_decoder(&self, epoch: u64) -> Result<WebCodecsDecoder, MediaError> {
+        // ~2s of setTimeout(0) spins — enough for a cancelled peer to restore the slot.
+        for _ in 0..120 {
+            if !self.is_current(epoch) {
+                return Err(MediaError::Cancelled);
+            }
+            if let Some(decoder) = self.decoder.borrow_mut().take() {
+                return Ok(decoder);
+            }
+            yield_event_loop().await;
+        }
+        Err(MediaError::WebCodecs(
+            "decoder busy (Pause/Play raced — try Play again)".into(),
+        ))
     }
 
     async fn goto_frame(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
@@ -799,6 +849,14 @@ impl Drop for WebPlayer {
 
 fn performance_now_ms() -> Option<f64> {
     web_sys::window()?.performance().map(|p| p.now())
+}
+
+/// One event-loop turn via `Promise.resolve` (microtask).
+async fn yield_event_loop() {
+    let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+        &wasm_bindgen::JsValue::UNDEFINED,
+    ))
+    .await;
 }
 
 async fn sleep_ms(ms: i32) {

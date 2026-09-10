@@ -21,5 +21,7 @@ web-sys = { workspace = true, features = [
     "AudioContext",
     "BaseAudioContext",
     "Performance",
+    "Blob",
+    "console",
 ] }
 webmedia = { path = "../media", features = ["webcodecs"] }

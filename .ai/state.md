@@ -2,15 +2,7 @@
 
 ## In progress
 
-- **Progressive open (like `<video>` / mediabunny `BlobSource`)** — stop whole-file `array_buffer` into WASM.
-  1. `MediaSource` + wasm `BlobSource` / native file source (~8 MiB cache).
-  2. Ranged top-level box scan → `ftyp`+`moov` stub → `re_mp4` → `FrameIndex` (file offsets).
-  3. Async sample fetch via `source.read` through WebCodecs decode/prefetch.
-  4. `Video` / demo: `open_blob` instead of full-file buffer.
-  5. Lazy AVC sync verify (off critical open path).
-  6. Docs/tests: keep `open_mp4_bytes` for fixtures; offset-consistency check.
-  - ADR sketch: `.ai/architecture.md` → Progressive open.
-  - Temporary deps: workspace pins `alexantoshuk/re_mp4` @ `a6dceaa` until [rerun-io/re_mp4#35](https://github.com/rerun-io/re_mp4/pull/35) merges.
+- (none — progressive Blob open landed; see Next up)
 
 ---
 
@@ -18,9 +10,11 @@
 
 ### Media engine
 
-- Audio track + shared A/V media clock (video slaves to audio once audio exists).
+- Audio track + shared A/V media clock (video slaves to audio once audio exists). Wall-clock play works until then.
 - HEVC bitstream key verify + AVC Recovery Point SEI (IDR-only verify is in place).
-- After progressive open: coalesce adjacent sample ranges; optional background full sync-verify.
+- After progressive open: coalesce adjacent sample ranges; optional background sync-verify for huge files if open latency matters.
+- Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
+- Temporary deps: workspace pins `alexantoshuk/re_mp4` @ `a6dceaa` until [rerun-io/re_mp4#35](https://github.com/rerun-io/re_mp4/pull/35) merges.
 
 ### Later
 

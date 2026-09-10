@@ -35,6 +35,16 @@ pub enum MediaError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("media source: {0}")]
+    Source(String),
+
+    #[error("read past end: offset={offset} len={len} size={size}")]
+    ReadOutOfRange {
+        offset: u64,
+        len: usize,
+        size: u64,
+    },
 }
 
 impl MediaError {

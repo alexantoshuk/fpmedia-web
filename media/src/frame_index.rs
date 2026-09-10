@@ -58,7 +58,14 @@ impl FrameIndex {
     }
 
     pub fn frames(&self) -> &[FrameEntry] {
-        &self.frames
+        self.frames.as_slice()
+    }
+
+    /// Update sync flag after bitstream verify (mediabunny `verifyKeyPackets`).
+    pub fn set_sync(&mut self, frame: FrameId, is_sync: bool) {
+        if let Some(entry) = self.frames.get_mut(frame as usize) {
+            entry.is_sync = is_sync;
+        }
     }
 
     /// Latest sync sample at or before `frame` in **decode** order.

@@ -38,4 +38,6 @@ web-sys = { workspace = true, optional = true, features = [
     "EncodedVideoChunkType",
     "VideoFrame",
     "HardwareAcceleration",
+    "Blob",
+    "console",
 ] }

@@ -76,12 +76,12 @@ webmedia/
 
 **Approach** (mediabunny-aligned; keep `re_mp4`):
 
-1. `MediaSource` trait — `size` + async `read(offset, len)`; wasm `BlobSource` (`Blob.slice`), native file/`Seek`; ~8 MiB read cache.
-2. Top-level box scan — read headers only, skip `mdat`, collect `ftyp`+`moov`, parse stub with `re_mp4` (sample offsets stay **file-absolute**).
-3. `Mp4VideoTrack` holds source + `FrameIndex` + codec config — not full media bytes; `encoded_sample` reads ranges on demand.
-4. UI — `open_blob(File)` instead of whole-file `array_buffer`.
+1. ~~`MediaSource`~~ — `MemorySource` + wasm `BlobSource`; ~8 MiB `CachedSource`. Native `FileSource` later.
+2. ~~Top-level box scan~~ — `ftyp`+`moov` stub → `re_mp4` (file-absolute sample offsets).
+3. ~~`Mp4VideoTrack` holds source~~ — async `encoded_sample` via `source.read`.
+4. ~~UI `open_blob(File)`~~ — demo no longer `array_buffer()`s the whole file.
 5. Defer full AVC sync-flag verify off the critical path (lazy / first GOP).
-6. Keep `open_mp4_bytes` for fixtures/tests.
+6. Keep `open_mp4_bytes` for fixtures/tests (offset-consistency covered).
 
 **Out of scope for this track:** stream-only sources without random access; fMP4/DASH; MSE remux.
 

@@ -1,20 +1,54 @@
-//! MP4 / ISOBMFF demux via `re_mp4`.
+//! MP4 / ISOBMFF demux via `re_mp4` + ranged [`MediaSource`].
+
+use std::fmt;
+use std::sync::Arc;
 
 use re_mp4::{Mp4, TrackKind};
 
 use crate::bitstream::{PacketType, avc_nal_length_size, determine_avc_packet_type};
 use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
+use crate::source::{CachedSource, MediaSource, MemorySource};
 use crate::types::{
     CodecConfig, EncodedSample, FrameId, VideoCodec, VideoMetadata,
 };
+use crate::util::block_on;
+
+/// Options for [`open_mp4_source`].
+#[derive(Clone, Copy, Debug)]
+pub struct OpenMp4Options {
+    /// Mediabunny-style bitstream sync verify (AVC IDR). For progressive/Blob
+    /// opens this runs **async** after moov parse (do not use `block_on` on Blob).
+    pub verify_avc_sync: bool,
+}
+
+impl Default for OpenMp4Options {
+    fn default() -> Self {
+        Self {
+            verify_avc_sync: false,
+        }
+    }
+}
 
 /// Demuxed H.264/H.265 (etc.) video track with a presentation-order frame index.
-#[derive(Clone, Debug)]
+///
+/// Sample bytes are fetched on demand from [`MediaSource`] using **file-absolute**
+/// offsets from the sample table (not stub-relative).
+#[derive(Clone)]
 pub struct Mp4VideoTrack {
-    bytes: Vec<u8>,
+    source: Arc<dyn MediaSource>,
     metadata: VideoMetadata,
     index: FrameIndex,
+}
+
+impl fmt::Debug for Mp4VideoTrack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Mp4VideoTrack")
+            .field("metadata", &self.metadata)
+            .field("frames", &self.index.len())
+            .field("source_size", &self.source.size())
+            .finish()
+    }
 }
 
 impl Mp4VideoTrack {
@@ -30,22 +64,27 @@ impl Mp4VideoTrack {
         self.metadata.frame_count
     }
 
-    pub fn encoded_sample(&self, frame: FrameId) -> Result<EncodedSample, MediaError> {
+    pub fn source(&self) -> &Arc<dyn MediaSource> {
+        &self.source
+    }
+
+    pub async fn encoded_sample(&self, frame: FrameId) -> Result<EncodedSample, MediaError> {
         let entry = self
             .index
             .get(frame)
             .ok_or(MediaError::FrameOutOfRange(frame, self.frame_count()))?;
-        let range = entry.byte_range();
         let data = self
-            .bytes
-            .get(range.clone())
-            .ok_or_else(|| {
-                MediaError::Mp4(format!(
-                    "sample byte range {range:?} outside file (len={})",
-                    self.bytes.len()
-                ))
-            })?
-            .to_vec();
+            .source
+            .read(entry.offset, entry.size as usize)
+            .await?;
+        if data.len() != entry.size as usize {
+            return Err(MediaError::Mp4(format!(
+                "short sample read at {}: got {} want {}",
+                entry.offset,
+                data.len(),
+                entry.size
+            )));
+        }
 
         Ok(EncodedSample {
             frame: entry.frame,
@@ -60,19 +99,20 @@ impl Mp4VideoTrack {
     }
 
     /// Encoded samples from nearest keyframe through `frame`, decode order.
-    pub fn decode_cascade(&self, frame: FrameId) -> Result<Vec<EncodedSample>, MediaError> {
+    pub async fn decode_cascade(&self, frame: FrameId) -> Result<Vec<EncodedSample>, MediaError> {
         let window = self
             .index
             .decode_window(frame)
             .ok_or(MediaError::FrameOutOfRange(frame, self.frame_count()))?;
-        window
-            .into_iter()
-            .map(|f| self.encoded_sample(f))
-            .collect()
+        let mut out = Vec::with_capacity(window.len());
+        for f in window {
+            out.push(self.encoded_sample(f).await?);
+        }
+        Ok(out)
     }
 
     /// Copy only samples with `decode_order` in `from_do..=to_do` (inclusive), decode order.
-    pub fn samples_decode_range(
+    pub async fn samples_decode_range(
         &self,
         from_do: usize,
         to_do: usize,
@@ -87,14 +127,15 @@ impl Mp4VideoTrack {
             .filter(|e| e.decode_order >= from_do && e.decode_order <= to_do)
             .collect();
         entries.sort_by_key(|e| e.decode_order);
-        entries
-            .into_iter()
-            .map(|e| self.encoded_sample(e.frame))
-            .collect()
+        let mut out = Vec::with_capacity(entries.len());
+        for e in entries {
+            out.push(self.encoded_sample(e.frame).await?);
+        }
+        Ok(out)
     }
 
     /// Next `limit` samples after `after_do` within the GOP that starts at `key_do`.
-    pub fn samples_after_in_gop(
+    pub async fn samples_after_in_gop(
         &self,
         key_do: usize,
         after_do: usize,
@@ -123,17 +164,90 @@ impl Mp4VideoTrack {
             .collect();
         entries.sort_by_key(|e| e.decode_order);
         entries.truncate(limit);
-        entries
-            .into_iter()
-            .map(|e| self.encoded_sample(e.frame))
-            .collect()
+        let mut out = Vec::with_capacity(entries.len());
+        for e in entries {
+            out.push(self.encoded_sample(e.frame).await?);
+        }
+        Ok(out)
     }
 }
 
-/// Open an MP4 from an owned byte buffer (keeps bytes for sample slicing).
+/// Open an MP4 from an owned byte buffer (fixtures / sync API).
+///
+/// Still parses the full buffer with `re_mp4` (fast for small fixtures) and keeps
+/// samples behind [`MemorySource`]. Prefer [`open_mp4_source`] for large Blobs.
 pub fn open_mp4_bytes(bytes: Vec<u8>) -> Result<Mp4VideoTrack, MediaError> {
-    let mp4 = Mp4::read_bytes(&bytes)?;
-    build_track(mp4, bytes)
+    let bytes: Arc<[u8]> = Arc::from(bytes);
+    let mp4 = Mp4::read_bytes(bytes.as_ref())?;
+    let source: Arc<dyn MediaSource> = Arc::new(MemorySource::new(Arc::clone(&bytes)));
+    build_track(
+        mp4,
+        source,
+        OpenMp4Options {
+            verify_avc_sync: true,
+        },
+    )
+}
+
+/// Progressive open: ranged `ftyp`+`moov` → sparse `re_mp4` parse → index (file offsets).
+pub async fn open_mp4_source(
+    source: Arc<dyn MediaSource>,
+    options: OpenMp4Options,
+) -> Result<Mp4VideoTrack, MediaError> {
+    open_mp4_source_with_progress(source, options, |_| {}).await
+}
+
+/// Like [`open_mp4_source`], with UI progress callbacks.
+pub async fn open_mp4_source_with_progress(
+    source: Arc<dyn MediaSource>,
+    options: OpenMp4Options,
+    mut progress: impl FnMut(&str),
+) -> Result<Mp4VideoTrack, MediaError> {
+    let mp4 = crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
+    // Verify separately (async) — `block_on` cannot drive BlobSource reads.
+    let mut track = build_track(
+        mp4,
+        source,
+        OpenMp4Options {
+            verify_avc_sync: false,
+        },
+    )?;
+    if options.verify_avc_sync {
+        verify_track_avc_sync_async(&mut track, &mut progress).await?;
+    }
+    Ok(track)
+}
+
+/// Open via progressive parse, then attach an 8 MiB [`CachedSource`] for sample I/O.
+///
+/// Important: demux/scan runs on the **raw** source so header reads do not prefetch
+/// multi‑MiB windows from the middle of `mdat`.
+pub async fn open_mp4_source_cached(
+    source: Arc<dyn MediaSource>,
+    options: OpenMp4Options,
+) -> Result<Mp4VideoTrack, MediaError> {
+    open_mp4_source_cached_with_progress(source, options, |_| {}).await
+}
+
+/// Like [`open_mp4_source_cached`], with UI progress callbacks.
+pub async fn open_mp4_source_cached_with_progress(
+    source: Arc<dyn MediaSource>,
+    options: OpenMp4Options,
+    mut progress: impl FnMut(&str),
+) -> Result<Mp4VideoTrack, MediaError> {
+    let mp4 = crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
+    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::new(source));
+    let mut track = build_track(
+        mp4,
+        cached,
+        OpenMp4Options {
+            verify_avc_sync: false,
+        },
+    )?;
+    if options.verify_avc_sync {
+        verify_track_avc_sync_async(&mut track, &mut progress).await?;
+    }
+    Ok(track)
 }
 
 /// Open an MP4 from a filesystem path (native / tests).
@@ -143,7 +257,11 @@ pub fn open_mp4_path(path: impl AsRef<std::path::Path>) -> Result<Mp4VideoTrack,
     open_mp4_bytes(bytes)
 }
 
-fn build_track(mp4: Mp4, bytes: Vec<u8>) -> Result<Mp4VideoTrack, MediaError> {
+fn build_track(
+    mp4: Mp4,
+    source: Arc<dyn MediaSource>,
+    options: OpenMp4Options,
+) -> Result<Mp4VideoTrack, MediaError> {
     let track = mp4
         .tracks()
         .values()
@@ -178,10 +296,10 @@ fn build_track(mp4: Mp4, bytes: Vec<u8>) -> Result<Mp4VideoTrack, MediaError> {
         })
         .collect();
 
-    // Mediabunny verifyKeyPackets: demote container "sync" samples that are
-    // not real keyframes in the bitstream (lying stss / sample flags).
-    if codec == VideoCodec::Avc {
-        verify_avc_sync_flags(&mut entries, &bytes, &description);
+    if options.verify_avc_sync && codec == VideoCodec::Avc {
+        // Sync path only works for immediately-ready sources (MemorySource).
+        // Progressive Blob open uses [`verify_avc_sync_flags_async`] after build.
+        verify_avc_sync_flags(&mut entries, source.as_ref(), &description)?;
     }
 
     let index = FrameIndex::from_entries(entries);
@@ -208,7 +326,7 @@ fn build_track(mp4: Mp4, bytes: Vec<u8>) -> Result<Mp4VideoTrack, MediaError> {
     };
 
     Ok(Mp4VideoTrack {
-        bytes,
+        source,
         metadata,
         index,
     })
@@ -223,19 +341,85 @@ fn classify_codec(codec_string: Option<&str>) -> VideoCodec {
 }
 
 /// Clear `is_sync` when the AVCC AU is not an IDR (or undecidable).
-fn verify_avc_sync_flags(entries: &mut [FrameEntry], bytes: &[u8], avcc: &[u8]) {
+///
+/// Only for immediately-ready sources (`MemorySource`) — uses [`block_on`].
+fn verify_avc_sync_flags(
+    entries: &mut [FrameEntry],
+    source: &dyn MediaSource,
+    avcc: &[u8],
+) -> Result<(), MediaError> {
     let Some(length_size) = avc_nal_length_size(avcc) else {
-        return;
+        return Ok(());
     };
     for entry in entries.iter_mut().filter(|e| e.is_sync) {
-        let range = entry.byte_range();
-        let Some(sample) = bytes.get(range) else {
+        let sample = block_on(source.read(entry.offset, entry.size as usize))?;
+        if sample.len() != entry.size as usize {
             entry.is_sync = false;
             continue;
-        };
-        match determine_avc_packet_type(sample, length_size) {
+        }
+        match determine_avc_packet_type(&sample, length_size) {
             Some(PacketType::Key) => {}
             Some(PacketType::Delta) | None => entry.is_sync = false,
         }
     }
+    Ok(())
+}
+
+/// Async mediabunny-style `verifyKeyPackets` for progressive / Blob sources.
+async fn verify_track_avc_sync_async(
+    track: &mut Mp4VideoTrack,
+    progress: &mut dyn FnMut(&str),
+) -> Result<(), MediaError> {
+    if track.metadata.codec.codec != VideoCodec::Avc {
+        return Ok(());
+    }
+    let Some(length_size) = avc_nal_length_size(&track.metadata.codec.description) else {
+        return Ok(());
+    };
+    let sync_frames: Vec<FrameId> = track
+        .index
+        .frames()
+        .iter()
+        .filter(|e| e.is_sync)
+        .map(|e| e.frame)
+        .collect();
+    let total = sync_frames.len();
+    if total == 0 {
+        return Ok(());
+    }
+    progress(&format!("Verifying keyframes (0/{total})…"));
+    let mut demoted = 0usize;
+    for (i, frame) in sync_frames.into_iter().enumerate() {
+        if i % 4 == 0 {
+            progress(&format!("Verifying keyframes ({}/{total})…", i + 1));
+            crate::util::yield_now().await;
+        }
+        let (offset, size) = {
+            let entry = track
+                .index
+                .get(frame)
+                .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
+            (entry.offset, entry.size)
+        };
+        let sample = track.source.read(offset, size as usize).await?;
+        let keep = sample.len() == size as usize
+            && matches!(
+                determine_avc_packet_type(&sample, length_size),
+                Some(PacketType::Key)
+            );
+        if !keep {
+            track.index.set_sync(frame, false);
+            demoted += 1;
+        }
+    }
+    if demoted > 0 {
+        progress(&format!(
+            "Keyframe verify: demoted {demoted} lying sync flag(s)"
+        ));
+        #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+        web_sys::console::log_1(
+            &format!("webmedia: demoted {demoted}/{total} lying stss sync flags").into(),
+        );
+    }
+    Ok(())
 }

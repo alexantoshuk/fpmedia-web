@@ -1,10 +1,8 @@
 //! Demo controls over [`video::Video`] — not production chrome.
 
-use js_sys::Uint8Array;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
-use web_sys::HtmlInputElement;
+use web_sys::{Blob, HtmlInputElement};
 use video::{Video, VideoMetadata, VideoRef};
 
 #[component]
@@ -27,12 +25,11 @@ pub fn DemoPlayer() -> impl IntoView {
                             let input: HtmlInputElement = event_target(&ev);
                             let Some(files) = input.files() else { return };
                             let Some(file) = files.get(0) else { return };
-                            spawn_local(async move {
-                                match wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
-                                    Ok(buf) => video.open_mp4_bytes(Uint8Array::new(&buf).to_vec()),
-                                    Err(e) => video.error.set(Some(format!("{e:?}"))),
-                                }
-                            });
+                            let name = file.name();
+                            video.status.set(format!("Selected {name}…"));
+                            // File is a Blob — progressive open, no whole-file array_buffer.
+                            let blob: Blob = file.unchecked_into();
+                            video.open_blob(blob);
                         }
                     />
                 </label>

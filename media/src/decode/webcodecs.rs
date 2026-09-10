@@ -17,6 +17,7 @@ use web_sys::{
     VideoDecoderConfig, VideoDecoderInit, VideoFrame,
 };
 
+use crate::bitstream::{avc_nal_length_size, sanitize_avc_packet_for_chromium};
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::types::{EncodedSample, FrameId, VideoMetadata};
@@ -90,6 +91,8 @@ pub struct WebCodecsDecoder {
     /// Sorted PTS (µs) of fed chunks — shifted onto outputs in presentation order.
     input_timestamps: Vec<i64>,
     held: Vec<HeldFrame>,
+    /// Packets fed since last `configure` (mediabunny `currentPacketIndex`).
+    packets_fed: usize,
     _on_output: Closure<dyn FnMut(JsValue)>,
     _on_error: Closure<dyn FnMut(JsValue)>,
     _on_dequeue: Closure<dyn FnMut(JsValue)>,
@@ -200,6 +203,7 @@ impl WebCodecsDecoder {
             key_order: None,
             input_timestamps: Vec::new(),
             held: Vec::new(),
+            packets_fed: 0,
             _on_output: on_output,
             _on_error: on_error,
             _on_dequeue: on_dequeue,
@@ -217,6 +221,7 @@ impl WebCodecsDecoder {
         }
         self.clear_held();
         self.input_timestamps.clear();
+        self.packets_fed = 0;
         let waiting = std::mem::take(&mut *self.output_waiters.borrow_mut());
         wake_waiters_deferred(waiting);
         let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
@@ -346,12 +351,80 @@ impl WebCodecsDecoder {
             // Hard reset on new sync — soft flush path hung open on some clips.
             self.recreate()?;
             self.key_order = Some(key_do);
-            let key_sample = track.encoded_sample(key_id)?;
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(
+                &format!("webmedia: decode feed key frame={key_id} → target={frame}").into(),
+            );
+            let key_sample = track.encoded_sample(key_id).await?;
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(
+                &format!(
+                    "webmedia: key sample {} B, decode…",
+                    key_sample.data.len()
+                )
+                .into(),
+            );
             self.feed_sample(&key_sample, true).await?;
             self.fed_through_order = Some(key_do);
-            self.await_outputs_if_pending().await?;
+            // Poll with macrotasks (see `poll_output_or_macrotask`) — microtask-only
+            // never saw HW output on Wing It and forced flush.
+            for _ in 0..24 {
+                self.await_outputs_if_pending().await?;
+                self.collect_outputs_into_held()?;
+                if let Some(ready) = self.take_held(target_us) {
+                    #[cfg(target_arch = "wasm32")]
+                    web_sys::console::log_1(&"webmedia: decode got target from key".into());
+                    self.drop_held_before(target_us);
+                    return Ok(ready);
+                }
+                if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
+                    break;
+                }
+            }
+            // Prefer feeding one more GOP packet over flush — flush forces the
+            // next decode() to be a key (Chromium: "needs a key chunk").
+            if key_id == frame {
+                let coax = track.samples_after_in_gop(key_do, key_do, 1).await?;
+                if let Some(sample) = coax.first() {
+                    self.feed_sample(sample, false).await?;
+                    self.fed_through_order = Some(sample.decode_order);
+                    for _ in 0..24 {
+                        self.await_outputs_if_pending().await?;
+                        self.collect_outputs_into_held()?;
+                        if let Some(ready) = self.take_held(target_us) {
+                            #[cfg(target_arch = "wasm32")]
+                            web_sys::console::log_1(
+                                &"webmedia: decode got target after coax feed".into(),
+                            );
+                            self.drop_held_before(target_us);
+                            return Ok(ready);
+                        }
+                        if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
+                            break;
+                        }
+                    }
+                }
+                if self.held.iter().all(|h| h.pts_us != target_us) {
+                    // Last resort — flush ends the decode session; clear warm state.
+                    let _ = self.flush_with_timeout().await;
+                    self.collect_outputs_into_held()?;
+                    self.fed_through_order = None;
+                    self.key_order = None;
+                    self.input_timestamps.clear();
+                    if let Some(ready) = self.take_held(target_us) {
+                        #[cfg(target_arch = "wasm32")]
+                        web_sys::console::log_1(
+                            &"webmedia: decode got target after flush".into(),
+                        );
+                        self.drop_held_before(target_us);
+                        return Ok(ready);
+                    }
+                }
+            }
             self.collect_outputs_into_held()?;
             if let Some(ready) = self.take_held(target_us) {
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::log_1(&"webmedia: decode got target from key".into());
                 self.drop_held_before(target_us);
                 return Ok(ready);
             }
@@ -371,7 +444,7 @@ impl WebCodecsDecoder {
             }
 
             let fed = self.fed_through_order.unwrap_or(key_do);
-            let next = track.samples_after_in_gop(key_do, fed, 1)?;
+            let next = track.samples_after_in_gop(key_do, fed, 1).await?;
             if next.is_empty() {
                 if !self.frames.borrow().is_empty() || !self.input_timestamps.is_empty() {
                     self.await_outputs_if_pending().await?;
@@ -383,9 +456,9 @@ impl WebCodecsDecoder {
                     if !self.input_timestamps.is_empty() {
                         // End of GOP/container: some browsers keep the final frame buffered
                         // until an explicit flush. Only do this once we've run out of input.
-                        JsFuture::from(self.decoder.flush())
-                            .await
-                            .map_err(MediaError::from)?;
+                        // Race with a timeout — Chromium can hang forever on flush after a
+                        // bad first key (AUD); better fail open than wedge the UI.
+                        self.flush_with_timeout().await?;
                         self.check_error()?;
                         self.collect_outputs_into_held()?;
                         if let Some(ready) = self.take_held(target_us) {
@@ -434,8 +507,32 @@ impl WebCodecsDecoder {
         let timestamp_us = ticks_to_micros(sample.composition_timestamp_ticks, sample.timescale);
         self.push_input_timestamp(timestamp_us);
         let timestamp_i32 = timestamp_us.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+
+        // mediabunny: Chromium first-packet AVC AUD / reserved-NAL sanitize.
+        let sanitized = if self.packets_fed == 0
+            && is_chromium()
+            && self.config.codec.starts_with("avc1")
+        {
+            avc_nal_length_size(&self.config.description)
+                .and_then(|len_size| sanitize_avc_packet_for_chromium(&sample.data, len_size))
+        } else {
+            None
+        };
+        if let Some(ref cleaned) = sanitized {
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(
+                &format!(
+                    "webmedia: chromium AVC sanitize first packet {}→{} B",
+                    sample.data.len(),
+                    cleaned.len()
+                )
+                .into(),
+            );
+        }
+        let bytes = sanitized.as_deref().unwrap_or(sample.data.as_slice());
+
         let init = EncodedVideoChunkInit::new(
-            &Uint8Array::from(sample.data.as_slice()),
+            &Uint8Array::from(bytes),
             timestamp_i32,
             chunk_type,
         );
@@ -445,28 +542,58 @@ impl WebCodecsDecoder {
         }
         let chunk = EncodedVideoChunk::new(&init).map_err(MediaError::from)?;
         self.decoder.decode(&chunk).map_err(MediaError::from)?;
+        self.packets_fed = self.packets_fed.saturating_add(1);
         self.check_error()
     }
 
-    /// Mediabunny-style backpressure on the **browser** encoded queue only.
-    /// Do not include `held` — a full held buffer with an idle decoder would
-    /// wait forever for `dequeue` that never comes (B-frame reorder deadlock).
-    async fn await_decode_capacity(&self) -> Result<(), MediaError> {
-        let max = if self.held.is_empty() && self.frames.borrow().is_empty() {
-            MAX_DECODE_QUEUE_EMPTY
-        } else {
-            MAX_DECODE_QUEUE_WITH_HELD
-        };
-        while self.decode_queue_size() > max {
+    /// `flush()` raced with a timeout — a wedged Chromium decoder never settles.
+    async fn flush_with_timeout(&self) -> Result<(), MediaError> {
+        let flush: js_sys::Promise = self.decoder.flush().unchecked_into();
+        let result = JsFuture::from(promise_race(flush, sleep_promise_ms(2_000))).await;
+        match result {
+            Ok(v) if v.as_string().as_deref() == Some("timeout") => Err(MediaError::WebCodecs(
+                "VideoDecoder.flush timed out (Chromium wedged?)".into(),
+            )),
+            Ok(_) => Ok(()),
+            Err(e) => Err(MediaError::from(e)),
+        }
+    }
+
+    /// Backpressure before `decode()` — mediabunny `media-sink.ts`:
+    /// `sampleQueue.length + decodeQueueSize > computeMaxQueueSize(sampleQueue.length)`
+    /// then `await queueDequeue` (resolved on each output).
+    ///
+    /// We map `frames` (+ soon `held` only for the empty/non-empty max pick) carefully:
+    /// do **not** treat already-buffered `frames` as capacity progress (that spun
+    /// to `backpressure timed out` while `decodeQueueSize` never dropped).
+    async fn await_decode_capacity(&mut self) -> Result<(), MediaError> {
+        let mut spins = 0u32;
+        loop {
             self.check_error()?;
-            self.wait_for_dequeue_or_tick().await;
+            // Move raw outputs into `held` so the empty/non-empty max is accurate.
+            self.collect_outputs_into_held()?;
+            let max = if self.held.is_empty() {
+                MAX_DECODE_QUEUE_EMPTY
+            } else {
+                MAX_DECODE_QUEUE_WITH_HELD
+            };
+            if self.decode_queue_size() <= max {
+                break;
+            }
+            spins += 1;
+            if spins > 600 {
+                return Err(MediaError::WebCodecs(format!(
+                    "decodeQueueSize backpressure timed out (q={}, held={})",
+                    self.decode_queue_size(),
+                    self.held.len()
+                )));
+            }
+            self.wait_for_capacity_progress().await;
         }
         self.check_error()
     }
 
-    /// After a feed: never block the pump when the decoder still needs more
-    /// input for B-frame reorder. Waiting forever on `output` while
-    /// `decodeQueueSize > 0` hangs open on `with_b_frames`.
+    /// After a feed: give WebCodecs a macrotask to emit; never park forever.
     async fn await_outputs_if_pending(&self) -> Result<(), MediaError> {
         self.check_error()?;
         if !self.frames.borrow().is_empty() {
@@ -476,34 +603,48 @@ impl WebCodecsDecoder {
             return Ok(());
         }
         if self.decode_queue_size() == 0 {
-            // Idle queue + pending timestamps ⇒ reorder needs more input.
             return Ok(());
         }
-        // One event-loop turn so an already-queued output can land; then feed on.
-        self.wait_for_output_or_tick().await;
+        self.poll_output_or_macrotask().await;
         self.check_error()
     }
 
-    async fn wait_for_dequeue_or_tick(&self) {
-        let waiters = Rc::clone(&self.dequeue_waiters);
-        let dequeue = js_sys::Promise::new(&mut |resolve, _reject| {
-            waiters.borrow_mut().push(resolve);
-        });
-        let _ = JsFuture::from(promise_race(dequeue, yield_microtask())).await;
-    }
-
-    async fn wait_for_output_or_tick(&self) {
+    /// mediabunny: await progress until an output arrives (or a short timer).
+    async fn poll_output_or_macrotask(&self) {
         let frames = Rc::clone(&self.frames);
-        let waiters = Rc::clone(&self.output_waiters);
+        let output_waiters = Rc::clone(&self.output_waiters);
         let output = js_sys::Promise::new(&mut |resolve, _reject| {
-            // Avoid missing an output that arrived between the empty-check and register.
             if !frames.borrow().is_empty() {
                 let _ = resolve.call0(&JsValue::NULL);
                 return;
             }
-            waiters.borrow_mut().push(resolve);
+            output_waiters.borrow_mut().push(resolve);
         });
-        let _ = JsFuture::from(promise_race(output, yield_microtask())).await;
+        // Macrotask — HW decode often will not finish in a microtask-only spin
+        // (that path forced `flush` on Wing It frame 0 and broke Play).
+        let tick = sleep_promise_ms(0);
+        let _ = JsFuture::from(promise_race(output, tick)).await;
+    }
+
+    /// Wait for `decodeQueueSize` to drop: `ondequeue`, new `output`, or macrotask.
+    /// Do **not** resolve early when `frames` is already non-empty — that is not
+    /// queue progress and caused false backpressure timeouts (mediabunny waits on
+    /// real `onQueueDequeue` from a new sample).
+    async fn wait_for_capacity_progress(&self) {
+        let output_waiters = Rc::clone(&self.output_waiters);
+        let dequeue_waiters = Rc::clone(&self.dequeue_waiters);
+
+        let output = js_sys::Promise::new(&mut |resolve, _reject| {
+            output_waiters.borrow_mut().push(resolve);
+        });
+        let dequeue = js_sys::Promise::new(&mut |resolve, _reject| {
+            dequeue_waiters.borrow_mut().push(resolve);
+        });
+        let tick = sleep_promise_ms(0);
+        let _ = JsFuture::from(js_sys::Promise::race(&js_sys::Array::of3(
+            &output, &dequeue, &tick,
+        )))
+        .await;
     }
 
     fn check_error(&self) -> Result<(), MediaError> {
@@ -547,16 +688,43 @@ fn ticks_to_micros(ticks: i64, timescale: u64) -> i64 {
     ((ticks as i128) * 1_000_000 / timescale) as i64
 }
 
-/// One event-loop turn. Prefer `setTimeout(0)` — `Promise.resolve` + some
-/// waiter bridges hung `open`/`seek` on Chromium + wasm-bindgen-futures.
-fn yield_microtask() -> js_sys::Promise {
+/// Macrotask turn via `setTimeout` + bare Promise `resolve` (mediabunny-compatible).
+/// Required when waiting for WebCodecs to drain — microtasks alone never let it run.
+fn sleep_promise_ms(ms: i32) -> js_sys::Promise {
     js_sys::Promise::new(&mut |resolve, _reject| {
-        let _ = web_sys::window()
-            .expect("window")
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => {
+                let _ = resolve.call1(&JsValue::NULL, &JsValue::from_str("timeout"));
+                return;
+            }
+        };
+        if window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .is_err()
+        {
+            let _ = resolve.call1(&JsValue::NULL, &JsValue::from_str("timeout"));
+        }
     })
 }
 
 fn promise_race(a: js_sys::Promise, b: js_sys::Promise) -> js_sys::Promise {
     js_sys::Promise::race(&js_sys::Array::of2(&a, &b))
+}
+
+fn is_chromium() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Ok(nav) = js_sys::Reflect::get(&window, &"navigator".into()) else {
+        return false;
+    };
+    let Ok(ua) = js_sys::Reflect::get(&nav, &"userAgent".into()) else {
+        return false;
+    };
+    let Some(nav) = ua.as_string() else {
+        return false;
+    };
+    // mediabunny `isChromium`: Chrome / Edge / Chromium UA.
+    nav.contains("Chrome") || nav.contains("Chromium") || nav.contains("Edg/")
 }

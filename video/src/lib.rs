@@ -33,7 +33,7 @@ pub struct VideoRef {
 
 #[derive(Clone)]
 pub(crate) struct VideoOps {
-    pub open: Rc<dyn Fn(Vec<u8>)>,
+    pub open_blob: Rc<dyn Fn(web_sys::Blob)>,
     pub play: Rc<dyn Fn()>,
     pub pause: Rc<dyn Fn()>,
     pub seek_frame: Rc<dyn Fn(u32)>,
@@ -61,14 +61,16 @@ impl VideoRef {
         }
     }
 
-    pub fn open_mp4_bytes(&self, bytes: Vec<u8>) {
+    pub fn open_blob(&self, blob: web_sys::Blob) {
         let open = self
             .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.open)))
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.open_blob)))
             .flatten();
         if let Some(open) = open {
-            open(bytes);
+            open(blob);
         } else {
+            self.status
+                .set("Video not mounted — hard-refresh the page.".into());
             self.error.set(Some("Video not mounted".into()));
         }
     }

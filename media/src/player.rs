@@ -106,11 +106,11 @@ impl Player {
     }
 
     /// Build a decode cascade for `frame` without changing current position.
-    pub fn window_at(&self, frame: FrameId) -> Result<DecodeWindow, MediaError> {
+    pub async fn window_at(&self, frame: FrameId) -> Result<DecodeWindow, MediaError> {
         self.ensure_in_range(frame)?;
         Ok(DecodeWindow {
             target_frame: frame,
-            samples: self.track.decode_cascade(frame)?,
+            samples: self.track.decode_cascade(frame).await?,
         })
     }
 
@@ -123,31 +123,31 @@ impl Player {
     }
 
     /// Seek to presentation frame `frame` and return the decode cascade.
-    pub fn seek_frame(&mut self, frame: FrameId) -> Result<DecodeWindow, MediaError> {
-        let window = self.window_at(frame)?;
+    pub async fn seek_frame(&mut self, frame: FrameId) -> Result<DecodeWindow, MediaError> {
+        let window = self.window_at(frame).await?;
         self.pause();
         self.commit_frame(frame)?;
         Ok(window)
     }
 
-    pub fn next_frame(&mut self) -> Result<DecodeWindow, MediaError> {
+    pub async fn next_frame(&mut self) -> Result<DecodeWindow, MediaError> {
         let next = self.frame.saturating_add(1);
         if next >= self.track.frame_count() {
             return Err(MediaError::FrameOutOfRange(next, self.track.frame_count()));
         }
-        self.seek_frame(next)
+        self.seek_frame(next).await
     }
 
-    pub fn previous_frame(&mut self) -> Result<DecodeWindow, MediaError> {
+    pub async fn previous_frame(&mut self) -> Result<DecodeWindow, MediaError> {
         if self.frame == 0 {
             return Err(MediaError::FrameOutOfRange(0, self.track.frame_count()));
         }
-        self.seek_frame(self.frame - 1)
+        self.seek_frame(self.frame - 1).await
     }
 
     /// Current frame's encoded sample (not the full cascade).
-    pub fn current_sample(&self) -> Result<EncodedSample, MediaError> {
-        self.track.encoded_sample(self.frame)
+    pub async fn current_sample(&self) -> Result<EncodedSample, MediaError> {
+        self.track.encoded_sample(self.frame).await
     }
 
     fn ensure_in_range(&self, frame: FrameId) -> Result<(), MediaError> {

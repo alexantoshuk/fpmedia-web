@@ -1,13 +1,30 @@
 //! Integration tests: demux + frame index against short-GOP H.264 fixtures.
 
+use std::future::Future;
+use std::sync::Arc;
+
 use webmedia::{
-    PacketType, Player, VideoCodec, avc_nal_length_size, determine_avc_packet_type, open_mp4_path,
+    MemorySource, OpenMp4Options, PacketType, Player, VideoCodec, avc_nal_length_size,
+    determine_avc_packet_type, open_mp4_path, open_mp4_source,
 };
 
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name)
+}
+
+fn block_on<F: Future>(fut: F) -> F::Output {
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    let mut fut = Box::pin(fut);
+    for _ in 0..256 {
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(v) => return v,
+            std::task::Poll::Pending => continue,
+        }
+    }
+    panic!("block_on: future stayed pending");
 }
 
 #[test]
@@ -49,7 +66,7 @@ fn demux_short_gop_metadata_and_frames() {
     // verifyKeyPackets: every remaining sync sample is a real IDR in the AU.
     let length_size = avc_nal_length_size(&meta.codec.description).expect("avcC length");
     for &frame in &syncs {
-        let sample = track.encoded_sample(frame).expect("sample");
+        let sample = block_on(track.encoded_sample(frame)).expect("sample");
         assert_eq!(
             determine_avc_packet_type(&sample.data, length_size),
             Some(PacketType::Key),
@@ -69,7 +86,7 @@ fn demux_short_gop_metadata_and_frames() {
 
     let player = Player::from_track(track).expect("player");
     assert_eq!(player.state().frame, 0);
-    let win = player.window_at(14).expect("cascade");
+    let win = block_on(player.window_at(14)).expect("cascade");
     assert_eq!(win.target_frame, 14);
     assert!(win.samples.first().is_some_and(|s| s.is_keyframe));
 }
@@ -104,7 +121,7 @@ fn demux_with_b_frames_reorder_windows() {
     assert_eq!(w3, vec![0, 3]);
 
     let player = Player::from_track(track).expect("player");
-    let cascade = player.window_at(1).expect("cascade");
+    let cascade = block_on(player.window_at(1)).expect("cascade");
     assert_eq!(cascade.target_frame, 1);
     assert_eq!(
         cascade
@@ -116,4 +133,36 @@ fn demux_with_b_frames_reorder_windows() {
     );
     assert!(cascade.samples[0].is_keyframe);
     assert!(!cascade.samples[1].is_keyframe);
+}
+
+#[test]
+fn progressive_source_open_matches_bytes_offsets() {
+    let path = fixture("short_gop.mp4");
+    if !path.exists() {
+        eprintln!("skip: missing fixture {}", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read");
+    let full = open_mp4_path(&path).expect("full open");
+    let source: Arc<dyn webmedia::MediaSource> =
+        Arc::new(MemorySource::from_vec(bytes));
+    let progressive = block_on(open_mp4_source(
+        source,
+        OpenMp4Options {
+            verify_avc_sync: true,
+        },
+    ))
+    .expect("progressive open");
+
+    assert_eq!(full.frame_count(), progressive.frame_count());
+    for (a, b) in full.index().frames().iter().zip(progressive.index().frames()) {
+        assert_eq!(a.offset, b.offset);
+        assert_eq!(a.size, b.size);
+        assert_eq!(a.is_sync, b.is_sync);
+        assert_eq!(a.composition_timestamp_ticks, b.composition_timestamp_ticks);
+    }
+
+    let sample_full = block_on(full.encoded_sample(12)).expect("full sample");
+    let sample_prog = block_on(progressive.encoded_sample(12)).expect("prog sample");
+    assert_eq!(sample_full.data, sample_prog.data);
 }
