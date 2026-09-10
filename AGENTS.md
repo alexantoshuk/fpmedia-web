@@ -70,6 +70,22 @@ Semantic format:
 - Closes a state.md task → blank line then `closes: <task name>`.
 - Never commit code failing `cargo check` or `cargo leptos build`.
 
+### Commit / PR size
+
+Soft guidance. Split when a change exceeds “too much” unless it is inherently
+atomic (rename/format, lockfile, generated assets).
+
+| Metric | Optimal | Acceptable | Too much |
+| ------ | ------- | ---------- | -------- |
+| Lines changed | 50–200 | 200–400 | > 400 |
+| Files changed | 1–10 | 10–20 | > 20 |
+| Commits per PR | 1–5 | 5–10 | > 10 |
+
+- One commit = one logical theme.
+- Prefer several small commits over one large mixed commit.
+- Related `.ai/` updates may ship with the code they describe.
+- Line counts exclude lockfiles and generated files when judging size.
+
 ## Dev commands
 
 ```sh
