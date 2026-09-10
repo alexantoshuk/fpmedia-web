@@ -8,6 +8,10 @@
 
 ## Next up
 
+### Video host / races
+
+- Serialize `open` / `seek` / `play-prime` through one local command queue + abort on epoch bump (mediabunny: `asyncId` + iterator `.return()`, `CallSerializer` for shared mutable decode). Collapse ad-hoc `busy` + scattered `spawn_local` races. Document the pattern in `.ai/skills/leptos.md` when implemented.
+
 ### Media engine
 
 - Audio track + shared A/V media clock (video slaves to audio once audio exists). Wall-clock play works until then.
