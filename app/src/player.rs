@@ -2,7 +2,7 @@
 
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{Blob, HtmlInputElement};
+use web_sys::{Blob, Element, HtmlInputElement};
 use video::{Video, VideoMetadata, VideoRef};
 
 #[component]
@@ -11,7 +11,11 @@ pub fn DemoPlayer() -> impl IntoView {
 
     view! {
         <div class="wm-player">
-            <Video video=video/>
+            <div class="wm-media">
+                <Video video=video/>
+                <Scrubber video=video/>
+            </div>
+            <BufferMeters video=video/>
             <p class="wm-meta">
                 {move || video.metadata.get().as_ref().map(format_metadata).unwrap_or_default()}
             </p>
@@ -148,13 +152,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         None => String::new(),
                     };
                     format!(
-                        "prefetch {}/{}{} · cache {}f/{}c{} · held {} · decodeQ {} · skipped {}{}",
-                        s.presentation_len,
-                        s.presentation_cap,
-                        range,
-                        s.cache_frames,
-                        s.cache_chunks,
-                        if s.scrub_busy { " · scrub" } else { "" },
+                        "held {} · decodeQ {} · skipped {}{}",
                         if s.held_len == usize::MAX {
                             "busy".into()
                         } else {
@@ -166,11 +164,166 @@ pub fn DemoPlayer() -> impl IntoView {
                             s.decode_queue_size.to_string()
                         },
                         s.frames_skipped,
-                        lag
+                        format!("{range}{lag}")
                     )
                 }}
             </p>
             <p class="wm-error">{move || video.error.get().unwrap_or_default()}</p>
+        </div>
+    }
+}
+
+/// Timeline scrubber under the video — red = current frame.
+#[component]
+fn Scrubber(video: VideoRef) -> impl IntoView {
+    let scrubbing = RwSignal::new(false);
+
+    let seek_from_client_x = move |el: &Element, client_x: f64| {
+        if !video.ready.get_untracked() {
+            return;
+        }
+        let rect = el.get_bounding_client_rect();
+        let w = rect.width().max(1.0);
+        let x = (client_x - rect.left()).clamp(0.0, w);
+        let max_frame = video.frame_count.get_untracked().saturating_sub(1);
+        let frame = ((x / w) * max_frame as f64).round() as u32;
+        video.seek_frame(frame.min(max_frame));
+    };
+
+    view! {
+        <div
+            class="wm-scrubber"
+            role="slider"
+            prop:aria-valuemin="0"
+            prop:aria-valuemax=move || video.frame_count.get().saturating_sub(1)
+            prop:aria-valuenow=move || video.frame.get()
+            prop:aria-disabled=move || !video.ready.get()
+            on:pointerdown=move |ev| {
+                if !video.ready.get_untracked() {
+                    return;
+                }
+                let Ok(el) = ev.current_target().unwrap().dyn_into::<Element>() else {
+                    return;
+                };
+                if let Ok(html) = el.clone().dyn_into::<web_sys::HtmlElement>() {
+                    let _ = html.set_pointer_capture(ev.pointer_id());
+                }
+                scrubbing.set(true);
+                seek_from_client_x(&el, ev.client_x() as f64);
+            }
+            on:pointermove=move |ev| {
+                if !scrubbing.get_untracked() {
+                    return;
+                }
+                let Ok(el) = ev.current_target().unwrap().dyn_into::<Element>() else {
+                    return;
+                };
+                seek_from_client_x(&el, ev.client_x() as f64);
+            }
+            on:pointerup=move |_| scrubbing.set(false)
+            on:pointercancel=move |_| scrubbing.set(false)
+        >
+            <div class="wm-scrubber-track">
+                <div
+                    class="wm-scrubber-progress"
+                    style:width=move || {
+                        let max = video.frame_count.get().saturating_sub(1).max(1);
+                        let pct = (video.frame.get() as f64 / max as f64) * 100.0;
+                        format!("{pct:.3}%")
+                    }
+                />
+            </div>
+        </div>
+    }
+}
+
+/// Separate buffer meters under the scrubber (not overlaid on the timeline).
+#[component]
+fn BufferMeters(video: VideoRef) -> impl IntoView {
+    view! {
+        <div class="wm-buffer-meters">
+            <MeterRow
+                label="Prefetch queue"
+                detail=Signal::derive(move || {
+                    let Some(s) = video.pipeline.get() else {
+                        return String::new();
+                    };
+                    format!("{}/{}", s.presentation_len, s.presentation_cap)
+                })
+                fill_pct=Signal::derive(move || {
+                    let Some(s) = video.pipeline.get() else {
+                        return 0.0;
+                    };
+                    if s.presentation_cap == 0 {
+                        return 0.0;
+                    }
+                    (s.presentation_len as f64 / s.presentation_cap as f64) * 100.0
+                })
+            />
+            <MeterRow
+                label="Prefetch ahead"
+                detail=Signal::derive(move || {
+                    let Some(s) = video.pipeline.get() else {
+                        return String::new();
+                    };
+                    match (s.presentation_from, s.presentation_to) {
+                        (Some(a), Some(b)) if a == b => format!("frame {a}"),
+                        (Some(a), Some(b)) => format!("{a}–{b}"),
+                        _ => "—".into(),
+                    }
+                })
+                fill_pct=Signal::derive(move || {
+                    let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
+                    let Some(s) = video.pipeline.get() else {
+                        return 0.0;
+                    };
+                    let tip = s
+                        .presentation_to
+                        .unwrap_or(video.frame.get() as u64)
+                        .max(video.frame.get() as u64);
+                    (tip as f64 / max) * 100.0
+                })
+            />
+            <MeterRow
+                label="Frame cache"
+                detail=Signal::derive(move || {
+                    let Some(s) = video.pipeline.get() else {
+                        return String::new();
+                    };
+                    let scrub = if s.scrub_busy { " · scrub" } else { "" };
+                    format!("{}f / {}c{scrub}", s.cache_frames, s.cache_chunks)
+                })
+                fill_pct=Signal::derive(move || {
+                    let Some(s) = video.pipeline.get() else {
+                        return 0.0;
+                    };
+                    // Dense cache soft cap is 96 frames (engine default).
+                    const CACHE_CAP: f64 = 96.0;
+                    ((s.cache_frames as f64 / CACHE_CAP) * 100.0).min(100.0)
+                })
+            />
+        </div>
+    }
+}
+
+#[component]
+fn MeterRow(
+    label: &'static str,
+    detail: Signal<String>,
+    fill_pct: Signal<f64>,
+) -> impl IntoView {
+    view! {
+        <div class="wm-meter">
+            <div class="wm-meter-label">
+                <span>{label}</span>
+                <span class="wm-meter-detail">{move || detail.get()}</span>
+            </div>
+            <div class="wm-meter-track">
+                <div
+                    class="wm-meter-fill"
+                    style:width=move || format!("{:.3}%", fill_pct.get())
+                />
+            </div>
         </div>
     }
 }
