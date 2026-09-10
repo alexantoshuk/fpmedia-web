@@ -1,6 +1,6 @@
 //! [`Video`] component — canvas stage + playback orchestration.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use leptos::html::{Canvas, Div};
@@ -75,6 +75,9 @@ pub fn Video(
     let player: PlayerHandle = Rc::new(RefCell::new(None));
     let fps_meter = Rc::new(RefCell::new(FpsMeter::new()));
     let session: Rc<RefCell<Option<PlaySession>>> = Rc::new(RefCell::new(None));
+    // Bumped on each open / stop so late async results are discarded.
+    let open_epoch = Rc::new(Cell::new(0_u64));
+    let play_epoch = Rc::new(Cell::new(0_u64));
 
     let busy = video.busy;
     let ready = video.ready;
@@ -112,9 +115,15 @@ pub fn Video(
         let session = Rc::clone(&session);
         let fps_meter = Rc::clone(&fps_meter);
         let sync_ui = Rc::clone(&sync_ui);
+        let play_epoch = Rc::clone(&play_epoch);
         Rc::new(move || {
+            play_epoch.set(play_epoch.get().wrapping_add(1));
             playing.set(false);
-            *session.borrow_mut() = None;
+            if let Some(prev) = session.borrow_mut().take() {
+                if let Some(audio) = prev.audio {
+                    let _ = audio.close();
+                }
+            }
             if let Ok(borrow) = player.try_borrow() {
                 if let Some(p) = borrow.as_ref() {
                     p.pause();
@@ -218,6 +227,11 @@ pub fn Video(
                                         s.restarting = false;
                                     }
                                 }
+                                Some(Err(e)) if e.is_cancelled() => {
+                                    if let Some(s) = session.borrow_mut().as_mut() {
+                                        s.restarting = false;
+                                    }
+                                }
                                 Some(Err(e)) => {
                                     error.set(Some(e.to_string()));
                                     stop_playback();
@@ -288,6 +302,7 @@ pub fn Video(
         let sync_ui = Rc::clone(&sync_ui);
         let fps_meter = Rc::clone(&fps_meter);
         let stop_playback = Rc::clone(&stop_playback);
+        let open_epoch = Rc::clone(&open_epoch);
         Rc::new(move |bytes: Vec<u8>| {
             let Some(canvas_el) = canvas_ref.get_untracked() else {
                 error.set(Some("canvas not mounted".into()));
@@ -299,6 +314,8 @@ pub fn Video(
                 return;
             }
             stop_playback();
+            let my_open = open_epoch.get().wrapping_add(1);
+            open_epoch.set(my_open);
             busy.set(true);
             ready.set(false);
             error.set(None);
@@ -309,10 +326,15 @@ pub fn Video(
             fps_meter.borrow_mut().reset();
             let player = Rc::clone(&player);
             let sync_ui = Rc::clone(&sync_ui);
+            let open_epoch = Rc::clone(&open_epoch);
             spawn_local(async move {
                 *player.borrow_mut() = None;
                 status.set(format!("Demux + decoder ({} KB)…", bytes.len() / 1024));
                 let opened = open_with_timeout(bytes, canvas, 15_000).await;
+                if open_epoch.get() != my_open {
+                    busy.set(false);
+                    return;
+                }
                 match opened {
                     Ok(p) => {
                         metadata.set(Some(p.metadata()));
@@ -330,11 +352,18 @@ pub fn Video(
                             *player.borrow_mut() = Some(p);
                             result
                         };
+                        if open_epoch.get() != my_open {
+                            busy.set(false);
+                            return;
+                        }
                         match seek {
                             Ok(()) => {
                                 ready.set(true);
                                 status.set("Ready.".into());
                                 sync_ui();
+                            }
+                            Err(e) if e.is_cancelled() => {
+                                status.set("Open cancelled.".into());
                             }
                             Err(e) => {
                                 ready.set(false);
@@ -361,6 +390,7 @@ pub fn Video(
         let fps_meter = Rc::clone(&fps_meter);
         let resume_raf = resume_raf.clone();
         let stop_playback = Rc::clone(&stop_playback);
+        let play_epoch = Rc::clone(&play_epoch);
         Rc::new(move || {
             if busy.get_untracked() || !ready.get_untracked() || playing.get_untracked() {
                 return;
@@ -370,11 +400,15 @@ pub fn Video(
             }
             fps_meter.borrow_mut().reset();
             fps.set(None);
+            let my_play = play_epoch.get().wrapping_add(1);
+            play_epoch.set(my_play);
             playing.set(true);
+            busy.set(true);
             let player = Rc::clone(&player);
             let session = Rc::clone(&session);
             let resume_raf = resume_raf.clone();
             let stop_playback = Rc::clone(&stop_playback);
+            let play_epoch = Rc::clone(&play_epoch);
             spawn_local(async move {
                 let audio = match AudioContext::new() {
                     Ok(ctx) => {
@@ -386,18 +420,31 @@ pub fn Video(
                     Err(_) => None,
                 };
 
-                {
+                let prime_ok = {
                     let borrow = player.borrow();
                     if let Some(p) = borrow.as_ref() {
-                        if let Err(e) = p.prime_playback().await {
-                            error.set(Some(e.to_string()));
-                            stop_playback();
-                            return;
+                        match p.prime_playback().await {
+                            Ok(()) => true,
+                            Err(e) if e.is_cancelled() => false,
+                            Err(e) => {
+                                error.set(Some(e.to_string()));
+                                false
+                            }
                         }
                     } else {
-                        stop_playback();
-                        return;
+                        false
                     }
+                };
+
+                if !prime_ok || play_epoch.get() != my_play || !playing.get_untracked() {
+                    if let Some(a) = audio {
+                        let _ = a.close();
+                    }
+                    busy.set(false);
+                    if play_epoch.get() == my_play {
+                        stop_playback();
+                    }
+                    return;
                 }
 
                 let media_origin = {
@@ -405,6 +452,10 @@ pub fn Video(
                     match borrow.as_ref() {
                         Some(p) => p.state().timestamp.seconds,
                         None => {
+                            if let Some(a) = audio {
+                                let _ = a.close();
+                            }
+                            busy.set(false);
                             stop_playback();
                             return;
                         }
@@ -422,12 +473,14 @@ pub fn Video(
                     last_ui_ms,
                     restarting: false,
                 });
+                busy.set(false);
 
                 {
                     let player = Rc::clone(&player);
                     let stop_playback = Rc::clone(&stop_playback);
+                    let play_epoch = Rc::clone(&play_epoch);
                     spawn_local(async move {
-                        while playing.get_untracked() {
+                        while playing.get_untracked() && play_epoch.get() == my_play {
                             let need = {
                                 let borrow = player.borrow();
                                 borrow.as_ref().is_some_and(|p| {
@@ -448,6 +501,7 @@ pub fn Video(
                                 match decoded {
                                     Ok(true) => continue,
                                     Ok(false) => {}
+                                    Err(e) if e.is_cancelled() => break,
                                     Err(e) => {
                                         error.set(Some(e.to_string()));
                                         stop_playback();
@@ -465,10 +519,14 @@ pub fn Video(
                                         _ => None,
                                     }
                                 };
-                                if let Some(Err(e)) = prepare {
-                                    error.set(Some(e.to_string()));
-                                    stop_playback();
-                                    break;
+                                match prepare {
+                                    Some(Err(e)) if e.is_cancelled() => break,
+                                    Some(Err(e)) => {
+                                        error.set(Some(e.to_string()));
+                                        stop_playback();
+                                        break;
+                                    }
+                                    _ => {}
                                 }
                             }
                             wait_animation_frame().await;
@@ -604,7 +662,9 @@ fn step_or_seek(
             SeekOrStep::Step(false) => p.previous_frame().await,
         };
         if let Err(e) = &result {
-            error.set(Some(e.to_string()));
+            if !e.is_cancelled() {
+                error.set(Some(e.to_string()));
+            }
         }
         *player.borrow_mut() = Some(p);
         sync_ui();
@@ -652,14 +712,11 @@ async fn sleep_ms(ms: i32) {
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
+/// Await one animation frame without `Closure::forget` (pass Promise resolve to rAF).
 async fn wait_animation_frame() {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         let window = web_sys::window().expect("window");
-        let cb = wasm_bindgen::closure::Closure::once(move |_: f64| {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
-        });
-        let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
-        cb.forget();
+        let _ = window.request_animation_frame(resolve.unchecked_ref());
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }

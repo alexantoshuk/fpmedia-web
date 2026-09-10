@@ -41,6 +41,8 @@ struct Shared {
     /// Prefetch must idle while seek/loop prepare owns the decoder.
     restarting: Cell<bool>,
     preparing_loop: Cell<bool>,
+    /// Bumped to cancel in-flight decode (mediabunny dispose / asyncId).
+    op_epoch: Cell<u64>,
 }
 
 /// Live decode / prefetch counters for the demo UI (and host apps).
@@ -91,6 +93,7 @@ impl WebPlayer {
             last_behind_ms: Cell::new(None),
             restarting: Cell::new(false),
             preparing_loop: Cell::new(false),
+            op_epoch: Cell::new(0),
         });
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
@@ -129,8 +132,25 @@ impl WebPlayer {
     }
 
     pub fn pause(&self) {
+        // Invalidate in-flight seek/prefetch (mediabunny-style cancel).
+        self.cancel_ops();
         self.shared.player.borrow_mut().pause();
         self.clear_loop_prime();
+    }
+
+    /// Bump the op epoch so in-flight decode/seek ignores its result.
+    pub fn cancel_ops(&self) {
+        let next = self.shared.op_epoch.get().wrapping_add(1);
+        self.shared.op_epoch.set(next);
+    }
+
+    fn begin_op(&self) -> u64 {
+        self.cancel_ops();
+        self.shared.op_epoch.get()
+    }
+
+    fn is_current(&self, epoch: u64) -> bool {
+        self.shared.op_epoch.get() == epoch
     }
 
     pub fn set_loop(&self, looping: bool) {
@@ -185,27 +205,33 @@ impl WebPlayer {
     }
 
     pub async fn seek_frame(&self, frame: FrameId) -> Result<(), MediaError> {
+        let epoch = self.begin_op();
         self.shared.restarting.set(true);
         let result = async {
             self.shared.player.borrow_mut().pause();
             self.clear_loop_prime();
             self.clear_presentation();
             self.invalidate_decoder();
-            self.goto_frame(frame).await
+            self.goto_frame(frame, epoch).await
         }
         .await;
         self.shared.restarting.set(false);
+        if !self.is_current(epoch) {
+            return Err(MediaError::Cancelled);
+        }
         result
     }
 
     pub async fn next_frame(&self) -> Result<(), MediaError> {
+        let epoch = self.begin_op();
         self.shared.player.borrow_mut().pause();
         self.clear_presentation();
         let next = self.state().frame.saturating_add(1);
-        self.goto_frame(next).await
+        self.goto_frame(next, epoch).await
     }
 
     pub async fn previous_frame(&self) -> Result<(), MediaError> {
+        let epoch = self.begin_op();
         self.shared.player.borrow_mut().pause();
         self.clear_presentation();
         let cur = self.state().frame;
@@ -213,7 +239,7 @@ impl WebPlayer {
             return Err(MediaError::FrameOutOfRange(0, self.state().frame_count));
         }
         self.invalidate_decoder();
-        self.goto_frame(cur - 1).await
+        self.goto_frame(cur - 1, epoch).await
     }
 
     pub async fn step_playback(&self) -> Result<bool, MediaError> {
@@ -268,7 +294,8 @@ impl WebPlayer {
         if behind_seconds >= BIG_LAG_SECONDS {
             self.invalidate_decoder();
         }
-        self.goto_frame(target).await?;
+        let epoch = self.shared.op_epoch.get();
+        self.goto_frame(target, epoch).await?;
         Ok(self.has_more_playback())
     }
 
@@ -280,7 +307,8 @@ impl WebPlayer {
         }
         self.clear_presentation();
         self.invalidate_decoder();
-        self.goto_frame(0).await?;
+        let epoch = self.shared.op_epoch.get();
+        self.goto_frame(0, epoch).await?;
         Ok(true)
     }
 
@@ -295,7 +323,8 @@ impl WebPlayer {
         if !self.is_playing() {
             return Ok(());
         }
-        self.fill_presentation_queue().await
+        let epoch = self.shared.op_epoch.get();
+        self.fill_presentation_queue(epoch).await
     }
 
     pub fn frame_timestamp_seconds(&self, frame: FrameId) -> Result<f64, MediaError> {
@@ -437,7 +466,8 @@ impl WebPlayer {
 
         self.shared.preparing_loop.set(true);
         self.shared.restarting.set(true);
-        let result = self.fill_loop_prime().await;
+        let epoch = self.shared.op_epoch.get();
+        let result = self.fill_loop_prime(epoch).await;
         self.shared.restarting.set(false);
         self.shared.preparing_loop.set(false);
         result
@@ -459,7 +489,7 @@ impl WebPlayer {
         Ok(true)
     }
 
-    async fn fill_loop_prime(&self) -> Result<(), MediaError> {
+    async fn fill_loop_prime(&self, epoch: u64) -> Result<(), MediaError> {
         self.invalidate_decoder();
         let track = self.shared.player.borrow().track_rc();
         let count = self.state().frame_count;
@@ -467,14 +497,20 @@ impl WebPlayer {
         let mut buf: VecDeque<QueuedFrame> = VecDeque::new();
 
         for frame in 0..n {
-            if !self.is_playing() || !self.is_looping() {
+            if !self.is_playing() || !self.is_looping() || !self.is_current(epoch) {
                 for q in buf.drain(..) {
                     q.video.close();
                 }
                 return Ok(());
             }
-            match self.decode_frame(track.as_ref(), frame).await {
+            match self.decode_frame(track.as_ref(), frame, epoch).await {
                 Ok(video) => buf.push_back(QueuedFrame { frame, video }),
+                Err(MediaError::Cancelled) => {
+                    for q in buf.drain(..) {
+                        q.video.close();
+                    }
+                    return Ok(());
+                }
                 Err(e) => {
                     for q in buf.drain(..) {
                         q.video.close();
@@ -484,25 +520,36 @@ impl WebPlayer {
             }
         }
 
+        if !self.is_current(epoch) {
+            for q in buf.drain(..) {
+                q.video.close();
+            }
+            return Ok(());
+        }
+
         *self.shared.loop_prime.borrow_mut() = Some(buf);
         Ok(())
     }
 
     async fn loop_to_start_cold(&self) -> Result<(), MediaError> {
+        let epoch = self.begin_op();
         self.shared.restarting.set(true);
         let result = async {
             self.clear_loop_prime();
             self.clear_presentation();
             self.invalidate_decoder();
-            self.goto_frame(0).await?;
-            if self.is_playing() {
-                self.prime_presentation(LOOP_PRIME_FRAMES.saturating_sub(1))
+            self.goto_frame(0, epoch).await?;
+            if self.is_playing() && self.is_current(epoch) {
+                self.prime_presentation(LOOP_PRIME_FRAMES.saturating_sub(1), epoch)
                     .await?;
             }
             Ok(())
         }
         .await;
         self.shared.restarting.set(false);
+        if !self.is_current(epoch) {
+            return Err(MediaError::Cancelled);
+        }
         result
     }
 
@@ -514,11 +561,12 @@ impl WebPlayer {
         if !self.is_playing() || self.shared.restarting.get() {
             return Ok(false);
         }
-        self.enqueue_next_presentation_frame().await
+        let epoch = self.shared.op_epoch.get();
+        self.enqueue_next_presentation_frame(epoch).await
     }
 
     /// Push the next presentation-order frame (ignores the restarting gate).
-    async fn enqueue_next_presentation_frame(&self) -> Result<bool, MediaError> {
+    async fn enqueue_next_presentation_frame(&self, epoch: u64) -> Result<bool, MediaError> {
         if self.presentation_len() >= PRESENTATION_QUEUE_CAP {
             return Ok(false);
         }
@@ -537,8 +585,12 @@ impl WebPlayer {
             }
             (player.track_rc(), next)
         };
-        let video = self.decode_frame(track.as_ref(), next).await?;
-        if !self.is_playing() {
+        let video = match self.decode_frame(track.as_ref(), next, epoch).await {
+            Ok(v) => v,
+            Err(MediaError::Cancelled) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if !self.is_playing() || !self.is_current(epoch) {
             video.close();
             return Ok(false);
         }
@@ -625,19 +677,25 @@ impl WebPlayer {
                 }
             }
         }
-        self.goto_frame(frame).await
+        self.goto_frame(frame, self.shared.op_epoch.get()).await
     }
 
-    async fn fill_presentation_queue(&self) -> Result<(), MediaError> {
-        self.prime_presentation(PRESENTATION_QUEUE_CAP).await
+    async fn fill_presentation_queue(&self, epoch: u64) -> Result<(), MediaError> {
+        self.prime_presentation(PRESENTATION_QUEUE_CAP, epoch).await
     }
 
     /// Decode up to `min_frames` into the presentation queue (bypasses restarting gate).
-    async fn prime_presentation(&self, min_frames: usize) -> Result<(), MediaError> {
+    async fn prime_presentation(&self, min_frames: usize, epoch: u64) -> Result<(), MediaError> {
         let target = min_frames.min(PRESENTATION_QUEUE_CAP);
         while self.presentation_len() < target {
-            if !self.enqueue_next_presentation_frame().await? {
-                break;
+            if !self.is_current(epoch) {
+                return Err(MediaError::Cancelled);
+            }
+            match self.enqueue_next_presentation_frame(epoch).await {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
+                Err(e) => return Err(e),
             }
         }
         Ok(())
@@ -679,7 +737,11 @@ impl WebPlayer {
         &self,
         track: &crate::demux::Mp4VideoTrack,
         frame: FrameId,
+        epoch: u64,
     ) -> Result<VideoFrame, MediaError> {
+        if !self.is_current(epoch) {
+            return Err(MediaError::Cancelled);
+        }
         let mut decoder = self
             .decoder
             .borrow_mut()
@@ -687,12 +749,22 @@ impl WebPlayer {
             .ok_or_else(|| MediaError::WebCodecs("decoder busy".into()))?;
         let result = decoder.decode_frame(track, frame).await;
         *self.decoder.borrow_mut() = Some(decoder);
+        if !self.is_current(epoch) {
+            if let Ok(video) = result {
+                video.close();
+            }
+            return Err(MediaError::Cancelled);
+        }
         result
     }
 
-    async fn goto_frame(&self, frame: FrameId) -> Result<(), MediaError> {
+    async fn goto_frame(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
         let track = self.shared.player.borrow().track_rc();
-        let video_frame = self.decode_frame(track.as_ref(), frame).await?;
+        let video_frame = self.decode_frame(track.as_ref(), frame, epoch).await?;
+        if !self.is_current(epoch) {
+            video_frame.close();
+            return Err(MediaError::Cancelled);
+        }
         self.present(video_frame)?;
         self.shared.player.borrow_mut().commit_frame(frame)?;
         Ok(())

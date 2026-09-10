@@ -51,7 +51,8 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 - Decode-order pump + held buffer + PTS remap + output-callback wait (`decode_frame`) — done; prefer feed-ahead over flush.
 - Bounded presentation queue (decode ~6 frames ahead) + `decodeQueueSize` backpressure + skip-when-behind — done on `WebPlayer` / `video` loop.
 - Bitstream keyframe verification (`verifyKeyPackets`) — AVC at demux: demote lying `stss` sync flags via IDR NAL check; HEVC / Recovery Point SEI still open.
-- Seek/pause cancel of in-flight decode; audio + shared media clock.
+- Seek/pause cancel of in-flight decode — `WebPlayer` `op_epoch` (mediabunny dispose / asyncId); UI open/play epochs + `AudioContext.close`; rAF yield without `Closure::forget`.
+- Audio track + shared A/V media clock.
 - Later: packet / sample / canvas sink layering; sparse samples-at-timestamps for filmstrip.
 
 ## Gotchas
@@ -65,6 +66,9 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 5b. **B-frame held buffer + PTS remap** — park not-yet-presented frames in `held`. Assign PTS from sorted `input_timestamps` as frames emerge (mediabunny `VideoDecoderWrapper`). After each feed: if `decodeQueueSize == 0` and no output, **feed more** (reorder). If queue > 0, wait for output **raced with `Promise.resolve` microtask** — never await output alone (hangs open on B-frames). Wake waiters via `spawn_local` (not raw `queueMicrotask(resolve)` — that can fail to run and freeze open with `busy=true`). Open uses `optimizeForLatency: true`. Do **not** require `prefer-hardware` in `isConfigSupported`.
 5c. **`decodeQueueSize` backpressure** — before `decode()`, wait while `decodeQueueSize` alone exceeds caps (8 with buffered frames, 40 when empty), raced with a microtask. **Do not** count `held` toward the wait condition — held-full + idle queue deadlocks (no `dequeue` ever fires).
 5c2. **WebCodecs Closure reentrancy** — never `resolve.call0()` synchronously inside `output`/`dequeue` callbacks. Defer with **`spawn_local`**. On teardown: bump generation, `set_ondequeue(None)`, `close()`, **forget** old Closures.
+5c3. **Op cancel** — `WebPlayer::op_epoch` / `cancel_ops` / `begin_op`. After every decode await, if epoch changed → `VideoFrame.close()` + `MediaError::Cancelled` (UI treats as soft). `pause()` bumps epoch. Prefetch returns `Ok(false)` on cancel. Host: open/play epoch guards so late async cannot install session/player.
+5c4. **AudioContext** — `close()` when clearing the play session (pause / stop / superseded play). Do not leave contexts for GC only.
+5c5. **rAF yield** — pass Promise `resolve` into `requestAnimationFrame` (no per-frame `Closure::forget`).
 5d. **Presentation queue** — `WebPlayer` keeps a bounded decode-ahead queue (~16 `VideoFrame`s). **Present path must not refill**. `video`: background `prefetch_one` to CAP. **Play** full-primes before the media clock. **Loop (one decoder):** once the queue holds EOF, `prepare_loop_if_needed` reuses the main decoder to fill `loop_prime` while the tail still presents; `loop_to_start` swaps buffers (cold `goto_frame(0)` only if prepare missed).
 5e. **Behind-deadline skip** — `video` loop calls `skip_behind(lag)` when wall clock is past the next present deadline: jump to the frame at the catch-up media time (nearest keyframe if lag ≥ ~0.5s), then snap the deadline to now. Do not try to catch up by decoding every skipped present.
 5f. **Freeze cause** — filling the whole prefetch queue *after* each present blocks the deadline (feels like short freezes on long/heavy clips). Prefetch must use wall-clock spare time instead.

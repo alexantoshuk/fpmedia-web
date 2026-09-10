@@ -28,8 +28,19 @@ pub enum MediaError {
     #[error("codec not supported by this browser: {0}")]
     CodecUnsupported(String),
 
+    /// In-flight decode/seek superseded by pause, a newer seek, or teardown
+    /// (mediabunny iterator `return` / `Input.dispose`).
+    #[error("operation cancelled")]
+    Cancelled,
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl MediaError {
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
 }
 
 impl From<re_mp4::Error> for MediaError {

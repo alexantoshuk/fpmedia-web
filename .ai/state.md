@@ -10,7 +10,6 @@
 
 ### Media engine
 
-- Seek/pause cancellation — abort or ignore in-flight decode when seeking/pausing mid-pump (busy gate exists; make cancel intentional).
 - Audio track + shared A/V media clock (video slaves to audio once audio exists).
 - HEVC bitstream key verify + AVC Recovery Point SEI (IDR-only verify is in place).
 
