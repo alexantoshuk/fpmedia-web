@@ -2,15 +2,11 @@
 
 ## In progress
 
-- (none — progressive Blob open landed; see Next up)
+- Chunked dense frame cache + scrub decoder (replace `step_history`; GOP LRU; caller-sized thumb cache shell).
 
 ---
 
 ## Next up
-
-### Video host / races
-
-- Serialize `open` / `seek` / `play-prime` through one local command queue + abort on epoch bump (mediabunny: `asyncId` + iterator `.return()`, `CallSerializer` for shared mutable decode). Collapse ad-hoc `busy` + scattered `spawn_local` races. Document the pattern in `.ai/skills/leptos.md` when implemented.
 
 ### Media engine
 

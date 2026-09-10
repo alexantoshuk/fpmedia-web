@@ -17,6 +17,8 @@ use crate::types::{FrameId, VideoMetadata};
 
 /// Decoded frames held ready for canvas present (mediabunny-style prefetch).
 pub const PRESENTATION_QUEUE_CAP: usize = 16;
+/// Recent presents kept for instant PREV (avoids key→N cascade per step).
+const STEP_HISTORY_CAP: usize = 48;
 /// Frames to decode before starting the media clock (rest filled by prefetch).
 const PLAY_PRIME_FRAMES: usize = 2;
 /// Start-of-clip frames prepared into `loop_prime` before EOF (one decoder).
@@ -34,6 +36,8 @@ struct QueuedFrame {
 struct Shared {
     player: RefCell<Player>,
     presentation: RefCell<VecDeque<QueuedFrame>>,
+    /// Recently drawn frames for fast PREV (clone of each present).
+    step_history: RefCell<VecDeque<QueuedFrame>>,
     /// Start frames decoded ahead of the loop seam (same decoder, while end plays).
     loop_prime: RefCell<Option<VecDeque<QueuedFrame>>>,
     canvas: HtmlCanvasElement,
@@ -45,6 +49,9 @@ struct Shared {
     preparing_loop: Cell<bool>,
     /// Bumped to cancel in-flight decode (mediabunny dispose / asyncId).
     op_epoch: Cell<u64>,
+    /// Set when invalidate runs while the decoder slot is empty (checked out).
+    /// Honored on the next `take_decoder` put-back / decode start.
+    decoder_reset: Cell<bool>,
 }
 
 /// Live decode / prefetch counters for the demo UI (and host apps).
@@ -123,6 +130,7 @@ impl WebPlayer {
         let shared = Rc::new(Shared {
             player: RefCell::new(player),
             presentation: RefCell::new(VecDeque::new()),
+            step_history: RefCell::new(VecDeque::new()),
             loop_prime: RefCell::new(None),
             canvas,
             ctx,
@@ -131,6 +139,7 @@ impl WebPlayer {
             restarting: Cell::new(false),
             preparing_loop: Cell::new(false),
             op_epoch: Cell::new(0),
+            decoder_reset: Cell::new(false),
         });
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
@@ -248,6 +257,7 @@ impl WebPlayer {
             self.shared.player.borrow_mut().pause();
             self.clear_loop_prime();
             self.clear_presentation();
+            self.clear_step_history();
             self.invalidate_decoder();
             self.goto_frame(frame, epoch).await
         }
@@ -270,10 +280,17 @@ impl WebPlayer {
             if presentation.front().is_some_and(|f| f.frame == next) {
                 let queued = presentation.pop_front().expect("front checked");
                 drop(presentation);
-                self.present(queued.video)?;
+                self.present_and_remember(queued.frame, queued.video)?;
                 self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                 return Ok(());
             }
+        }
+        // Instant next when we just stepped back through history.
+        if let Some(video) = self.clone_from_step_history(next) {
+            self.clear_presentation();
+            self.present_only(video)?;
+            self.shared.player.borrow_mut().commit_frame(next)?;
+            return Ok(());
         }
         self.clear_presentation();
         self.goto_frame(next, epoch).await
@@ -282,13 +299,22 @@ impl WebPlayer {
     pub async fn previous_frame(&self) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         self.shared.player.borrow_mut().pause();
-        self.clear_presentation();
         let cur = self.state().frame;
         if cur == 0 {
             return Err(MediaError::FrameOutOfRange(0, self.state().frame_count));
         }
+        let prev = cur - 1;
+        // Prefer recent presents — key→N cascade is multi-second on long GOPs.
+        if let Some(video) = self.clone_from_step_history(prev) {
+            self.clear_presentation();
+            // Keep the warm decoder; only a cache miss needs invalidate.
+            self.present_only(video)?;
+            self.shared.player.borrow_mut().commit_frame(prev)?;
+            return Ok(());
+        }
+        self.clear_presentation();
         self.invalidate_decoder();
-        self.goto_frame(cur - 1, epoch).await
+        self.goto_frame(prev, epoch).await
     }
 
     pub async fn step_playback(&self) -> Result<bool, MediaError> {
@@ -333,7 +359,7 @@ impl WebPlayer {
             if presentation.front().is_some_and(|f| f.frame == target) {
                 let queued = presentation.pop_front().expect("front checked");
                 drop(presentation);
-                self.present(queued.video)?;
+                self.present_and_remember(queued.frame, queued.video)?;
                 self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                 return Ok(self.has_more_playback());
             }
@@ -341,6 +367,7 @@ impl WebPlayer {
 
         self.clear_presentation();
         if behind_seconds >= BIG_LAG_SECONDS {
+            self.clear_step_history();
             self.invalidate_decoder();
         }
         let epoch = self.shared.op_epoch.get();
@@ -472,7 +499,7 @@ impl WebPlayer {
             if lag_ms > 1.0 {
                 self.shared.last_behind_ms.set(Some(lag_ms));
             }
-            self.present(queued.video)?;
+            self.present_and_remember(queued.frame, queued.video)?;
             self.shared.player.borrow_mut().commit_frame(queued.frame)?;
             did_draw = true;
             break;
@@ -531,7 +558,8 @@ impl WebPlayer {
         };
 
         self.clear_presentation();
-        self.present(first.video)?;
+        self.clear_step_history();
+        self.present_and_remember(first.frame, first.video)?;
         self.shared.player.borrow_mut().commit_frame(first.frame)?;
         *self.shared.presentation.borrow_mut() = buf;
         // Decoder is already warm past the primed start frames.
@@ -586,6 +614,7 @@ impl WebPlayer {
         let result = async {
             self.clear_loop_prime();
             self.clear_presentation();
+            self.clear_step_history();
             self.invalidate_decoder();
             self.goto_frame(0, epoch).await?;
             if self.is_playing() && self.is_current(epoch) {
@@ -705,7 +734,7 @@ impl WebPlayer {
                 if front.frame == frame {
                     let queued = presentation.pop_front().expect("front checked");
                     drop(presentation);
-                    self.present(queued.video)?;
+                    self.present_and_remember(queued.frame, queued.video)?;
                     self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                     return Ok(());
                 }
@@ -716,7 +745,7 @@ impl WebPlayer {
                     if presentation.front().is_some_and(|f| f.frame == frame) {
                         let queued = presentation.pop_front().expect("front checked");
                         drop(presentation);
-                        self.present(queued.video)?;
+                        self.present_and_remember(queued.frame, queued.video)?;
                         self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                         return Ok(());
                     }
@@ -767,6 +796,41 @@ impl WebPlayer {
         }
     }
 
+    fn clear_step_history(&self) {
+        let mut history = self.shared.step_history.borrow_mut();
+        while let Some(q) = history.pop_front() {
+            q.video.close();
+        }
+    }
+
+    fn push_step_history_owned(&self, frame: FrameId, video: VideoFrame) {
+        let mut history = self.shared.step_history.borrow_mut();
+        if history.back().is_some_and(|q| q.frame == frame) {
+            video.close();
+            return;
+        }
+        history.retain(|q| {
+            if q.frame == frame {
+                q.video.close();
+                false
+            } else {
+                true
+            }
+        });
+        history.push_back(QueuedFrame { frame, video });
+        while history.len() > STEP_HISTORY_CAP {
+            if let Some(old) = history.pop_front() {
+                old.video.close();
+            }
+        }
+    }
+
+    fn clone_from_step_history(&self, frame: FrameId) -> Option<VideoFrame> {
+        let history = self.shared.step_history.borrow();
+        let q = history.iter().find(|q| q.frame == frame)?;
+        q.video.clone().ok()
+    }
+
     fn clear_loop_prime(&self) {
         if let Some(buf) = self.shared.loop_prime.borrow_mut().take() {
             for q in buf {
@@ -776,8 +840,14 @@ impl WebPlayer {
     }
 
     fn invalidate_decoder(&self) {
+        // Soft clear is not enough: clearing `input_timestamps` while the browser
+        // still holds in-flight chunks desyncs PTS remap → rare
+        // `flush/idle without pts=… (held=0)` on rapid PREV.
+        self.shared.decoder_reset.set(true);
         if let Some(decoder) = self.decoder.borrow_mut().as_mut() {
-            decoder.invalidate();
+            if decoder.reset().is_ok() {
+                self.shared.decoder_reset.set(false);
+            }
         }
     }
 
@@ -793,14 +863,36 @@ impl WebPlayer {
         epoch: u64,
     ) -> Result<VideoFrame, MediaError> {
         let mut decoder = self.take_decoder(epoch).await?;
-        let result = decoder.decode_frame(track, frame).await;
-        *self.decoder.borrow_mut() = Some(decoder);
-        if !self.is_current(epoch) {
+        if self.shared.decoder_reset.get() {
+            decoder.reset()?;
+            self.shared.decoder_reset.set(false);
+        }
+        let cancelled = || !self.is_current(epoch);
+        let result = decoder.decode_frame(track, frame, &cancelled).await;
+        let result = match result {
+            // One hard reset + retry — orphan PTS after a raced invalidate.
+            Err(MediaError::WebCodecs(msg))
+                if msg.contains("flush/idle without pts=")
+                    || msg.contains("exhausted GOP before pts=") =>
+            {
+                if cancelled() {
+                    Err(MediaError::Cancelled)
+                } else {
+                    decoder.reset()?;
+                    decoder.decode_frame(track, frame, &cancelled).await
+                }
+            }
+            other => other,
+        };
+        if cancelled() {
+            let _ = decoder.reset();
+            *self.decoder.borrow_mut() = Some(decoder);
             if let Ok(video) = result {
                 video.close();
             }
             return Err(MediaError::Cancelled);
         }
+        *self.decoder.borrow_mut() = Some(decoder);
         result
     }
 
@@ -827,15 +919,27 @@ impl WebPlayer {
             video_frame.close();
             return Err(MediaError::Cancelled);
         }
-        self.present(video_frame)?;
+        self.present_and_remember(frame, video_frame)?;
         self.shared.player.borrow_mut().commit_frame(frame)?;
         Ok(())
     }
 
-    fn present(&self, frame: VideoFrame) -> Result<(), MediaError> {
-        let result =
-            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, &frame);
-        frame.close();
+    /// Draw, then **move** the frame into step history (no `VideoFrame.clone`).
+    /// Safe on the play `present_due` path — clone-per-frame was what killed fps.
+    fn present_and_remember(&self, frame_id: FrameId, video: VideoFrame) -> Result<(), MediaError> {
+        let result = draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, &video);
+        if result.is_ok() {
+            self.push_step_history_owned(frame_id, video);
+        } else {
+            video.close();
+        }
+        result
+    }
+
+    /// Draw a history clone (or one-shot frame) without parking another copy.
+    fn present_only(&self, video: VideoFrame) -> Result<(), MediaError> {
+        let result = draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, &video);
+        video.close();
         result
     }
 }
@@ -844,6 +948,7 @@ impl Drop for WebPlayer {
     fn drop(&mut self) {
         self.clear_loop_prime();
         self.clear_presentation();
+        self.clear_step_history();
     }
 }
 

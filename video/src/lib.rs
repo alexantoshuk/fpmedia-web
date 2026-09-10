@@ -4,6 +4,7 @@
 //! Host UI (controls, file picker) lives outside this crate.
 
 mod component;
+mod op_queue;
 
 pub use component::Video;
 pub use webmedia::{PipelineStats, VideoMetadata};

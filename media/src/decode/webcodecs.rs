@@ -98,6 +98,10 @@ pub struct WebCodecsDecoder {
     _on_dequeue: Closure<dyn FnMut(JsValue)>,
 }
 
+/// Max delta packets to feed after the target's decode_order to coax B-frame emit
+/// before flushing (mediabunny feeds ahead; whole-GOP feed is unnecessary).
+const REORDER_FEED_SLACK: usize = 24;
+
 impl WebCodecsDecoder {
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
         let config = DecoderConfig::from_meta(meta)?;
@@ -246,17 +250,14 @@ impl WebCodecsDecoder {
     }
 
     pub fn invalidate(&mut self) {
-        self.fed_through_order = None;
-        self.key_order = None;
-        self.input_timestamps.clear();
-        self.clear_held();
-        let waiting = std::mem::take(&mut *self.output_waiters.borrow_mut());
-        wake_waiters_deferred(waiting);
-        let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
-        wake_waiters_deferred(waiting);
-        for frame in self.frames.borrow_mut().drain(..) {
-            frame.close();
-        }
+        // Prefer a hard decoder reset — soft clear of timestamps/held while the
+        // browser still has in-flight chunks desyncs PTS remap.
+        let _ = self.reset();
+    }
+
+    /// Close and recreate the VideoDecoder; clear warm GOP / held / timestamps.
+    pub fn reset(&mut self) -> Result<(), MediaError> {
+        self.recreate()
     }
 
     fn clear_held(&mut self) {
@@ -300,6 +301,16 @@ impl WebCodecsDecoder {
         }
     }
 
+    /// Move decoder outputs into `held`, then close anything strictly before the
+    /// seek target. mediabunny frees `sampleQueue` as the consumer pulls; we only
+    /// need `target_us`, so early frames must not stay open — a full `held` stalls
+    /// WebCodecs (`decodeQueueSize` never drains → backpressure timeout on PREV).
+    fn collect_and_prune_held(&mut self, target_us: i64) -> Result<(), MediaError> {
+        self.collect_outputs_into_held()?;
+        self.drop_held_before(target_us);
+        Ok(())
+    }
+
     fn decode_queue_size(&self) -> u32 {
         self.decoder.decode_queue_size()
     }
@@ -315,16 +326,23 @@ impl WebCodecsDecoder {
     }
 
     /// Decode until `frame` is available, feeding decode-order packets as needed.
+    ///
+    /// `is_cancelled` — host op epoch (rapid PREV/seek); bail with [`MediaError::Cancelled`].
     pub async fn decode_frame(
         &mut self,
         track: &Mp4VideoTrack,
         frame: FrameId,
+        is_cancelled: &dyn Fn() -> bool,
     ) -> Result<VideoFrame, MediaError> {
+        if is_cancelled() {
+            return Err(MediaError::Cancelled);
+        }
         let entry = track
             .index()
             .get(frame)
             .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
         let target_us = ticks_to_micros(entry.composition_timestamp_ticks, entry.timescale);
+        let target_do = entry.decode_order;
         let key_id = track
             .index()
             .nearest_keyframe(frame)
@@ -335,9 +353,8 @@ impl WebCodecsDecoder {
             .map(|e| e.decode_order)
             .ok_or(MediaError::FrameOutOfRange(key_id, track.frame_count()))?;
 
-        self.collect_outputs_into_held()?;
+        self.collect_and_prune_held(target_us)?;
         if let Some(ready) = self.take_held(target_us) {
-            self.drop_held_before(target_us);
             return Ok(ready);
         }
 
@@ -356,6 +373,9 @@ impl WebCodecsDecoder {
                 &format!("webmedia: decode feed key frame={key_id} → target={frame}").into(),
             );
             let key_sample = track.encoded_sample(key_id).await?;
+            if is_cancelled() {
+                return Err(MediaError::Cancelled);
+            }
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(
                 &format!(
@@ -364,17 +384,19 @@ impl WebCodecsDecoder {
                 )
                 .into(),
             );
-            self.feed_sample(&key_sample, true).await?;
+            self.feed_sample(&key_sample, true, target_us).await?;
             self.fed_through_order = Some(key_do);
             // Poll with macrotasks (see `poll_output_or_macrotask`) — microtask-only
             // never saw HW output on Wing It and forced flush.
             for _ in 0..24 {
+                if is_cancelled() {
+                    return Err(MediaError::Cancelled);
+                }
                 self.await_outputs_if_pending().await?;
-                self.collect_outputs_into_held()?;
+                self.collect_and_prune_held(target_us)?;
                 if let Some(ready) = self.take_held(target_us) {
                     #[cfg(target_arch = "wasm32")]
                     web_sys::console::log_1(&"webmedia: decode got target from key".into());
-                    self.drop_held_before(target_us);
                     return Ok(ready);
                 }
                 if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
@@ -386,17 +408,19 @@ impl WebCodecsDecoder {
             if key_id == frame {
                 let coax = track.samples_after_in_gop(key_do, key_do, 1).await?;
                 if let Some(sample) = coax.first() {
-                    self.feed_sample(sample, false).await?;
+                    self.feed_sample(sample, false, target_us).await?;
                     self.fed_through_order = Some(sample.decode_order);
                     for _ in 0..24 {
+                        if is_cancelled() {
+                            return Err(MediaError::Cancelled);
+                        }
                         self.await_outputs_if_pending().await?;
-                        self.collect_outputs_into_held()?;
+                        self.collect_and_prune_held(target_us)?;
                         if let Some(ready) = self.take_held(target_us) {
                             #[cfg(target_arch = "wasm32")]
                             web_sys::console::log_1(
                                 &"webmedia: decode got target after coax feed".into(),
                             );
-                            self.drop_held_before(target_us);
                             return Ok(ready);
                         }
                         if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
@@ -407,7 +431,7 @@ impl WebCodecsDecoder {
                 if self.held.iter().all(|h| h.pts_us != target_us) {
                     // Last resort — flush ends the decode session; clear warm state.
                     let _ = self.flush_with_timeout().await;
-                    self.collect_outputs_into_held()?;
+                    self.collect_and_prune_held(target_us)?;
                     self.fed_through_order = None;
                     self.key_order = None;
                     self.input_timestamps.clear();
@@ -416,72 +440,56 @@ impl WebCodecsDecoder {
                         web_sys::console::log_1(
                             &"webmedia: decode got target after flush".into(),
                         );
-                        self.drop_held_before(target_us);
                         return Ok(ready);
                     }
                 }
             }
-            self.collect_outputs_into_held()?;
+            self.collect_and_prune_held(target_us)?;
             if let Some(ready) = self.take_held(target_us) {
                 #[cfg(target_arch = "wasm32")]
                 web_sys::console::log_1(&"webmedia: decode got target from key".into());
-                self.drop_held_before(target_us);
                 return Ok(ready);
             }
         }
 
         // Pump decode-order samples until the target PTS lands in `held`.
-        // Feeding past the target (next B/P) is intentional — some browsers only
-        // emit reordered frames once more packets arrive (mediabunny insight).
-        // Cap at track length: Resolve / Telegram exports often use GOPs ≫ 64.
+        // Feeding a little past the target (B/P reorder) is intentional; do not
+        // drain the entire GOP — that amplified PTS desync on rapid PREV.
         let max_feeds = (track.frame_count() as usize).saturating_add(32).max(64);
         for _ in 0..max_feeds {
+            if is_cancelled() {
+                return Err(MediaError::Cancelled);
+            }
             self.check_error()?;
-            self.collect_outputs_into_held()?;
+            self.collect_and_prune_held(target_us)?;
             if let Some(ready) = self.take_held(target_us) {
-                self.drop_held_before(target_us);
                 return Ok(ready);
             }
 
             let fed = self.fed_through_order.unwrap_or(key_do);
-            let next = track.samples_after_in_gop(key_do, fed, 1).await?;
+            let past_target = fed >= target_do;
+            let force_flush = past_target
+                && fed.saturating_sub(target_do) >= REORDER_FEED_SLACK;
+            let next = if force_flush {
+                Vec::new()
+            } else {
+                track.samples_after_in_gop(key_do, fed, 1).await?
+            };
             if next.is_empty() {
-                if !self.frames.borrow().is_empty() || !self.input_timestamps.is_empty() {
-                    self.await_outputs_if_pending().await?;
-                    self.collect_outputs_into_held()?;
-                    if let Some(ready) = self.take_held(target_us) {
-                        self.drop_held_before(target_us);
-                        return Ok(ready);
-                    }
-                    if !self.input_timestamps.is_empty() {
-                        // End of GOP/container: some browsers keep the final frame buffered
-                        // until an explicit flush. Only do this once we've run out of input.
-                        // Race with a timeout — Chromium can hang forever on flush after a
-                        // bad first key (AUD); better fail open than wedge the UI.
-                        self.flush_with_timeout().await?;
-                        self.check_error()?;
-                        self.collect_outputs_into_held()?;
-                        if let Some(ready) = self.take_held(target_us) {
-                            self.drop_held_before(target_us);
-                            self.fed_through_order = None;
-                            self.key_order = None;
-                            self.input_timestamps.clear();
-                            return Ok(ready);
-                        }
-                    }
-                    return Err(MediaError::WebCodecs(format!(
-                        "flush/idle without pts={target_us}µs (held={})",
-                        self.held.len()
-                    )));
+                if let Some(ready) = self
+                    .finish_gop_for_target(target_us, is_cancelled)
+                    .await?
+                {
+                    return Ok(ready);
                 }
                 return Err(MediaError::WebCodecs(format!(
-                    "exhausted GOP before pts={target_us}µs (held={})",
+                    "flush/idle without pts={target_us}µs (held={})",
                     self.held.len()
                 )));
             }
 
             let sample = &next[0];
-            self.feed_sample(sample, false).await?;
+            self.feed_sample(sample, false, target_us).await?;
             self.fed_through_order = Some(sample.decode_order);
             // If the decoder is idle with no output, it is waiting for more input
             // (typical B-frame reorder) — do not block; feed the next packet.
@@ -493,12 +501,58 @@ impl WebCodecsDecoder {
         )))
     }
 
+    /// End-of-input / reorder-slack: drain outputs, then flush once.
+    async fn finish_gop_for_target(
+        &mut self,
+        target_us: i64,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<VideoFrame>, MediaError> {
+        for _ in 0..32 {
+            if is_cancelled() {
+                return Err(MediaError::Cancelled);
+            }
+            self.await_outputs_if_pending().await?;
+            self.collect_and_prune_held(target_us)?;
+            if let Some(ready) = self.take_held(target_us) {
+                return Ok(Some(ready));
+            }
+            if self.decode_queue_size() == 0
+                && self.frames.borrow().is_empty()
+                && self.input_timestamps.is_empty()
+            {
+                break;
+            }
+            if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
+                break;
+            }
+        }
+        self.collect_and_prune_held(target_us)?;
+        if let Some(ready) = self.take_held(target_us) {
+            return Ok(Some(ready));
+        }
+        if !self.input_timestamps.is_empty() || self.decode_queue_size() > 0 {
+            self.flush_with_timeout().await?;
+            self.check_error()?;
+            self.collect_and_prune_held(target_us)?;
+            if let Some(ready) = self.take_held(target_us) {
+                self.fed_through_order = None;
+                self.key_order = None;
+                self.input_timestamps.clear();
+                return Ok(Some(ready));
+            }
+        }
+        Ok(None)
+    }
+
     async fn feed_sample(
         &mut self,
         sample: &EncodedSample,
         force_key: bool,
+        prune_before_us: i64,
     ) -> Result<(), MediaError> {
-        self.await_decode_capacity().await?;
+        // Prune before/during backpressure so a long key→target cascade (PREV)
+        // does not pin dozens of VideoFrames and wedge decodeQueueSize.
+        self.await_decode_capacity(Some(prune_before_us)).await?;
         let chunk_type = if force_key || sample.is_keyframe {
             EncodedVideoChunkType::Key
         } else {
@@ -561,17 +615,26 @@ impl WebCodecsDecoder {
 
     /// Backpressure before `decode()` — mediabunny `media-sink.ts`:
     /// `sampleQueue.length + decodeQueueSize > computeMaxQueueSize(sampleQueue.length)`
-    /// then `await queueDequeue` (resolved on each output).
+    /// then `await queueDequeue` (resolved on each output **or** consumer take).
     ///
-    /// We map `frames` (+ soon `held` only for the empty/non-empty max pick) carefully:
-    /// do **not** treat already-buffered `frames` as capacity progress (that spun
-    /// to `backpressure timed out` while `decodeQueueSize` never dropped).
-    async fn await_decode_capacity(&mut self) -> Result<(), MediaError> {
+    /// `drop_before_us`: close held frames strictly before the seek target so
+    /// `held` does not stay non-empty forever during a long key→N cascade (that
+    /// kept max=8 and stalled the browser queue — rapid PREV timeout).
+    ///
+    /// Do **not** treat already-buffered `frames` alone as capacity progress
+    /// (that spun to timeout while `decodeQueueSize` never dropped).
+    async fn await_decode_capacity(
+        &mut self,
+        drop_before_us: Option<i64>,
+    ) -> Result<(), MediaError> {
         let mut spins = 0u32;
         loop {
             self.check_error()?;
             // Move raw outputs into `held` so the empty/non-empty max is accurate.
             self.collect_outputs_into_held()?;
+            if let Some(us) = drop_before_us {
+                self.drop_held_before(us);
+            }
             let max = if self.held.is_empty() {
                 MAX_DECODE_QUEUE_EMPTY
             } else {

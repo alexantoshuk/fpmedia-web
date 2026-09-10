@@ -1,6 +1,6 @@
 //! [`Video`] component — canvas stage + playback orchestration.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use leptos::html::{Canvas, Div};
@@ -15,6 +15,7 @@ use webmedia::{
     BlobSource, DuePresent, OpenMp4Options, WebPlayer, open_mp4_source_cached_with_progress,
 };
 
+use crate::op_queue::{HostOp, OpQueue};
 use crate::{VideoOps, VideoRef};
 
 type PlayerHandle = Rc<RefCell<Option<Rc<WebPlayer>>>>;
@@ -76,9 +77,6 @@ pub fn Video(
     let player: PlayerHandle = Rc::new(RefCell::new(None));
     let fps_meter = Rc::new(RefCell::new(FpsMeter::new()));
     let session: Rc<RefCell<Option<PlaySession>>> = Rc::new(RefCell::new(None));
-    // Bumped on each open / stop so late async results are discarded.
-    let open_epoch = Rc::new(Cell::new(0_u64));
-    let play_epoch = Rc::new(Cell::new(0_u64));
 
     let busy = video.busy;
     let ready = video.ready;
@@ -92,6 +90,9 @@ pub fn Video(
     let error = video.error;
     let pipeline = video.pipeline;
     let status = video.status;
+
+    // mediabunny CallSerializer + asyncId — one queue for open / seek / play-prime.
+    let queue = OpQueue::new(busy);
 
     let sync_ui = {
         let player = Rc::clone(&player);
@@ -118,13 +119,13 @@ pub fn Video(
         let session = Rc::clone(&session);
         let fps_meter = Rc::clone(&fps_meter);
         let sync_ui = Rc::clone(&sync_ui);
-        let play_epoch = Rc::clone(&play_epoch);
+        let queue = queue.clone();
         Rc::new(move || {
-            play_epoch.set(play_epoch.get().wrapping_add(1));
+            // Abort in-flight play-prime / prefetch; drop queued PlayPrime.
+            queue.bump();
+            queue.clear_pending_play();
             playing.set(false);
-            busy.set(false);
             let _ = session.borrow_mut().take();
-            // Clone Rc so we never fail to pause due to a transient RefCell borrow.
             let p = player.borrow().as_ref().cloned();
             if let Some(p) = p {
                 p.pause();
@@ -133,7 +134,7 @@ pub fn Video(
             fps.set(None);
             sync_ui();
             playing.set(false);
-            busy.set(false);
+            // `busy` stays with the op queue (open/seek may still be draining).
         }) as Rc<dyn Fn()>
     };
 
@@ -289,12 +290,107 @@ pub fn Video(
         }
     });
 
-    let open_blob = {
+    let kick_drain = {
+        let queue = queue.clone();
         let player = Rc::clone(&player);
-        let sync_ui = Rc::clone(&sync_ui);
+        let session = Rc::clone(&session);
         let fps_meter = Rc::clone(&fps_meter);
+        let sync_ui = Rc::clone(&sync_ui);
         let stop_playback = Rc::clone(&stop_playback);
-        let open_epoch = Rc::clone(&open_epoch);
+        let resume_raf = resume_raf.clone();
+        Rc::new(move || {
+            let queue = queue.clone();
+            let player = Rc::clone(&player);
+            let session = Rc::clone(&session);
+            let fps_meter = Rc::clone(&fps_meter);
+            let sync_ui = Rc::clone(&sync_ui);
+            let stop_playback = Rc::clone(&stop_playback);
+            let resume_raf = resume_raf.clone();
+            // IMPORTANT: wasm_bindgen_futures::spawn_local (not leptos) — open may
+            // be invoked from the file-input handler outside a reactive owner.
+            spawn_local(async move {
+                loop {
+                    let Some((id, op)) = queue.pop_next() else {
+                        if queue.try_end_drain() {
+                            break;
+                        }
+                        continue;
+                    };
+                    if !queue.is_current(id) {
+                        continue;
+                    }
+                    match op {
+                        HostOp::Open { blob, canvas } => {
+                            run_open(
+                                &queue,
+                                id,
+                                blob,
+                                canvas,
+                                &player,
+                                &sync_ui,
+                                &fps_meter,
+                                ready,
+                                metadata,
+                                error,
+                                status,
+                                fps,
+                                pipeline,
+                            )
+                            .await;
+                        }
+                        HostOp::Seek(target) => {
+                            run_seek_or_step(
+                                &queue,
+                                id,
+                                &player,
+                                &sync_ui,
+                                &session,
+                                error,
+                                playing,
+                                SeekOrStep::Seek(target),
+                            )
+                            .await;
+                        }
+                        HostOp::Step(forward) => {
+                            run_seek_or_step(
+                                &queue,
+                                id,
+                                &player,
+                                &sync_ui,
+                                &session,
+                                error,
+                                playing,
+                                SeekOrStep::Step(forward),
+                            )
+                            .await;
+                        }
+                        HostOp::PlayPrime => {
+                            run_play_prime(
+                                &queue,
+                                id,
+                                &player,
+                                &session,
+                                &fps_meter,
+                                &stop_playback,
+                                &resume_raf,
+                                ready,
+                                playing,
+                                error,
+                                fps,
+                            )
+                            .await;
+                        }
+                    }
+                }
+            });
+        }) as Rc<dyn Fn()>
+    };
+
+    let open_blob = {
+        let queue = queue.clone();
+        let stop_playback = Rc::clone(&stop_playback);
+        let fps_meter = Rc::clone(&fps_meter);
+        let kick_drain = Rc::clone(&kick_drain);
         Rc::new(move |blob: web_sys::Blob| {
             let Some(canvas_el) = canvas_ref.get_untracked() else {
                 error.set(Some("canvas not mounted".into()));
@@ -302,12 +398,8 @@ pub fn Video(
                 return;
             };
             let canvas: HtmlCanvasElement = canvas_el;
-            // Always supersede an in-flight open (do not silent-return on busy —
-            // a prior hang would leave busy=true and ignore every later file).
+            // Always supersede in-flight work (mediabunny asyncId++ on new file).
             stop_playback();
-            let my_open = open_epoch.get().wrapping_add(1);
-            open_epoch.set(my_open);
-            busy.set(true);
             ready.set(false);
             error.set(None);
             fps.set(None);
@@ -316,91 +408,24 @@ pub fn Video(
             let size_kb = (blob.size() as u64) / 1024;
             status.set(format!("Opening (~{size_kb} KB, progressive)…"));
             fps_meter.borrow_mut().reset();
-            let player = Rc::clone(&player);
-            let sync_ui = Rc::clone(&sync_ui);
-            let open_epoch = Rc::clone(&open_epoch);
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(
                 &format!("webmedia: open_blob start ~{size_kb} KB").into(),
             );
-            // IMPORTANT: use wasm_bindgen_futures::spawn_local, not leptos::task::spawn_local.
-            // open_blob is invoked from the app file-input handler (outside a Leptos
-            // reactive owner); leptos spawn can queue the future nowhere → hang with
-            // only "open_blob start" in the console and status stuck on the default.
-            spawn_local(async move {
-                web_sys::console::log_1(&"webmedia: open task running".into());
-                if open_epoch.get() != my_open {
-                    return;
-                }
-                *player.borrow_mut() = None;
-                let opened = open_blob_staged(blob, canvas, {
-                    let status = status;
-                    move |msg: &str| {
-                        web_sys::console::log_1(&format!("webmedia: status {msg}").into());
-                        status.set(msg.to_string());
-                    }
-                })
-                .await;
-                if open_epoch.get() != my_open {
-                    busy.set(false);
-                    return;
-                }
-                match opened {
-                    Ok(p) => {
-                        let p = Rc::new(p);
-                        metadata.set(Some(p.metadata()));
-                        let _ = p.relayout();
-                        *player.borrow_mut() = Some(Rc::clone(&p));
-                        status.set("Decoding frame 0…".into());
-                        // Clone Rc — never hold RefCell borrow across await (blocks pause/cancel).
-                        let seek = p.seek_frame(0).await;
-                        if open_epoch.get() != my_open {
-                            busy.set(false);
-                            return;
-                        }
-                        match seek {
-                            Ok(()) => {
-                                ready.set(true);
-                                status.set("Ready.".into());
-                                sync_ui();
-                            }
-                            Err(e) if e.is_cancelled() => {
-                                status.set("Open cancelled.".into());
-                            }
-                            Err(e) => {
-                                ready.set(false);
-                                error.set(Some(e.to_string()));
-                                status.set(format!("Seek 0 failed: {e}"));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        ready.set(false);
-                        metadata.set(None);
-                        error.set(Some(e.clone()));
-                        status.set(format!("Open failed: {e}"));
-                        web_sys::console::error_1(&e.clone().into());
-                    }
-                }
-                busy.set(false);
-            });
+            if queue.enqueue_open(blob, canvas) {
+                kick_drain();
+            }
         }) as Rc<dyn Fn(web_sys::Blob)>
     };
 
     let play_fn = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
-        let fps_meter = Rc::clone(&fps_meter);
-        let resume_raf = resume_raf.clone();
-        let stop_playback = Rc::clone(&stop_playback);
-        let play_epoch = Rc::clone(&play_epoch);
+        let queue = queue.clone();
+        let kick_drain = Rc::clone(&kick_drain);
         Rc::new(move || {
             if !ready.get_untracked() {
                 web_sys::console::log_1(&"webmedia: play ignored (not ready)".into());
-                return;
-            }
-            if busy.get_untracked() {
-                web_sys::console::log_1(&"webmedia: play ignored (busy)".into());
                 return;
             }
             // Stale `playing` with no session (Pause race) blocked all transport.
@@ -415,181 +440,63 @@ pub fn Video(
                     p.pause();
                 }
             }
-            let Some(p) = player.borrow().as_ref().cloned() else {
+            if player.borrow().as_ref().is_none() {
                 web_sys::console::log_1(&"webmedia: play ignored (no player)".into());
                 return;
-            };
-            p.play();
-            fps_meter.borrow_mut().reset();
-            fps.set(None);
-            let my_play = play_epoch.get().wrapping_add(1);
-            play_epoch.set(my_play);
-            playing.set(true);
-            busy.set(true);
-            let player = Rc::clone(&player);
-            let session = Rc::clone(&session);
-            let resume_raf = resume_raf.clone();
-            let stop_playback = Rc::clone(&stop_playback);
-            let play_epoch = Rc::clone(&play_epoch);
-            spawn_local(async move {
-                let still_mine = || play_epoch.get() == my_play && playing.get_untracked();
-
-                let Some(p) = player.borrow().as_ref().cloned() else {
-                    if still_mine() {
-                        busy.set(false);
-                        stop_playback();
-                    }
-                    return;
-                };
-
-                web_sys::console::log_1(&"webmedia: play prime start".into());
-                let prime_ok = match p.prime_playback().await {
-                    Ok(()) => true,
-                    Err(e) if e.is_cancelled() => false,
-                    Err(e) => {
-                        if still_mine() {
-                            error.set(Some(e.to_string()));
-                        }
-                        false
-                    }
-                };
-                web_sys::console::log_1(
-                    &format!("webmedia: play prime done ok={prime_ok}").into(),
-                );
-
-                // Stale Pause→Play tasks must not clear `busy` or stop the new session.
-                if !still_mine() {
-                    return;
-                }
-                if !prime_ok {
-                    busy.set(false);
-                    stop_playback();
-                    return;
-                }
-
-                let media_origin = p.state().timestamp.seconds;
-                let wall_origin = performance_now_ms().map(|t| t / 1000.0).unwrap_or(0.0);
-                let last_ui_ms = performance_now_ms().unwrap_or(0.0);
-
-                *session.borrow_mut() = Some(PlaySession {
-                    media_origin,
-                    wall_origin,
-                    last_ui_ms,
-                    restarting: false,
-                });
-                busy.set(false);
-
-                {
-                    let player = Rc::clone(&player);
-                    let stop_playback = Rc::clone(&stop_playback);
-                    let play_epoch = Rc::clone(&play_epoch);
-                    spawn_local(async move {
-                        while playing.get_untracked() && play_epoch.get() == my_play {
-                            let need = {
-                                let borrow = player.borrow();
-                                borrow.as_ref().is_some_and(|p| {
-                                    p.is_playing()
-                                        && !p.is_restarting()
-                                        && p.presentation_len()
-                                            < webmedia::PRESENTATION_QUEUE_CAP
-                                })
-                            };
-                            if need {
-                                let decoded = {
-                                    let Some(p) = player.borrow().as_ref().cloned() else {
-                                        break;
-                                    };
-                                    p.prefetch_one().await
-                                };
-                                match decoded {
-                                    Ok(true) => continue,
-                                    Ok(false) => {}
-                                    Err(e) if e.is_cancelled() => break,
-                                    Err(e) => {
-                                        if play_epoch.get() == my_play {
-                                            error.set(Some(e.to_string()));
-                                            stop_playback();
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                            {
-                                let prepare = {
-                                    let Some(p) = player.borrow().as_ref().cloned() else {
-                                        break;
-                                    };
-                                    if p.is_looping() {
-                                        Some(p.prepare_loop_if_needed().await)
-                                    } else {
-                                        None
-                                    }
-                                };
-                                match prepare {
-                                    Some(Err(e)) if e.is_cancelled() => break,
-                                    Some(Err(e)) => {
-                                        if play_epoch.get() == my_play {
-                                            error.set(Some(e.to_string()));
-                                            stop_playback();
-                                        }
-                                        break;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            wait_animation_frame().await;
-                        }
-                    });
-                }
-
-                if still_mine() {
-                    resume_raf();
-                }
-            });
+            }
+            if queue.enqueue_play() {
+                kick_drain();
+            }
         }) as Rc<dyn Fn()>
     };
 
     let seek_fn = {
         let player = Rc::clone(&player);
-        let sync_ui = Rc::clone(&sync_ui);
+        let session = Rc::clone(&session);
+        let queue = queue.clone();
+        let kick_drain = Rc::clone(&kick_drain);
         Rc::new(move |target: u32| {
-            step_or_seek(
+            enqueue_seek_step(
+                &queue,
+                &kick_drain,
                 &player,
-                &sync_ui,
-                busy,
-                error,
+                &session,
                 playing,
-                SeekOrStep::Seek(target),
+                HostOp::Seek(target),
             );
         }) as Rc<dyn Fn(u32)>
     };
 
     let next_fn = {
         let player = Rc::clone(&player);
-        let sync_ui = Rc::clone(&sync_ui);
+        let session = Rc::clone(&session);
+        let queue = queue.clone();
+        let kick_drain = Rc::clone(&kick_drain);
         Rc::new(move || {
-            step_or_seek(
+            enqueue_seek_step(
+                &queue,
+                &kick_drain,
                 &player,
-                &sync_ui,
-                busy,
-                error,
+                &session,
                 playing,
-                SeekOrStep::Step(true),
+                HostOp::Step(true),
             );
         }) as Rc<dyn Fn()>
     };
 
     let prev_fn = {
         let player = Rc::clone(&player);
-        let sync_ui = Rc::clone(&sync_ui);
+        let session = Rc::clone(&session);
+        let queue = queue.clone();
+        let kick_drain = Rc::clone(&kick_drain);
         Rc::new(move || {
-            step_or_seek(
+            enqueue_seek_step(
+                &queue,
+                &kick_drain,
                 &player,
-                &sync_ui,
-                busy,
-                error,
+                &session,
                 playing,
-                SeekOrStep::Step(false),
+                HostOp::Step(false),
             );
         }) as Rc<dyn Fn()>
     };
@@ -640,61 +547,277 @@ pub fn Video(
     }
 }
 
+fn enqueue_seek_step(
+    queue: &OpQueue,
+    kick_drain: &Rc<dyn Fn()>,
+    player: &PlayerHandle,
+    session: &Rc<RefCell<Option<PlaySession>>>,
+    playing: RwSignal<bool>,
+    op: HostOp,
+) {
+    if player.borrow().as_ref().is_none() {
+        return;
+    }
+    // Mirror Pause: clear stale playing so controls stay usable.
+    playing.set(false);
+    let _ = session.borrow_mut().take();
+    if let Some(p) = player.borrow().as_ref().cloned() {
+        p.pause();
+    }
+    if queue.enqueue_seek_or_step(op) {
+        kick_drain();
+    }
+}
+
 enum SeekOrStep {
     Seek(u32),
     Step(bool),
 }
 
-fn step_or_seek(
+async fn run_open(
+    queue: &OpQueue,
+    id: u64,
+    blob: web_sys::Blob,
+    canvas: HtmlCanvasElement,
     player: &PlayerHandle,
     sync_ui: &Rc<dyn Fn()>,
-    busy: RwSignal<bool>,
+    fps_meter: &Rc<RefCell<FpsMeter>>,
+    ready: RwSignal<bool>,
+    metadata: RwSignal<Option<webmedia::VideoMetadata>>,
+    error: RwSignal<Option<String>>,
+    status: RwSignal<String>,
+    fps: RwSignal<Option<f64>>,
+    pipeline: RwSignal<Option<webmedia::PipelineStats>>,
+) {
+    web_sys::console::log_1(&"webmedia: open task running".into());
+    if !queue.is_current(id) {
+        return;
+    }
+    *player.borrow_mut() = None;
+    let opened = open_blob_staged(blob, canvas, {
+        let status = status;
+        move |msg: &str| {
+            web_sys::console::log_1(&format!("webmedia: status {msg}").into());
+            status.set(msg.to_string());
+        }
+    })
+    .await;
+    if !queue.is_current(id) {
+        return;
+    }
+    match opened {
+        Ok(p) => {
+            let p = Rc::new(p);
+            metadata.set(Some(p.metadata()));
+            let _ = p.relayout();
+            *player.borrow_mut() = Some(Rc::clone(&p));
+            status.set("Decoding frame 0…".into());
+            let seek = p.seek_frame(0).await;
+            if !queue.is_current(id) {
+                return;
+            }
+            match seek {
+                Ok(()) => {
+                    ready.set(true);
+                    status.set("Ready.".into());
+                    fps_meter.borrow_mut().reset();
+                    fps.set(None);
+                    pipeline.set(Some(p.pipeline_stats()));
+                    sync_ui();
+                }
+                Err(e) if e.is_cancelled() => {
+                    status.set("Open cancelled.".into());
+                }
+                Err(e) => {
+                    ready.set(false);
+                    error.set(Some(e.to_string()));
+                    status.set(format!("Seek 0 failed: {e}"));
+                }
+            }
+        }
+        Err(e) => {
+            ready.set(false);
+            metadata.set(None);
+            error.set(Some(e.clone()));
+            status.set(format!("Open failed: {e}"));
+            web_sys::console::error_1(&e.clone().into());
+        }
+    }
+}
+
+async fn run_seek_or_step(
+    queue: &OpQueue,
+    id: u64,
+    player: &PlayerHandle,
+    sync_ui: &Rc<dyn Fn()>,
+    session: &Rc<RefCell<Option<PlaySession>>>,
     error: RwSignal<Option<String>>,
     playing: RwSignal<bool>,
     op: SeekOrStep,
 ) {
-    if busy.get_untracked() {
-        web_sys::console::log_1(&"webmedia: seek/step ignored (busy)".into());
+    if !queue.is_current(id) {
         return;
     }
     let Some(p) = player.borrow().as_ref().cloned() else {
         return;
     };
-    // Mirror Pause: clear stale playing so controls stay usable if a prior play
-    // session was torn down without resetting the flag.
+    let _ = session.borrow_mut().take();
     playing.set(false);
-    busy.set(true);
-    let sync_ui = Rc::clone(sync_ui);
-    let busy_flag = busy;
-    spawn_local(async move {
-        p.pause();
-        let label = match &op {
-            SeekOrStep::Seek(t) => format!("seek {t}"),
-            SeekOrStep::Step(true) => "next".into(),
-            SeekOrStep::Step(false) => "prev".into(),
-        };
-        web_sys::console::log_1(&format!("webmedia: {label} start").into());
-        let result = match op {
-            SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
-            SeekOrStep::Step(true) => p.next_frame().await,
-            SeekOrStep::Step(false) => p.previous_frame().await,
-        };
-        web_sys::console::log_1(
-            &format!(
-                "webmedia: {label} done {}",
-                if result.is_ok() { "ok" } else { "err" }
-            )
-            .into(),
-        );
-        if let Err(e) = &result {
-            if !e.is_cancelled() {
+    p.pause();
+    let label = match &op {
+        SeekOrStep::Seek(t) => format!("seek {t}"),
+        SeekOrStep::Step(true) => "next".into(),
+        SeekOrStep::Step(false) => "prev".into(),
+    };
+    web_sys::console::log_1(&format!("webmedia: {label} start").into());
+    let result = match op {
+        SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
+        SeekOrStep::Step(true) => p.next_frame().await,
+        SeekOrStep::Step(false) => p.previous_frame().await,
+    };
+    if !queue.is_current(id) {
+        return;
+    }
+    web_sys::console::log_1(
+        &format!(
+            "webmedia: {label} done {}",
+            if result.is_ok() { "ok" } else { "err" }
+        )
+        .into(),
+    );
+    if let Err(e) = &result {
+        if !e.is_cancelled() {
+            error.set(Some(e.to_string()));
+        }
+    }
+    sync_ui();
+    playing.set(false);
+}
+
+async fn run_play_prime(
+    queue: &OpQueue,
+    id: u64,
+    player: &PlayerHandle,
+    session: &Rc<RefCell<Option<PlaySession>>>,
+    fps_meter: &Rc<RefCell<FpsMeter>>,
+    stop_playback: &Rc<dyn Fn()>,
+    resume_raf: &impl Fn(),
+    ready: RwSignal<bool>,
+    playing: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
+    fps: RwSignal<Option<f64>>,
+) {
+    if !queue.is_current(id) || !ready.get_untracked() {
+        return;
+    }
+    let Some(p) = player.borrow().as_ref().cloned() else {
+        return;
+    };
+
+    p.play();
+    fps_meter.borrow_mut().reset();
+    fps.set(None);
+    playing.set(true);
+
+    let still_mine = || queue.is_current(id) && playing.get_untracked();
+
+    web_sys::console::log_1(&"webmedia: play prime start".into());
+    let prime_ok = match p.prime_playback().await {
+        Ok(()) => true,
+        Err(e) if e.is_cancelled() => false,
+        Err(e) => {
+            if still_mine() {
                 error.set(Some(e.to_string()));
             }
+            false
         }
-        sync_ui();
-        busy_flag.set(false);
-        playing.set(false);
+    };
+    web_sys::console::log_1(&format!("webmedia: play prime done ok={prime_ok}").into());
+
+    if !still_mine() {
+        return;
+    }
+    if !prime_ok {
+        stop_playback();
+        return;
+    }
+
+    let media_origin = p.state().timestamp.seconds;
+    let wall_origin = performance_now_ms().map(|t| t / 1000.0).unwrap_or(0.0);
+    let last_ui_ms = performance_now_ms().unwrap_or(0.0);
+
+    *session.borrow_mut() = Some(PlaySession {
+        media_origin,
+        wall_origin,
+        last_ui_ms,
+        restarting: false,
     });
+
+    {
+        let player = Rc::clone(player);
+        let stop_playback = Rc::clone(stop_playback);
+        let queue = queue.clone();
+        spawn_local(async move {
+            while playing.get_untracked() && queue.is_current(id) {
+                let need = {
+                    let borrow = player.borrow();
+                    borrow.as_ref().is_some_and(|p| {
+                        p.is_playing()
+                            && !p.is_restarting()
+                            && p.presentation_len() < webmedia::PRESENTATION_QUEUE_CAP
+                    })
+                };
+                if need {
+                    let decoded = {
+                        let Some(p) = player.borrow().as_ref().cloned() else {
+                            break;
+                        };
+                        p.prefetch_one().await
+                    };
+                    match decoded {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(e) if e.is_cancelled() => break,
+                        Err(e) => {
+                            if queue.is_current(id) {
+                                error.set(Some(e.to_string()));
+                                stop_playback();
+                            }
+                            break;
+                        }
+                    }
+                }
+                {
+                    let prepare = {
+                        let Some(p) = player.borrow().as_ref().cloned() else {
+                            break;
+                        };
+                        if p.is_looping() {
+                            Some(p.prepare_loop_if_needed().await)
+                        } else {
+                            None
+                        }
+                    };
+                    match prepare {
+                        Some(Err(e)) if e.is_cancelled() => break,
+                        Some(Err(e)) => {
+                            if queue.is_current(id) {
+                                error.set(Some(e.to_string()));
+                                stop_playback();
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                wait_animation_frame().await;
+            }
+        });
+    }
+
+    if still_mine() {
+        resume_raf();
+    }
 }
 
 async fn open_blob_staged(
