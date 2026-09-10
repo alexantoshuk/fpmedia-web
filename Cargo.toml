@@ -32,7 +32,9 @@ wasm-bindgen = "0.2.126"
 js-sys = "0.3"
 web-sys = "0.3"
 wasm-bindgen-futures = "0.4"
-re_mp4 = "0.5.1"
+# Temporary: QT SoundDescriptionV2 / wave+esds fix until rerun-io/re_mp4#35 merges.
+# https://github.com/rerun-io/re_mp4/issues/32
+re_mp4 = { git = "https://github.com/alexantoshuk/re_mp4", rev = "a6dceaa656469bd17be77c7d7e2e2b696835d0e6" }
 
 [[workspace.metadata.leptos]]
 name = "webmedia"

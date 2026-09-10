@@ -58,6 +58,7 @@ Useful areas there: packet/sample/canvas sinks, decode-order vs presentation-ord
 ## Gotchas
 
 1. **`re_mp4` sample ranges** refer to the **same** byte buffer passed to `open_mp4_bytes`. `Mp4VideoTrack` owns that buffer. `open_mp4_path` is native-only (`cfg(not(wasm32))`).
+1b. **QT / `.mov` AAC (`mp4a` version 2)** — crates.io `0.5.1` fails open (`mp4a box contains a box with a larger size than it`). Workspace pins [alexantoshuk/re_mp4@a6dceaa](https://github.com/alexantoshuk/re_mp4/commit/a6dceaa656469bd17be77c7d7e2e2b696835d0e6) (PR [rerun-io/re_mp4#35](https://github.com/rerun-io/re_mp4/pull/35)) until upstream merges.
 2. **AVCC vs Annex-B** — MP4 `avc1` samples are length-prefixed; WebCodecs wants that plus `avcC` in `VideoDecoderConfig.description`. Length size = `(avcC[4] & 0b11) + 1`.
 2b. **Lying sync samples** — on AVC open, demote `is_sync` when the AU is not an IDR (NAL type 5). Mediabunny `verifyKeyPackets`. Does not yet handle Recovery Point SEI or HEVC IRAP.
 3. **B-frames** — index is presentation order; `nearest_keyframe` / `decode_window` use **`decode_order`** (not DTS range). Fixture `with_b_frames.mp4` covers this.

@@ -66,6 +66,28 @@ webmedia/
 | WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
 | `leptos-use` for browser helpers | Observers/events/rAF in `video/`; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | [mediabunny](https://github.com/Vanilagy/mediabunny) is the required reference; port patterns, never depend on the TS package |
+| Progressive open via `MediaSource` (planned) | Match `<video>` / mediabunny `BlobSource`: ranged reads, parse `moov` only, fetch `mdat` samples by file offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
+
+---
+
+## Progressive open (plan)
+
+**Problem:** open loads the entire MP4/MOV into a `Vec<u8>` (`file.array_buffer` → `open_mp4_bytes`), so ~700 MB clips stall before first frame.
+
+**Approach** (mediabunny-aligned; keep `re_mp4`):
+
+1. `MediaSource` trait — `size` + async `read(offset, len)`; wasm `BlobSource` (`Blob.slice`), native file/`Seek`; ~8 MiB read cache.
+2. Top-level box scan — read headers only, skip `mdat`, collect `ftyp`+`moov`, parse stub with `re_mp4` (sample offsets stay **file-absolute**).
+3. `Mp4VideoTrack` holds source + `FrameIndex` + codec config — not full media bytes; `encoded_sample` reads ranges on demand.
+4. UI — `open_blob(File)` instead of whole-file `array_buffer`.
+5. Defer full AVC sync-flag verify off the critical path (lazy / first GOP).
+6. Keep `open_mp4_bytes` for fixtures/tests.
+
+**Out of scope for this track:** stream-only sources without random access; fMP4/DASH; MSE remux.
+
+**Success:** BBB-class file opens to first paint without allocating the full media size in WASM.
+
+Details / ordering: `.ai/state.md` (In progress).
 
 ---
 
