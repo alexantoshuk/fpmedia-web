@@ -19,7 +19,10 @@ pub(crate) enum HostOp {
         blob: web_sys::Blob,
         canvas: HtmlCanvasElement,
     },
+    /// Exact presentation frame.
     Seek(u32),
+    /// Nearest sync at/before frame (scrub drag preview).
+    SeekKeyframe(u32),
     Step(bool),
     /// Prime presentation queue then start the play session / rAF.
     PlayPrime,
@@ -86,7 +89,10 @@ impl OpQueue {
     /// In-flight seek/play abort via `WebPlayer::pause` / `cancel_ops` and the
     /// `playing` flag. Returns `true` to start drain.
     pub fn enqueue_seek_or_step(&self, op: HostOp) -> bool {
-        debug_assert!(matches!(op, HostOp::Seek(_) | HostOp::Step(_)));
+        debug_assert!(matches!(
+            op,
+            HostOp::Seek(_) | HostOp::SeekKeyframe(_) | HostOp::Step(_)
+        ));
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
         st.pending

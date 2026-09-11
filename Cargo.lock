@@ -64,6 +64,7 @@ dependencies = [
  "console_log",
  "js-sys",
  "leptos",
+ "leptos-use",
  "leptos_axum",
  "leptos_meta",
  "leptos_router",

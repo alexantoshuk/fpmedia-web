@@ -158,11 +158,28 @@ impl DenseFrameCache {
         keys
     }
 
+    /// Chunk keys that have no entry yet (not the same as an incomplete GOP —
+    /// use [`Self::gop_complete`] after a single-frame `insert_owned`).
+    #[allow(dead_code)] // ensure_window uses gop_complete; kept for callers
     pub fn missing_among(&self, keys: &[FrameId]) -> Vec<FrameId> {
         keys.iter()
             .copied()
             .filter(|k| !self.chunks.contains(k))
             .collect()
+    }
+
+    /// True when every id in `gop_ids` is present in the chunk for `key`.
+    ///
+    /// A chunk created by a single `insert_owned` (play/step) must not count as
+    /// a full GOP — otherwise scrub fill skips and PREV keeps cold-cascading.
+    pub fn gop_complete(&self, key: FrameId, gop_ids: &[FrameId]) -> bool {
+        if gop_ids.is_empty() {
+            return self.chunks.contains(&key);
+        }
+        let Some(chunk) = self.chunks.peek(&key) else {
+            return false;
+        };
+        gop_ids.iter().all(|id| chunk.frames.contains_key(id))
     }
 
     fn evict_until_room_for_chunk(&mut self) {

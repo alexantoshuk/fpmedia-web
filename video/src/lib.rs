@@ -38,6 +38,8 @@ pub(crate) struct VideoOps {
     pub play: Rc<dyn Fn()>,
     pub pause: Rc<dyn Fn()>,
     pub seek_frame: Rc<dyn Fn(u32)>,
+    /// Scrub-drag preview: nearest sync at/before frame (mediabunny `seekToKey`).
+    pub seek_keyframe: Rc<dyn Fn(u32)>,
     pub next_frame: Rc<dyn Fn()>,
     pub previous_frame: Rc<dyn Fn()>,
     pub set_loop: Rc<dyn Fn(bool)>,
@@ -100,6 +102,17 @@ impl VideoRef {
         if let Some(seek) = self
             .ops
             .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
+            .flatten()
+        {
+            seek(frame);
+        }
+    }
+
+    /// Fast scrub preview — snap to the nearest keyframe at or before `frame`.
+    pub fn seek_keyframe(&self, frame: u32) {
+        if let Some(seek) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_keyframe)))
             .flatten()
         {
             seek(frame);

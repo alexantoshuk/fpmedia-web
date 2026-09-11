@@ -1,13 +1,45 @@
 //! Demo controls over [`video::Video`] — not production chrome.
 
+use leptos::ev;
 use leptos::prelude::*;
+use leptos_use::use_event_listener;
 use wasm_bindgen::JsCast;
-use web_sys::{Blob, Element, HtmlInputElement};
+use web_sys::{Blob, Element, HtmlInputElement, window};
 use video::{Video, VideoMetadata, VideoRef};
 
 #[component]
 pub fn DemoPlayer() -> impl IntoView {
     let video = VideoRef::new();
+
+    // ← / → match Prev / Next buttons (skip when typing in an input).
+    let _arrow_keys = use_event_listener(window(), ev::keydown, move |ev| {
+        let Some(target) = ev.target() else {
+            return;
+        };
+        if let Ok(el) = target.dyn_into::<Element>() {
+            let tag = el.tag_name().to_ascii_lowercase();
+            if tag == "input" || tag == "textarea" || tag == "select" {
+                return;
+            }
+        }
+        let can_step = video.ready.get_untracked()
+            && !video.busy.get_untracked()
+            && !video.playing.get_untracked();
+        if !can_step {
+            return;
+        }
+        match ev.key().as_str() {
+            "ArrowLeft" => {
+                ev.prevent_default();
+                video.previous_frame();
+            }
+            "ArrowRight" => {
+                ev.prevent_default();
+                video.next_frame();
+            }
+            _ => {}
+        }
+    });
 
     view! {
         <div class="wm-player">
@@ -174,20 +206,24 @@ pub fn DemoPlayer() -> impl IntoView {
 }
 
 /// Timeline scrubber under the video — red = current frame.
+///
+/// Drag uses keyframe seeks (mediabunny `seekToKey`); pointer-up does an exact
+/// frame seek so release lands on the precise scrub position.
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
+    let pending_exact = RwSignal::new(None::<u32>);
 
-    let seek_from_client_x = move |el: &Element, client_x: f64| {
+    let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
         if !video.ready.get_untracked() {
-            return;
+            return None;
         }
         let rect = el.get_bounding_client_rect();
         let w = rect.width().max(1.0);
         let x = (client_x - rect.left()).clamp(0.0, w);
         let max_frame = video.frame_count.get_untracked().saturating_sub(1);
         let frame = ((x / w) * max_frame as f64).round() as u32;
-        video.seek_frame(frame.min(max_frame));
+        Some(frame.min(max_frame))
     };
 
     view! {
@@ -209,7 +245,10 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     let _ = html.set_pointer_capture(ev.pointer_id());
                 }
                 scrubbing.set(true);
-                seek_from_client_x(&el, ev.client_x() as f64);
+                if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
+                    pending_exact.set(Some(frame));
+                    video.seek_keyframe(frame);
+                }
             }
             on:pointermove=move |ev| {
                 if !scrubbing.get_untracked() {
@@ -218,10 +257,22 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 let Ok(el) = ev.current_target().unwrap().dyn_into::<Element>() else {
                     return;
                 };
-                seek_from_client_x(&el, ev.client_x() as f64);
+                if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
+                    pending_exact.set(Some(frame));
+                    video.seek_keyframe(frame);
+                }
             }
-            on:pointerup=move |_| scrubbing.set(false)
-            on:pointercancel=move |_| scrubbing.set(false)
+            on:pointerup=move |_| {
+                scrubbing.set(false);
+                if let Some(frame) = pending_exact.get_untracked() {
+                    pending_exact.set(None);
+                    video.seek_frame(frame);
+                }
+            }
+            on:pointercancel=move |_| {
+                scrubbing.set(false);
+                pending_exact.set(None);
+            }
         >
             <div class="wm-scrubber-track">
                 <div

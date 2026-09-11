@@ -351,6 +351,19 @@ pub fn Video(
                             )
                             .await;
                         }
+                        HostOp::SeekKeyframe(target) => {
+                            run_seek_or_step(
+                                &queue,
+                                id,
+                                &player,
+                                &sync_ui,
+                                &session,
+                                error,
+                                playing,
+                                SeekOrStep::SeekKeyframe(target),
+                            )
+                            .await;
+                        }
                         HostOp::Step(forward) => {
                             run_seek_or_step(
                                 &queue,
@@ -467,6 +480,23 @@ pub fn Video(
         }) as Rc<dyn Fn(u32)>
     };
 
+    let seek_keyframe_fn = {
+        let player = Rc::clone(&player);
+        let session = Rc::clone(&session);
+        let queue = queue.clone();
+        let kick_drain = Rc::clone(&kick_drain);
+        Rc::new(move |target: u32| {
+            enqueue_seek_step(
+                &queue,
+                &kick_drain,
+                &player,
+                &session,
+                playing,
+                HostOp::SeekKeyframe(target),
+            );
+        }) as Rc<dyn Fn(u32)>
+    };
+
     let next_fn = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
@@ -519,6 +549,7 @@ pub fn Video(
         play: play_fn,
         pause: stop_playback,
         seek_frame: seek_fn,
+        seek_keyframe: seek_keyframe_fn,
         next_frame: next_fn,
         previous_frame: prev_fn,
         set_loop: set_loop_fn,
@@ -571,6 +602,7 @@ fn enqueue_seek_step(
 
 enum SeekOrStep {
     Seek(u32),
+    SeekKeyframe(u32),
     Step(bool),
 }
 
@@ -666,12 +698,14 @@ async fn run_seek_or_step(
     p.pause();
     let label = match &op {
         SeekOrStep::Seek(t) => format!("seek {t}"),
+        SeekOrStep::SeekKeyframe(t) => format!("seek-key {t}"),
         SeekOrStep::Step(true) => "next".into(),
         SeekOrStep::Step(false) => "prev".into(),
     };
     web_sys::console::log_1(&format!("webmedia: {label} start").into());
     let result = match op {
         SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
+        SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
         SeekOrStep::Step(true) => p.next_frame().await,
         SeekOrStep::Step(false) => p.previous_frame().await,
     };

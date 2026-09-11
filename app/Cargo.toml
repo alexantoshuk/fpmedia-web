@@ -12,6 +12,7 @@ leptos = { workspace = true }
 leptos_meta = { workspace = true }
 leptos_router = { workspace = true }
 leptos_axum = { workspace = true, optional = true }
+leptos-use = { workspace = true, optional = true }
 console_error_panic_hook = { workspace = true, optional = true }
 console_log = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
@@ -26,6 +27,8 @@ web-sys = { workspace = true, optional = true, features = [
     "File",
     "FileList",
     "Blob",
+    "KeyboardEvent",
+    "Window",
 ] }
 video = { path = "../video", optional = true }
 
@@ -40,6 +43,7 @@ csr = [
     "dep:wasm-bindgen-futures",
     "dep:js-sys",
     "dep:web-sys",
+    "dep:leptos-use",
     "dep:video",
 ]
 ssr = [
