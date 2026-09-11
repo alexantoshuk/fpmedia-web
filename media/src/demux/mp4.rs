@@ -236,10 +236,11 @@ pub async fn open_mp4_source_cached_with_progress(
     mut progress: impl FnMut(&str),
 ) -> Result<Mp4VideoTrack, MediaError> {
     let mp4 = crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
-    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::new(source));
+    // Verify on the raw source first — CachedSource's 8 MiB prefetch on every
+    // scattered keyframe would thrash WASM (BBB ≈600 syncs → multi‑GB of Blob reads).
     let mut track = build_track(
         mp4,
-        cached,
+        Arc::clone(&source),
         OpenMp4Options {
             verify_avc_sync: false,
         },
@@ -247,6 +248,7 @@ pub async fn open_mp4_source_cached_with_progress(
     if options.verify_avc_sync {
         verify_track_avc_sync_async(&mut track, &mut progress).await?;
     }
+    track.source = Arc::new(CachedSource::new(source));
     Ok(track)
 }
 

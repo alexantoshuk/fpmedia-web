@@ -54,7 +54,11 @@ pub struct LoadedBox {
 /// one Blob round-trip instead of many tiny `array_buffer`s on large files.
 const HEAD_PREFETCH: usize = 64 * 1024;
 
-/// Walk top-level boxes until `moov` is found (headers only for non-needed boxes).
+/// Walk all top-level boxes (`moov` required).
+///
+/// Loads **headers** for every top-level atom (`free` / `wide` / `mdat` / …).
+/// Stopping at `moov` leaves later headers as sparse zeros; `re_mp4` then hits a
+/// size-0 box and `skip_box(0)` infinite-loops (browser freeze on large files).
 pub async fn scan_top_level(source: &dyn MediaSource) -> Result<Vec<TopLevelBox>, MediaError> {
     let file_size = source.size();
     if file_size == 0 {
@@ -97,10 +101,6 @@ pub async fn scan_top_level(source: &dyn MediaSource) -> Result<Vec<TopLevelBox>
         boxes.push(entry);
 
         offset = offset.saturating_add(box_size);
-
-        if saw_moov {
-            break;
-        }
     }
 
     if !saw_moov {
@@ -110,6 +110,57 @@ pub async fn scan_top_level(source: &dyn MediaSource) -> Result<Vec<TopLevelBox>
     }
 
     Ok(boxes)
+}
+
+/// Truncate `moov` before trailing size-0 / short padding and patch the size field.
+///
+/// QuickTime often pads `moov` with zeros. After real children end, `re_mp4`
+/// parses those as a size-0 box and `skip_box(0)` seeks back forever
+/// (ISOBMFF: size 0 ⇒ extends to end of parent — stop, don't skip 0).
+fn sanitize_moov_padding(bytes: &mut Vec<u8>) -> Result<(), MediaError> {
+    if bytes.len() < HEADER_SIZE || &bytes[4..8] != b"moov" {
+        return Ok(());
+    }
+    // 64-bit largesize moov: leave alone (rare; size field is not a u32 length).
+    if bytes[0..4] == [0, 0, 0, 1] {
+        return Ok(());
+    }
+
+    // Walk top-level children inside moov; stop before size-0 or truncated junk.
+    let mut pos = HEADER_SIZE;
+    let end = bytes.len();
+    while pos < end {
+        if end - pos < HEADER_SIZE {
+            // Fewer than 8 bytes of padding — drop them.
+            break;
+        }
+        let size32 = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap());
+        if size32 == 0 {
+            // size-0 "box" (padding) — truncate here.
+            break;
+        }
+        let box_size = if size32 == 1 {
+            if end - pos < EXTENDED_HEADER_SIZE {
+                break;
+            }
+            let size64 = u64::from_be_bytes(bytes[pos + 8..pos + 16].try_into().unwrap());
+            size64 as usize
+        } else {
+            size32 as usize
+        };
+        if box_size < HEADER_SIZE || pos.saturating_add(box_size) > end {
+            // Declared size runs past moov — treat as corruption/padding.
+            break;
+        }
+        pos += box_size;
+    }
+    bytes.truncate(pos);
+
+    let new_size = u32::try_from(bytes.len()).map_err(|_| {
+        MediaError::Mp4("moov too large after padding trim".into())
+    })?;
+    bytes[0..4].copy_from_slice(&new_size.to_be_bytes());
+    Ok(())
 }
 
 async fn read_box_header_at(
@@ -192,7 +243,7 @@ async fn load_ftyp_moov_with_progress(
     let boxes = scan_top_level(source).await?;
     let mut loaded = Vec::new();
 
-    for info in boxes {
+    for mut info in boxes {
         let need = if info.is_ftyp() || info.is_moov() {
             info.size as usize
         } else {
@@ -208,7 +259,7 @@ async fn load_ftyp_moov_with_progress(
         } else if info.is_ftyp() {
             progress("Reading ftyp…");
         }
-        let bytes = source.read(info.offset, need).await?;
+        let mut bytes = source.read(info.offset, need).await?;
         if bytes.len() != need {
             return Err(MediaError::Mp4(format!(
                 "short {} read at {}: got {} want {}",
@@ -229,6 +280,11 @@ async fn load_ftyp_moov_with_progress(
                 )));
             }
         }
+        if info.is_moov() {
+            sanitize_moov_padding(&mut bytes)?;
+            info.size = bytes.len() as u64;
+            info.header_len = HEADER_SIZE as u8;
+        }
         loaded.push(LoadedBox { info, bytes });
     }
 
@@ -246,6 +302,8 @@ pub struct SparseBoxReader {
     pos: u64,
     /// Sorted by offset; non-overlapping.
     segments: Vec<(u64, Vec<u8>)>,
+    /// After the last [`Read::read`] — used to detect `skip_box(0)` livelock.
+    after_read_pos: u64,
 }
 
 impl SparseBoxReader {
@@ -259,6 +317,7 @@ impl SparseBoxReader {
             file_size,
             pos: 0,
             segments,
+            after_read_pos: 0,
         }
     }
 
@@ -266,6 +325,22 @@ impl SparseBoxReader {
         self.segments
             .iter()
             .find(|(off, bytes)| pos >= *off && pos < off + bytes.len() as u64)
+    }
+
+    /// Peek up to `len` bytes at `pos` without moving the cursor.
+    fn peek_at(&self, pos: u64, len: usize) -> Option<Vec<u8>> {
+        if len == 0 || pos >= self.file_size {
+            return None;
+        }
+        let want = len.min((self.file_size - pos) as usize);
+        if let Some((off, bytes)) = self.segment_at(pos) {
+            let local = (pos - off) as usize;
+            let avail = bytes.len() - local;
+            let n = want.min(avail);
+            return Some(bytes[local..local + n].to_vec());
+        }
+        // Gap — sparse zeros.
+        Some(vec![0u8; want])
     }
 }
 
@@ -284,6 +359,7 @@ impl Read for SparseBoxReader {
             let n = want.min(avail);
             buf[..n].copy_from_slice(&bytes[local..local + n]);
             self.pos += n as u64;
+            self.after_read_pos = self.pos;
             Ok(n)
         } else {
             let next = self
@@ -296,6 +372,7 @@ impl Read for SparseBoxReader {
             let n = want.min(gap);
             buf[..n].fill(0);
             self.pos += n as u64;
+            self.after_read_pos = self.pos;
             Ok(n)
         }
     }
@@ -314,7 +391,22 @@ impl Seek for SparseBoxReader {
                 "seek before start",
             ));
         }
-        self.pos = next as u64;
+        let next = next as u64;
+        // re_mp4 `skip_box(0)` on QT padding: after reading an 8-byte size-0 header
+        // at `next`, seeks back to `next` → infinite loop. Only refuse that rewind
+        // when the header at `next` is actually size 0 (do not break RawBox re-reads
+        // of small legitimate boxes).
+        if next < self.pos
+            && self.pos - next == HEADER_SIZE as u64
+            && self.after_read_pos == self.pos
+        {
+            if let Some(hdr) = self.peek_at(next, HEADER_SIZE) {
+                if hdr.len() >= 4 && u32::from_be_bytes(hdr[0..4].try_into().unwrap()) == 0 {
+                    return Ok(self.pos);
+                }
+            }
+        }
+        self.pos = next;
         Ok(self.pos)
     }
 }
@@ -415,6 +507,24 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn sanitize_moov_drops_trailing_size_zero_padding() {
+        // moov with one fake child (8-byte "mdat"-like) + size-0 padding + short junk.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&28u32.to_be_bytes()); // will be patched
+        bytes.extend_from_slice(b"moov");
+        bytes.extend_from_slice(&8u32.to_be_bytes());
+        bytes.extend_from_slice(b"mvhd"); // fake 8-byte child
+        bytes.extend_from_slice(&[0u8; 8]); // size-0 trap
+        bytes.extend_from_slice(&[0u8; 4]); // short padding
+        assert_eq!(bytes.len(), 28);
+        sanitize_moov_padding(&mut bytes).expect("sanitize");
+        assert_eq!(bytes.len(), 16); // header + one child
+        assert_eq!(&bytes[0..4], &16u32.to_be_bytes());
+        assert_eq!(&bytes[4..8], b"moov");
+        assert_eq!(&bytes[8..16], &[0, 0, 0, 8, b'm', b'v', b'h', b'd']);
     }
 
     #[test]

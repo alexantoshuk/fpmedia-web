@@ -16,6 +16,7 @@
 - After progressive open: coalesce adjacent sample ranges; optional background sync-verify for huge files if open latency matters.
 - Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
 - Temporary deps: workspace pins `alexantoshuk/re_mp4` @ `a6dceaa` until [rerun-io/re_mp4#35](https://github.com/rerun-io/re_mp4/pull/35) merges.
+- Upstream/re_mp4: nested `skip_box(0)` livelock on QT size-0 padding (we work around in `SparseBoxReader`).
 
 ### Later
 
