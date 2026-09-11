@@ -205,14 +205,17 @@ pub fn DemoPlayer() -> impl IntoView {
     }
 }
 
-/// Timeline scrubber under the video — red = current frame.
+/// Timeline scrubber under the video — red = current / drag preview frame.
 ///
-/// Drag uses keyframe seeks (mediabunny `seekToKey`); pointer-up does an exact
-/// frame seek so release lands on the precise scrub position.
+/// Drag is **async**: cancelable exact scrubs (latest wins), bar follows the
+/// pointer immediately. Prev/Next stay **sync** (queue + `busy`).
+/// Preview stays pinned until the engine playhead catches up so release does not
+/// flash through intermediate committed frames.
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
-    let pending_exact = RwSignal::new(None::<u32>);
+    // Optimistic playhead while dragging (and until engine matches after release).
+    let preview_frame = RwSignal::new(None::<u32>);
 
     let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
         if !video.ready.get_untracked() {
@@ -226,13 +229,32 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
         Some(frame.min(max_frame))
     };
 
+    let display_frame = Signal::derive(move || {
+        preview_frame
+            .get()
+            .unwrap_or_else(|| video.frame.get())
+    });
+
+    // Drop optimistic preview once the committed playhead reaches it.
+    Effect::new(move |_| {
+        let Some(preview) = preview_frame.get() else {
+            return;
+        };
+        if scrubbing.get() {
+            return;
+        }
+        if video.frame.get() == preview {
+            preview_frame.set(None);
+        }
+    });
+
     view! {
         <div
             class="wm-scrubber"
             role="slider"
             prop:aria-valuemin="0"
             prop:aria-valuemax=move || video.frame_count.get().saturating_sub(1)
-            prop:aria-valuenow=move || video.frame.get()
+            prop:aria-valuenow=move || display_frame.get()
             prop:aria-disabled=move || !video.ready.get()
             on:pointerdown=move |ev| {
                 if !video.ready.get_untracked() {
@@ -246,8 +268,8 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 }
                 scrubbing.set(true);
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
-                    pending_exact.set(Some(frame));
-                    video.seek_keyframe(frame);
+                    preview_frame.set(Some(frame));
+                    video.scrub_frame(frame);
                 }
             }
             on:pointermove=move |ev| {
@@ -258,20 +280,23 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     return;
                 };
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
-                    pending_exact.set(Some(frame));
-                    video.seek_keyframe(frame);
+                    preview_frame.set(Some(frame));
+                    video.scrub_frame(frame);
                 }
             }
             on:pointerup=move |_| {
                 scrubbing.set(false);
-                if let Some(frame) = pending_exact.get_untracked() {
-                    pending_exact.set(None);
-                    video.seek_frame(frame);
+                if let Some(frame) = preview_frame.get_untracked() {
+                    if video.frame.get_untracked() != frame {
+                        video.scrub_frame(frame);
+                    } else {
+                        preview_frame.set(None);
+                    }
                 }
             }
             on:pointercancel=move |_| {
                 scrubbing.set(false);
-                pending_exact.set(None);
+                preview_frame.set(None);
             }
         >
             <div class="wm-scrubber-track">
@@ -279,7 +304,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     class="wm-scrubber-progress"
                     style:width=move || {
                         let max = video.frame_count.get().saturating_sub(1).max(1);
-                        let pct = (video.frame.get() as f64 / max as f64) * 100.0;
+                        let pct = (display_frame.get() as f64 / max as f64) * 100.0;
                         format!("{pct:.3}%")
                     }
                 />

@@ -341,6 +341,77 @@ impl WebPlayer {
         self.seek_frame(key).await
     }
 
+    /// Async timeline scrub (mediabunny `seekToKey` then `seekTo` under one epoch).
+    /// Draws the nearest key quickly when possible **without** committing the
+    /// playhead (avoids scrubber jumping key → exact), then commits the exact frame.
+    pub async fn scrub_to(&self, frame: FrameId) -> Result<(), MediaError> {
+        let epoch = self.begin_op();
+        self.shared.restarting.set(true);
+        let result = async {
+            self.shared.player.borrow_mut().pause();
+            let cur = self.state().frame;
+            if frame < cur {
+                self.shared.fill_bias.set(FillBias::Behind);
+            } else {
+                self.shared.fill_bias.set(FillBias::Ahead);
+            }
+            self.clear_loop_prime();
+            self.clear_presentation();
+
+            if let Some(video) = self.clone_from_dense_cache(frame) {
+                self.present_only(video)?;
+                self.shared.player.borrow_mut().commit_frame(frame)?;
+                self.touch_playhead(frame);
+                return Ok(());
+            }
+
+            // Canvas-only key preview — do not commit_frame (UI playhead stays put).
+            if let Some(key) = self.key_for(frame) {
+                if key != frame {
+                    self.draw_frame_unccommitted(key, epoch).await?;
+                    if !self.is_current(epoch) {
+                        return Err(MediaError::Cancelled);
+                    }
+                    if let Some(video) = self.clone_from_dense_cache(frame) {
+                        self.present_only(video)?;
+                        self.shared.player.borrow_mut().commit_frame(frame)?;
+                        self.touch_playhead(frame);
+                        return Ok(());
+                    }
+                }
+            }
+
+            self.goto_frame(frame, epoch).await
+        }
+        .await;
+        self.shared.restarting.set(false);
+        if !self.is_current(epoch) {
+            return Err(MediaError::Cancelled);
+        }
+        result?;
+        self.schedule_ensure_window();
+        Ok(())
+    }
+
+    /// Decode/draw `frame` for canvas preview without updating the committed playhead.
+    async fn draw_frame_unccommitted(
+        &self,
+        frame: FrameId,
+        epoch: u64,
+    ) -> Result<(), MediaError> {
+        if let Some(video) = self.clone_from_dense_cache(frame) {
+            return self.present_only(video);
+        }
+        let track = self.shared.player.borrow().track_rc();
+        let video_frame = self.decode_frame(track.as_ref(), frame, epoch).await?;
+        if !self.is_current(epoch) {
+            video_frame.close();
+            return Err(MediaError::Cancelled);
+        }
+        // Cache the frame for later exact hits; playhead stays unchanged.
+        self.present_and_remember(frame, video_frame)
+    }
+
     pub async fn next_frame(&self) -> Result<(), MediaError> {
         self.shared.player.borrow_mut().pause();
         self.shared.fill_bias.set(FillBias::Ahead);

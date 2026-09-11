@@ -40,6 +40,8 @@ pub(crate) struct VideoOps {
     pub seek_frame: Rc<dyn Fn(u32)>,
     /// Scrub-drag preview: nearest sync at/before frame (mediabunny `seekToKey`).
     pub seek_keyframe: Rc<dyn Fn(u32)>,
+    /// Async timeline scrub — cancelable exact seek (latest wins).
+    pub scrub_frame: Rc<dyn Fn(u32)>,
     pub next_frame: Rc<dyn Fn()>,
     pub previous_frame: Rc<dyn Fn()>,
     pub set_loop: Rc<dyn Fn(bool)>,
@@ -116,6 +118,17 @@ impl VideoRef {
             .flatten()
         {
             seek(frame);
+        }
+    }
+
+    /// Async scrub drag — cancelable exact seek; rapid moves keep only the latest.
+    pub fn scrub_frame(&self, frame: u32) {
+        if let Some(scrub) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_frame)))
+            .flatten()
+        {
+            scrub(frame);
         }
     }
 

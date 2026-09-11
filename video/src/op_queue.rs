@@ -19,10 +19,12 @@ pub(crate) enum HostOp {
         blob: web_sys::Blob,
         canvas: HtmlCanvasElement,
     },
-    /// Exact presentation frame.
+    /// Exact presentation frame (sync — waits in the drain queue).
     Seek(u32),
-    /// Nearest sync at/before frame (scrub drag preview).
+    /// Nearest sync at/before frame.
     SeekKeyframe(u32),
+    /// Timeline drag — cancelable; latest target wins (does not latch `busy`).
+    Scrub(u32),
     Step(bool),
     /// Prime presentation queue then start the play session / rAF.
     PlayPrime,
@@ -32,6 +34,8 @@ struct QueueState {
     pending: VecDeque<(u64, HostOp)>,
     /// Drain loop is scheduled / running.
     draining: bool,
+    /// In-flight op is a cancelable scrub (sync step may preempt it).
+    scrub_inflight: bool,
 }
 
 /// Serializes host media ops and tracks the invalidation epoch.
@@ -49,6 +53,7 @@ impl OpQueue {
             inner: Rc::new(RefCell::new(QueueState {
                 pending: VecDeque::new(),
                 draining: false,
+                scrub_inflight: false,
             })),
             async_id: Rc::new(Cell::new(0)),
             busy,
@@ -83,11 +88,24 @@ impl OpQueue {
         self.begin_drain_locked(&mut st)
     }
 
-    /// Seek/step: drop pending seek/step/play (keep open), enqueue latest.
+    /// Async scrub: drop pending seek/step/scrub/play (keep open), enqueue latest.
+    /// Does **not** set `busy` — drag must not disable Prev/Next. Caller must
+    /// `WebPlayer::cancel_ops` so the in-flight scrub aborts.
+    pub fn enqueue_scrub(&self, frame: u32) -> bool {
+        let id = self.async_id.get();
+        let mut st = self.inner.borrow_mut();
+        st.pending
+            .retain(|(_, o)| matches!(o, HostOp::Open { .. }));
+        st.pending.push_back((id, HostOp::Scrub(frame)));
+        self.begin_drain_locked(&mut st)
+    }
+
+    /// Seek/step: drop pending seek/step/scrub/play (keep open), enqueue latest.
     /// Does **not** bump the epoch — that would cancel an in-flight open
     /// (mediabunny seeks await the prior iterator; open uses asyncId++).
-    /// In-flight seek/play abort via `WebPlayer::pause` / `cancel_ops` and the
-    /// `playing` flag. Returns `true` to start drain.
+    /// In-flight scrub is preempted by the caller via `cancel_ops` when
+    /// [`Self::scrub_inflight`] is set. Sync step/seek wait for each other.
+    /// Returns `true` to start drain.
     pub fn enqueue_seek_or_step(&self, op: HostOp) -> bool {
         debug_assert!(matches!(
             op,
@@ -100,6 +118,15 @@ impl OpQueue {
         st.pending.push_back((id, op));
         self.busy.set(true);
         self.begin_drain_locked(&mut st)
+    }
+
+    /// True when the drain loop is inside a scrub op (sync step should cancel it).
+    pub fn scrub_inflight(&self) -> bool {
+        self.inner.borrow().scrub_inflight
+    }
+
+    pub fn set_scrub_inflight(&self, on: bool) {
+        self.inner.borrow_mut().scrub_inflight = on;
     }
 
     /// Play-prime: replace a pending PlayPrime; do not cancel an in-flight open/seek.

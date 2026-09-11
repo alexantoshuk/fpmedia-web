@@ -364,6 +364,21 @@ pub fn Video(
                             )
                             .await;
                         }
+                        HostOp::Scrub(target) => {
+                            queue.set_scrub_inflight(true);
+                            run_seek_or_step(
+                                &queue,
+                                id,
+                                &player,
+                                &sync_ui,
+                                &session,
+                                error,
+                                playing,
+                                SeekOrStep::Scrub(target),
+                            )
+                            .await;
+                            queue.set_scrub_inflight(false);
+                        }
                         HostOp::Step(forward) => {
                             run_seek_or_step(
                                 &queue,
@@ -497,6 +512,23 @@ pub fn Video(
         }) as Rc<dyn Fn(u32)>
     };
 
+    let scrub_fn = {
+        let player = Rc::clone(&player);
+        let session = Rc::clone(&session);
+        let queue = queue.clone();
+        let kick_drain = Rc::clone(&kick_drain);
+        Rc::new(move |target: u32| {
+            enqueue_scrub(
+                &queue,
+                &kick_drain,
+                &player,
+                &session,
+                playing,
+                target,
+            );
+        }) as Rc<dyn Fn(u32)>
+    };
+
     let next_fn = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
@@ -550,6 +582,7 @@ pub fn Video(
         pause: stop_playback,
         seek_frame: seek_fn,
         seek_keyframe: seek_keyframe_fn,
+        scrub_frame: scrub_fn,
         next_frame: next_fn,
         previous_frame: prev_fn,
         set_loop: set_loop_fn,
@@ -593,6 +626,10 @@ fn enqueue_seek_step(
     playing.set(false);
     let _ = session.borrow_mut().take();
     if let Some(p) = player.borrow().as_ref().cloned() {
+        // Sync Prev/Next/Seek wait for each other, but preempt async scrub.
+        if queue.scrub_inflight() {
+            p.cancel_ops();
+        }
         p.pause();
     }
     if queue.enqueue_seek_or_step(op) {
@@ -600,9 +637,33 @@ fn enqueue_seek_step(
     }
 }
 
+/// Async scrub drag — always cancel in-flight decode; latest frame wins.
+fn enqueue_scrub(
+    queue: &OpQueue,
+    kick_drain: &Rc<dyn Fn()>,
+    player: &PlayerHandle,
+    session: &Rc<RefCell<Option<PlaySession>>>,
+    playing: RwSignal<bool>,
+    frame: u32,
+) {
+    if player.borrow().as_ref().is_none() {
+        return;
+    }
+    playing.set(false);
+    let _ = session.borrow_mut().take();
+    if let Some(p) = player.borrow().as_ref().cloned() {
+        p.cancel_ops();
+        p.pause();
+    }
+    if queue.enqueue_scrub(frame) {
+        kick_drain();
+    }
+}
+
 enum SeekOrStep {
     Seek(u32),
     SeekKeyframe(u32),
+    Scrub(u32),
     Step(bool),
 }
 
@@ -699,6 +760,7 @@ async fn run_seek_or_step(
     let label = match &op {
         SeekOrStep::Seek(t) => format!("seek {t}"),
         SeekOrStep::SeekKeyframe(t) => format!("seek-key {t}"),
+        SeekOrStep::Scrub(t) => format!("scrub {t}"),
         SeekOrStep::Step(true) => "next".into(),
         SeekOrStep::Step(false) => "prev".into(),
     };
@@ -706,6 +768,7 @@ async fn run_seek_or_step(
     let result = match op {
         SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
         SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
+        SeekOrStep::Scrub(target) => p.scrub_to(u64::from(target)).await,
         SeekOrStep::Step(true) => p.next_frame().await,
         SeekOrStep::Step(false) => p.previous_frame().await,
     };
