@@ -1301,10 +1301,15 @@ impl WebPlayer {
             self.shared.decoder_reset.set(false);
         }
         let cancelled = || !self.is_current(epoch);
-        let decoded = decoder.decode_gop(track.as_ref(), key, &cancelled).await;
+        let shared = Rc::clone(&self.shared);
+        let mut on_frame = move |id: FrameId, video: OwnedVideoFrame| {
+            shared.dense_cache.borrow_mut().insert_frame(id, video);
+        };
+        let decoded = decoder
+            .decode_gop(track.as_ref(), key, &cancelled, &mut on_frame)
+            .await;
         match decoded {
-            Ok(frames) => {
-                self.shared.dense_cache.borrow_mut().insert_gop(key, frames);
+            Ok(()) => {
                 *self.decoder.borrow_mut() = Some(decoder);
                 Ok(())
             }
@@ -1377,7 +1382,14 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
                     idle_passes = 0;
                     yield_event_loop().await;
                 }
-                Err(e) => return Err(e),
+                Err(_) => {
+                    // Transient WebCodecs fault — keep densifying (do not kill the task).
+                    idle_passes = idle_passes.saturating_add(1);
+                    if idle_passes >= 3 {
+                        return Ok(());
+                    }
+                    yield_event_loop().await;
+                }
             }
         }
     }
@@ -1497,22 +1509,20 @@ async fn fill_one_gap(
         return Err(MediaError::Cancelled);
     }
 
-    let decoded = decoder.decode_gop(track.as_ref(), key, &cancelled).await;
+    // Stream into dense as each remapped frame emerges so the ready strip
+    // paints per-frame (not one tick-burst after the whole GOP).
+    let shared_for_cache = Rc::clone(&shared);
+    let mut on_frame = move |id: FrameId, video: OwnedVideoFrame| {
+        shared_for_cache
+            .dense_cache
+            .borrow_mut()
+            .insert_frame(id, video);
+    };
+    let decoded = decoder
+        .decode_gop(track.as_ref(), key, &cancelled, &mut on_frame)
+        .await;
     match decoded {
-        Ok(frames) => {
-            // Refuse incomplete GOPs (e.g. race) — a lone sync frame becomes an
-            // orphan tick outside the contiguous scrub window.
-            let index = shared.player.borrow().track().index().clone();
-            let ids = index.gop_frame_ids(key).unwrap_or_default();
-            let complete = ids.is_empty()
-                || ids.iter().all(|id| frames.contains_key(id));
-            if complete {
-                shared.dense_cache.borrow_mut().insert_gop(key, frames);
-            } else {
-                for (_, video) in frames {
-                    drop(video);
-                }
-            }
+        Ok(()) => {
             *shared.scrub_decoder.borrow_mut() = Some(decoder);
             let after = shared.dense_cache.borrow().frame_count();
             Ok(after > before)

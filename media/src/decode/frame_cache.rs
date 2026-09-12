@@ -193,6 +193,8 @@ impl DenseFrameCache {
     pub fn touch_playhead(&mut self, frame: FrameId, key: FrameId) {
         self.playhead = frame;
         self.playhead_key = key;
+        // Evict farthest from the new aim when over budget — do **not** wipe
+        // other visited runs (scrub should keep frames it already touched).
         self.enforce_frame_budget(Some(frame));
     }
 
@@ -255,6 +257,9 @@ impl DenseFrameCache {
         self.refresh_no_gaps();
     }
 
+    /// Batch insert (tests / non-streaming callers). Scrub fill streams via
+    /// [`Self::insert_frame`] per decoded output so the ready strip updates live.
+    #[allow(dead_code)]
     pub fn insert_gop(&mut self, _key: FrameId, frames: HashMap<FrameId, OwnedVideoFrame>) {
         if frames.is_empty() {
             return;
@@ -267,6 +272,9 @@ impl DenseFrameCache {
                 continue;
             }
             self.insert_frame(id, video);
+            if !self.index.contains_key(&id) {
+                break;
+            }
             protect = Some(id);
         }
         self.enforce_frame_budget(protect);

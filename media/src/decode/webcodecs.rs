@@ -274,10 +274,10 @@ impl WebCodecsDecoder {
     fn collect_outputs_into_held(&mut self) -> Result<(), MediaError> {
         for frame in self.frames.borrow_mut().drain(..) {
             let Some(pts_us) = self.input_timestamps.first().copied() else {
+                // Late output after flush/cancel/recreate race — drop; do not
+                // poison the session (was: "decoded frame without queued input timestamp").
                 drop(frame);
-                return Err(MediaError::WebCodecs(
-                    "decoded frame without queued input timestamp".into(),
-                ));
+                continue;
             };
             self.input_timestamps.remove(0);
             self.held.push(HeldFrame { pts_us, frame });
@@ -479,20 +479,23 @@ impl WebCodecsDecoder {
 
     /// Decode every presentation frame in the GOP starting at sync `key_frame`.
     ///
-    /// Does **not** prune mid-GOP (unlike [`Self::decode_frame`]) so scrub fill can
-    /// populate the dense cache. Ends with flush + cleared warm state.
+    /// Delivers remapped frames to `on_frame` as they emerge so `held` stays
+    /// empty (mediabunny drains `sampleQueue` as the consumer pulls) and the
+    /// dense-cache strip can paint each tick without waiting for the whole GOP.
+    /// Parking the whole GOP in `held` forced `MAX_DECODE_QUEUE_WITH_HELD` (8)
+    /// and wedged at `q≈9, held=16` → backpressure timeout.
     ///
-    /// On cancel: drops any held frames and returns [`MediaError::Cancelled`].
-    /// Do **not** insert a partial GOP — the first emit is usually only the sync
-    /// frame, which would sit as an orphan outside the contiguous scrub window.
+    /// On cancel: hard-reset. Frames already delivered to `on_frame` stay with
+    /// the consumer (partial densify is OK; holes re-arm fill).
     pub async fn decode_gop(
         &mut self,
         track: &Mp4VideoTrack,
         key_frame: FrameId,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<HashMap<FrameId, OwnedVideoFrame>, MediaError> {
+        on_frame: &mut dyn FnMut(FrameId, OwnedVideoFrame),
+    ) -> Result<(), MediaError> {
         if is_cancelled() {
-            return Err(MediaError::Cancelled);
+            return self.abort_gop_partial();
         }
         let key_entry = track
             .index()
@@ -527,14 +530,17 @@ impl WebCodecsDecoder {
         if is_cancelled() {
             return self.abort_gop_partial();
         }
-        // i64::MIN → never prune; we want the whole GOP in `held`.
-        self.feed_sample(&key_sample, true, i64::MIN).await?;
+        self.feed_sample_gop(&key_sample, true, &mut pts_to_id, on_frame)
+            .await?;
         self.fed_through_order = Some(key_do);
         self.await_outputs_if_pending().await?;
         self.collect_outputs_into_held()?;
+        self.flush_held_into_gop(on_frame, &mut pts_to_id);
+        // Macrotask so paused rAF can refresh the ready strip mid-GOP.
+        let _ = JsFuture::from(sleep_promise_ms(0)).await;
 
         let max_feeds = gop_ids.len().saturating_add(8).max(16);
-        for i in 0..max_feeds {
+        for _ in 0..max_feeds {
             if is_cancelled() {
                 return self.abort_gop_partial();
             }
@@ -543,17 +549,14 @@ impl WebCodecsDecoder {
             if next.is_empty() {
                 break;
             }
-            self.feed_sample(&next[0], false, i64::MIN).await?;
+            self.feed_sample_gop(&next[0], false, &mut pts_to_id, on_frame)
+                .await?;
             self.fed_through_order = Some(next[0].decode_order);
             self.await_outputs_if_pending().await?;
             self.collect_outputs_into_held()?;
-            // Yield so paused UI / play start can cancel without a long stall.
-            if i % 4 == 3 {
-                let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
-                    &wasm_bindgen::JsValue::UNDEFINED,
-                ))
-                .await;
-            }
+            self.flush_held_into_gop(on_frame, &mut pts_to_id);
+            // Macrotask yield — microtask-only spins starve rAF / strip updates.
+            let _ = JsFuture::from(sleep_promise_ms(0)).await;
         }
 
         for _ in 0..32 {
@@ -562,46 +565,43 @@ impl WebCodecsDecoder {
             }
             self.await_outputs_if_pending().await?;
             self.collect_outputs_into_held()?;
+            self.flush_held_into_gop(on_frame, &mut pts_to_id);
             if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
                 break;
             }
+            let _ = JsFuture::from(sleep_promise_ms(0)).await;
         }
         if !self.input_timestamps.is_empty() || self.decode_queue_size() > 0 {
             let _ = self.flush_with_timeout().await;
             self.collect_outputs_into_held()?;
+            self.flush_held_into_gop(on_frame, &mut pts_to_id);
         }
 
-        Ok(self.drain_gop_held(&mut pts_to_id))
+        self.fed_through_order = None;
+        self.key_order = None;
+        self.input_timestamps.clear();
+        Ok(())
     }
 
-    fn drain_gop_held(
+    /// Move remapped `held` frames to the consumer so `held` stays empty
+    /// for backpressure (max queue 40 vs 8).
+    fn flush_held_into_gop(
         &mut self,
+        on_frame: &mut dyn FnMut(FrameId, OwnedVideoFrame),
         pts_to_id: &mut HashMap<i64, FrameId>,
-    ) -> HashMap<FrameId, OwnedVideoFrame> {
-        let mut out = HashMap::with_capacity(self.held.len());
+    ) {
         for h in self.held.drain(..) {
             if let Some(id) = pts_to_id.remove(&h.pts_us) {
-                out.insert(id, h.frame);
+                on_frame(id, h.frame);
             } else {
                 drop(h.frame);
             }
         }
-        self.fed_through_order = None;
-        self.key_order = None;
-        self.input_timestamps.clear();
-        out
     }
 
-    /// Cancel path: discard held frames so we never densify a lone sync frame.
-    fn abort_gop_partial(&mut self) -> Result<HashMap<FrameId, OwnedVideoFrame>, MediaError> {
-        let _ = self.collect_outputs_into_held();
-        for h in self.held.drain(..) {
-            drop(h.frame);
-        }
-        self.frames.borrow_mut().clear();
-        self.fed_through_order = None;
-        self.key_order = None;
-        self.input_timestamps.clear();
+    /// Cancel path: hard-reset so in-flight browser outputs cannot desync PTS remap.
+    fn abort_gop_partial(&mut self) -> Result<(), MediaError> {
+        let _ = self.reset();
         Err(MediaError::Cancelled)
     }
 
@@ -656,7 +656,30 @@ impl WebCodecsDecoder {
     ) -> Result<(), MediaError> {
         // Prune before/during backpressure so a long key→target cascade (PREV)
         // does not pin dozens of VideoFrames and wedge decodeQueueSize.
-        self.await_decode_capacity(Some(prune_before_us)).await?;
+        self.await_decode_capacity(Some(prune_before_us), None)
+            .await?;
+        self.decode_encoded_sample(sample, force_key)
+    }
+
+    /// Like [`Self::feed_sample`] but drains remapped frames to `on_frame` during
+    /// backpressure waits so `held` stays empty (GOP densify / scrub fill).
+    async fn feed_sample_gop(
+        &mut self,
+        sample: &EncodedSample,
+        force_key: bool,
+        pts_to_id: &mut HashMap<i64, FrameId>,
+        on_frame: &mut dyn FnMut(FrameId, OwnedVideoFrame),
+    ) -> Result<(), MediaError> {
+        self.await_decode_capacity(None, Some((pts_to_id, on_frame)))
+            .await?;
+        self.decode_encoded_sample(sample, force_key)
+    }
+
+    fn decode_encoded_sample(
+        &mut self,
+        sample: &EncodedSample,
+        force_key: bool,
+    ) -> Result<(), MediaError> {
         let chunk_type = if force_key || sample.is_keyframe {
             EncodedVideoChunkType::Key
         } else {
@@ -725,11 +748,18 @@ impl WebCodecsDecoder {
     /// `held` does not stay non-empty forever during a long key→N cascade (that
     /// kept max=8 and stalled the browser queue — rapid PREV timeout).
     ///
+    /// `gop`: when densifying a full GOP, drain remapped frames to the consumer
+    /// each spin so `held` stays empty (consumer take → max queue 40, not 8).
+    ///
     /// Do **not** treat already-buffered `frames` alone as capacity progress
     /// (that spun to timeout while `decodeQueueSize` never dropped).
     async fn await_decode_capacity(
         &mut self,
         drop_before_us: Option<i64>,
+        mut gop: Option<(
+            &mut HashMap<i64, FrameId>,
+            &mut dyn FnMut(FrameId, OwnedVideoFrame),
+        )>,
     ) -> Result<(), MediaError> {
         let mut spins = 0u32;
         loop {
@@ -738,6 +768,9 @@ impl WebCodecsDecoder {
             self.collect_outputs_into_held()?;
             if let Some(us) = drop_before_us {
                 self.drop_held_before(us);
+            }
+            if let Some((pts_to_id, on_frame)) = gop.as_mut() {
+                self.flush_held_into_gop(*on_frame, pts_to_id);
             }
             let max = if self.held.is_empty() {
                 MAX_DECODE_QUEUE_EMPTY
