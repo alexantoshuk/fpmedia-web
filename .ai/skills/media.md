@@ -69,6 +69,48 @@ Rust/WASM friction (Closures, `JsFuture`, single-threaded `RefCell`) is adaptati
 - Audio track + shared A/V media clock.
 - Later: packet / sample / canvas sink layering; sparse samples-at-timestamps for filmstrip.
 
+## Frame and decode caches
+
+Decoded `VideoFrame` residency (`wasm` + `webcodecs`). Dual `VideoDecoder` so scrub fill does not steal play.
+
+```text
+  Play path                          Scrub / pause path
+ ─────────────                       ──────────────────
+  main VideoDecoder                  scrub VideoDecoder
+       │                                    │
+       ▼                                    ▼
+  presentation queue                 DenseFrameCache
+  (ahead, ~16 frames)                (visited + gap-fill)
+       │                                    │
+       └──────────► canvas ◄────────────────┘
+```
+
+| Store | Role | Ownership |
+| ----- | ---- | --------- |
+| **Presentation queue** | Play-ahead for deadline present | `WebPlayer` deque; `PRESENTATION_QUEUE_CAP` (16) |
+| **`DenseFrameCache`** | Exact-frame hits for scrub / step / seek | Slab of `OwnedVideoFrame` + sparse `FrameId → slot` |
+| **`ThumbCache`** | Filmstrip bitmaps (shell; not wired) | Separate LRU / budget from dense |
+
+| Constant | Default | Meaning |
+| -------- | ------- | ------- |
+| `DEFAULT_MAX_FRAMES` | 96 | Soft dense cap (long clips) |
+| `SHORT_CLIP_FRAME_BUDGET` | 200 | Clips with ≤ N frames stay fully resident |
+| `PRESENTATION_QUEUE_CAP` | 16 | Play prefetch depth (independent of dense) |
+| `SCRUB_CACHE_EDGE_MARGIN` | 16 | After `no_gaps`, re-arm fill only within N of either cache edge |
+
+Eviction (dense): drop farthest from **aim** (playhead / scrub focus); protect the aim frame. Ownership: move into cache; borrow to draw (`with_frame` / `AsVideoFrame`) — see §5c6.
+
+| Mode | Dense fill | Main decoder |
+| ---- | ---------- | ------------ |
+| **Play** | Off (scrub epoch cancelled) | Present + prefetch into presentation queue |
+| **Scrub / paused** | On via scrub decoder | Seeks / steps / PREV GOP fill as needed |
+
+**One entry:** `WebPlayer::enter_scrub_cache_pipeline(focus)` for pause, scrub drag/hold/release, and post-seek/step: scrub mode → park presentation queue into dense → aim at `focus` → `scrub_cache_fill_task` densifies the **GOP** of the nearest gap (both sides) until budget-saturated. `play()` switches to Play mode and cancels scrub fill.
+
+**Contiguous arming:** `DenseFrameCache::no_gaps` is set when the extent is a single run (`len == end − start + 1`). While `no_gaps`, gap-fill stays idle unless the playhead is within `SCRUB_CACHE_EDGE_MARGIN` of `cache_start` or `cache_end` (or outside the window). Holes (`!no_gaps`) keep fill always armed.
+
+Demo strip: dense exact (green) + presentation ahead (blue). While paused, `video` keeps rAF ticking so marks update during fill.
+
 ## Gotchas
 
 1. **`re_mp4` sample ranges** are **file-absolute**. Progressive open loads full `ftyp`+`moov` plus **headers** of all other top-level boxes (`mdat`/`free`/`wide`/…): `re_mp4` reads those headers before `skip_box` seeks. Zero-filled gaps look like `size=0` and abort **or** — with QT padding — `skip_box(0)` **infinite-loops** (seek back to the size-0 header) and freezes the tab on large files (BBB `.mov`). Mitigations: scan headers past `moov`; trim size-0 padding at the end of `moov` children; `SparseBoxReader` refuses size-0 `skip_box` rewinds. **Do not** wrap the source in `CachedSource` during demux or during full-file AVC sync verify — an 8 MiB prefetch per scattered keyframe pulls multi‑GB into WASM (BBB ≈600 syncs); attach cache only after parse+verify for sample I/O. Header-sized reads (≤16 B) never prefetch. Demo uses `open_blob` with **async** AVC sync verify after moov.
@@ -85,9 +127,7 @@ Rust/WASM friction (Closures, `JsFuture`, single-threaded `RefCell`) is adaptati
 5c4. **Media clock** — wall-clock until audio track exists. Do not open `AudioContext` only as a clock: `resume()` + early `close()` throws `Closed before resume completed`.
 5c5. **Yields** — prefer `Promise.resolve` microtask for decode pump turns. `setTimeout`+`Closure::once` hung open on `Decoding frame 0` after key sample read. Still use Closure for `requestAnimationFrame` (do not pass bare Promise `resolve` into rAF). Never await WebCodecs `output` alone — poll + feed-ahead / flush-with-timeout.
 5c6. **WebCodecs resource wrappers** — Types that must `close()` (or equivalent) or whose browser `clone` is fallible get an RAII owner + borrow trait (`OwnedVideoFrame` / `AsVideoFrame`). Move into cache/queue; borrow to draw. `try_clone` → `Result` (never `Option`). Same pattern later for `AudioData` / similar — not for DOM/`Blob`/`window`.
-5d. **Scrub cache (one pipeline)** — `WebPlayer::enter_scrub_cache_pipeline(focus)` is the **only** entry for pause, scrub drag, scrub hold, scrub release, and post-seek/step: (1) scrub fill mode, (2) park play presentation queue into dense cache, (3) aim at `focus`, (4) kick bidirectional GOP densify until budget-saturated. Evict farthest from aim. Play cancels the fill. Visited frames via `present_and_cache` (move, not clone). Demo strip: rAF keeps ticking while paused so fill marks update. `OwnedVideoFrame::try_clone` → `Result`; draw via borrow.
-5d2. **Seek must not clear the dense cache** — `seek_frame` used to `clear_dense_cache` + `invalidate_decoder` on every call, so scrub pointermoves always did a cold key→N cascade (multi-second on Wing It / long GOPs). Port: cache-hit present like PREV/NEXT; keep chunks across seeks; let `decode_frame` recreate only when the GOP changes or the target was consumed. Timeline drag uses async `scrub_to` (key **draw** then exact commit, cancelable — never `commit_frame` the key preview or the scrubber jumps key→exact on release); frame input / Seek button stay sync `seek_frame`. Hold optimistic scrub preview until `video.frame` matches.
-5d3. **PREV vs NEXT asymmetry** — NEXT reuses a warm decoder / presentation queue. PREV must restart from the key. Do **not** use `decode_frame` on PREV miss (it prunes every held frame before the target, so the next PREV cascades again). Fill the **whole GOP** into `DenseFrameCache` (`decode_gop` / `fill_gop_into_cache`), then present from cache. Background gap-fill uses single-frame `decode_frame` into the sparse cache. `pause()` must not bump `scrub_epoch` when already paused (UI steps call pause every time and were aborting background fill). Cache-hit PREV/NEXT must not `begin_op` (same reason).
+5d. **Scrub cache traps** — Model: [Frame and decode caches](#frame-and-decode-caches). Visited frames via `present_and_cache` (**move**, not silent clone). `seek_frame` must **not** `clear_dense_cache` / invalidate on every call (cold key→N on scrub pointermoves). Timeline drag: async `scrub_to` (key **draw** then exact commit, cancelable — never `commit_frame` **or densify** the key preview; `draw_frame_unccommitted` uses `present_only` or a keyframe already lands as a lone tick outside the contiguous window). `decode_gop` cancel must **drop** held frames (`abort_gop_partial`) — returning `Ok(partial)` inserted only the sync frame after the first emit. Scrub fill also refuses incomplete GOP maps before `insert_gop`. At capacity, `insert_frame` must refuse candidates farther than every resident (`would_evict_closer_than`) — playhead at **frame 0** otherwise evicts `end` to insert `end+1` and leaves a lone next-GOP key outside a holed window. Frame input / Seek stay sync `seek_frame`. Hold optimistic scrub preview until `video.frame` matches. NEXT reuses warm decoder / presentation queue; PREV miss fills the **whole GOP** into dense (`decode_gop` / `fill_gop_into_cache`) — do **not** `decode_frame` on PREV miss (prunes held before target → cascade). `pause()` must not bump `scrub_epoch` when already paused; cache-hit PREV/NEXT must not `begin_op` (both abort background fill).
 5e. **Behind-deadline skip** — `video` loop calls `skip_behind(lag)` when wall clock is past the next present deadline: jump to the frame at the catch-up media time (nearest keyframe if lag ≥ ~0.5s), then snap the deadline to now. Do not try to catch up by decoding every skipped present.
 5f. **Freeze cause** — filling the whole prefetch queue *after* each present blocks the deadline (feels like short freezes on long/heavy clips). Prefetch must use wall-clock spare time instead.
 6. **Playback** — `video`: **AudioContext clock + rAF present task** and a **separate prefetch task**. `present_due` / `prefetch_one` take `&self` with interior mutability so decode awaits never block presents. Track is `Rc` so decode can hold it across await without locking the playhead.

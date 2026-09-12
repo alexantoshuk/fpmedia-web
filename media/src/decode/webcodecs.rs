@@ -482,8 +482,9 @@ impl WebCodecsDecoder {
     /// Does **not** prune mid-GOP (unlike [`Self::decode_frame`]) so scrub fill can
     /// populate the dense cache. Ends with flush + cleared warm state.
     ///
-    /// On cancel: returns any frames already held (`Ok` partial) so the strip can
-    /// show progress immediately; empty cancel → `Err(Cancelled)`.
+    /// On cancel: drops any held frames and returns [`MediaError::Cancelled`].
+    /// Do **not** insert a partial GOP — the first emit is usually only the sync
+    /// frame, which would sit as an orphan outside the contiguous scrub window.
     pub async fn decode_gop(
         &mut self,
         track: &Mp4VideoTrack,
@@ -524,7 +525,7 @@ impl WebCodecsDecoder {
 
         let key_sample = track.encoded_sample(key_frame).await?;
         if is_cancelled() {
-            return self.take_gop_partial(&mut pts_to_id);
+            return self.abort_gop_partial();
         }
         // i64::MIN → never prune; we want the whole GOP in `held`.
         self.feed_sample(&key_sample, true, i64::MIN).await?;
@@ -535,7 +536,7 @@ impl WebCodecsDecoder {
         let max_feeds = gop_ids.len().saturating_add(8).max(16);
         for i in 0..max_feeds {
             if is_cancelled() {
-                return self.take_gop_partial(&mut pts_to_id);
+                return self.abort_gop_partial();
             }
             let fed = self.fed_through_order.unwrap_or(key_do);
             let next = track.samples_after_in_gop(key_do, fed, 1).await?;
@@ -557,7 +558,7 @@ impl WebCodecsDecoder {
 
         for _ in 0..32 {
             if is_cancelled() {
-                return self.take_gop_partial(&mut pts_to_id);
+                return self.abort_gop_partial();
             }
             self.await_outputs_if_pending().await?;
             self.collect_outputs_into_held()?;
@@ -591,18 +592,17 @@ impl WebCodecsDecoder {
         out
     }
 
-    /// Cancel path: keep whatever remapped frames we already have.
-    fn take_gop_partial(
-        &mut self,
-        pts_to_id: &mut HashMap<i64, FrameId>,
-    ) -> Result<HashMap<FrameId, OwnedVideoFrame>, MediaError> {
+    /// Cancel path: discard held frames so we never densify a lone sync frame.
+    fn abort_gop_partial(&mut self) -> Result<HashMap<FrameId, OwnedVideoFrame>, MediaError> {
         let _ = self.collect_outputs_into_held();
-        let out = self.drain_gop_held(pts_to_id);
-        if out.is_empty() {
-            Err(MediaError::Cancelled)
-        } else {
-            Ok(out)
+        for h in self.held.drain(..) {
+            drop(h.frame);
         }
+        self.frames.borrow_mut().clear();
+        self.fed_through_order = None;
+        self.key_order = None;
+        self.input_timestamps.clear();
+        Err(MediaError::Cancelled)
     }
 
     /// End-of-input / reorder-slack: drain outputs, then flush once.

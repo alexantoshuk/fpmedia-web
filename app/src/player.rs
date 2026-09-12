@@ -398,11 +398,12 @@ fn BufferMeters(video: VideoRef) -> impl IntoView {
                         return String::new();
                     };
                     let phase = if s.scrub_busy { " · dense" } else { "" };
+                    let solid = if s.cache_no_gaps { " · no_gaps" } else { "" };
                     let win = match (s.scrub_window_from, s.scrub_window_to) {
                         (Some(a), Some(b)) => format!(" · win {a}–{b}"),
                         _ => String::new(),
                     };
-                    format!("{}f / {}c{phase}{win}", s.cache_frames, s.cache_chunks)
+                    format!("{}f / {}c{phase}{solid}{win}", s.cache_frames, s.cache_chunks)
                 })
                 fill_pct=Signal::derive(move || {
                     let Some(s) = video.pipeline.get() else {

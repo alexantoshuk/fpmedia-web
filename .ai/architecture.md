@@ -67,11 +67,11 @@ webmedia/
 | `leptos-use` for browser helpers | Observers/events/rAF in `video/`; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | [mediabunny](https://github.com/Vanilagy/mediabunny) is the required reference; port patterns, never depend on the TS package |
 | Progressive open via `MediaSource` (planned) | Match `<video>` / mediabunny `BlobSource`: ranged reads, parse `moov` only, fetch `mdat` samples by file offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
-| Dual decoder + unified scrub-cache pipeline | Main `VideoDecoder` + presentation queue while playing; while scrubbing/paused, one entry (`enter_scrub_cache_pipeline`) parks ahead frames and gap-fills GOPs both sides of the aim into `DenseFrameCache` (slab + sparse map). Evict farthest from aim. Dual decode so background fill does not steal playback. Short clips (≤200 frames) keep the whole file resident. |
+| Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline: `.ai/skills/media.md` (Frame and decode caches). |
 
 ---
 
-## Progressive open (plan)
+## Progressive open (MediaSource)
 
 **Problem:** open loads the entire MP4/MOV into a `Vec<u8>` (`file.array_buffer` → `open_mp4_bytes`), so ~700 MB clips stall before first frame.
 

@@ -106,6 +106,8 @@ pub struct PipelineStats {
     pub cache_chunks: usize,
     pub cache_frames: usize,
     pub cache_cap: usize,
+    /// Dense extent is a single contiguous run (gap-fill edge-armed only).
+    pub cache_no_gaps: bool,
     pub scrub_busy: bool,
     /// Inclusive cache extent `[from, to]` (presentation frames), if any.
     pub scrub_window_from: Option<FrameId>,
@@ -174,14 +176,12 @@ impl WebPlayer {
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
         let ctx = canvas_2d(&canvas)?;
-        let sync_count = player.track().index().sync_frame_ids().len();
         let frame_count = player.state().frame_count;
-        let (max_chunks, max_frames) =
-            DenseFrameCache::budgets_for_clip(frame_count, sync_count);
+        let max_frames = DenseFrameCache::budget_for_clip(frame_count);
         let shared = Rc::new(Shared {
             player: RefCell::new(player),
             presentation: RefCell::new(VecDeque::new()),
-            dense_cache: RefCell::new(DenseFrameCache::new(max_chunks, max_frames)),
+            dense_cache: RefCell::new(DenseFrameCache::new(max_frames)),
             thumb_cache: RefCell::new(ThumbCache::new(
                 DEFAULT_MAX_THUMB_GOPS,
                 DEFAULT_MAX_THUMBS,
@@ -312,7 +312,7 @@ impl WebPlayer {
 
     pub fn pipeline_stats(&self) -> PipelineStats {
         let presentation = self.shared.presentation.borrow();
-        let (cache_chunks, cache_frames, cache_cap, ready_frames, win_from, win_to) = {
+        let (cache_chunks, cache_frames, cache_cap, cache_no_gaps, ready_frames, win_from, win_to) = {
             let cache = self.shared.dense_cache.borrow();
             let extent = cache.extent();
             let mut ready = Vec::new();
@@ -337,6 +337,7 @@ impl WebPlayer {
                 cache.chunk_count(),
                 cache.frame_count(),
                 cache.max_frames(),
+                cache.no_gaps(),
                 ready,
                 extent.map(|(a, _)| a),
                 extent.map(|(_, b)| b),
@@ -359,6 +360,7 @@ impl WebPlayer {
             cache_chunks,
             cache_frames,
             cache_cap,
+            cache_no_gaps,
             scrub_busy: self.shared.scrub_busy.get(),
             scrub_window_from: win_from,
             scrub_window_to: win_to,
@@ -467,7 +469,9 @@ impl WebPlayer {
         Ok(())
     }
 
-    /// Decode/draw `frame` for canvas preview without updating the committed playhead.
+    /// Decode/draw `frame` for canvas preview without updating the committed playhead
+    /// and **without** inserting into the dense cache (key previews must not leave
+    /// orphan sync frames outside the contiguous scrub window).
     async fn draw_frame_unccommitted(
         &self,
         frame: FrameId,
@@ -482,7 +486,7 @@ impl WebPlayer {
             drop(video_frame);
             return Err(MediaError::Cancelled);
         }
-        self.present_and_cache(frame, video_frame)
+        self.present_only(video_frame)
     }
 
     pub async fn next_frame(&self) -> Result<(), MediaError> {
@@ -1398,14 +1402,9 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
 }
 
 fn apply_clip_budgets(shared: &Shared) {
-    let index = shared.player.borrow().track().index().clone();
     let frame_count = shared.player.borrow().state().frame_count;
-    let sync_count = index.sync_frame_ids().len();
-    let (max_chunks, max_frames) = DenseFrameCache::budgets_for_clip(frame_count, sync_count);
-    shared
-        .dense_cache
-        .borrow_mut()
-        .set_budgets(max_chunks, max_frames);
+    let max_frames = DenseFrameCache::budget_for_clip(frame_count);
+    shared.dense_cache.borrow_mut().set_max_frames(max_frames);
 }
 
 fn playhead_and_last(shared: &Shared) -> (FrameId, FrameId) {
@@ -1418,11 +1417,15 @@ fn playhead_and_last(shared: &Shared) -> (FrameId, FrameId) {
     (playhead, last)
 }
 
-/// Next missing frame nearest the playhead, or `None` when saturated.
+/// Next missing frame nearest the playhead, or `None` when saturated /
+/// when a contiguous cache has the playhead away from both edges.
 fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     let (playhead, last) = playhead_and_last(shared);
     let cache = shared.dense_cache.borrow();
     if cache.gaps_saturated(playhead, last) {
+        return None;
+    }
+    if !cache.gap_fill_armed(playhead) {
         return None;
     }
     cache.next_gap_frame(playhead, last)
@@ -1497,7 +1500,19 @@ async fn fill_one_gap(
     let decoded = decoder.decode_gop(track.as_ref(), key, &cancelled).await;
     match decoded {
         Ok(frames) => {
-            shared.dense_cache.borrow_mut().insert_gop(key, frames);
+            // Refuse incomplete GOPs (e.g. race) — a lone sync frame becomes an
+            // orphan tick outside the contiguous scrub window.
+            let index = shared.player.borrow().track().index().clone();
+            let ids = index.gop_frame_ids(key).unwrap_or_default();
+            let complete = ids.is_empty()
+                || ids.iter().all(|id| frames.contains_key(id));
+            if complete {
+                shared.dense_cache.borrow_mut().insert_gop(key, frames);
+            } else {
+                for (_, video) in frames {
+                    drop(video);
+                }
+            }
             *shared.scrub_decoder.borrow_mut() = Some(decoder);
             let after = shared.dense_cache.borrow().frame_count();
             Ok(after > before)
