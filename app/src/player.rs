@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use leptos_use::use_event_listener;
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, Element, HtmlInputElement, window};
-use video::{Video, VideoMetadata, VideoRef};
+use video::{ReadyFrameKind, Video, VideoMetadata, VideoRef};
 
 #[component]
 pub fn DemoPlayer() -> impl IntoView {
@@ -309,6 +309,37 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     }
                 />
             </div>
+            <div
+                class="wm-scrubber-ready"
+                aria-hidden="true"
+                title="Ready frames: green=exact, blue=ahead"
+            >
+                {move || {
+                    let marks = video
+                        .pipeline
+                        .get()
+                        .map(|s| s.ready_frames)
+                        .unwrap_or_default();
+                    let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
+                    marks
+                        .into_iter()
+                        .map(|m| {
+                            let pct = (m.frame as f64 / max) * 100.0;
+                            let class = match m.kind {
+                                ReadyFrameKind::Exact => "wm-ready-tick is-exact",
+                                ReadyFrameKind::Ahead => "wm-ready-tick is-ahead",
+                            };
+                            view! {
+                                <span
+                                    class=class
+                                    style:left=format!("{pct:.3}%")
+                                    title=format!("frame {}", m.frame)
+                                />
+                            }
+                        })
+                        .collect_view()
+                }}
+            </div>
         </div>
     }
 }
@@ -366,16 +397,19 @@ fn BufferMeters(video: VideoRef) -> impl IntoView {
                     let Some(s) = video.pipeline.get() else {
                         return String::new();
                     };
-                    let scrub = if s.scrub_busy { " · scrub" } else { "" };
-                    format!("{}f / {}c{scrub}", s.cache_frames, s.cache_chunks)
+                    let phase = if s.scrub_busy { " · dense" } else { "" };
+                    let win = match (s.scrub_window_from, s.scrub_window_to) {
+                        (Some(a), Some(b)) => format!(" · win {a}–{b}"),
+                        _ => String::new(),
+                    };
+                    format!("{}f / {}c{phase}{win}", s.cache_frames, s.cache_chunks)
                 })
                 fill_pct=Signal::derive(move || {
                     let Some(s) = video.pipeline.get() else {
                         return 0.0;
                     };
-                    // Dense cache soft cap is 96 frames (engine default).
-                    const CACHE_CAP: f64 = 96.0;
-                    ((s.cache_frames as f64 / CACHE_CAP) * 100.0).min(100.0)
+                    let cap = s.cache_cap.max(1) as f64;
+                    ((s.cache_frames as f64 / cap) * 100.0).min(100.0)
                 })
             />
         </div>

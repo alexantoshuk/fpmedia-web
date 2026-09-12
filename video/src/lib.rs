@@ -7,7 +7,7 @@ mod component;
 mod op_queue;
 
 pub use component::Video;
-pub use webmedia::{PipelineStats, VideoMetadata};
+pub use webmedia::{PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoMetadata};
 
 use std::rc::Rc;
 

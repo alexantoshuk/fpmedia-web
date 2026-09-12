@@ -139,7 +139,7 @@ pub fn Video(
     };
 
     let Pausable {
-        pause: pause_raf,
+        pause: _pause_raf,
         resume: resume_raf,
         ..
     } = use_raf_fn_with_options(
@@ -150,7 +150,16 @@ pub fn Video(
             let sync_ui = Rc::clone(&sync_ui);
             let stop_playback = Rc::clone(&stop_playback);
             move |_| {
+                // Play path: normal present/prefetch UI.
+                // Pause path: still tick so gap-fill strip marks update (fill is async).
                 if !playing.get_untracked() {
+                    let Ok(borrow) = player.try_borrow() else {
+                        return;
+                    };
+                    if let Some(p) = borrow.as_ref() {
+                        // Refresh while filling and once more after busy clears.
+                        pipeline.set(Some(p.pipeline_stats()));
+                    }
                     return;
                 }
 
@@ -270,11 +279,12 @@ pub fn Video(
     );
 
     Effect::new({
-        let pause_raf = pause_raf.clone();
+        let resume_raf = resume_raf.clone();
         move |_| {
-            if !playing.get() {
-                pause_raf();
-            }
+            // Keep rAF alive while paused so gap-fill can refresh the strip
+            // (`scrub_busy` ticks in the callback above).
+            let _ = playing.get();
+            resume_raf();
         }
     });
 
@@ -654,6 +664,8 @@ fn enqueue_scrub(
     if let Some(p) = player.borrow().as_ref().cloned() {
         p.cancel_ops();
         p.pause();
+        // Expand scrub cache on every pointer sample (same pipeline as pause/release).
+        p.note_scrub_frame(u64::from(frame));
     }
     if queue.enqueue_scrub(frame) {
         kick_drain();
@@ -775,13 +787,12 @@ async fn run_seek_or_step(
     if !queue.is_current(id) {
         return;
     }
-    web_sys::console::log_1(
-        &format!(
-            "webmedia: {label} done {}",
-            if result.is_ok() { "ok" } else { "err" }
-        )
-        .into(),
-    );
+    let done = match &result {
+        Ok(()) => "ok",
+        Err(e) if e.is_cancelled() => "cancel",
+        Err(_) => "err",
+    };
+    web_sys::console::log_1(&format!("webmedia: {label} done {done}").into());
     if let Err(e) = &result {
         if !e.is_cancelled() {
             error.set(Some(e.to_string()));

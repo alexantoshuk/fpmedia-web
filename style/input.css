@@ -81,11 +81,13 @@ body {
 
 /* Timeline scrubber — sits on the bottom edge of the video stage. */
 .wm-scrubber {
-  height: 14px;
+  height: 22px;
   background: #1c1c1c;
   cursor: pointer;
   touch-action: none;
   user-select: none;
+  display: flex;
+  flex-direction: column;
 }
 
 .wm-scrubber[aria-disabled="true"] {
@@ -95,9 +97,10 @@ body {
 
 .wm-scrubber-track {
   position: relative;
-  height: 100%;
+  height: 10px;
   background: #2a2a2a;
   overflow: hidden;
+  flex: 0 0 auto;
 }
 
 .wm-scrubber-progress {
@@ -105,6 +108,34 @@ body {
   inset: 0 auto 0 0;
   background: #e11d48;
   pointer-events: none;
+}
+
+/* Cache / ahead readiness under the progress bar (frame ticks). */
+.wm-scrubber-ready {
+  position: relative;
+  height: 12px;
+  background: #141414;
+  border-top: 1px solid #2a2a2a;
+  pointer-events: none;
+  flex: 1 1 auto;
+}
+
+.wm-ready-tick {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  opacity: 0.95;
+}
+
+.wm-ready-tick.is-exact {
+  background: #34d399;
+}
+
+.wm-ready-tick.is-ahead {
+  background: #60a5fa;
 }
 
 .wm-buffer-meters {

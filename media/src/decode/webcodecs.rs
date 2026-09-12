@@ -19,6 +19,7 @@ use web_sys::{
 };
 
 use crate::bitstream::{avc_nal_length_size, sanitize_avc_packet_for_chromium};
+use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::types::{EncodedSample, FrameId, VideoMetadata};
@@ -71,7 +72,7 @@ impl DecoderConfig {
 
 struct HeldFrame {
     pts_us: i64,
-    frame: VideoFrame,
+    frame: OwnedVideoFrame,
 }
 
 /// Decode presentation frames via WebCodecs with a warm decode-order pump.
@@ -81,7 +82,7 @@ pub struct WebCodecsDecoder {
     optimize_for_latency: bool,
     /// Bumped on teardown so late browser callbacks become no-ops.
     generation: Rc<Cell<u64>>,
-    frames: Rc<RefCell<Vec<VideoFrame>>>,
+    frames: Rc<RefCell<Vec<OwnedVideoFrame>>>,
     error: Rc<RefCell<Option<String>>>,
     /// Resolvers waiting for the next `output` callback (mediabunny-style).
     output_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
@@ -130,7 +131,7 @@ impl WebCodecsDecoder {
         let web_config = config.to_web_config(optimize_for_latency);
 
         let generation = Rc::new(Cell::new(0));
-        let frames: Rc<RefCell<Vec<VideoFrame>>> = Rc::new(RefCell::new(Vec::new()));
+        let frames: Rc<RefCell<Vec<OwnedVideoFrame>>> = Rc::new(RefCell::new(Vec::new()));
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let output_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
             Rc::new(RefCell::new(Vec::new()));
@@ -144,12 +145,12 @@ impl WebCodecsDecoder {
         let on_output = Closure::wrap(Box::new(move |value: JsValue| {
             if gen_cb.get() != my_gen {
                 if let Ok(frame) = value.dyn_into::<VideoFrame>() {
-                    frame.close();
+                    drop(OwnedVideoFrame::new(frame));
                 }
                 return;
             }
             if let Ok(frame) = value.dyn_into::<VideoFrame>() {
-                frames_cb.borrow_mut().push(frame);
+                frames_cb.borrow_mut().push(OwnedVideoFrame::new(frame));
             }
             let waiting = std::mem::take(&mut *waiters_cb.borrow_mut());
             // Defer resolves — sync wake from inside this Closure re-enters Rust
@@ -222,7 +223,7 @@ impl WebCodecsDecoder {
         let _ = self.decoder.set_ondequeue(None);
         let _ = self.decoder.close();
         for frame in self.frames.borrow_mut().drain(..) {
-            frame.close();
+            drop(frame);
         }
         self.clear_held();
         self.input_timestamps.clear();
@@ -262,9 +263,7 @@ impl WebCodecsDecoder {
     }
 
     fn clear_held(&mut self) {
-        for held in self.held.drain(..) {
-            held.frame.close();
-        }
+        self.held.clear();
     }
 
     fn push_input_timestamp(&mut self, pts_us: i64) {
@@ -275,7 +274,7 @@ impl WebCodecsDecoder {
     fn collect_outputs_into_held(&mut self) -> Result<(), MediaError> {
         for frame in self.frames.borrow_mut().drain(..) {
             let Some(pts_us) = self.input_timestamps.first().copied() else {
-                frame.close();
+                drop(frame);
                 return Err(MediaError::WebCodecs(
                     "decoded frame without queued input timestamp".into(),
                 ));
@@ -286,7 +285,7 @@ impl WebCodecsDecoder {
         Ok(())
     }
 
-    fn take_held(&mut self, target_us: i64) -> Option<VideoFrame> {
+    fn take_held(&mut self, target_us: i64) -> Option<OwnedVideoFrame> {
         let idx = self.held.iter().position(|h| h.pts_us == target_us)?;
         Some(self.held.remove(idx).frame)
     }
@@ -295,7 +294,7 @@ impl WebCodecsDecoder {
         let mut i = 0;
         while i < self.held.len() {
             if self.held[i].pts_us < target_us {
-                self.held.swap_remove(i).frame.close();
+                let _ = self.held.swap_remove(i);
             } else {
                 i += 1;
             }
@@ -334,7 +333,7 @@ impl WebCodecsDecoder {
         track: &Mp4VideoTrack,
         frame: FrameId,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<VideoFrame, MediaError> {
+    ) -> Result<OwnedVideoFrame, MediaError> {
         if is_cancelled() {
             return Err(MediaError::Cancelled);
         }
@@ -369,22 +368,10 @@ impl WebCodecsDecoder {
             // Hard reset on new sync — soft flush path hung open on some clips.
             self.recreate()?;
             self.key_order = Some(key_do);
-            #[cfg(target_arch = "wasm32")]
-            web_sys::console::log_1(
-                &format!("webmedia: decode feed key frame={key_id} → target={frame}").into(),
-            );
             let key_sample = track.encoded_sample(key_id).await?;
             if is_cancelled() {
                 return Err(MediaError::Cancelled);
             }
-            #[cfg(target_arch = "wasm32")]
-            web_sys::console::log_1(
-                &format!(
-                    "webmedia: key sample {} B, decode…",
-                    key_sample.data.len()
-                )
-                .into(),
-            );
             self.feed_sample(&key_sample, true, target_us).await?;
             self.fed_through_order = Some(key_do);
             // Poll with macrotasks (see `poll_output_or_macrotask`) — microtask-only
@@ -396,8 +383,6 @@ impl WebCodecsDecoder {
                 self.await_outputs_if_pending().await?;
                 self.collect_and_prune_held(target_us)?;
                 if let Some(ready) = self.take_held(target_us) {
-                    #[cfg(target_arch = "wasm32")]
-                    web_sys::console::log_1(&"webmedia: decode got target from key".into());
                     return Ok(ready);
                 }
                 if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
@@ -418,10 +403,6 @@ impl WebCodecsDecoder {
                         self.await_outputs_if_pending().await?;
                         self.collect_and_prune_held(target_us)?;
                         if let Some(ready) = self.take_held(target_us) {
-                            #[cfg(target_arch = "wasm32")]
-                            web_sys::console::log_1(
-                                &"webmedia: decode got target after coax feed".into(),
-                            );
                             return Ok(ready);
                         }
                         if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
@@ -437,18 +418,12 @@ impl WebCodecsDecoder {
                     self.key_order = None;
                     self.input_timestamps.clear();
                     if let Some(ready) = self.take_held(target_us) {
-                        #[cfg(target_arch = "wasm32")]
-                        web_sys::console::log_1(
-                            &"webmedia: decode got target after flush".into(),
-                        );
                         return Ok(ready);
                     }
                 }
             }
             self.collect_and_prune_held(target_us)?;
             if let Some(ready) = self.take_held(target_us) {
-                #[cfg(target_arch = "wasm32")]
-                web_sys::console::log_1(&"webmedia: decode got target from key".into());
                 return Ok(ready);
             }
         }
@@ -506,12 +481,15 @@ impl WebCodecsDecoder {
     ///
     /// Does **not** prune mid-GOP (unlike [`Self::decode_frame`]) so scrub fill can
     /// populate the dense cache. Ends with flush + cleared warm state.
+    ///
+    /// On cancel: returns any frames already held (`Ok` partial) so the strip can
+    /// show progress immediately; empty cancel → `Err(Cancelled)`.
     pub async fn decode_gop(
         &mut self,
         track: &Mp4VideoTrack,
         key_frame: FrameId,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<HashMap<FrameId, VideoFrame>, MediaError> {
+    ) -> Result<HashMap<FrameId, OwnedVideoFrame>, MediaError> {
         if is_cancelled() {
             return Err(MediaError::Cancelled);
         }
@@ -546,7 +524,7 @@ impl WebCodecsDecoder {
 
         let key_sample = track.encoded_sample(key_frame).await?;
         if is_cancelled() {
-            return Err(MediaError::Cancelled);
+            return self.take_gop_partial(&mut pts_to_id);
         }
         // i64::MIN → never prune; we want the whole GOP in `held`.
         self.feed_sample(&key_sample, true, i64::MIN).await?;
@@ -557,7 +535,7 @@ impl WebCodecsDecoder {
         let max_feeds = gop_ids.len().saturating_add(8).max(16);
         for i in 0..max_feeds {
             if is_cancelled() {
-                return Err(MediaError::Cancelled);
+                return self.take_gop_partial(&mut pts_to_id);
             }
             let fed = self.fed_through_order.unwrap_or(key_do);
             let next = track.samples_after_in_gop(key_do, fed, 1).await?;
@@ -579,7 +557,7 @@ impl WebCodecsDecoder {
 
         for _ in 0..32 {
             if is_cancelled() {
-                return Err(MediaError::Cancelled);
+                return self.take_gop_partial(&mut pts_to_id);
             }
             self.await_outputs_if_pending().await?;
             self.collect_outputs_into_held()?;
@@ -592,18 +570,39 @@ impl WebCodecsDecoder {
             self.collect_outputs_into_held()?;
         }
 
+        Ok(self.drain_gop_held(&mut pts_to_id))
+    }
+
+    fn drain_gop_held(
+        &mut self,
+        pts_to_id: &mut HashMap<i64, FrameId>,
+    ) -> HashMap<FrameId, OwnedVideoFrame> {
         let mut out = HashMap::with_capacity(self.held.len());
         for h in self.held.drain(..) {
             if let Some(id) = pts_to_id.remove(&h.pts_us) {
                 out.insert(id, h.frame);
             } else {
-                h.frame.close();
+                drop(h.frame);
             }
         }
         self.fed_through_order = None;
         self.key_order = None;
         self.input_timestamps.clear();
-        Ok(out)
+        out
+    }
+
+    /// Cancel path: keep whatever remapped frames we already have.
+    fn take_gop_partial(
+        &mut self,
+        pts_to_id: &mut HashMap<i64, FrameId>,
+    ) -> Result<HashMap<FrameId, OwnedVideoFrame>, MediaError> {
+        let _ = self.collect_outputs_into_held();
+        let out = self.drain_gop_held(pts_to_id);
+        if out.is_empty() {
+            Err(MediaError::Cancelled)
+        } else {
+            Ok(out)
+        }
     }
 
     /// End-of-input / reorder-slack: drain outputs, then flush once.
@@ -611,7 +610,7 @@ impl WebCodecsDecoder {
         &mut self,
         target_us: i64,
         is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<Option<VideoFrame>, MediaError> {
+    ) -> Result<Option<OwnedVideoFrame>, MediaError> {
         for _ in 0..32 {
             if is_cancelled() {
                 return Err(MediaError::Cancelled);

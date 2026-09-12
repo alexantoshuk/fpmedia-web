@@ -43,6 +43,7 @@ pub use types::{
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use decode::{
-    DuePresent, PipelineStats, PRESENTATION_QUEUE_CAP, WebCodecsDecoder, WebPlayer, canvas_2d,
-    configure_canvas_for_video, draw_frame_to_canvas, draw_frame_with_context,
+    DuePresent, AsVideoFrame, OwnedVideoFrame, PipelineStats, PRESENTATION_QUEUE_CAP, ReadyFrameKind,
+    ReadyFrameMark, WebCodecsDecoder, WebPlayer, canvas_2d, configure_canvas_for_video,
+    draw_frame_to_canvas, draw_frame_with_context,
 };

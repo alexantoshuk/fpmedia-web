@@ -1904,7 +1904,7 @@ dependencies = [
 [[package]]
 name = "re_mp4"
 version = "0.5.1"
-source = "git+https://github.com/alexantoshuk/re_mp4?rev=a6dceaa656469bd17be77c7d7e2e2b696835d0e6#a6dceaa656469bd17be77c7d7e2e2b696835d0e6"
+source = "git+https://github.com/alexantoshuk/re_mp4?rev=cd63ecac0269668e09435cc5b9d5f3b06692c09e#cd63ecac0269668e09435cc5b9d5f3b06692c09e"
 dependencies = [
  "byteorder",
  "bytes",

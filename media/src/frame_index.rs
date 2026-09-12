@@ -90,6 +90,18 @@ impl FrameIndex {
             .map(|e| e.frame)
     }
 
+    /// All sync `FrameId`s in decode order (GOP starts).
+    pub fn sync_frame_ids(&self) -> Vec<FrameId> {
+        let mut keys: Vec<(usize, FrameId)> = self
+            .frames
+            .iter()
+            .filter(|e| e.is_sync)
+            .map(|e| (e.decode_order, e.frame))
+            .collect();
+        keys.sort_by_key(|(decode_order, _)| *decode_order);
+        keys.into_iter().map(|(_, frame)| frame).collect()
+    }
+
     /// Presentation `FrameId`s in the GOP that begins at sync `key_frame`
     /// (exclusive of the next sync). `key_frame` must be a sync sample.
     pub fn gop_frame_ids(&self, key_frame: FrameId) -> Option<Vec<FrameId>> {
@@ -211,6 +223,7 @@ mod tests {
         assert_eq!(index.next_keyframe_after(0), Some(3));
         assert_eq!(index.gop_frame_ids(0), Some(vec![0, 1, 2]));
         assert_eq!(index.gop_frame_ids(3), Some(vec![3, 4]));
+        assert_eq!(index.sync_frame_ids(), vec![0, 3]);
     }
 
     #[test]

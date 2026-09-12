@@ -67,7 +67,7 @@ webmedia/
 | `leptos-use` for browser helpers | Observers/events/rAF in `video/`; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | [mediabunny](https://github.com/Vanilagy/mediabunny) is the required reference; port patterns, never depend on the TS package |
 | Progressive open via `MediaSource` (planned) | Match `<video>` / mediabunny `BlobSource`: ranged reads, parse `moov` only, fetch `mdat` samples by file offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
-| Dual decoder + dense GOP cache | Main `VideoDecoder` for play/prefetch; scrub decoder fills `DenseFrameCache` (GOP LRU) without stealing playback. Mediabunny uses one decoder per session — dual decode is intentional for background window fill. |
+| Dual decoder + unified scrub-cache pipeline | Main `VideoDecoder` + presentation queue while playing; while scrubbing/paused, one entry (`enter_scrub_cache_pipeline`) parks ahead frames and gap-fills GOPs both sides of the aim into `DenseFrameCache` (slab + sparse map). Evict farthest from aim. Dual decode so background fill does not steal playback. Short clips (≤200 frames) keep the whole file resident. |
 
 ---
 
@@ -98,4 +98,5 @@ Details / ordering: `.ai/state.md` (In progress).
 - Gate client UI: `#[cfg(feature = "csr")]`.
 - Errors: `thiserror`; no `.unwrap()`/`.expect()` in production paths.
 - WebCodecs needs `web_sys_unstable_apis` (`.cargo/config.toml`).
+- **WebCodecs / media resources:** wrap types that need explicit release or unsafe clone in RAII owners + borrow helpers (pattern: `OwnedVideoFrame` / `AsVideoFrame`). Prefer **move into caches** and **borrow to draw**; never silent `Option` clone for residency. Do **not** wrap ordinary DOM / `Blob` / `window` / `console` handles.
 - **Mediabunny reference:** before implementing or fixing demux / decode / seek / playback pacing, check [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny) (docs + source) for the analogous approach; reimplement in Rust.

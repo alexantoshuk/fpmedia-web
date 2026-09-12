@@ -25,6 +25,11 @@ pub enum MediaError {
     #[error("webcodecs: {0}")]
     WebCodecs(String),
 
+    /// Browser `VideoFrame.clone` failed. Prefer moving the frame (cache insert)
+    /// or borrowing via [`crate::decode::AsVideoFrame`] for draw.
+    #[error("video frame clone failed: {0}")]
+    VideoFrameClone(String),
+
     #[error("codec not supported by this browser: {0}")]
     CodecUnsupported(String),
 
