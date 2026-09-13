@@ -352,7 +352,20 @@ impl WebPlayer {
     }
 
     pub fn pipeline_stats(&self) -> PipelineStats {
-        let presentation = self.shared.presentation.borrow();
+        // Do not hold `presentation` across the dense-cache borrow — park/fill
+        // may re-enter on VideoFrame drop and need the queue RefCell.
+        let (presentation_len, presentation_from, presentation_to, ahead) = {
+            let presentation = self.shared.presentation.borrow();
+            (
+                presentation.len(),
+                presentation.front().map(|q| q.frame),
+                presentation.back().map(|q| q.frame),
+                presentation
+                    .iter()
+                    .map(|q| q.frame)
+                    .collect::<Vec<_>>(),
+            )
+        };
         let (cache_chunks, cache_frames, cache_cap, cache_no_gaps, ready_frames, win_from, win_to) = {
             let cache = self.shared.dense_cache.borrow();
             let extent = cache.extent();
@@ -363,13 +376,13 @@ impl WebPlayer {
                     kind: ReadyFrameKind::Exact,
                 });
             }
-            for q in presentation.iter() {
-                if !ready.iter().any(|m| m.frame == q.frame) {
+            for frame in ahead {
+                if !ready.iter().any(|m| m.frame == frame) {
                     ready.push(ReadyFrameMark {
-                        frame: q.frame,
+                        frame,
                         kind: ReadyFrameKind::Ahead,
                     });
-                } else if let Some(m) = ready.iter_mut().find(|m| m.frame == q.frame) {
+                } else if let Some(m) = ready.iter_mut().find(|m| m.frame == frame) {
                     m.kind = ReadyFrameKind::Ahead;
                 }
             }
@@ -390,10 +403,10 @@ impl WebPlayer {
             None => (usize::MAX, u32::MAX),
         };
         PipelineStats {
-            presentation_len: presentation.len(),
+            presentation_len,
             presentation_cap: PRESENTATION_QUEUE_CAP,
-            presentation_from: presentation.front().map(|q| q.frame),
-            presentation_to: presentation.back().map(|q| q.frame),
+            presentation_from,
+            presentation_to,
             held_len,
             decode_queue_size,
             frames_skipped: self.shared.frames_skipped.get(),
@@ -1103,11 +1116,25 @@ impl WebPlayer {
     }
 
     /// Move presentation-queue frames into the dense cache (pause / scrub handoff).
+    ///
+    /// Drain the queue first, then insert — do not hold `presentation` across
+    /// `insert_frame` (evict/drop of `VideoFrame` can re-enter JS → Rust and
+    /// panic with `RefCell already borrowed`).
     fn park_presentation_into_cache(&self) {
-        let mut presentation = self.shared.presentation.borrow_mut();
-        let mut cache = self.shared.dense_cache.borrow_mut();
-        while let Some(q) = presentation.pop_front() {
-            cache.insert_frame(q.frame, q.video);
+        let items: Vec<(FrameId, OwnedVideoFrame)> = {
+            let mut presentation = self.shared.presentation.borrow_mut();
+            presentation
+                .drain(..)
+                .map(|q| (q.frame, q.video))
+                .collect()
+        };
+        for (frame, video) in items {
+            let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() else {
+                // Nested re-entry during another insert — drop rather than panic.
+                drop(video);
+                continue;
+            };
+            cache.insert_frame(frame, video);
         }
     }
 
@@ -1132,21 +1159,31 @@ impl WebPlayer {
     }
 
     fn touch_playhead(&self, frame: FrameId) {
-        if let Some(key) = self.key_for(frame) {
-            self.shared
-                .dense_cache
-                .borrow_mut()
-                .touch_playhead(frame, key);
-        }
+        let Some(key) = self.key_for(frame) else {
+            return;
+        };
+        // `insert_frame` eviction drops `VideoFrame`s; Chromium may flush microtasks
+        // mid-drop and re-enter scrub (`note_scrub` → here) while the cache RefCell
+        // is still mutably borrowed — common when aim jumps to 0 and many far frames
+        // evict. Skip the nested aim update; the outer insert still completes.
+        let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() else {
+            return;
+        };
+        cache.touch_playhead(frame, key);
     }
 
     fn clone_from_dense_cache(&self, frame: FrameId) -> Result<Option<OwnedVideoFrame>, MediaError> {
-        self.shared.dense_cache.borrow().try_clone_frame(frame)
+        let Ok(cache) = self.shared.dense_cache.try_borrow() else {
+            return Ok(None);
+        };
+        cache.try_clone_frame(frame)
     }
 
     /// Draw a cached frame without cloning the `VideoFrame` (clone often fails).
     fn present_from_cache(&self, frame: FrameId) -> Result<bool, MediaError> {
-        let cache = self.shared.dense_cache.borrow();
+        let Ok(cache) = self.shared.dense_cache.try_borrow() else {
+            return Ok(false);
+        };
         let drawn = cache.with_frame(frame, |video| {
             draw_frame_with_context(
                 &self.shared.canvas,
@@ -1266,10 +1303,11 @@ impl WebPlayer {
             &self.shared.ctx,
             video.as_web_sys(),
         );
-        self.shared
-            .dense_cache
-            .borrow_mut()
-            .insert_frame(frame, video);
+        if let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() {
+            cache.insert_frame(frame, video);
+        } else {
+            drop(video);
+        }
         result
     }
 
@@ -1370,7 +1408,11 @@ impl WebPlayer {
         let cancelled = || !self.is_current(epoch);
         let shared = Rc::clone(&self.shared);
         let mut on_frame = move |id: FrameId, video: OwnedVideoFrame| {
-            shared.dense_cache.borrow_mut().insert_frame(id, video);
+            let Ok(mut cache) = shared.dense_cache.try_borrow_mut() else {
+                drop(video);
+                return;
+            };
+            cache.insert_frame(id, video);
         };
         let decoded = decoder
             .decode_gop(track.as_ref(), key, &cancelled, &mut on_frame)
@@ -1600,11 +1642,11 @@ async fn fill_one_gap(
     let newly = std::rc::Rc::new(std::cell::Cell::new(0u32));
     let newly_cb = Rc::clone(&newly);
     let mut on_frame = move |id: FrameId, video: OwnedVideoFrame| {
-        if shared_for_cache
-            .dense_cache
-            .borrow_mut()
-            .insert_frame(id, video)
-        {
+        let Ok(mut cache) = shared_for_cache.dense_cache.try_borrow_mut() else {
+            drop(video);
+            return;
+        };
+        if cache.insert_frame(id, video) {
             newly_cb.set(newly_cb.get().saturating_add(1));
         }
     };

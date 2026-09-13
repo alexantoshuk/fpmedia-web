@@ -130,10 +130,14 @@ impl FrameRunIndex {
             return next_gap_outside_extent(playhead, last, extent);
         }
 
-        let behind_adj = (playhead > 0 && !frames.contains_key(&(playhead - 1)))
-            .then_some(playhead - 1);
-        let ahead_adj = (playhead < last && !frames.contains_key(&(playhead + 1)))
-            .then_some(playhead + 1);
+        // Do not use `.then_some(playhead - 1)` — the subtraction is eager and
+        // overflows when playhead == 0 (debug panic / release wrap).
+        let behind_adj = playhead
+            .checked_sub(1)
+            .filter(|b| !frames.contains_key(b));
+        let ahead_adj = (playhead < last)
+            .then(|| playhead + 1)
+            .filter(|a| !frames.contains_key(a));
         if behind_adj.is_some() && ahead_adj.is_some() {
             return nearer_gap_prefer_behind(playhead, behind_adj, ahead_adj);
         }

@@ -20,7 +20,12 @@ pub struct VideoRef {
     pub ready: RwSignal<bool>,
     pub playing: RwSignal<bool>,
     pub looping: RwSignal<bool>,
+    /// Engine-committed presentation frame (may lag during async scrub).
     pub frame: RwSignal<u32>,
+    /// UI / transport playhead — scrubber, Prev/Next/Seek/Play/Pause target.
+    /// Scrub updates this immediately without locking; sync ops promote it and
+    /// drive the engine from this value (not from a stale `frame`).
+    pub playhead: RwSignal<u32>,
     pub frame_count: RwSignal<u32>,
     pub timestamp: RwSignal<f64>,
     pub fps: RwSignal<Option<f64>>,
@@ -55,6 +60,7 @@ impl VideoRef {
             playing: RwSignal::new(false),
             looping: RwSignal::new(false),
             frame: RwSignal::new(0),
+            playhead: RwSignal::new(0),
             frame_count: RwSignal::new(0),
             timestamp: RwSignal::new(0.0),
             fps: RwSignal::new(None),
@@ -81,6 +87,11 @@ impl VideoRef {
     }
 
     pub fn play(&self) {
+        // Start from the UI playhead (may be ahead of engine after scrub).
+        let ph = self.playhead.get_untracked();
+        if self.frame.get_untracked() != ph {
+            self.seek_frame(ph);
+        }
         if let Some(play) = self
             .ops
             .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.play)))
@@ -91,6 +102,11 @@ impl VideoRef {
     }
 
     pub fn pause(&self) {
+        // Promote potential playhead to the transport target, then pause.
+        let ph = self.playhead.get_untracked();
+        if self.frame.get_untracked() != ph {
+            self.seek_frame(ph);
+        }
         if let Some(pause) = self
             .ops
             .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.pause)))
@@ -101,6 +117,9 @@ impl VideoRef {
     }
 
     pub fn seek_frame(&self, frame: u32) {
+        let max = self.frame_count.get_untracked().saturating_sub(1);
+        let frame = frame.min(max);
+        self.playhead.set(frame);
         if let Some(seek) = self
             .ops
             .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
@@ -112,6 +131,9 @@ impl VideoRef {
 
     /// Fast scrub preview — snap to the nearest keyframe at or before `frame`.
     pub fn seek_keyframe(&self, frame: u32) {
+        let max = self.frame_count.get_untracked().saturating_sub(1);
+        let frame = frame.min(max);
+        self.playhead.set(frame);
         if let Some(seek) = self
             .ops
             .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_keyframe)))
@@ -122,7 +144,11 @@ impl VideoRef {
     }
 
     /// Async scrub drag — cancelable exact seek; rapid moves keep only the latest.
+    /// Updates [`Self::playhead`] immediately; does not latch `busy`.
     pub fn scrub_frame(&self, frame: u32) {
+        let max = self.frame_count.get_untracked().saturating_sub(1);
+        let frame = frame.min(max);
+        self.playhead.set(frame);
         if let Some(scrub) = self
             .ops
             .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_frame)))
@@ -133,22 +159,45 @@ impl VideoRef {
     }
 
     pub fn next_frame(&self) {
-        if let Some(next) = self
+        let max = self.frame_count.get_untracked().saturating_sub(1);
+        let ph = self.playhead.get_untracked().saturating_add(1).min(max);
+        self.playhead.set(ph);
+        let engine = self.frame.get_untracked();
+        if engine < max && engine + 1 == ph {
+            if let Some(next) = self
+                .ops
+                .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.next_frame)))
+                .flatten()
+            {
+                next();
+            }
+        } else if let Some(seek) = self
             .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.next_frame)))
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
             .flatten()
         {
-            next();
+            seek(ph);
         }
     }
 
     pub fn previous_frame(&self) {
-        if let Some(prev) = self
+        let ph = self.playhead.get_untracked().saturating_sub(1);
+        self.playhead.set(ph);
+        let engine = self.frame.get_untracked();
+        if engine > 0 && engine - 1 == ph {
+            if let Some(prev) = self
+                .ops
+                .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.previous_frame)))
+                .flatten()
+            {
+                prev();
+            }
+        } else if let Some(seek) = self
             .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.previous_frame)))
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
             .flatten()
         {
-            prev();
+            seek(ph);
         }
     }
 

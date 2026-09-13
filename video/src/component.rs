@@ -83,6 +83,7 @@ pub fn Video(
     let playing = video.playing;
     let looping = video.looping;
     let frame = video.frame;
+    let playhead = video.playhead;
     let frame_count = video.frame_count;
     let timestamp = video.timestamp;
     let fps = video.fps;
@@ -102,9 +103,17 @@ pub fn Video(
             };
             if let Some(p) = borrow.as_ref() {
                 let st = p.state();
-                frame.set(st.frame.min(u32::MAX as u64) as u32);
-                frame_count.set(st.frame_count.min(u32::MAX as u64) as u32);
+                let engine = st.frame.min(u32::MAX as u64) as u32;
+                let count = st.frame_count.min(u32::MAX as u64) as u32;
+                let count_changed = frame_count.get_untracked() != count;
+                frame.set(engine);
+                frame_count.set(count);
                 timestamp.set(st.timestamp.seconds);
+                // Follow engine while playing, or reset playhead on a new clip.
+                // While paused after scrub, leave `playhead` (UI target) alone.
+                if playing.get_untracked() || count_changed {
+                    playhead.set(engine);
+                }
                 // Do NOT sync `playing` from the engine. UI owns transport state;
                 // overwriting after Pause (e.g. pause missed try_borrow, then
                 // sync_ui) left playing=true with no session → Play/Next/Prev dead.
@@ -659,12 +668,19 @@ fn enqueue_scrub(
     if player.borrow().as_ref().is_none() {
         return;
     }
-    playing.set(false);
-    let _ = session.borrow_mut().take();
+    // Leaving play: full pause once. Already paused: do **not** call `WebPlayer::pause`
+    // on every pointer sample (re-enters scrub pipeline / parks queue and can nest
+    // into Leptos event handlers → tachys `RefCell already borrowed`).
+    let leaving_play = playing.get_untracked();
+    if leaving_play {
+        playing.set(false);
+        let _ = session.borrow_mut().take();
+    }
     if let Some(p) = player.borrow().as_ref().cloned() {
         p.cancel_ops();
-        p.pause();
-        // Expand scrub cache on every pointer sample (same pipeline as pause/release).
+        if leaving_play {
+            p.pause();
+        }
         p.note_scrub_frame(u64::from(frame));
     }
     if queue.enqueue_scrub(frame) {

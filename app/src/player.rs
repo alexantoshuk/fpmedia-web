@@ -4,8 +4,39 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos_use::use_event_listener;
 use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{Blob, Element, HtmlInputElement, window};
 use video::{ReadyFrameKind, Video, VideoMetadata, VideoRef};
+
+/// Coalesce scrub engine work after the Leptos/tachys event callback releases its
+/// `RefCell`. Duplicate targets (left-edge clamp spams `frame=0`) collapse to one
+/// pending sample so microtasks do not pile up and re-enter cache inserts.
+fn defer_scrub(video: VideoRef, frame: u32) {
+    thread_local! {
+        static PENDING: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+        static SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    PENDING.with(|p| p.set(Some(frame)));
+    if SCHEDULED.with(|s| s.get()) {
+        return;
+    }
+    SCHEDULED.with(|s| s.set(true));
+    spawn_local(async move {
+        loop {
+            let Some(frame) = PENDING.with(|p| p.take()) else {
+                break;
+            };
+            video.scrub_frame(frame);
+            if PENDING.with(|p| p.get().is_none()) {
+                break;
+            }
+        }
+        SCHEDULED.with(|s| s.set(false));
+        if let Some(frame) = PENDING.with(|p| p.get()) {
+            defer_scrub(video, frame);
+        }
+    });
+}
 
 #[component]
 pub fn DemoPlayer() -> impl IntoView {
@@ -126,7 +157,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     type="number"
                     class="wm-frame-input"
                     min="0"
-                    prop:value=move || video.frame.get().to_string()
+                    prop:value=move || video.playhead.get().to_string()
                     prop:disabled=move || {
                         video.busy.get() || !video.ready.get() || video.playing.get()
                     }
@@ -143,7 +174,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     prop:disabled=move || {
                         video.busy.get() || !video.ready.get() || video.playing.get()
                     }
-                    on:click=move |_| video.seek_frame(video.frame.get())
+                    on:click=move |_| video.seek_frame(video.playhead.get())
                 >
                     "Seek"
                 </button>
@@ -157,9 +188,15 @@ pub fn DemoPlayer() -> impl IntoView {
                             Some(v) => format!(" · {v:.1} fps"),
                             None => String::new(),
                         };
+                        let ph = video.playhead.get();
+                        let eng = video.frame.get();
+                        let frame_part = if ph == eng {
+                            format!("frame {ph}")
+                        } else {
+                            format!("frame {ph} (eng {eng})")
+                        };
                         format!(
-                            "frame {} / {} · {} · {:.3}s{}{}{}",
-                            video.frame.get(),
+                            "{frame_part} / {} · {} · {:.3}s{}{}{}",
                             video.frame_count.get().saturating_sub(1),
                             video
                                 .metadata
@@ -210,17 +247,13 @@ pub fn DemoPlayer() -> impl IntoView {
     }
 }
 
-/// Timeline scrubber under the video — red = current / drag preview frame.
+/// Timeline scrubber — bar follows [`VideoRef::playhead`] (potential frame).
 ///
-/// Drag is **async**: cancelable exact scrubs (latest wins), bar follows the
-/// pointer immediately. Prev/Next stay **sync** (queue + `busy`).
-/// Preview stays pinned until the engine playhead catches up so release does not
-/// flash through intermediate committed frames.
+/// Scrub updates playhead immediately and decodes async without latching `busy`.
+/// Prev/Next/Seek/Play/Pause also drive `playhead` and commit via sync ops.
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
-    // Optimistic playhead while dragging (and until engine matches after release).
-    let preview_frame = RwSignal::new(None::<u32>);
 
     let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
         if !video.ready.get_untracked() {
@@ -234,32 +267,13 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
         Some(frame.min(max_frame))
     };
 
-    let display_frame = Signal::derive(move || {
-        preview_frame
-            .get()
-            .unwrap_or_else(|| video.frame.get())
-    });
-
-    // Drop optimistic preview once the committed playhead reaches it.
-    Effect::new(move |_| {
-        let Some(preview) = preview_frame.get() else {
-            return;
-        };
-        if scrubbing.get() {
-            return;
-        }
-        if video.frame.get() == preview {
-            preview_frame.set(None);
-        }
-    });
-
     view! {
         <div
             class="wm-scrubber"
             role="slider"
             prop:aria-valuemin="0"
             prop:aria-valuemax=move || video.frame_count.get().saturating_sub(1)
-            prop:aria-valuenow=move || display_frame.get()
+            prop:aria-valuenow=move || video.playhead.get()
             prop:aria-disabled=move || !video.ready.get()
             on:pointerdown=move |ev| {
                 if !video.ready.get_untracked() {
@@ -273,8 +287,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 }
                 scrubbing.set(true);
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
-                    preview_frame.set(Some(frame));
-                    video.scrub_frame(frame);
+                    defer_scrub(video, frame);
                 }
             }
             on:pointermove=move |ev| {
@@ -285,23 +298,16 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     return;
                 };
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
-                    preview_frame.set(Some(frame));
-                    video.scrub_frame(frame);
+                    defer_scrub(video, frame);
                 }
             }
             on:pointerup=move |_| {
                 scrubbing.set(false);
-                if let Some(frame) = preview_frame.get_untracked() {
-                    if video.frame.get_untracked() != frame {
-                        video.scrub_frame(frame);
-                    } else {
-                        preview_frame.set(None);
-                    }
-                }
+                let frame = video.playhead.get_untracked();
+                defer_scrub(video, frame);
             }
             on:pointercancel=move |_| {
                 scrubbing.set(false);
-                preview_frame.set(None);
             }
         >
             <div class="wm-scrubber-track">
@@ -309,7 +315,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     class="wm-scrubber-progress"
                     style:width=move || {
                         let max = video.frame_count.get().saturating_sub(1).max(1);
-                        let pct = (display_frame.get() as f64 / max as f64) * 100.0;
+                        let pct = (video.playhead.get() as f64 / max as f64) * 100.0;
                         format!("{pct:.3}%")
                     }
                 />
