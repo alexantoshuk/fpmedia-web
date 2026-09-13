@@ -10,6 +10,7 @@
 
 ### Media engine
 
+- Sync-index binary search (`nearest_keyframe` / `gop_frame_ids` O(log n)).
 - Filmstrip thumbs via `ThumbCache` (caller-sized bitmaps; mediabunny `samplesAtTimestamps` later).
 - Audio track + shared A/V media clock (video slaves to audio once audio exists). Wall-clock play works until then.
 - HEVC bitstream key verify + AVC Recovery Point SEI (IDR-only verify is in place).
@@ -25,3 +26,4 @@
 - Publish `webmedia` / `video` crates for reuse by host apps.
 - Production player chrome (demo controls in `app` stay for now).
 - Drop `re_mp4` git pin when upstream #35 is released on crates.io.
+- Web Worker decode tier — only if profiling shows main-thread pump starving rAF after GOP profile + byte budgets.

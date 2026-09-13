@@ -4,7 +4,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use webmedia::{
-    MemorySource, OpenMp4Options, PacketType, Player, VideoCodec, avc_nal_length_size,
+    GopProfile, MemorySource, OpenMp4Options, PacketType, Player, VideoCodec, avc_nal_length_size,
     determine_avc_packet_type, open_mp4_path, open_mp4_source,
 };
 
@@ -62,6 +62,10 @@ fn demux_short_gop_metadata_and_frames() {
         .map(|e| e.frame)
         .collect();
     assert_eq!(syncs, vec![0, 12, 24, 36]);
+    assert_eq!(meta.gop_profile, GopProfile::ShortFixed { len: 12 });
+    assert_eq!(meta.gop_profile.label(), "GOP 12");
+    // 320×240 fits entirely under the default MiB budget.
+    assert_eq!(meta.scrub_cache_frame_budget(), 48);
 
     // verifyKeyPackets: every remaining sync sample is a real IDR in the AU.
     let length_size = avc_nal_length_size(&meta.codec.description).expect("avcC length");

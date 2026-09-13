@@ -158,9 +158,14 @@ pub fn DemoPlayer() -> impl IntoView {
                             None => String::new(),
                         };
                         format!(
-                            "frame {} / {} · {:.3}s{}{}{}",
+                            "frame {} / {} · {} · {:.3}s{}{}{}",
                             video.frame.get(),
                             video.frame_count.get().saturating_sub(1),
+                            video
+                                .metadata
+                                .get()
+                                .map(|m| m.gop_profile.label())
+                                .unwrap_or_else(|| "—".into()),
                             video.timestamp.get(),
                             fps_part,
                             if video.playing.get() { " · playing" } else { "" },

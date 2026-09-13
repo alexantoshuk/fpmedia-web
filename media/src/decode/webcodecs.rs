@@ -262,6 +262,33 @@ impl WebCodecsDecoder {
         self.recreate()
     }
 
+    /// Start a new key→… cascade.
+    ///
+    /// Soft-clear only when the browser queue is empty **and** no PTS remap is
+    /// pending. Otherwise hard-`recreate` — soft-switching over in-flight HW
+    /// output desyncs timestamps (All-Intra scrub → wrong frame / hung decode /
+    /// `decoder busy` while flush holds the slot).
+    fn begin_key_cascade(&mut self, key_do: usize, force_hard: bool) -> Result<(), MediaError> {
+        // Pull any already-delivered outputs before deciding idle vs hard reset.
+        let _ = self.collect_outputs_into_held();
+        self.clear_held();
+        for frame in self.frames.borrow_mut().drain(..) {
+            drop(frame);
+        }
+
+        let pending_remap = !self.input_timestamps.is_empty();
+        let busy = self.decode_queue_size() > 0 || pending_remap;
+        if force_hard || busy {
+            self.recreate()?;
+        } else {
+            self.input_timestamps.clear();
+            self.fed_through_order = None;
+            self.key_order = None;
+        }
+        self.key_order = Some(key_do);
+        Ok(())
+    }
+
     fn clear_held(&mut self) {
         self.held.clear();
     }
@@ -365,9 +392,9 @@ impl WebCodecsDecoder {
             entry.decode_order <= fed && !self.input_timestamps.contains(&target_us)
         });
         if self.key_order != Some(key_do) || target_consumed {
-            // Hard reset on new sync — soft flush path hung open on some clips.
-            self.recreate()?;
-            self.key_order = Some(key_do);
+            // Soft key switch when idle — All-Intra hits a new sync every scrub step.
+            // Hard recreate only if the previous cascade left in-flight work / held.
+            self.begin_key_cascade(key_do, target_consumed)?;
             let key_sample = track.encoded_sample(key_id).await?;
             if is_cancelled() {
                 return Err(MediaError::Cancelled);
@@ -376,7 +403,7 @@ impl WebCodecsDecoder {
             self.fed_through_order = Some(key_do);
             // Poll with macrotasks (see `poll_output_or_macrotask`) — microtask-only
             // never saw HW output on Wing It and forced flush.
-            for _ in 0..24 {
+            for _ in 0..32 {
                 if is_cancelled() {
                     return Err(MediaError::Cancelled);
                 }
@@ -385,18 +412,25 @@ impl WebCodecsDecoder {
                 if let Some(ready) = self.take_held(target_us) {
                     return Ok(ready);
                 }
-                if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
+                // Only stop early when nothing is in-flight — empty queue alone can
+                // race the output callback (All-Intra then fell into 2s flush).
+                if self.decode_queue_size() == 0
+                    && self.frames.borrow().is_empty()
+                    && self.input_timestamps.is_empty()
+                {
                     break;
                 }
             }
             // Prefer feeding one more GOP packet over flush — flush forces the
             // next decode() to be a key (Chromium: "needs a key chunk").
+            // All-Intra: GOP is one sample — coax is empty; hard-retry instead of
+            // a multi-second flush that pins the decoder slot (→ `decoder busy`).
             if key_id == frame {
                 let coax = track.samples_after_in_gop(key_do, key_do, 1).await?;
                 if let Some(sample) = coax.first() {
                     self.feed_sample(sample, false, target_us).await?;
                     self.fed_through_order = Some(sample.decode_order);
-                    for _ in 0..24 {
+                    for _ in 0..32 {
                         if is_cancelled() {
                             return Err(MediaError::Cancelled);
                         }
@@ -405,14 +439,49 @@ impl WebCodecsDecoder {
                         if let Some(ready) = self.take_held(target_us) {
                             return Ok(ready);
                         }
-                        if self.decode_queue_size() == 0 && self.frames.borrow().is_empty() {
+                        if self.decode_queue_size() == 0
+                            && self.frames.borrow().is_empty()
+                            && self.input_timestamps.is_empty()
+                        {
+                            break;
+                        }
+                    }
+                } else if self.held.iter().all(|h| h.pts_us != target_us) {
+                    // Sole sync (All-Intra): one hard reset + re-feed, no long flush.
+                    if is_cancelled() {
+                        return Err(MediaError::Cancelled);
+                    }
+                    self.recreate()?;
+                    self.key_order = Some(key_do);
+                    let key_sample = track.encoded_sample(key_id).await?;
+                    if is_cancelled() {
+                        return Err(MediaError::Cancelled);
+                    }
+                    self.feed_sample(&key_sample, true, target_us).await?;
+                    self.fed_through_order = Some(key_do);
+                    for _ in 0..48 {
+                        if is_cancelled() {
+                            return Err(MediaError::Cancelled);
+                        }
+                        self.await_outputs_if_pending().await?;
+                        self.collect_and_prune_held(target_us)?;
+                        if let Some(ready) = self.take_held(target_us) {
+                            return Ok(ready);
+                        }
+                        if self.decode_queue_size() == 0
+                            && self.frames.borrow().is_empty()
+                            && self.input_timestamps.is_empty()
+                        {
                             break;
                         }
                     }
                 }
                 if self.held.iter().all(|h| h.pts_us != target_us) {
-                    // Last resort — flush ends the decode session; clear warm state.
-                    let _ = self.flush_with_timeout().await;
+                    // Last resort — short flush (not 2s) then clear warm state.
+                    if is_cancelled() {
+                        return Err(MediaError::Cancelled);
+                    }
+                    let _ = self.flush_with_timeout_ms(250).await;
                     self.collect_and_prune_held(target_us)?;
                     self.fed_through_order = None;
                     self.key_order = None;
@@ -523,8 +592,7 @@ impl WebCodecsDecoder {
             );
         }
 
-        self.recreate()?;
-        self.key_order = Some(key_do);
+        self.begin_key_cascade(key_do, false)?;
 
         let key_sample = track.encoded_sample(key_frame).await?;
         if is_cancelled() {
@@ -729,8 +797,12 @@ impl WebCodecsDecoder {
 
     /// `flush()` raced with a timeout — a wedged Chromium decoder never settles.
     async fn flush_with_timeout(&self) -> Result<(), MediaError> {
+        self.flush_with_timeout_ms(2_000).await
+    }
+
+    async fn flush_with_timeout_ms(&self, ms: i32) -> Result<(), MediaError> {
         let flush: js_sys::Promise = self.decoder.flush().unchecked_into();
-        let result = JsFuture::from(promise_race(flush, sleep_promise_ms(2_000))).await;
+        let result = JsFuture::from(promise_race(flush, sleep_promise_ms(ms))).await;
         match result {
             Ok(v) if v.as_string().as_deref() == Some("timeout") => Err(MediaError::WebCodecs(
                 "VideoDecoder.flush timed out (Chromium wedged?)".into(),

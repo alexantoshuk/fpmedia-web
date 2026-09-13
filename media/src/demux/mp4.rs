@@ -306,6 +306,7 @@ fn build_track(
 
     let index = FrameIndex::from_entries(entries);
     let frame_count = index.len() as u64;
+    let gop_profile = index.gop_profile();
 
     let fps = if track.duration > 0 && frame_count > 0 {
         Some(frame_count as f64 * track.timescale as f64 / track.duration as f64)
@@ -325,6 +326,7 @@ fn build_track(
             codec_string,
             description,
         },
+        gop_profile,
     };
 
     Ok(Mp4VideoTrack {
@@ -422,6 +424,8 @@ async fn verify_track_avc_sync_async(
         web_sys::console::log_1(
             &format!("webmedia: demoted {demoted}/{total} lying stss sync flags").into(),
         );
+        // Sync map changed — refresh scrub-policy profile.
+        track.metadata.gop_profile = track.index.gop_profile();
     }
     Ok(())
 }

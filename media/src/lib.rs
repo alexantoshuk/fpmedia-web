@@ -38,7 +38,10 @@ pub use source::{CachedSource, DEFAULT_CACHE_SIZE, MediaSource, MemorySource, Re
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use source::BlobSource;
 pub use types::{
-    CodecConfig, EncodedSample, FrameId, Timestamp, VideoCodec, VideoMetadata,
+    CodecConfig, EncodedSample, FrameId, GopProfile, Timestamp, VideoCodec, VideoMetadata,
+    DEFAULT_SCRUB_CACHE_MIB, MAX_SCRUB_CACHE_FRAMES, MIN_SCRUB_CACHE_FRAMES, SHORT_GOP_MAX_LEN,
+    SHORT_GOP_MAX_SPREAD, SCRUB_CACHE_EDGE_MARGIN, estimated_decoded_frame_bytes,
+    scrub_cache_frame_budget, scrub_preview_choice,
 };
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]

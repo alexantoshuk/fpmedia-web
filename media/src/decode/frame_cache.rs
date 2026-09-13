@@ -9,21 +9,12 @@ use std::num::NonZeroUsize;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::error::MediaError;
+use crate::types::{FrameId, SCRUB_CACHE_EDGE_MARGIN};
 use lru::LruCache;
 
-use crate::types::FrameId;
-
-/// Soft cap on cached `VideoFrame`s (longer clips).
-pub const DEFAULT_MAX_FRAMES: usize = 96;
-/// Short-clip mode: keep up to this many exact frames (whole file when ≤ N).
-pub const SHORT_CLIP_FRAME_BUDGET: usize = 200;
 /// Scrub/filmstrip keyframe GOPs retained.
 pub const DEFAULT_MAX_THUMB_GOPS: usize = 8;
 pub const DEFAULT_MAX_THUMBS: usize = 64;
-/// Once the dense cache is a contiguous run ([`DenseFrameCache::no_gaps`]),
-/// gap-fill only re-arms when the playhead is within this many frames of
-/// either extent edge (or outside the window).
-pub const SCRUB_CACHE_EDGE_MARGIN: u64 = 24;
 
 /// Owning table of `VideoFrame` handles.
 struct FrameSlab {
@@ -202,6 +193,15 @@ impl DenseFrameCache {
         self.playhead
     }
 
+    /// Nearest cached presentation frame to `target` (by `|id − target|`).
+    /// On distance ties, prefer the lower id.
+    pub fn nearest_frame(&self, target: FrameId) -> Option<FrameId> {
+        self.index
+            .keys()
+            .copied()
+            .min_by_key(|f| (f.abs_diff(target), *f))
+    }
+
     pub fn has_frame(&self, frame: FrameId, _key: FrameId) -> bool {
         self.index.contains_key(&frame)
     }
@@ -344,14 +344,9 @@ impl DenseFrameCache {
             .is_some_and(|far| far <= gap_dist)
     }
 
-    /// Frame budget for a clip: whole file when short, else [`DEFAULT_MAX_FRAMES`].
-    pub fn budget_for_clip(frame_count: u64) -> usize {
-        let n = frame_count as usize;
-        if n > 0 && n <= SHORT_CLIP_FRAME_BUDGET {
-            n.max(1)
-        } else {
-            DEFAULT_MAX_FRAMES
-        }
+    /// Frame budget for a clip — delegates to [`crate::VideoMetadata::scrub_cache_frame_budget`].
+    pub fn budget_for_clip(meta: &crate::types::VideoMetadata) -> usize {
+        meta.scrub_cache_frame_budget()
     }
 
     pub fn gop_complete(&self, key: FrameId, gop_ids: &[FrameId]) -> bool {

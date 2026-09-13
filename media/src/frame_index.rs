@@ -1,6 +1,6 @@
 //! Presentation-order frame index built from demuxed samples.
 
-use crate::types::{FrameId, Timestamp};
+use crate::types::{FrameId, GopProfile, Timestamp, SHORT_GOP_MAX_LEN, SHORT_GOP_MAX_SPREAD};
 
 /// One frame in presentation order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,6 +172,77 @@ impl FrameIndex {
         }
         Some(best)
     }
+
+    /// Decode-order lengths of each GOP (samples from sync inclusive to next sync exclusive).
+    ///
+    /// Empty index → empty vec. No sync samples → one length covering the whole track.
+    pub fn gop_lengths(&self) -> Vec<u32> {
+        if self.frames.is_empty() {
+            return Vec::new();
+        }
+        let syncs = self.sync_frame_ids();
+        if syncs.is_empty() {
+            return vec![self.frames.len() as u32];
+        }
+        let max_do = self
+            .frames
+            .iter()
+            .map(|e| e.decode_order)
+            .max()
+            .unwrap_or(0);
+        let mut lengths = Vec::with_capacity(syncs.len());
+        for (i, &key) in syncs.iter().enumerate() {
+            let start_do = self.get(key).map(|e| e.decode_order).unwrap_or(0);
+            let end_do = if i + 1 < syncs.len() {
+                self.get(syncs[i + 1])
+                    .map(|e| e.decode_order)
+                    .unwrap_or(start_do)
+            } else {
+                max_do.saturating_add(1)
+            };
+            lengths.push(end_do.saturating_sub(start_do).max(1) as u32);
+        }
+        lengths
+    }
+
+    /// Classify keyframe spacing for scrub-cache / fill policy.
+    pub fn gop_profile(&self) -> GopProfile {
+        classify_gop_profile(&self.gop_lengths(), self.frames.len())
+    }
+}
+
+/// Pure classification from observed GOP lengths (testable without a full index).
+pub(crate) fn classify_gop_profile(lengths: &[u32], frame_count: usize) -> GopProfile {
+    if frame_count == 0 || lengths.is_empty() {
+        return GopProfile::Long { median: 0, max: 0 };
+    }
+    let min = *lengths.iter().min().unwrap_or(&1);
+    let max = *lengths.iter().max().unwrap_or(&1);
+    // All-Intra: every GOP is length 1 (every sample sync), or one sync per frame.
+    if max == 1 {
+        return GopProfile::AllIntra;
+    }
+    let spread = max.saturating_sub(min);
+    if max <= SHORT_GOP_MAX_LEN && spread <= SHORT_GOP_MAX_SPREAD {
+        return GopProfile::ShortFixed { len: max };
+    }
+    let median = median_u32(lengths);
+    GopProfile::Long { median, max }
+}
+
+fn median_u32(values: &[u32]) -> u32 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 0 {
+        // Lower median for even counts — stable, no float.
+        sorted[mid - 1]
+    } else {
+        sorted[mid]
+    }
 }
 
 #[cfg(test)]
@@ -242,5 +313,77 @@ mod tests {
         // Presentation frame 4 is P4 (decode_order 1) — only I0 + P4.
         assert_eq!(index.get(4).unwrap().decode_order, 1);
         assert_eq!(index.decode_window(4), Some(vec![0, 4]));
+    }
+
+    #[test]
+    fn gop_profile_all_intra() {
+        let index = FrameIndex::from_entries(vec![
+            entry(0, true, 0, 0),
+            entry(1, true, 1, 1),
+            entry(2, true, 2, 2),
+        ]);
+        assert_eq!(index.gop_lengths(), vec![1, 1, 1]);
+        assert_eq!(index.gop_profile(), GopProfile::AllIntra);
+    }
+
+    #[test]
+    fn gop_profile_short_fixed() {
+        // GOP = 3 throughout.
+        let index = FrameIndex::from_entries(vec![
+            entry(0, true, 0, 0),
+            entry(1, false, 1, 1),
+            entry(2, false, 2, 2),
+            entry(3, true, 3, 3),
+            entry(4, false, 4, 4),
+            entry(5, false, 5, 5),
+            entry(6, true, 6, 6),
+            entry(7, false, 7, 7),
+            entry(8, false, 8, 8),
+        ]);
+        assert_eq!(index.gop_lengths(), vec![3, 3, 3]);
+        assert_eq!(index.gop_profile(), GopProfile::ShortFixed { len: 3 });
+    }
+
+    #[test]
+    fn gop_profile_short_fixed_allows_small_spread() {
+        assert_eq!(
+            classify_gop_profile(&[11, 12, 12, 13], 48),
+            GopProfile::ShortFixed { len: 13 }
+        );
+    }
+
+    #[test]
+    fn gop_profile_long_variable() {
+        assert_eq!(
+            classify_gop_profile(&[30, 120, 250, 250], 650),
+            GopProfile::Long {
+                median: 120,
+                max: 250
+            }
+        );
+        assert_eq!(
+            classify_gop_profile(&[60, 60, 60], 180),
+            GopProfile::Long {
+                median: 60,
+                max: 60
+            }
+        );
+    }
+
+    #[test]
+    fn gop_profile_single_gop_is_long_when_over_short_cap() {
+        let n = (SHORT_GOP_MAX_LEN + 1) as usize;
+        let mut entries = vec![entry(0, true, 0, 0)];
+        for i in 1..n {
+            entries.push(entry(i, false, i as i64, i as i64));
+        }
+        let index = FrameIndex::from_entries(entries);
+        assert_eq!(
+            index.gop_profile(),
+            GopProfile::Long {
+                median: n as u32,
+                max: n as u32
+            }
+        );
     }
 }
