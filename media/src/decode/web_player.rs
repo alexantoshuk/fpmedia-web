@@ -74,6 +74,39 @@ struct Shared {
     /// Set when invalidate runs while the decoder slot is empty (checked out).
     /// Honored on the next `take_decoder` put-back / decode start.
     decoder_reset: Cell<bool>,
+    /// Last gap-fill probe (demo diagnostics).
+    gap_diag: RefCell<GapFillDiag>,
+}
+
+/// Snapshot of the latest gap-fill decision (updated on each probe).
+#[derive(Clone, Debug, PartialEq)]
+struct GapFillDiag {
+    aim: FrameId,
+    target: Option<FrameId>,
+    steps: u32,
+    elapsed_us: u32,
+    path: &'static str,
+    armed: bool,
+    saturated: bool,
+    /// Why fill has no work: `fill` | `saturated` | `disarmed` | `done` | `idle`.
+    stop: &'static str,
+    idle_passes: u8,
+}
+
+impl Default for GapFillDiag {
+    fn default() -> Self {
+        Self {
+            aim: 0,
+            target: None,
+            steps: 0,
+            elapsed_us: 0,
+            path: "-",
+            armed: false,
+            saturated: false,
+            stop: "-",
+            idle_passes: 0,
+        }
+    }
 }
 
 /// Why a frame is marked ready on the demo timeline strip.
@@ -116,6 +149,21 @@ pub struct PipelineStats {
     pub ready_frames: Vec<ReadyFrameMark>,
     /// Keyframe spacing class (scrub budget / fill policy).
     pub gop_profile: GopProfile,
+    /// Aim used for gap-fill (scrub pointer or committed playhead).
+    pub scrub_aim: FrameId,
+    /// Next gap target, if fill has work.
+    pub scrub_gap_target: Option<FrameId>,
+    /// Steps taken by the last gap search (run-bound walk).
+    pub scrub_gap_steps: u32,
+    /// Microseconds for the last gap search.
+    pub scrub_gap_us: u32,
+    /// Gap search path: `miss` | `ends` | `run` | …
+    pub scrub_gap_path: &'static str,
+    pub scrub_gap_armed: bool,
+    pub scrub_gap_saturated: bool,
+    /// Fill gate: `fill` | `saturated` | `disarmed` | `done` | `idle`.
+    pub scrub_fill_stop: &'static str,
+    pub scrub_fill_idle_passes: u8,
 }
 
 impl Default for PipelineStats {
@@ -138,6 +186,15 @@ impl Default for PipelineStats {
             scrub_window_to: None,
             ready_frames: Vec::new(),
             gop_profile: GopProfile::Long { median: 0, max: 0 },
+            scrub_aim: 0,
+            scrub_gap_target: None,
+            scrub_gap_steps: 0,
+            scrub_gap_us: 0,
+            scrub_gap_path: "-",
+            scrub_gap_armed: false,
+            scrub_gap_saturated: false,
+            scrub_fill_stop: "-",
+            scrub_fill_idle_passes: 0,
         }
     }
 }
@@ -225,6 +282,7 @@ impl WebPlayer {
             preparing_loop: Cell::new(false),
             op_epoch: Cell::new(0),
             decoder_reset: Cell::new(false),
+            gap_diag: RefCell::new(GapFillDiag::default()),
         });
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
@@ -292,6 +350,8 @@ impl WebPlayer {
         self.shared.fill_mode.set(CacheFillMode::Scrub);
         self.park_presentation_into_cache();
         self.touch_playhead(focus);
+        // Fresh aim — allow fill even after a prior sticky idle stop.
+        self.shared.gap_diag.borrow_mut().idle_passes = 0;
         if !self.is_all_intra() {
             self.schedule_scrub_cache_fill();
         }
@@ -347,6 +407,8 @@ impl WebPlayer {
     }
 
     pub fn pipeline_stats(&self) -> PipelineStats {
+        // Refresh gap probe so the demo meter stays live while paused / idle.
+        let _ = next_gap_target(&self.shared);
         let presentation = self.shared.presentation.borrow();
         let (cache_chunks, cache_frames, cache_cap, cache_no_gaps, ready_frames, win_from, win_to) = {
             let cache = self.shared.dense_cache.borrow();
@@ -384,6 +446,7 @@ impl WebPlayer {
             Some(d) => (d.held_len(), d.browser_decode_queue_size()),
             None => (usize::MAX, u32::MAX),
         };
+        let diag = self.shared.gap_diag.borrow().clone();
         PipelineStats {
             presentation_len: presentation.len(),
             presentation_cap: PRESENTATION_QUEUE_CAP,
@@ -402,6 +465,15 @@ impl WebPlayer {
             scrub_window_to: win_to,
             ready_frames,
             gop_profile: self.shared.player.borrow().metadata().gop_profile,
+            scrub_aim: diag.aim,
+            scrub_gap_target: diag.target,
+            scrub_gap_steps: diag.steps,
+            scrub_gap_us: diag.elapsed_us,
+            scrub_gap_path: diag.path,
+            scrub_gap_armed: diag.armed,
+            scrub_gap_saturated: diag.saturated,
+            scrub_fill_stop: diag.stop,
+            scrub_fill_idle_passes: diag.idle_passes,
         }
     }
 
@@ -652,7 +724,8 @@ impl WebPlayer {
             if presentation.front().is_some_and(|f| f.frame == target) {
                 let queued = presentation.pop_front().expect("front checked");
                 drop(presentation);
-                self.present_only(queued.video)?;
+                // Visited play frames belong in dense (same as goto / step).
+                self.present_and_cache(queued.frame, queued.video)?;
                 self.touch_playhead(queued.frame);
                 self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                 return Ok(self.has_more_playback());
@@ -793,7 +866,9 @@ impl WebPlayer {
             if lag_ms > 1.0 {
                 self.shared.last_behind_ms.set(Some(lag_ms));
             }
-            self.present_only(queued.video)?;
+            // Play presents are visited frames — park in dense so pause gap-fill
+            // starts from a playhead-centered window (not a stale open/seek island).
+            self.present_and_cache(queued.frame, queued.video)?;
             self.touch_playhead(queued.frame);
             self.shared.player.borrow_mut().commit_frame(queued.frame)?;
             did_draw = true;
@@ -854,7 +929,7 @@ impl WebPlayer {
 
         self.clear_presentation();
         self.clear_dense_cache();
-        self.present_only(first.video)?;
+        self.present_and_cache(first.frame, first.video)?;
         self.touch_playhead(first.frame);
         self.shared.player.borrow_mut().commit_frame(first.frame)?;
         *self.shared.presentation.borrow_mut() = buf;
@@ -1030,7 +1105,7 @@ impl WebPlayer {
                 if front.frame == frame {
                     let queued = presentation.pop_front().expect("front checked");
                     drop(presentation);
-                    self.present_only(queued.video)?;
+                    self.present_and_cache(queued.frame, queued.video)?;
                     self.touch_playhead(queued.frame);
                     self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                     return Ok(());
@@ -1042,7 +1117,7 @@ impl WebPlayer {
                     if presentation.front().is_some_and(|f| f.frame == frame) {
                         let queued = presentation.pop_front().expect("front checked");
                         drop(presentation);
-                        self.present_only(queued.video)?;
+                        self.present_and_cache(queued.frame, queued.video)?;
                         self.touch_playhead(queued.frame);
                         self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                         return Ok(());
@@ -1425,7 +1500,7 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
                 if shared.scrub_pending.get() {
                     shared.scrub_pending.set(false);
                     idle_passes = 0;
-                    yield_event_loop().await;
+                    sleep_ms(0).await;
                     continue;
                 }
                 return Ok(());
@@ -1434,24 +1509,30 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
             match fill_one_gap(Rc::clone(&shared), target, scrub_epoch).await {
                 Ok(made_progress) => {
                     idle_passes = if made_progress { 0 } else { idle_passes.saturating_add(1) };
+                    shared.gap_diag.borrow_mut().idle_passes = idle_passes;
                     // No progress repeatedly (oversized GOP / budget) — stop spinning.
                     if idle_passes >= 3 {
+                        shared.gap_diag.borrow_mut().stop = "idle";
                         return Ok(());
                     }
-                    yield_event_loop().await;
+                    // Macrotask so paused rAF can refresh the ready strip.
+                    sleep_ms(0).await;
                 }
                 Err(MediaError::Cancelled) => {
                     // Re-aim or epoch bump — continue while paused/scrub.
                     idle_passes = 0;
-                    yield_event_loop().await;
+                    shared.gap_diag.borrow_mut().idle_passes = 0;
+                    sleep_ms(0).await;
                 }
                 Err(_) => {
                     // Transient WebCodecs fault — keep densifying (do not kill the task).
                     idle_passes = idle_passes.saturating_add(1);
+                    shared.gap_diag.borrow_mut().idle_passes = idle_passes;
                     if idle_passes >= 3 {
+                        shared.gap_diag.borrow_mut().stop = "idle";
                         return Ok(());
                     }
-                    yield_event_loop().await;
+                    sleep_ms(0).await;
                 }
             }
         }
@@ -1493,17 +1574,65 @@ fn playhead_and_last(shared: &Shared) -> (FrameId, FrameId) {
 }
 
 /// Next missing frame nearest the playhead, or `None` when saturated /
-/// when a contiguous cache has the playhead away from both edges.
+/// when a contiguous at-capacity cache has the playhead away from both edges.
 fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     let (playhead, last) = playhead_and_last(shared);
-    let cache = shared.dense_cache.borrow();
-    if cache.gaps_saturated(playhead, last) {
-        return None;
+    let prev = shared.gap_diag.borrow().clone();
+    // Aim moved — clear sticky idle so fill may run again.
+    if prev.aim != playhead && prev.idle_passes >= 3 {
+        shared.gap_diag.borrow_mut().idle_passes = 0;
     }
-    if !cache.gap_fill_armed(playhead) {
-        return None;
-    }
-    cache.next_gap_frame(playhead, last)
+    let t0 = performance_now_ms();
+    let (search, saturated, armed) = {
+        let cache = shared.dense_cache.borrow();
+        let search = cache.next_gap_search(playhead, last);
+        let saturated = cache.gaps_saturated(playhead, last);
+        let armed = cache.gap_fill_armed(playhead);
+        (search, saturated, armed)
+    };
+    let elapsed_us = performance_now_ms()
+        .zip(t0)
+        .map(|(a, b)| ((a - b) * 1000.0).max(0.0) as u32)
+        .unwrap_or(0);
+    let idle_passes = shared.gap_diag.borrow().idle_passes;
+    let sticky_idle = idle_passes >= 3
+        && !shared.scrub_busy.get()
+        && prev.aim == playhead
+        && prev.target == search.gap;
+    let stop = if sticky_idle {
+        "idle"
+    } else if saturated {
+        "saturated"
+    } else if !armed {
+        "disarmed"
+    } else if search.gap.is_none() {
+        "done"
+    } else {
+        "fill"
+    };
+    let target = if sticky_idle || saturated || !armed {
+        None
+    } else {
+        search.gap
+    };
+    *shared.gap_diag.borrow_mut() = GapFillDiag {
+        aim: playhead,
+        target: search.gap,
+        steps: search.steps,
+        elapsed_us,
+        path: search.path.as_str(),
+        armed,
+        saturated,
+        stop,
+        idle_passes: if sticky_idle {
+            idle_passes
+        } else if prev.aim != playhead {
+            0
+        } else {
+            idle_passes
+        },
+    };
+    target
 }
 
 /// Densify the GOP containing `target`. Returns whether the cache gained frames.
@@ -1513,7 +1642,6 @@ async fn fill_one_gap(
     scrub_epoch: u64,
 ) -> Result<bool, MediaError> {
     let start_playhead = playhead_and_last(&shared).0;
-    let before = shared.dense_cache.borrow().frame_count();
     let key = shared
         .player
         .borrow()
@@ -1555,8 +1683,15 @@ async fn fill_one_gap(
         let ids = index.gop_frame_ids(key).unwrap_or_default();
         // Only skip when this GOP is fully resident — do not bail just because
         // `target` exists (holes elsewhere in the GOP must still densify).
-        if !ids.is_empty() && shared.dense_cache.borrow().gop_complete(key, &ids) {
-            return Ok(false);
+        // If the gap `target` is still missing, the complete check is stale /
+        // inconsistent — fall through and decode.
+        let cache = shared.dense_cache.borrow();
+        if !ids.is_empty()
+            && cache.gop_complete(key, &ids)
+            && cache.has_frame(target, key)
+        {
+            // Gap already closed — count as progress so idle_passes does not trip.
+            return Ok(true);
         }
     }
 
@@ -1574,12 +1709,18 @@ async fn fill_one_gap(
 
     // Stream into dense as each remapped frame emerges so the ready strip
     // paints per-frame (not one tick-burst after the whole GOP).
+    // Progress ≠ frame_count growth: at capacity, evict+insert keeps len stable.
     let shared_for_cache = Rc::clone(&shared);
+    let newly = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let newly_cb = Rc::clone(&newly);
     let mut on_frame = move |id: FrameId, video: OwnedVideoFrame| {
-        shared_for_cache
+        if shared_for_cache
             .dense_cache
             .borrow_mut()
-            .insert_frame(id, video);
+            .insert_frame(id, video)
+        {
+            newly_cb.set(newly_cb.get().saturating_add(1));
+        }
     };
     let decoded = decoder
         .decode_gop(track.as_ref(), key, &cancelled, &mut on_frame)
@@ -1587,8 +1728,8 @@ async fn fill_one_gap(
     match decoded {
         Ok(()) => {
             *shared.scrub_decoder.borrow_mut() = Some(decoder);
-            let after = shared.dense_cache.borrow().frame_count();
-            Ok(after > before)
+            let got_target = shared.dense_cache.borrow().has_frame(target, key);
+            Ok(newly.get() > 0 || got_target)
         }
         Err(MediaError::Cancelled) => {
             let _ = decoder.reset();

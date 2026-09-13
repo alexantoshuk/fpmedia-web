@@ -1,11 +1,12 @@
-//! Playhead-centered `VideoFrame` cache: **slab of handles** + **frame index**.
+//! Playhead-centered `VideoFrame` cache: ordered `BTreeMap` of handles.
 //!
-//! - Slab: `Option<OwnedVideoFrame>` slots — owns handles.
-//! - Index: sparse `FrameId → slot` (visited / gap-filled frames; gaps allowed).
-//! Eviction drops the frame farthest from the playhead. Thumbs stay separate.
+//! Keys are presentation `FrameId` (sparse / gap-filled; holes allowed).
+//! Eviction drops the frame farthest from the playhead (always an extent end).
+//! Thumbs stay separate.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
+use std::ops::Bound;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::error::MediaError;
@@ -16,64 +17,37 @@ use lru::LruCache;
 pub const DEFAULT_MAX_THUMB_GOPS: usize = 8;
 pub const DEFAULT_MAX_THUMBS: usize = 64;
 
-/// Owning table of `VideoFrame` handles.
-struct FrameSlab {
-    slots: Vec<Option<OwnedVideoFrame>>,
-    free: Vec<usize>,
+/// Result of a gap probe (for fill + demo diagnostics).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GapSearch {
+    pub gap: Option<FrameId>,
+    /// Key / integer steps taken while locating the gap (0 = O(1) path).
+    pub steps: u32,
+    pub path: GapSearchPath,
 }
 
-impl FrameSlab {
-    fn new() -> Self {
-        Self {
-            slots: Vec::new(),
-            free: Vec::new(),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GapSearchPath {
+    EmptyClip,
+    PlayheadMissing,
+    ContiguousEnds,
+    RunBounds,
+}
+
+impl GapSearchPath {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptyClip => "empty",
+            Self::PlayheadMissing => "miss",
+            Self::ContiguousEnds => "ends",
+            Self::RunBounds => "run",
         }
-    }
-
-    fn len_occupied(&self) -> usize {
-        self.slots.len().saturating_sub(self.free.len())
-    }
-
-    fn clear(&mut self) {
-        self.slots.clear();
-        self.free.clear();
-    }
-
-    fn alloc(&mut self, video: OwnedVideoFrame) -> usize {
-        if let Some(idx) = self.free.pop() {
-            self.slots[idx] = Some(video);
-            idx
-        } else {
-            let idx = self.slots.len();
-            self.slots.push(Some(video));
-            idx
-        }
-    }
-
-    fn free_slot(&mut self, idx: usize) {
-        if let Some(slot) = self.slots.get_mut(idx) {
-            if slot.take().is_some() {
-                self.free.push(idx);
-            }
-        }
-    }
-
-    fn get(&self, idx: usize) -> Option<&OwnedVideoFrame> {
-        self.slots.get(idx)?.as_ref()
     }
 }
 
-impl Drop for FrameSlab {
-    fn drop(&mut self) {
-        self.clear();
-    }
-}
-
-/// Exact-frame residency: slab owns handles; map addresses them sparsely.
+/// Exact-frame residency: `BTreeMap` owns handles and keeps ids ordered.
 pub struct DenseFrameCache {
-    slab: FrameSlab,
-    /// Sparse visited / gap-filled frames → slab slot.
-    index: HashMap<FrameId, usize>,
+    frames: BTreeMap<FrameId, OwnedVideoFrame>,
     max_frames: usize,
     playhead: FrameId,
     playhead_key: FrameId,
@@ -90,8 +64,7 @@ impl Drop for DenseFrameCache {
 impl DenseFrameCache {
     pub fn new(max_frames: usize) -> Self {
         Self {
-            slab: FrameSlab::new(),
-            index: HashMap::new(),
+            frames: BTreeMap::new(),
             max_frames: max_frames.max(1),
             playhead: 0,
             playhead_key: 0,
@@ -119,8 +92,7 @@ impl DenseFrameCache {
     }
 
     pub fn clear(&mut self) {
-        self.index.clear();
-        self.slab.clear();
+        self.frames.clear();
         self.no_gaps = false;
     }
 
@@ -131,11 +103,20 @@ impl DenseFrameCache {
 
     /// Whether scrub gap-fill should run for `playhead`.
     ///
-    /// Always when there are holes. When [`Self::no_gaps`], only near either
-    /// edge of the extent (within [`SCRUB_CACHE_EDGE_MARGIN`]) or outside it.
+    /// - Holes → always armed.
+    /// - Contiguous **under budget** → armed (keep expanding into long empty
+    ///   regions; edge-idle only applies once the frame budget is full).
+    /// - Contiguous **at capacity** → armed only near extent edges / outside
+    ///   (within [`SCRUB_CACHE_EDGE_MARGIN`]).
     pub fn gap_fill_armed(&self, playhead: FrameId) -> bool {
+        if !self.no_gaps() {
+            return true;
+        }
+        if self.frame_count() < self.max_frames {
+            return true;
+        }
         scrub_gap_fill_armed(
-            self.no_gaps(),
+            true,
             playhead,
             self.extent(),
             SCRUB_CACHE_EDGE_MARGIN,
@@ -144,40 +125,30 @@ impl DenseFrameCache {
 
     /// Contiguous runs among cached ids (demo meter “chunks”).
     pub fn chunk_count(&self) -> usize {
-        let mut ids: Vec<FrameId> = self.index.keys().copied().collect();
-        if ids.is_empty() {
-            return 0;
-        }
-        ids.sort_unstable();
-        let mut runs = 1usize;
-        for w in ids.windows(2) {
-            if w[1] != w[0] + 1 {
-                runs += 1;
+        let mut runs = 0usize;
+        let mut prev: Option<FrameId> = None;
+        for &id in self.frames.keys() {
+            match prev {
+                Some(p) if id == p + 1 => {}
+                _ => runs += 1,
             }
+            prev = Some(id);
         }
         runs
     }
 
     pub fn frame_count(&self) -> usize {
-        debug_assert_eq!(self.index.len(), self.slab.len_occupied());
-        self.slab.len_occupied()
+        self.frames.len()
     }
 
     pub fn cached_frame_ids(&self) -> Vec<FrameId> {
-        let mut out: Vec<FrameId> = self.index.keys().copied().collect();
-        out.sort_unstable();
-        out
+        self.frames.keys().copied().collect()
     }
 
     /// Inclusive min/max cached frame, if any.
     pub fn extent(&self) -> Option<(FrameId, FrameId)> {
-        let mut iter = self.index.keys().copied();
-        let first = iter.next()?;
-        let (mut lo, mut hi) = (first, first);
-        for f in iter {
-            lo = lo.min(f);
-            hi = hi.max(f);
-        }
+        let lo = *self.frames.keys().next()?;
+        let hi = *self.frames.keys().next_back()?;
         Some((lo, hi))
     }
 
@@ -194,16 +165,25 @@ impl DenseFrameCache {
     }
 
     /// Nearest cached presentation frame to `target` (by `|id − target|`).
-    /// On distance ties, prefer the lower id.
+    /// On distance ties, prefer the lower id (floor over ceil).
     pub fn nearest_frame(&self, target: FrameId) -> Option<FrameId> {
-        self.index
-            .keys()
-            .copied()
-            .min_by_key(|f| (f.abs_diff(target), *f))
+        let floor = self.frames.range(..=target).next_back().map(|(id, _)| *id);
+        let ceil = self.frames.range(target..).next().map(|(id, _)| *id);
+        match (floor, ceil) {
+            (Some(a), Some(b)) if a != b => {
+                if a.abs_diff(target) <= b.abs_diff(target) {
+                    Some(a)
+                } else {
+                    Some(b)
+                }
+            }
+            (Some(a), _) | (_, Some(a)) => Some(a),
+            (None, None) => None,
+        }
     }
 
     pub fn has_frame(&self, frame: FrameId, _key: FrameId) -> bool {
-        self.index.contains_key(&frame)
+        self.frames.contains_key(&frame)
     }
 
     /// Borrow the cached handle for canvas draw (avoids `VideoFrame.clone`, which
@@ -213,17 +193,13 @@ impl DenseFrameCache {
         frame: FrameId,
         f: impl FnOnce(&OwnedVideoFrame) -> R,
     ) -> Option<R> {
-        let slot = *self.index.get(&frame)?;
-        Some(f(self.slab.get(slot)?))
+        Some(f(self.frames.get(&frame)?))
     }
 
     /// Clone a cached frame for handoff (`frame_at`, etc.). Prefer [`Self::with_frame`]
     /// for drawing. `Ok(None)` = not cached; `Err` = present but clone failed.
     pub fn try_clone_frame(&self, frame: FrameId) -> Result<Option<OwnedVideoFrame>, MediaError> {
-        let Some(&slot) = self.index.get(&frame) else {
-            return Ok(None);
-        };
-        let Some(video) = self.slab.get(slot) else {
+        let Some(video) = self.frames.get(&frame) else {
             return Ok(None);
         };
         Ok(Some(video.try_clone()?))
@@ -231,18 +207,20 @@ impl DenseFrameCache {
 
     /// Insert one visited / gap-filled frame. Evicts farthest from playhead if needed.
     ///
+    /// Returns `true` when `frame` is newly resident (not already present / not refused).
+    ///
     /// At capacity, refuses to insert when every resident is closer than `frame`
     /// (same rule as [`Self::gaps_saturated`]). Without this, playhead at 0
     /// expands ahead by evicting `end` then inserting `end+1`, leaving a lone
     /// keyframe outside a holed window.
-    pub fn insert_frame(&mut self, frame: FrameId, video: OwnedVideoFrame) {
-        if self.index.contains_key(&frame) {
-            return;
+    pub fn insert_frame(&mut self, frame: FrameId, video: OwnedVideoFrame) -> bool {
+        if self.frames.contains_key(&frame) {
+            return false;
         }
         if self.frame_count() >= self.max_frames
             && self.would_evict_closer_than(frame, self.playhead)
         {
-            return;
+            return false;
         }
         while self.frame_count() >= self.max_frames {
             if !self.evict_one(Some(frame)) {
@@ -250,11 +228,11 @@ impl DenseFrameCache {
             }
         }
         if self.frame_count() >= self.max_frames {
-            return;
+            return false;
         }
-        let slot = self.slab.alloc(video);
-        self.index.insert(frame, slot);
+        self.frames.insert(frame, video);
         self.refresh_no_gaps();
+        true
     }
 
     /// Batch insert (tests / non-streaming callers). Scrub fill streams via
@@ -268,11 +246,11 @@ impl DenseFrameCache {
         items.sort_by_key(|(id, _)| *id);
         let mut protect = None;
         for (id, video) in items {
-            if self.index.contains_key(&id) {
+            if self.frames.contains_key(&id) {
                 continue;
             }
             self.insert_frame(id, video);
-            if !self.index.contains_key(&id) {
+            if !self.frames.contains_key(&id) {
                 break;
             }
             protect = Some(id);
@@ -283,49 +261,75 @@ impl DenseFrameCache {
     /// Nearest missing presentation frame to `playhead` within `[0, last]`.
     /// Prefer behind on distance ties (helps PREV).
     pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId) -> Option<FrameId> {
-        if last == 0 && !self.index.contains_key(&0) {
-            return Some(0);
+        self.next_gap_search(playhead, last).gap
+    }
+
+    /// Like [`Self::next_gap_frame`] plus step/path counters for diagnostics.
+    pub fn next_gap_search(&self, playhead: FrameId, last: FrameId) -> GapSearch {
+        if last == 0 && !self.frames.contains_key(&0) {
+            return GapSearch {
+                gap: Some(0),
+                steps: 0,
+                path: GapSearchPath::EmptyClip,
+            };
         }
         let playhead = playhead.min(last);
-        if !self.index.contains_key(&playhead) {
-            return Some(playhead);
+        if !self.frames.contains_key(&playhead) {
+            return GapSearch {
+                gap: Some(playhead),
+                steps: 0,
+                path: GapSearchPath::PlayheadMissing,
+            };
         }
-        let mut best: Option<(u64, u8, FrameId)> = None;
-        // Behind: playhead-1, playhead-2, …
-        let mut f = playhead;
-        while f > 0 {
-            f -= 1;
-            if !self.index.contains_key(&f) {
-                let dist = playhead - f;
-                best = Some((dist, 0, f));
+        if self.no_gaps {
+            let gap = self.next_gap_outside_extent(playhead, last);
+            return GapSearch {
+                gap,
+                steps: 0,
+                path: GapSearchPath::ContiguousEnds,
+            };
+        }
+        // Walk only *cached* keys in the run containing playhead (≤ max_frames),
+        // not every integer across a long hole.
+        let mut steps = 0u32;
+        let mut run_lo = playhead;
+        for &id in self.frames.range(..playhead).rev().map(|(k, _)| k) {
+            steps = steps.saturating_add(1);
+            if id + 1 == run_lo {
+                run_lo = id;
+            } else {
                 break;
             }
         }
-        // Ahead: playhead+1 …
-        let mut f = playhead;
-        while f < last {
-            f += 1;
-            if !self.index.contains_key(&f) {
-                let dist = f - playhead;
-                let cand = (dist, 1, f);
-                best = match best {
-                    Some(b) if b.0 < cand.0 || (b.0 == cand.0 && b.1 <= cand.1) => Some(b),
-                    _ => Some(cand),
-                };
+        let mut run_hi = playhead;
+        for &id in self
+            .frames
+            .range((Bound::Excluded(playhead), Bound::Unbounded))
+            .map(|(k, _)| k)
+        {
+            steps = steps.saturating_add(1);
+            if id == run_hi + 1 {
+                run_hi = id;
+            } else {
                 break;
             }
         }
-        best.map(|(_, _, id)| id)
+        let behind = run_lo.checked_sub(1);
+        let ahead = (run_hi < last).then_some(run_hi + 1);
+        GapSearch {
+            gap: nearer_gap_prefer_behind(playhead, behind, ahead),
+            steps,
+            path: GapSearchPath::RunBounds,
+        }
     }
 
     /// True when every frame in `[0, last]` is cached, or cache is at capacity
     /// with no nearer gaps than the current extent allows under budget.
     pub fn gaps_saturated(&self, playhead: FrameId, last: FrameId) -> bool {
-        self.next_gap_frame(playhead, last).is_none()
+        let gap = self.next_gap_frame(playhead, last);
+        gap.is_none()
             || self.frame_count() >= self.max_frames
-                && self
-                    .next_gap_frame(playhead, last)
-                    .is_some_and(|g| self.would_evict_closer_than(g, playhead))
+                && gap.is_some_and(|g| self.would_evict_closer_than(g, playhead))
     }
 
     /// If inserting `gap` at capacity would immediately evict something closer
@@ -335,12 +339,7 @@ impl DenseFrameCache {
             return false;
         }
         let gap_dist = gap.abs_diff(playhead);
-        self.index
-            .keys()
-            .copied()
-            .filter(|f| *f != playhead)
-            .map(|f| f.abs_diff(playhead))
-            .max()
+        self.max_dist_from_playhead(playhead)
             .is_some_and(|far| far <= gap_dist)
     }
 
@@ -364,41 +363,94 @@ impl DenseFrameCache {
         }
     }
 
+    /// Farthest *evictable* resident is an endpoint of the remaining key set
+    /// (full extent ends may be playhead / protect).
     fn evict_one(&mut self, protect: Option<FrameId>) -> bool {
-        let victim = self
-            .index
+        let Some(victim) = self.farthest_evictable(protect) else {
+            return false;
+        };
+        self.remove_frame(victim)
+    }
+
+    fn farthest_evictable(&self, protect: Option<FrameId>) -> Option<FrameId> {
+        let allowed = |f: FrameId| Some(f) != protect && f != self.playhead;
+        let lo = self.frames.keys().copied().find(|&f| allowed(f))?;
+        let hi = self.frames.keys().copied().rev().find(|&f| allowed(f))?;
+        [lo, hi]
+            .into_iter()
+            .max_by_key(|f| f.abs_diff(self.playhead))
+    }
+
+    fn max_dist_from_playhead(&self, playhead: FrameId) -> Option<u64> {
+        let lo = self
+            .frames
             .keys()
             .copied()
-            .filter(|f| Some(*f) != protect && *f != self.playhead)
-            .max_by_key(|f| f.abs_diff(self.playhead));
-        match victim {
-            Some(f) => self.remove_frame(f),
-            None => false,
-        }
+            .find(|&f| f != playhead)?;
+        let hi = self
+            .frames
+            .keys()
+            .copied()
+            .rev()
+            .find(|&f| f != playhead)?;
+        Some(lo.abs_diff(playhead).max(hi.abs_diff(playhead)))
+    }
+
+    fn next_gap_outside_extent(&self, playhead: FrameId, last: FrameId) -> Option<FrameId> {
+        let (lo, hi) = self.extent()?;
+        // `then_some(lo - 1)` evaluates the sub even when lo == 0 (debug overflow).
+        let behind = lo.checked_sub(1);
+        let ahead = hi.checked_add(1).filter(|&a| a <= last);
+        nearer_gap_prefer_behind(playhead, behind, ahead)
     }
 
     fn remove_frame(&mut self, frame: FrameId) -> bool {
-        let Some(slot) = self.index.remove(&frame) else {
+        if self.frames.remove(&frame).is_none() {
             return false;
-        };
-        self.slab.free_slot(slot);
+        }
         self.refresh_no_gaps();
         true
     }
 
     fn refresh_no_gaps(&mut self) {
         self.no_gaps = match self.extent() {
-            Some((lo, hi)) => self.index.len() as u64 == hi - lo + 1,
+            Some((lo, hi)) => {
+                // Contiguous run length; checked to avoid debug overflow if lo > hi.
+                hi.checked_sub(lo)
+                    .and_then(|d| d.checked_add(1))
+                    .is_some_and(|n| n == self.frames.len() as u64)
+            }
             None => false,
         };
     }
 }
 
-/// Gap-fill arming once the dense window is contiguous (`no_gaps`).
+/// Pick nearer of `behind` / `ahead` to `playhead`; on distance ties prefer behind.
+pub(crate) fn nearer_gap_prefer_behind(
+    playhead: FrameId,
+    behind: Option<FrameId>,
+    ahead: Option<FrameId>,
+) -> Option<FrameId> {
+    match (behind, ahead) {
+        (Some(b), Some(a)) => {
+            if playhead.abs_diff(b) <= playhead.abs_diff(a) {
+                Some(b)
+            } else {
+                Some(a)
+            }
+        }
+        (Some(b), None) => Some(b),
+        (None, Some(a)) => Some(a),
+        (None, None) => None,
+    }
+}
+
+/// Gap-fill arming once the dense window is contiguous **and at capacity**.
 ///
-/// - Holes (`!no_gaps`) → always armed.
-/// - Contiguous → armed only when `playhead` is within `margin` of either
-///   extent edge, or outside `[start, end]` entirely.
+/// - Holes (`!no_gaps`) → always armed (caller).
+/// - Under budget → always armed (caller).
+/// - Contiguous at capacity → armed only when `playhead` is within `margin` of
+///   either extent edge, or outside `[start, end]` entirely.
 pub(crate) fn scrub_gap_fill_armed(
     no_gaps: bool,
     playhead: FrameId,
@@ -491,19 +543,34 @@ mod tests {
     #[test]
     fn next_gap_prefers_nearest_behind_on_tie() {
         let mut c = DenseFrameCache::new(8);
-        // Empty: playhead itself is the gap.
         assert_eq!(c.next_gap_frame(5, 10), Some(5));
-        // Simulate occupied playhead without a real VideoFrame — use index insert via
-        // a stub is hard; test distance logic with empty+manual would need insert.
-        // Playhead missing takes priority — covered above.
         let _ = &mut c;
     }
 
     #[test]
     fn next_gap_expands_both_directions() {
         let c = DenseFrameCache::new(8);
-        // No frames cached → gap is playhead.
         assert_eq!(c.next_gap_frame(3, 9), Some(3));
+    }
+
+    #[test]
+    fn nearer_gap_outside_extent_prefers_behind_on_tie() {
+        assert_eq!(
+            nearer_gap_prefer_behind(150, Some(99), Some(201)),
+            Some(99)
+        );
+        assert_eq!(nearer_gap_prefer_behind(120, Some(99), Some(201)), Some(99));
+        assert_eq!(
+            nearer_gap_prefer_behind(180, Some(99), Some(201)),
+            Some(201)
+        );
+    }
+
+    #[test]
+    fn gap_outside_extent_lo_zero_has_no_behind() {
+        let behind = 0u64.checked_sub(1);
+        let ahead = 7u64.checked_add(1).filter(|&a| a <= 100);
+        assert_eq!(nearer_gap_prefer_behind(0, behind, ahead), Some(8));
     }
 
     #[test]
@@ -515,26 +582,19 @@ mod tests {
     fn scrub_gap_fill_armed_near_edges_when_contiguous() {
         let extent = Some((100, 200));
         let m = 16;
-        // Middle of a contiguous window — idle.
         assert!(!scrub_gap_fill_armed(true, 150, extent, m));
-        // Within margin of start / end.
         assert!(scrub_gap_fill_armed(true, 110, extent, m));
         assert!(scrub_gap_fill_armed(true, 190, extent, m));
-        // Outside the window entirely.
         assert!(scrub_gap_fill_armed(true, 50, extent, m));
         assert!(scrub_gap_fill_armed(true, 250, extent, m));
     }
 
     #[test]
     fn refuse_farther_insert_when_playhead_at_origin() {
-        // Playhead 0, full window [0, 7]: candidate 8 is farther than farthest
-        // resident (7) → would_evict_closer_than (far <= gap_dist).
         assert!(would_evict_closer_than_dist(8, 0, 7));
-        // Playhead mid-window: candidate beyond end may replace the far side.
-        assert!(!would_evict_closer_than_dist(12, 5, 5)); // far=5 (frame 0), gap=7
+        assert!(!would_evict_closer_than_dist(12, 5, 5));
     }
 
-    /// `far_dist` = max |resident − playhead| among non-playhead residents.
     fn would_evict_closer_than_dist(gap: FrameId, playhead: FrameId, far_dist: u64) -> bool {
         far_dist <= gap.abs_diff(playhead)
     }

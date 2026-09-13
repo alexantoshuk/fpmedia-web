@@ -418,6 +418,42 @@ fn BufferMeters(video: VideoRef) -> impl IntoView {
                     ((s.cache_frames as f64 / cap) * 100.0).min(100.0)
                 })
             />
+            <MeterRow
+                label="Gap fill"
+                detail=Signal::derive(move || {
+                    let Some(s) = video.pipeline.get() else {
+                        return String::new();
+                    };
+                    let gap = s
+                        .scrub_gap_target
+                        .map(|g| format!("gap {g}"))
+                        .unwrap_or_else(|| "gap —".into());
+                    format!(
+                        "aim {} · {gap} · {} · {}st {}µs · {} · idle {}",
+                        s.scrub_aim,
+                        s.scrub_fill_stop,
+                        s.scrub_gap_steps,
+                        s.scrub_gap_us,
+                        s.scrub_gap_path,
+                        s.scrub_fill_idle_passes,
+                    )
+                })
+                fill_pct=Signal::derive(move || {
+                    let Some(s) = video.pipeline.get() else {
+                        return 0.0;
+                    };
+                    if s.scrub_gap_saturated {
+                        return 100.0;
+                    }
+                    if s.scrub_busy {
+                        return 60.0;
+                    }
+                    if s.scrub_gap_armed {
+                        return 30.0;
+                    }
+                    0.0
+                })
+            />
         </div>
     }
 }

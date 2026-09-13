@@ -2,7 +2,7 @@
 
 ## In progress
 
-- Scrub cache: unified `enter_scrub_cache_pipeline` for pause / scrub drag / hold / release.
+- Confirm long-hole densify after under-budget arming; use Gap fill meter (`stop` / `steps` / `µs`).
 
 ---
 
