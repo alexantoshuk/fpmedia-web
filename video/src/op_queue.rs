@@ -24,7 +24,8 @@ pub(crate) enum HostOp {
     /// Nearest sync at/before frame.
     SeekKeyframe(u32),
     /// Timeline drag — cancelable; latest target wins (does not latch `busy`).
-    Scrub(u32),
+    /// `settle` = pointer up (exact-first densify hold); drag keeps densify on.
+    Scrub { frame: u32, settle: bool },
     Step(bool),
     /// Prime presentation queue then start the play session / rAF.
     PlayPrime,
@@ -91,12 +92,13 @@ impl OpQueue {
     /// Async scrub: drop pending seek/step/scrub/play (keep open), enqueue latest.
     /// Does **not** set `busy` — drag must not disable Prev/Next. Caller must
     /// `WebPlayer::cancel_ops` so the in-flight scrub aborts.
-    pub fn enqueue_scrub(&self, frame: u32) -> bool {
+    pub fn enqueue_scrub(&self, frame: u32, settle: bool) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
         st.pending
             .retain(|(_, o)| matches!(o, HostOp::Open { .. }));
-        st.pending.push_back((id, HostOp::Scrub(frame)));
+        st.pending
+            .push_back((id, HostOp::Scrub { frame, settle }));
         self.begin_drain_locked(&mut st)
     }
 

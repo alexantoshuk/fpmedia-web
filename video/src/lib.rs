@@ -46,7 +46,8 @@ pub(crate) struct VideoOps {
     /// Scrub-drag preview: nearest sync at/before frame (mediabunny `seekToKey`).
     pub seek_keyframe: Rc<dyn Fn(u32)>,
     /// Async timeline scrub — cancelable exact seek (latest wins).
-    pub scrub_frame: Rc<dyn Fn(u32)>,
+    /// `settle` = pointer released (exact-first); drag keeps densify warming.
+    pub scrub_frame: Rc<dyn Fn(u32, bool)>,
     pub next_frame: Rc<dyn Fn()>,
     pub previous_frame: Rc<dyn Fn()>,
     pub set_loop: Rc<dyn Fn(bool)>,
@@ -145,7 +146,17 @@ impl VideoRef {
 
     /// Async scrub drag — cancelable exact seek; rapid moves keep only the latest.
     /// Updates [`Self::playhead`] immediately; does not latch `busy`.
+    /// Densify runs while dragging so the cache warms under the finger.
     pub fn scrub_frame(&self, frame: u32) {
+        self.scrub_frame_inner(frame, false);
+    }
+
+    /// Pointer-up settle — exact frame first (hold densify), then densify the GOP.
+    pub fn scrub_settle(&self, frame: u32) {
+        self.scrub_frame_inner(frame, true);
+    }
+
+    fn scrub_frame_inner(&self, frame: u32, settle: bool) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
         self.playhead.set(frame);
@@ -154,7 +165,7 @@ impl VideoRef {
             .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_frame)))
             .flatten()
         {
-            scrub(frame);
+            scrub(frame, settle);
         }
     }
 

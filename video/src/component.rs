@@ -383,7 +383,7 @@ pub fn Video(
                             )
                             .await;
                         }
-                        HostOp::Scrub(target) => {
+                        HostOp::Scrub { frame: target, settle } => {
                             queue.set_scrub_inflight(true);
                             run_seek_or_step(
                                 &queue,
@@ -393,7 +393,7 @@ pub fn Video(
                                 &session,
                                 error,
                                 playing,
-                                SeekOrStep::Scrub(target),
+                                SeekOrStep::Scrub { target, settle },
                             )
                             .await;
                             queue.set_scrub_inflight(false);
@@ -536,7 +536,7 @@ pub fn Video(
         let session = Rc::clone(&session);
         let queue = queue.clone();
         let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move |target: u32| {
+        Rc::new(move |target: u32, settle: bool| {
             enqueue_scrub(
                 &queue,
                 &kick_drain,
@@ -544,8 +544,9 @@ pub fn Video(
                 &session,
                 playing,
                 target,
+                settle,
             );
-        }) as Rc<dyn Fn(u32)>
+        }) as Rc<dyn Fn(u32, bool)>
     };
 
     let next_fn = {
@@ -664,6 +665,7 @@ fn enqueue_scrub(
     session: &Rc<RefCell<Option<PlaySession>>>,
     playing: RwSignal<bool>,
     frame: u32,
+    settle: bool,
 ) {
     if player.borrow().as_ref().is_none() {
         return;
@@ -683,7 +685,7 @@ fn enqueue_scrub(
         }
         p.note_scrub_frame(u64::from(frame));
     }
-    if queue.enqueue_scrub(frame) {
+    if queue.enqueue_scrub(frame, settle) {
         kick_drain();
     }
 }
@@ -691,7 +693,7 @@ fn enqueue_scrub(
 enum SeekOrStep {
     Seek(u32),
     SeekKeyframe(u32),
-    Scrub(u32),
+    Scrub { target: u32, settle: bool },
     Step(bool),
 }
 
@@ -788,7 +790,13 @@ async fn run_seek_or_step(
     let label = match &op {
         SeekOrStep::Seek(t) => format!("seek {t}"),
         SeekOrStep::SeekKeyframe(t) => format!("seek-key {t}"),
-        SeekOrStep::Scrub(t) => format!("scrub {t}"),
+        SeekOrStep::Scrub { target: t, settle } => {
+            if *settle {
+                format!("scrub settle {t}")
+            } else {
+                format!("scrub {t}")
+            }
+        }
         SeekOrStep::Step(true) => "next".into(),
         SeekOrStep::Step(false) => "prev".into(),
     };
@@ -796,7 +804,7 @@ async fn run_seek_or_step(
     let result = match op {
         SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
         SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
-        SeekOrStep::Scrub(target) => p.scrub_to(u64::from(target)).await,
+        SeekOrStep::Scrub { target, settle } => p.scrub_to(u64::from(target), settle).await,
         SeekOrStep::Step(true) => p.next_frame().await,
         SeekOrStep::Step(false) => p.previous_frame().await,
     };

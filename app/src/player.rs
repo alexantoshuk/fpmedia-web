@@ -11,29 +11,35 @@ use video::{ReadyFrameKind, Video, VideoMetadata, VideoRef};
 /// Coalesce scrub engine work after the Leptos/tachys event callback releases its
 /// `RefCell`. Duplicate targets (left-edge clamp spams `frame=0`) collapse to one
 /// pending sample so microtasks do not pile up and re-enter cache inserts.
-fn defer_scrub(video: VideoRef, frame: u32) {
+/// `settle` = pointer up (exact-first); drag keeps densify on.
+fn defer_scrub(video: VideoRef, frame: u32, settle: bool) {
     thread_local! {
-        static PENDING: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+        static PENDING: std::cell::Cell<Option<(u32, bool)>> =
+            const { std::cell::Cell::new(None) };
         static SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
-    PENDING.with(|p| p.set(Some(frame)));
+    PENDING.with(|p| p.set(Some((frame, settle))));
     if SCHEDULED.with(|s| s.get()) {
         return;
     }
     SCHEDULED.with(|s| s.set(true));
     spawn_local(async move {
         loop {
-            let Some(frame) = PENDING.with(|p| p.take()) else {
+            let Some((frame, settle)) = PENDING.with(|p| p.take()) else {
                 break;
             };
-            video.scrub_frame(frame);
+            if settle {
+                video.scrub_settle(frame);
+            } else {
+                video.scrub_frame(frame);
+            }
             if PENDING.with(|p| p.get().is_none()) {
                 break;
             }
         }
         SCHEDULED.with(|s| s.set(false));
-        if let Some(frame) = PENDING.with(|p| p.get()) {
-            defer_scrub(video, frame);
+        if let Some((frame, settle)) = PENDING.with(|p| p.get()) {
+            defer_scrub(video, frame, settle);
         }
     });
 }
@@ -287,7 +293,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 }
                 scrubbing.set(true);
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
-                    defer_scrub(video, frame);
+                    defer_scrub(video, frame, false);
                 }
             }
             on:pointermove=move |ev| {
@@ -298,13 +304,13 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     return;
                 };
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
-                    defer_scrub(video, frame);
+                    defer_scrub(video, frame, false);
                 }
             }
             on:pointerup=move |_| {
                 scrubbing.set(false);
                 let frame = video.playhead.get_untracked();
-                defer_scrub(video, frame);
+                defer_scrub(video, frame, true);
             }
             on:pointercancel=move |_| {
                 scrubbing.set(false);

@@ -2,7 +2,7 @@
 
 ## In progress
 
-- Manual check: long-hole densify after under-budget arming / stall-at-aim.
+- Manual check: drag densify warms strip; pointer-up settle paints exact without waiting for GOP tail.
 
 ---
 
