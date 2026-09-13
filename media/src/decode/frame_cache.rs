@@ -1,9 +1,10 @@
 //! Playhead-centered `VideoFrame` cache: ordered `BTreeMap` of handles.
 //!
-//! Keys are presentation `FrameId` (sparse / gap-filled; holes allowed).
-//! Eviction drops the frame farthest from the playhead (always an extent end).
-//! Thumbs stay separate.
+//! - [`DenseFrameCache`] — residency, aim, budget / eviction.
+//! - [`FrameRunIndex`] — contiguous-run geometry + nearest-gap search.
+//! Eviction drops the frame farthest from the playhead. Thumbs stay separate.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
 use std::ops::Bound;
@@ -17,37 +18,197 @@ use lru::LruCache;
 pub const DEFAULT_MAX_THUMB_GOPS: usize = 8;
 pub const DEFAULT_MAX_THUMBS: usize = 64;
 
-/// Result of a gap probe (for fill + demo diagnostics).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GapSearch {
-    pub gap: Option<FrameId>,
-    /// Key / integer steps taken while locating the gap (0 = O(1) path).
-    pub steps: u32,
-    pub path: GapSearchPath,
+/// Contiguous-run geometry and nearest-gap search over a `FrameId` key set.
+///
+/// Does not own frames — only the optional cached run around the cache aim.
+pub struct FrameRunIndex {
+    /// Inclusive run containing the dense-cache aim, when known.
+    playhead_run: Cell<Option<(FrameId, FrameId)>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GapSearchPath {
-    EmptyClip,
-    PlayheadMissing,
-    ContiguousEnds,
-    RunBounds,
-}
-
-impl GapSearchPath {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::EmptyClip => "empty",
-            Self::PlayheadMissing => "miss",
-            Self::ContiguousEnds => "ends",
-            Self::RunBounds => "run",
-        }
+impl Default for FrameRunIndex {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// Exact-frame residency: `BTreeMap` owns handles and keeps ids ordered.
+impl FrameRunIndex {
+    pub fn new() -> Self {
+        Self {
+            playhead_run: Cell::new(None),
+        }
+    }
+
+    pub fn clear(&self) {
+        self.playhead_run.set(None);
+    }
+
+    /// Aim moved: keep the cache only if the new aim stays inside the run.
+    pub fn on_aim_change(&self, new_aim: FrameId) {
+        if let Some((lo, hi)) = self.playhead_run.get() {
+            if new_aim < lo || new_aim > hi {
+                self.playhead_run.set(None);
+            }
+        }
+    }
+
+    /// After a successful insert into `frames`.
+    pub fn note_insert<V>(&self, frames: &BTreeMap<FrameId, V>, aim: FrameId, frame: FrameId) {
+        let Some((lo, hi)) = self.playhead_run.get() else {
+            return;
+        };
+        if !frames.contains_key(&aim) {
+            self.playhead_run.set(None);
+            return;
+        }
+        if frame + 1 == lo {
+            let mut new_lo = frame;
+            while new_lo > 0 && frames.contains_key(&(new_lo - 1)) {
+                new_lo -= 1;
+            }
+            self.playhead_run.set(Some((new_lo, hi)));
+        } else if frame == hi + 1 {
+            let mut new_hi = frame;
+            while frames.contains_key(&(new_hi + 1)) {
+                new_hi += 1;
+            }
+            self.playhead_run.set(Some((lo, new_hi)));
+        }
+        // Outside this run / already covered — leave cache as-is.
+    }
+
+    /// After removing `frame` from the key set.
+    pub fn note_remove(&self, aim: FrameId, frame: FrameId) {
+        let Some((lo, hi)) = self.playhead_run.get() else {
+            return;
+        };
+        if frame < lo || frame > hi {
+            return;
+        }
+        if frame == aim || (lo < frame && frame < hi) {
+            self.playhead_run.set(None);
+            return;
+        }
+        if frame == lo {
+            if lo == hi {
+                self.playhead_run.set(None);
+            } else {
+                self.playhead_run.set(Some((lo + 1, hi)));
+            }
+        } else if frame == hi {
+            if lo == hi {
+                self.playhead_run.set(None);
+            } else {
+                self.playhead_run.set(Some((lo, hi - 1)));
+            }
+        }
+    }
+
+    /// Whole key set is a single solid run `[lo, hi]` (and `aim` is inside it).
+    pub fn set_solid_run(&self, lo: FrameId, hi: FrameId) {
+        self.playhead_run.set(Some((lo, hi)));
+    }
+
+    /// Nearest missing id to `playhead` within `[0, last]` (prefer behind on ties).
+    pub fn search<V>(
+        &self,
+        frames: &BTreeMap<FrameId, V>,
+        aim: FrameId,
+        playhead: FrameId,
+        last: FrameId,
+        no_gaps: bool,
+        extent: Option<(FrameId, FrameId)>,
+    ) -> Option<FrameId> {
+        if last == 0 && !frames.contains_key(&0) {
+            return Some(0);
+        }
+        let playhead = playhead.min(last);
+        if !frames.contains_key(&playhead) {
+            return Some(playhead);
+        }
+        if no_gaps {
+            return next_gap_outside_extent(playhead, last, extent);
+        }
+
+        let behind_adj = (playhead > 0 && !frames.contains_key(&(playhead - 1)))
+            .then_some(playhead - 1);
+        let ahead_adj = (playhead < last && !frames.contains_key(&(playhead + 1)))
+            .then_some(playhead + 1);
+        if behind_adj.is_some() && ahead_adj.is_some() {
+            return nearer_gap_prefer_behind(playhead, behind_adj, ahead_adj);
+        }
+        if behind_adj.is_some() || ahead_adj.is_some() {
+            let (run_lo, run_hi) = self.run_bounds(frames, aim, playhead);
+            let behind = behind_adj.or_else(|| run_lo.checked_sub(1));
+            let ahead = ahead_adj.or_else(|| (run_hi < last).then_some(run_hi + 1));
+            return nearer_gap_prefer_behind(playhead, behind, ahead);
+        }
+
+        let (run_lo, run_hi) = self.run_bounds(frames, aim, playhead);
+        let behind = run_lo.checked_sub(1);
+        let ahead = (run_hi < last).then_some(run_hi + 1);
+        nearer_gap_prefer_behind(playhead, behind, ahead)
+    }
+
+    fn run_bounds<V>(
+        &self,
+        frames: &BTreeMap<FrameId, V>,
+        aim: FrameId,
+        playhead: FrameId,
+    ) -> (FrameId, FrameId) {
+        if playhead == aim {
+            if let Some((lo, hi)) = self.playhead_run.get() {
+                if playhead >= lo && playhead <= hi {
+                    return (lo, hi);
+                }
+            }
+        }
+        let (lo, hi) = walk_run_bounds(frames, playhead);
+        if playhead == aim {
+            self.playhead_run.set(Some((lo, hi)));
+        }
+        (lo, hi)
+    }
+}
+
+fn walk_run_bounds<V>(frames: &BTreeMap<FrameId, V>, playhead: FrameId) -> (FrameId, FrameId) {
+    let mut run_lo = playhead;
+    for &id in frames.range(..playhead).rev().map(|(k, _)| k) {
+        if id + 1 == run_lo {
+            run_lo = id;
+        } else {
+            break;
+        }
+    }
+    let mut run_hi = playhead;
+    for &id in frames
+        .range((Bound::Excluded(playhead), Bound::Unbounded))
+        .map(|(k, _)| k)
+    {
+        if id == run_hi + 1 {
+            run_hi = id;
+        } else {
+            break;
+        }
+    }
+    (run_lo, run_hi)
+}
+
+fn next_gap_outside_extent(
+    playhead: FrameId,
+    last: FrameId,
+    extent: Option<(FrameId, FrameId)>,
+) -> Option<FrameId> {
+    let (lo, hi) = extent?;
+    let behind = lo.checked_sub(1);
+    let ahead = hi.checked_add(1).filter(|&a| a <= last);
+    nearer_gap_prefer_behind(playhead, behind, ahead)
+}
+
+/// Exact-frame residency: `BTreeMap` owns handles; [`FrameRunIndex`] tracks gaps.
 pub struct DenseFrameCache {
     frames: BTreeMap<FrameId, OwnedVideoFrame>,
+    runs: FrameRunIndex,
     max_frames: usize,
     playhead: FrameId,
     playhead_key: FrameId,
@@ -65,11 +226,18 @@ impl DenseFrameCache {
     pub fn new(max_frames: usize) -> Self {
         Self {
             frames: BTreeMap::new(),
+            runs: FrameRunIndex::new(),
             max_frames: max_frames.max(1),
             playhead: 0,
             playhead_key: 0,
             no_gaps: false,
         }
+    }
+
+    /// Gap / run index (tests and advanced callers).
+    #[allow(dead_code)]
+    pub fn runs(&self) -> &FrameRunIndex {
+        &self.runs
     }
 
     /// Public budget trim — drop frames farthest from the playhead.
@@ -94,6 +262,7 @@ impl DenseFrameCache {
     pub fn clear(&mut self) {
         self.frames.clear();
         self.no_gaps = false;
+        self.runs.clear();
     }
 
     /// True when the cached extent has no holes (`len == end - start + 1`).
@@ -153,6 +322,9 @@ impl DenseFrameCache {
     }
 
     pub fn touch_playhead(&mut self, frame: FrameId, key: FrameId) {
+        if frame != self.playhead {
+            self.runs.on_aim_change(frame);
+        }
         self.playhead = frame;
         self.playhead_key = key;
         // Evict farthest from the new aim when over budget — do **not** wipe
@@ -231,6 +403,7 @@ impl DenseFrameCache {
             return false;
         }
         self.frames.insert(frame, video);
+        self.runs.note_insert(&self.frames, self.playhead, frame);
         self.refresh_no_gaps();
         true
     }
@@ -261,66 +434,14 @@ impl DenseFrameCache {
     /// Nearest missing presentation frame to `playhead` within `[0, last]`.
     /// Prefer behind on distance ties (helps PREV).
     pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId) -> Option<FrameId> {
-        self.next_gap_search(playhead, last).gap
-    }
-
-    /// Like [`Self::next_gap_frame`] plus step/path counters for diagnostics.
-    pub fn next_gap_search(&self, playhead: FrameId, last: FrameId) -> GapSearch {
-        if last == 0 && !self.frames.contains_key(&0) {
-            return GapSearch {
-                gap: Some(0),
-                steps: 0,
-                path: GapSearchPath::EmptyClip,
-            };
-        }
-        let playhead = playhead.min(last);
-        if !self.frames.contains_key(&playhead) {
-            return GapSearch {
-                gap: Some(playhead),
-                steps: 0,
-                path: GapSearchPath::PlayheadMissing,
-            };
-        }
-        if self.no_gaps {
-            let gap = self.next_gap_outside_extent(playhead, last);
-            return GapSearch {
-                gap,
-                steps: 0,
-                path: GapSearchPath::ContiguousEnds,
-            };
-        }
-        // Walk only *cached* keys in the run containing playhead (≤ max_frames),
-        // not every integer across a long hole.
-        let mut steps = 0u32;
-        let mut run_lo = playhead;
-        for &id in self.frames.range(..playhead).rev().map(|(k, _)| k) {
-            steps = steps.saturating_add(1);
-            if id + 1 == run_lo {
-                run_lo = id;
-            } else {
-                break;
-            }
-        }
-        let mut run_hi = playhead;
-        for &id in self
-            .frames
-            .range((Bound::Excluded(playhead), Bound::Unbounded))
-            .map(|(k, _)| k)
-        {
-            steps = steps.saturating_add(1);
-            if id == run_hi + 1 {
-                run_hi = id;
-            } else {
-                break;
-            }
-        }
-        let behind = run_lo.checked_sub(1);
-        let ahead = (run_hi < last).then_some(run_hi + 1);
-        GapSearch {
-            gap: nearer_gap_prefer_behind(playhead, behind, ahead),
-            steps,
-            path: GapSearchPath::RunBounds,
-        }
+        self.runs.search(
+            &self.frames,
+            self.playhead,
+            playhead,
+            last,
+            self.no_gaps,
+            self.extent(),
+        )
     }
 
     /// True when every frame in `[0, last]` is cached, or cache is at capacity
@@ -396,18 +517,11 @@ impl DenseFrameCache {
         Some(lo.abs_diff(playhead).max(hi.abs_diff(playhead)))
     }
 
-    fn next_gap_outside_extent(&self, playhead: FrameId, last: FrameId) -> Option<FrameId> {
-        let (lo, hi) = self.extent()?;
-        // `then_some(lo - 1)` evaluates the sub even when lo == 0 (debug overflow).
-        let behind = lo.checked_sub(1);
-        let ahead = hi.checked_add(1).filter(|&a| a <= last);
-        nearer_gap_prefer_behind(playhead, behind, ahead)
-    }
-
     fn remove_frame(&mut self, frame: FrameId) -> bool {
         if self.frames.remove(&frame).is_none() {
             return false;
         }
+        self.runs.note_remove(self.playhead, frame);
         self.refresh_no_gaps();
         true
     }
@@ -415,12 +529,19 @@ impl DenseFrameCache {
     fn refresh_no_gaps(&mut self) {
         self.no_gaps = match self.extent() {
             Some((lo, hi)) => {
-                // Contiguous run length; checked to avoid debug overflow if lo > hi.
-                hi.checked_sub(lo)
+                let solid = hi
+                    .checked_sub(lo)
                     .and_then(|d| d.checked_add(1))
-                    .is_some_and(|n| n == self.frames.len() as u64)
+                    .is_some_and(|n| n == self.frames.len() as u64);
+                if solid && self.frames.contains_key(&self.playhead) {
+                    self.runs.set_solid_run(lo, hi);
+                }
+                solid
             }
-            None => false,
+            None => {
+                self.runs.clear();
+                false
+            }
         };
     }
 }

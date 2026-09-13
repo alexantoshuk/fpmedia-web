@@ -2,7 +2,7 @@
 
 ## In progress
 
-- Confirm long-hole densify after under-budget arming; use Gap fill meter (`stop` / `steps` / `µs`).
+- Manual check: long-hole densify after under-budget arming / stall-at-aim.
 
 ---
 
