@@ -679,11 +679,17 @@ fn enqueue_scrub(
         let _ = session.borrow_mut().take();
     }
     if let Some(p) = player.borrow().as_ref().cloned() {
-        p.cancel_ops();
-        if leaving_play {
-            p.pause();
+        if settle {
+            // Abort densify + hold HW for exact *before* the async op runs.
+            // Do not `note_scrub_frame` — that kicks densify and starved settle.
+            p.prepare_scrub_settle(u64::from(frame));
+        } else {
+            p.cancel_ops();
+            if leaving_play {
+                p.pause();
+            }
+            p.note_scrub_frame(u64::from(frame));
         }
-        p.note_scrub_frame(u64::from(frame));
     }
     if queue.enqueue_scrub(frame, settle) {
         kick_drain();

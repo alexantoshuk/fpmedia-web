@@ -98,10 +98,10 @@ test("perf probe: Wing It scrub timeline", async ({ page }) => {
     while (Date.now() - start < timeout) {
       await page.waitForTimeout(200);
       const next = await sample();
-      const dense = /\bdense\b/.test(next.frameCache);
       const ph = next.playhead;
       const eng = next.engine;
-      if (!dense && ph != null && eng != null && ph === eng) {
+      // Exact painted — densify may still run (`dense` in cache detail).
+      if (ph != null && eng != null && ph === eng) {
         return { settledMs: Date.now() - start, sample: next };
       }
       last = next;

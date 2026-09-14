@@ -2,7 +2,7 @@
 
 ## In progress
 
-- Manual check: drag densify warms strip; pointer-up settle paints exact without waiting for GOP tail.
+- Wing It cold scrub settle: exact paints in ~4.5s after densify-abort + seekToKey→seekTo fix (was eng stuck at 0 / tab freeze).
 
 ---
 

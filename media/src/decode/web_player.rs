@@ -334,11 +334,35 @@ impl WebPlayer {
     /// Cancel decode **and** background dense fill (play / hard abort).
     pub fn cancel_ops_and_scrub_fill(&self) {
         self.cancel_ops();
+        self.abort_scrub_fill(true);
+    }
+
+    /// Stop densify immediately and free the scrub `VideoDecoder` HW session.
+    ///
+    /// Long-GOP settle must not compete with exact cascade on the same GPU
+    /// (mediabunny: seekToKey/seekTo own the decoder; densify waits).
+    /// `rearm` → latch `scrub_pending` so fill resumes after exact clears hold.
+    fn abort_scrub_fill(&self, rearm: bool) {
         let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
         self.shared.scrub_epoch.set(scrub);
-        // In-flight scrub-cache fill will exit on epoch mismatch; ask for a fresh pass
-        // so pause→pipeline is not lost while `scrub_busy` is still true.
-        self.shared.scrub_pending.set(true);
+        self.shared.scrub_pending.set(rearm);
+        if let Some(mut d) = self.shared.scrub_decoder.borrow_mut().take() {
+            let _ = d.reset();
+        }
+    }
+
+    /// Pointer-up settle entry from the UI host — before the async op runs.
+    ///
+    /// Must not call [`Self::note_scrub_frame`] / densify kick: that starved exact
+    /// on Wing It–class long GOPs (playhead far, `eng` stuck at 0, `decodeQ≈10`).
+    pub fn prepare_scrub_settle(&self, frame: FrameId) {
+        self.abort_scrub_fill(true);
+        self.shared.hold_densify_for_exact.set(true);
+        self.cancel_ops();
+        // Drop in-flight main-decoder cascade from the preceding drag sample so
+        // settle does not inherit a wedged `decodeQueueSize`.
+        self.invalidate_decoder();
+        self.aim_scrub_cache(frame);
     }
 
     fn begin_op(&self) -> u64 {
@@ -456,7 +480,8 @@ impl WebPlayer {
 
     pub async fn seek_frame(&self, frame: FrameId) -> Result<(), MediaError> {
         let epoch = self.begin_op();
-        // Exact first — densify waits on `hold_densify_for_exact`.
+        // Exact first — abort densify and hold so scrub HW cannot starve the cascade.
+        self.abort_scrub_fill(true);
         self.shared.hold_densify_for_exact.set(true);
         self.shared.restarting.set(true);
         let result = async {
@@ -498,11 +523,14 @@ impl WebPlayer {
     ///
     /// - **Drag** (`settle=false`): densify while moving (warm cache under the finger);
     ///   preview + best-effort exact may race the scrub decoder.
-    /// - **Settle** (`settle=true`, pointer up): hold densify, paint exact first, then
-    ///   densify — avoids HW starvation so the final frame does not wait for the GOP tail.
+    /// - **Settle** (`settle=true`, pointer up): abort densify, seekToKey then warm
+    ///   seekTo (`goto_frame`) so exact owns HW — not while scrub densify holds
+    ///   `decodeQ`, and not via a `fill_gop` key re-feed that wedges long GOPs.
     pub async fn scrub_to(&self, frame: FrameId, settle: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         if settle {
+            // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
+            self.abort_scrub_fill(true);
             self.shared.hold_densify_for_exact.set(true);
             self.shared.restarting.set(true);
             self.aim_scrub_cache(frame);
@@ -521,7 +549,7 @@ impl WebPlayer {
                 return Ok(());
             }
 
-            // Canvas-only preview — do not commit_frame (UI playhead stays put).
+            // Canvas-only key/neighbor preview — do not commit_frame (UI playhead stays).
             if let Some(preview) = self.scrub_preview_frame(frame) {
                 if preview != frame {
                     self.draw_frame_unccommitted(preview, epoch).await?;
@@ -531,6 +559,29 @@ impl WebPlayer {
                     if self.present_from_cache(frame)? {
                         self.shared.player.borrow_mut().commit_frame(frame)?;
                         return Ok(());
+                    }
+                }
+            }
+
+            // Settle: mediabunny seekToKey → seekTo.
+            // Commit the key first (leaves frame 0), then continue the warm cascade
+            // to exact — do **not** `fill_gop` restart (re-feed of the same key after
+            // `goto_frame(key)` wedged at decodeQ≈11 on Wing It long GOPs).
+            if settle {
+                if let Some(key) = self.key_for(frame) {
+                    if key != frame {
+                        if self.present_from_cache(key)? {
+                            self.shared.player.borrow_mut().commit_frame(key)?;
+                        } else {
+                            self.goto_frame(key, epoch).await?;
+                        }
+                        if !self.is_current(epoch) {
+                            return Err(MediaError::Cancelled);
+                        }
+                        if self.present_from_cache(frame)? {
+                            self.shared.player.borrow_mut().commit_frame(frame)?;
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -1503,11 +1554,11 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
             {
                 return Ok(());
             }
-            // Settle / sync seek owns the main decoder — wait, do not densify in parallel.
+            // Settle / sync seek owns HW — exit so `scrub_busy` clears and the scrub
+            // decoder is not pinned in a spin-wait (was starving exact on long GOPs).
             if shared.hold_densify_for_exact.get() {
                 shared.scrub_pending.set(true);
-                sleep_ms(0).await;
-                continue;
+                return Ok(());
             }
             // Pause/play bumped the fill epoch — adopt it and keep going if still scrubbing.
             if shared.scrub_epoch.get() != scrub_epoch {
@@ -1562,6 +1613,12 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
     }
     .await;
     shared.scrub_busy.set(false);
+
+    // While exact settle/seek holds densify, leave `scrub_pending` latched and do
+    // **not** respawn — a spawn_local spin froze the tab (Wing It cold scrub).
+    if shared.hold_densify_for_exact.get() {
+        return result;
+    }
 
     let want_again = shared.scrub_pending.get()
         && shared.fill_mode.get() == CacheFillMode::Scrub
