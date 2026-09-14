@@ -969,8 +969,8 @@ async fn open_blob_staged(
     let track = open_mp4_source_cached_with_progress(
         source,
         OpenMp4Options {
-            // Mediabunny verifyKeyPackets — Wing It / Resolve clips mark non-IDR
-            // samples in `stss`; skip-behind then jumps to a fake key and dies.
+            // Mediabunny verifyKeyPackets — demote lying stss (non-IDR / inexact
+            // SEI) so skip-behind does not jump to a fake key and die.
             verify_avc_sync: true,
         },
         |msg| on_status(msg),

@@ -17,8 +17,9 @@ use crate::util::block_on;
 /// Options for [`open_mp4_source`].
 #[derive(Clone, Copy, Debug)]
 pub struct OpenMp4Options {
-    /// Mediabunny-style bitstream sync verify (AVC IDR). For progressive/Blob
-    /// opens this runs **async** after moov parse (do not use `block_on` on Blob).
+    /// Mediabunny-style bitstream sync verify (AVC IDR / Recovery Point SEI).
+    /// For progressive/Blob opens this runs **async** after moov parse (do not
+    /// use `block_on` on Blob).
     pub verify_avc_sync: bool,
 }
 
@@ -344,8 +345,10 @@ fn classify_codec(codec_string: Option<&str>) -> VideoCodec {
     }
 }
 
-/// Clear `is_sync` when the AVCC AU is not an IDR (or undecidable).
+/// Clear `is_sync` when the AVCC AU is not a bitstream key (or undecidable).
 ///
+/// Key = IDR, or exact Recovery Point SEI when the runtime accepts SEI keys
+/// (`accept_avc_recovery_point_sei`; Chromium &lt;145 demotes them).
 /// Only for immediately-ready sources (`MemorySource`) — uses [`block_on`].
 fn verify_avc_sync_flags(
     entries: &mut [FrameEntry],

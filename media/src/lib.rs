@@ -21,7 +21,8 @@ mod util;
 mod decode;
 
 pub use bitstream::{
-    PacketType, avc_nal_length_size, determine_avc_packet_type, sanitize_avc_packet_for_chromium,
+    PacketType, accept_avc_recovery_point_sei, avc_nal_length_size, determine_avc_packet_type,
+    determine_avc_packet_type_with, sanitize_avc_packet_for_chromium,
 };
 pub use demux::{
     Mp4VideoTrack, OpenMp4Options, TopLevelBox, load_ftyp_moov, open_mp4_bytes, open_mp4_source,

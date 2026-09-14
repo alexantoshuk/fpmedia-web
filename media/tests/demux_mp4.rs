@@ -67,7 +67,7 @@ fn demux_short_gop_metadata_and_frames() {
     // 320×240 fits entirely under the default MiB budget.
     assert_eq!(meta.scrub_cache_frame_budget(), 48);
 
-    // verifyKeyPackets: every remaining sync sample is a real IDR in the AU.
+    // verifyKeyPackets: every remaining sync is a bitstream key (IDR / exact SEI).
     let length_size = avc_nal_length_size(&meta.codec.description).expect("avcC length");
     for &frame in &syncs {
         let sample = block_on(track.encoded_sample(frame)).expect("sample");

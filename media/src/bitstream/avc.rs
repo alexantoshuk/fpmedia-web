@@ -1,7 +1,9 @@
 //! H.264 / AVC access-unit key vs delta from NAL types (AVCC length-prefixed).
 //!
 //! Port of mediabunny `determineVideoPacketType` for `avc` in `codec-data.ts`:
-//! scan length-prefixed NALs; types 1–4 ⇒ delta; type 5 (IDR) ⇒ key.
+//! scan length-prefixed NALs; types 1–4 ⇒ delta; type 5 (IDR) ⇒ key;
+//! type 6 SEI Recovery Point (`recovery_frame_cnt==0` && `exact_match_flag==1`) ⇒ key
+//! when the runtime accepts SEI keys (not Chromium &lt; 145).
 
 /// Packet type from bitstream inspection (not container sync flags).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,6 +14,10 @@ pub enum PacketType {
 
 /// Access unit delimiter (ISO/IEC 14496-10).
 const NAL_AUD: u8 = 9;
+/// Supplemental enhancement information.
+const NAL_SEI: u8 = 6;
+/// ITU-T H.264 Annex D Table D-1 — `recovery_point` SEI payload type.
+const SEI_PAYLOAD_RECOVERY_POINT: u32 = 6;
 
 /// `lengthSizeMinusOne + 1` from an `avcC` box payload (ISO/IEC 14496-15).
 ///
@@ -20,6 +26,49 @@ pub fn avc_nal_length_size(avcc: &[u8]) -> Option<usize> {
     let b = *avcc.get(4)?;
     let size = usize::from(b & 0b11) + 1;
     (1..=4).contains(&size).then_some(size)
+}
+
+/// Whether `verifyKeyPackets` may keep Recovery Point SEI AUs as sync.
+///
+/// Mediabunny (`codec-data.ts` `determineVideoPacketType`) skips SEI keys on
+/// Chromium; we additionally accept Chromium ≥ 145 where WebCodecs now treats
+/// `recovery_frame_cnt==0 && exact_match_flag=1` as a key (w3c/webcodecs#650).
+pub fn accept_avc_recovery_point_sei() -> bool {
+    #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+    {
+        // Older Chromium bricks on non-IDR keys; ≥145 accepts exact SEI recovery.
+        const CHROMIUM_SEI_RECOVERY_KEY_MAJOR: u32 = 145;
+        match chromium_major_version() {
+            Some(major) => major >= CHROMIUM_SEI_RECOVERY_KEY_MAJOR,
+            None => true, // Firefox / Safari / non-Chromium
+        }
+    }
+    #[cfg(not(all(target_arch = "wasm32", feature = "webcodecs")))]
+    {
+        true
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+fn chromium_major_version() -> Option<u32> {
+    let window = web_sys::window()?;
+    let nav = js_sys::Reflect::get(&window, &"navigator".into()).ok()?;
+    let ua = js_sys::Reflect::get(&nav, &"userAgent".into())
+        .ok()?
+        .as_string()?;
+    // mediabunny `isChromium`: Chrome / Chromium / Edge.
+    if !(ua.contains("Chrome") || ua.contains("Chromium") || ua.contains("Edg/")) {
+        return None;
+    }
+    // Prefer `Chrome/NNN` (Blink); fall back to `Chromium/NNN`.
+    parse_ua_major(&ua, "Chrome/").or_else(|| parse_ua_major(&ua, "Chromium/"))
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+fn parse_ua_major(ua: &str, marker: &str) -> Option<u32> {
+    let rest = ua.split_once(marker)?.1;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
 }
 
 fn read_nal_len(data: &[u8], offset: usize, length_size: usize) -> Option<usize> {
@@ -33,10 +82,133 @@ fn read_nal_len(data: &[u8], offset: usize, length_size: usize) -> Option<usize>
     Some(nal_len)
 }
 
+/// Strip H.264 emulation-prevention `0x000003` bytes (mediabunny
+/// `removeEmulationPreventionBytes`).
+fn remove_emulation_prevention_bytes(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if i + 2 < data.len() && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 3 {
+            out.push(0);
+            out.push(0);
+            i += 3;
+        } else {
+            out.push(data[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// MSB-first bit reader over RBSP bytes (mediabunny `shared/bitstream.ts`).
+struct BitReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> BitReader<'a> {
+    fn from_byte_offset(bytes: &'a [u8], byte_offset: usize) -> Self {
+        Self {
+            bytes,
+            pos: byte_offset.saturating_mul(8),
+        }
+    }
+
+    fn read_bit(&mut self) -> Option<u32> {
+        let byte_index = self.pos / 8;
+        let byte = *self.bytes.get(byte_index)?;
+        let bit_index = 7 - (self.pos & 7);
+        let bit = u32::from((byte >> bit_index) & 1);
+        self.pos += 1;
+        Some(bit)
+    }
+
+    fn read_bits(&mut self, n: usize) -> Option<u32> {
+        let mut result = 0u32;
+        for _ in 0..n {
+            result = (result << 1) | self.read_bit()?;
+        }
+        Some(result)
+    }
+
+    /// Unsigned Exp-Golomb `ue(v)` (mediabunny `readExpGolomb`).
+    fn read_exp_golomb(&mut self) -> Option<u32> {
+        let mut leading_zeros = 0u32;
+        while self.read_bit()? == 0 {
+            leading_zeros += 1;
+            if leading_zeros >= 32 {
+                return None;
+            }
+        }
+        let rest = self.read_bits(leading_zeros as usize)?;
+        Some(((1u32 << leading_zeros) - 1).saturating_add(rest))
+    }
+}
+
+/// True when an SEI NAL (type 6) contains Recovery Point with
+/// `recovery_frame_cnt == 0` and `exact_match_flag == 1`
+/// (w3c/webcodecs#650 / PR #910; mediabunny `codec-data.ts`).
+fn sei_nal_is_exact_recovery_point(nal: &[u8]) -> bool {
+    if nal.is_empty() || (nal[0] & 0x1f) != NAL_SEI {
+        return false;
+    }
+    let bytes = remove_emulation_prevention_bytes(nal);
+    let mut pos = 1; // skip NAL header
+    while pos + 1 < bytes.len() {
+        // sei_message(): payloadType / payloadSize as 0xFF-extended sums.
+        let mut payload_type = 0u32;
+        loop {
+            let Some(&b) = bytes.get(pos) else {
+                return false;
+            };
+            pos += 1;
+            payload_type = payload_type.saturating_add(u32::from(b));
+            if b < 255 {
+                break;
+            }
+        }
+        let mut payload_size = 0u32;
+        loop {
+            let Some(&b) = bytes.get(pos) else {
+                return false;
+            };
+            pos += 1;
+            payload_size = payload_size.saturating_add(u32::from(b));
+            if b < 255 {
+                break;
+            }
+        }
+        if payload_type == SEI_PAYLOAD_RECOVERY_POINT {
+            let mut bits = BitReader::from_byte_offset(&bytes, pos);
+            let Some(recovery_frame_cnt) = bits.read_exp_golomb() else {
+                return false;
+            };
+            let Some(exact_match_flag) = bits.read_bits(1) else {
+                return false;
+            };
+            if recovery_frame_cnt == 0 && exact_match_flag == 1 {
+                return true;
+            }
+        }
+        pos = pos.saturating_add(payload_size as usize);
+    }
+    false
+}
+
 /// Decide key/delta by inspecting AVCC (length-prefixed) NAL units.
 ///
+/// Uses [`accept_avc_recovery_point_sei`] for Recovery Point SEI keys.
 /// Returns `None` if the AU is empty or truncated (cannot decide).
 pub fn determine_avc_packet_type(data: &[u8], length_size: usize) -> Option<PacketType> {
+    determine_avc_packet_type_with(data, length_size, accept_avc_recovery_point_sei())
+}
+
+/// Like [`determine_avc_packet_type`] with an explicit Recovery Point SEI policy.
+pub fn determine_avc_packet_type_with(
+    data: &[u8],
+    length_size: usize,
+    accept_recovery_point_sei: bool,
+) -> Option<PacketType> {
     if length_size == 0 || length_size > 4 || data.is_empty() {
         return None;
     }
@@ -55,7 +227,8 @@ pub fn determine_avc_packet_type(data: &[u8], length_size: usize) -> Option<Pack
                 None
             };
         }
-        let nal_header = data[offset];
+        let nal = &data[offset..offset + nal_len];
+        let nal_header = nal[0];
         let nal_type = nal_header & 0x1f;
         saw_nal = true;
 
@@ -67,7 +240,14 @@ pub fn determine_avc_packet_type(data: &[u8], length_size: usize) -> Option<Pack
         if nal_type == 5 {
             return Some(PacketType::Key);
         }
-        // 6 SEI / 7+ (SPS, PPS, AUD, …): keep scanning (Recovery Point SEI not yet).
+        // 6 SEI — Recovery Point may count as key (before a following I-slice).
+        if nal_type == NAL_SEI
+            && accept_recovery_point_sei
+            && sei_nal_is_exact_recovery_point(nal)
+        {
+            return Some(PacketType::Key);
+        }
+        // Other SEI / SPS / PPS / AUD / …: keep scanning.
         offset += nal_len;
     }
 
@@ -168,6 +348,17 @@ mod tests {
         out
     }
 
+    /// SEI NAL: recovery_point, recovery_frame_cnt=0, exact_match=1.
+    /// Payload byte `0xC0` = bits `1 1 0 00 …` (ue(0), exact=1, broken=0, idc=0).
+    fn recovery_point_sei_exact() -> Vec<u8> {
+        vec![0x06, 0x06, 0x01, 0xC0, 0x80]
+    }
+
+    /// Same shape but exact_match_flag=0 (`0x80` = `1 0 …`).
+    fn recovery_point_sei_inexact() -> Vec<u8> {
+        vec![0x06, 0x06, 0x01, 0x80, 0x80]
+    }
+
     #[test]
     fn avcc_length_size_from_byte4() {
         // Typical avcC: lengthSizeMinusOne = 3 → 4-byte lengths.
@@ -217,6 +408,43 @@ mod tests {
     }
 
     #[test]
+    fn recovery_point_sei_exact_is_key_when_accepted() {
+        let sei = recovery_point_sei_exact();
+        let i_slice = &[0x41, 0x00]; // non-IDR I/P slice
+        let data = au(&[&sei, i_slice], 4);
+        assert_eq!(
+            determine_avc_packet_type_with(&data, 4, true),
+            Some(PacketType::Key)
+        );
+        // Chromium &lt;145 policy: SEI ignored → following slice ⇒ delta (demote).
+        assert_eq!(
+            determine_avc_packet_type_with(&data, 4, false),
+            Some(PacketType::Delta)
+        );
+    }
+
+    #[test]
+    fn recovery_point_sei_inexact_is_delta() {
+        let sei = recovery_point_sei_inexact();
+        let i_slice = &[0x41, 0x00];
+        let data = au(&[&sei, i_slice], 4);
+        assert_eq!(
+            determine_avc_packet_type_with(&data, 4, true),
+            Some(PacketType::Delta)
+        );
+    }
+
+    #[test]
+    fn recovery_point_sei_alone_is_key_when_accepted() {
+        let sei = recovery_point_sei_exact();
+        let data = au(&[&sei], 4);
+        assert_eq!(
+            determine_avc_packet_type_with(&data, 4, true),
+            Some(PacketType::Key)
+        );
+    }
+
+    #[test]
     fn chromium_strips_nals_before_aud() {
         let sei = &[0x06, 0x00];
         let aud = &[0x09, 0xf0];
@@ -244,5 +472,19 @@ mod tests {
     fn chromium_noop_when_clean() {
         let data = au(&[&[0x65, 0x88]], 4);
         assert!(sanitize_avc_packet_for_chromium(&data, 4).is_none());
+    }
+
+    #[test]
+    fn exp_golomb_zero() {
+        // Single bit `1` → ue(0).
+        let bytes = [0b1000_0000];
+        let mut bits = BitReader::from_byte_offset(&bytes, 0);
+        assert_eq!(bits.read_exp_golomb(), Some(0));
+    }
+
+    #[test]
+    fn remove_emulation_prevention() {
+        let raw = [0x00, 0x00, 0x03, 0x01];
+        assert_eq!(remove_emulation_prevention_bytes(&raw), vec![0x00, 0x00, 0x01]);
     }
 }
