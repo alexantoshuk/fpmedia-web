@@ -78,6 +78,7 @@ Semantic format:
 - Subject ≤ 72 chars, imperative (`add`, `fix`, `remove` — not `added`).
 - Scope optional: `feat(player)`, `fix(webcodecs)`.
 - Closes a state.md task → blank line then `closes: <task name>`.
+- **Always run `cargo fmt` (rustfmt) before committing** Rust changes; include any fmt-only touch-ups in the same commit.
 - Never commit code failing `cargo check` or `cargo leptos build`.
 
 ### Commit / PR size
@@ -99,6 +100,7 @@ atomic (rename/format, lockfile, generated assets).
 ## Dev commands
 
 ```sh
+cargo fmt                                               # rustfmt — required before every commit
 cargo leptos watch                                      # dev → http://127.0.0.1:3000
 cargo leptos build                                      # build → target/site/
 cargo check -p server                                   # server (ssr) type check
