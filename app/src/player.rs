@@ -1,6 +1,7 @@
 //! Demo controls over [`video::Video`] — not production chrome.
 
 use leptos::ev;
+use leptos::html::Input;
 use leptos::prelude::*;
 use leptos_use::use_event_listener;
 use video::{ReadyFrameKind, Video, VideoMetadata, VideoRef};
@@ -47,6 +48,7 @@ fn defer_scrub(video: VideoRef, frame: u32, settle: bool) {
 #[component]
 pub fn DemoPlayer() -> impl IntoView {
     let video = VideoRef::new();
+    let url_input = NodeRef::<Input>::new();
 
     // ← / → match Prev / Next buttons (skip when typing in an input).
     let _arrow_keys = use_event_listener(window(), ev::keydown, move |ev| {
@@ -89,24 +91,6 @@ pub fn DemoPlayer() -> impl IntoView {
                 {move || video.metadata.get().as_ref().map(format_metadata).unwrap_or_default()}
             </p>
             <div class="wm-controls" data-testid="controls">
-                <label class="wm-file">
-                    "Open MP4"
-                    <input
-                        type="file"
-                        accept="video/mp4,video/*"
-                        data-testid="file-input"
-                        on:change=move |ev: leptos::ev::Event| {
-                            let input: HtmlInputElement = event_target(&ev);
-                            let Some(files) = input.files() else { return };
-                            let Some(file) = files.get(0) else { return };
-                            let name = file.name();
-                            video.status.set(format!("Selected {name}…"));
-                            // File is a Blob — progressive open, no whole-file array_buffer.
-                            let blob: Blob = file.unchecked_into();
-                            video.open_blob(blob);
-                        }
-                    />
-                </label>
                 <button
                     type="button"
                     class="wm-btn wm-btn-primary"
@@ -192,6 +176,64 @@ pub fn DemoPlayer() -> impl IntoView {
                 >
                     "Seek"
                 </button>
+            </div>
+            <div class="wm-controls wm-source" data-testid="source">
+                <label class="wm-file">
+                    "Browse"
+                    <input
+                        type="file"
+                        accept="video/mp4,video/*"
+                        data-testid="file-input"
+                        on:change=move |ev: leptos::ev::Event| {
+                            let input: HtmlInputElement = event_target(&ev);
+                            let Some(files) = input.files() else { return };
+                            let Some(file) = files.get(0) else { return };
+                            let name = file.name();
+                            video.status.set(format!("Selected {name}…"));
+                            // File is a Blob — progressive open, no whole-file array_buffer.
+                            let blob: Blob = file.unchecked_into();
+                            video.open_blob(blob);
+                        }
+                    />
+                </label>
+                <div class="wm-url-row">
+                    <input
+                        type="url"
+                        class="wm-url-input"
+                        node_ref=url_input
+                        placeholder="https://… or blob:…"
+                        data-testid="url-input"
+                        prop:disabled=move || video.busy.get()
+                        on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                            if ev.key() != "Enter" {
+                                return;
+                            }
+                            ev.prevent_default();
+                            let Some(input) = url_input.get() else { return };
+                            let url = input.value();
+                            if url.trim().is_empty() {
+                                return;
+                            }
+                            video.open_url(url);
+                        }
+                    />
+                    <button
+                        type="button"
+                        class="wm-btn"
+                        data-testid="btn-open-url"
+                        prop:disabled=move || video.busy.get()
+                        on:click=move |_| {
+                            let Some(input) = url_input.get() else { return };
+                            let url = input.value();
+                            if url.trim().is_empty() {
+                                return;
+                            }
+                            video.open_url(url);
+                        }
+                    >
+                        "Open URL"
+                    </button>
+                </div>
             </div>
             <p class="wm-status" data-testid="status">
                 {move || {

@@ -156,6 +156,11 @@ impl OpQueue {
         }
     }
 
+    /// Current invalidation epoch (`asyncId`).
+    pub fn current_id(&self) -> u64 {
+        self.async_id.get()
+    }
+
     /// Pop the next command for the drain loop.
     pub fn pop_next(&self) -> Option<(u64, HostOp)> {
         self.inner.borrow_mut().pending.pop_front()

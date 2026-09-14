@@ -43,6 +43,8 @@ pub struct VideoRef {
 #[derive(Clone)]
 pub(crate) struct VideoOps {
     pub open_blob: Rc<dyn Fn(web_sys::Blob)>,
+    /// Host-layer fetch → [`Blob`] → same open path. Accepts `https:` and `blob:`.
+    pub open_url: Rc<dyn Fn(String)>,
     pub play: Rc<dyn Fn()>,
     pub pause: Rc<dyn Fn()>,
     /// Tear down the decode session and free caches (keeps the mounted canvas).
@@ -86,6 +88,26 @@ impl VideoRef {
             .flatten();
         if let Some(open) = open {
             open(blob);
+        } else {
+            self.status
+                .set("Video not mounted — hard-refresh the page.".into());
+            self.error.set(Some("Video not mounted".into()));
+        }
+    }
+
+    /// Fetch `url` into a [`web_sys::Blob`], then open like [`Self::open_blob`].
+    ///
+    /// Works for `https:` (full download; needs CORS + a progressive MP4) and
+    /// same-document `blob:` URLs (`URL.createObjectURL`). Not HTTP Range /
+    /// streaming — that would be a future `UrlSource`.
+    pub fn open_url(&self, url: impl Into<String>) {
+        let url = url.into();
+        let open = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.open_url)))
+            .flatten();
+        if let Some(open) = open {
+            open(url);
         } else {
             self.status
                 .set("Video not mounted — hard-refresh the page.".into());

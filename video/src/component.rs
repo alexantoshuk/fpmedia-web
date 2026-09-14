@@ -9,8 +9,8 @@ use leptos_use::utils::Pausable;
 use leptos_use::{UseRafFnOptions, use_raf_fn_with_options, use_resize_observer};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlCanvasElement;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::{HtmlCanvasElement, Response};
 use webmedia::{
     BlobSource, DuePresent, OpenMp4Options, WebPlayer, open_mp4_source_cached_with_progress,
 };
@@ -455,6 +455,71 @@ pub fn Video(
         }) as Rc<dyn Fn(web_sys::Blob)>
     };
 
+    let open_url = {
+        let queue = queue.clone();
+        let stop_playback = Rc::clone(&stop_playback);
+        let fps_meter = Rc::clone(&fps_meter);
+        let kick_drain = Rc::clone(&kick_drain);
+        Rc::new(move |url: String| {
+            let Some(canvas_el) = canvas_ref.get_untracked() else {
+                error.set(Some("canvas not mounted".into()));
+                status.set("Canvas missing — refresh the page.".into());
+                return;
+            };
+            let canvas: HtmlCanvasElement = canvas_el;
+            let url = url.trim().to_string();
+            if url.is_empty() {
+                error.set(Some("empty URL".into()));
+                status.set("Enter a URL to open.".into());
+                return;
+            }
+            stop_playback();
+            queue.cancel_all();
+            let fetch_id = queue.current_id();
+            ready.set(false);
+            ended.set(false);
+            error.set(None);
+            fps.set(None);
+            pipeline.set(None);
+            metadata.set(None);
+            fps_meter.borrow_mut().reset();
+            busy.set(true);
+            status.set(format!("Fetching {url}…"));
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&format!("webmedia: open_url start {url}").into());
+
+            let queue = queue.clone();
+            let kick_drain = Rc::clone(&kick_drain);
+            spawn_local(async move {
+                let fetched = fetch_url_as_blob(&url).await;
+                if !queue.is_current(fetch_id) {
+                    return;
+                }
+                match fetched {
+                    Ok(blob) => {
+                        let size_kb = (blob.size() as u64) / 1024;
+                        status.set(format!("Opening (~{size_kb} KB)…"));
+                        #[cfg(target_arch = "wasm32")]
+                        web_sys::console::log_1(
+                            &format!("webmedia: open_url fetched ~{size_kb} KB").into(),
+                        );
+                        if queue.enqueue_open(blob, canvas) {
+                            kick_drain();
+                        }
+                    }
+                    Err(e) => {
+                        busy.set(false);
+                        ready.set(false);
+                        error.set(Some(e.clone()));
+                        status.set(format!("Fetch failed: {e}"));
+                        #[cfg(target_arch = "wasm32")]
+                        web_sys::console::error_1(&e.into());
+                    }
+                }
+            });
+        }) as Rc<dyn Fn(String)>
+    };
+
     let play_fn = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
@@ -617,6 +682,7 @@ pub fn Video(
 
     video.ops.set_value(Some(VideoOps {
         open_blob,
+        open_url,
         play: play_fn,
         pause: stop_playback,
         close: Rc::clone(&close_fn),
@@ -984,6 +1050,38 @@ async fn run_play_prime(
     if still_mine() {
         resume_raf();
     }
+}
+
+/// Full-resource fetch → [`web_sys::Blob`] (https / same-document `blob:`).
+///
+/// Not progressive HTTP Range — host convenience over [`crate::VideoRef::open_blob`].
+async fn fetch_url_as_blob(url: &str) -> Result<web_sys::Blob, String> {
+    let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
+    let resp_val = JsFuture::from(window.fetch_with_str(url))
+        .await
+        .map_err(|e| format_js_error("fetch", &e))?;
+    let resp: Response = resp_val
+        .dyn_into()
+        .map_err(|_| "fetch did not return a Response".to_string())?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let blob_promise = resp
+        .blob()
+        .map_err(|e| format_js_error("response.blob", &e))?;
+    let blob_val = JsFuture::from(blob_promise)
+        .await
+        .map_err(|e| format_js_error("blob", &e))?;
+    blob_val
+        .dyn_into::<web_sys::Blob>()
+        .map_err(|_| "response body is not a Blob".to_string())
+}
+
+fn format_js_error(what: &str, err: &wasm_bindgen::JsValue) -> String {
+    if let Some(s) = err.as_string() {
+        return format!("{what}: {s}");
+    }
+    format!("{what}: {err:?}")
 }
 
 async fn open_blob_staged(
