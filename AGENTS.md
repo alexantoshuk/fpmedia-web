@@ -8,7 +8,7 @@ Respect `.agentignore`.
 2. Read `.ai/architecture.md` — stack + code rules.
 3. Read `.ai/state.md` — in progress + next up. No Done list.
 4. Scan `.ai/skills/` filenames.
-5. **Read the relevant skill file in full before touching code that imports its topic.**
+5. **Read the relevant skill before touching code that imports its topic** — start with its **Triage** table, then the sections it points to (read the full skill when the change is broad).
 6. **Media work (mandatory):** see [Mediabunny-first](#mediabunny-first) below.
 
 All `.ai/` documentation is English.
@@ -43,6 +43,7 @@ Example: dropping prune→dense salvage on settle “to avoid strip noise” re-
 | `.ai/skills/leptos.md` | Leptos UI / `<Video>` / CSR mount / resources |
 
 New gotcha → append to the relevant skill; add a skills-index row only if a new file is created.
+Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, session logs) — extend the table above only when a new skill topic is real and recurring.
 
 ## Documentation (`.ai/`)
 
@@ -51,11 +52,39 @@ New gotcha → append to the relevant skill; add a skills-index row only if a ne
 | **`product.md`** | Domain or UX decision stabilises | Model, surfaces, business invariants. One row/paragraph per decision — no session notes. |
 | **`architecture.md`** | Stack, layers, or DB policy stabilises | Layout, layer rules, code conventions, ADRs. Point to skills for how-to. |
 | **`state.md`** | End of session; before commit if priorities shifted | **In progress** + **Next up** only (no Done list). Drop finished specs; don’t duplicate product/architecture. |
-| **`skills/*.md`** | Reusable trap or API mismatch fixed in code | Triage, gotchas, patterns. Not backlog or layout. |
+| **`skills/*.md`** | Reusable trap or API mismatch fixed in code | Triage table + gotchas + patterns. Not backlog, workspace layout, or Dev commands. |
+
+### One source of truth
+
+| Topic | Canonical home | Elsewhere |
+| ----- | -------------- | --------- |
+| Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
+| Product / UX invariants | `product.md` | Do not restate essays in skills |
+| Crate layout, layers, ADRs | `architecture.md` | Skills may keep a **module map** for one crate |
+| Backlog / priorities | `state.md` | Never a Done list; never copy into skills |
+| Engine traps / decode / scrub | `skills/media.md` | UI host points here for decode hangs |
+| Leptos / `<Video>` host traps | `skills/leptos.md` | Engine skill points here for UI stuck |
+| Dev commands | `AGENTS.md` | Do not duplicate in skills |
+
+If two files disagree, fix the canonical home and delete the duplicate prose.
+
+### Skill hygiene
+
+- Every skill starts with a short **Triage** table: symptom → section / rule (agents read this first).
+- New gotcha format: **symptom → rule → symbol/file** (optional `mediabunny: src/…` cite). Prefer one tight bullet over a paragraph; expand only when the failure mode is subtle.
+- When a gotcha grows into a design section (e.g. scrub caches), keep the design once under a named heading and link it from triage — do not paste the same policy into three bullets.
+- After fixing a bug: update triage if the symptom is new; append/adjust the gotcha; remove obsolete claims (wrong clock, “planned” that shipped).
+- E2E / perf probes that guard a failure mode: list them in that skill’s triage (paths under `e2e/`). Do not invent a separate testing doc until probes outgrow a handful of lines.
+
+### State hygiene
+
+- `state.md` = **In progress** + **Next up** (+ optional **Later**). Never **Done**.
+- Finished work: delete the bullet (durable knowledge → skill/product/architecture).
+- Keep Next up actionable and short; no session narrative.
 
 **Before commit:** include `.ai/` when architecture, player UI, or a skill-worthy fix changed. **No** long duplicate prose across product, architecture, and skills.
 
-**End of session:** refresh `state.md`; append skill gotchas if any.
+**End of session:** refresh `state.md` (drop finished items); append/trim skill triage + gotchas if any.
 
 ## Commits
 
@@ -109,4 +138,5 @@ cargo check --target wasm32-unknown-unknown -p video    # Video element crate
 cargo test -p webmedia                                  # media engine unit/integration tests
 npm install && npm run e2e:install                      # once: Playwright (+ Chromium if CDN ok)
 npm run e2e                                             # browser smoke (app up on :3000; Win uses system Chrome)
+# Scrub perf probes: e2e/perf.scrub.*.spec.ts — listed in skills/media.md Triage
 ```

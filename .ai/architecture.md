@@ -23,7 +23,7 @@
 
 Long-lived chrome lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Details: `skills/leptos.md`.
 
-**Browser APIs in `video/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media-specific surfaces (`AudioContext`, `HtmlCanvasElement`, File) and anything the media crate owns (WebCodecs).
+**Browser APIs in `video/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the media crate owns (WebCodecs). Future audio clock may use `AudioContext`.
 
 ---
 
@@ -41,6 +41,8 @@ webmedia/
 ├── public/                ← sample MP4 fixtures served at /
 └── .ai/                   ← product / architecture / state / skills
 ```
+
+`media/src` module map (engine triage): `.ai/skills/media.md`.
 
 ### Layer rules
 
@@ -66,30 +68,21 @@ webmedia/
 | Isolated `video` crate | HTML `<video>` analog; reusable without demo chrome |
 | WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
 | `leptos-use` for browser helpers | Observers/events/rAF in `video/`; media crate stays free of Leptos |
-| Adapt mediabunny ideas in Rust | [mediabunny](https://github.com/Vanilagy/mediabunny) is the required reference; port patterns, never depend on the TS package |
-| Progressive open via `MediaSource` (planned) | Match `<video>` / mediabunny `BlobSource`: ranged reads, parse `moov` only, fetch `mdat` samples by file offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
-| Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline, **`GopProfile` policy**: `.ai/skills/media.md` (Frame and decode caches). |
+| Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
+| Progressive open via `MediaSource` | Ranged reads (`BlobSource` / `MemorySource` + `CachedSource`); parse `moov`, fetch samples by offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
+| Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline, **`GopProfile`**: `.ai/skills/media.md`. |
 
 ---
 
 ## Progressive open (MediaSource)
 
-**Problem:** open loads the entire MP4/MOV into a `Vec<u8>` (`file.array_buffer` → `open_mp4_bytes`), so ~700 MB clips stall before first frame.
+**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `MemorySource` + ~8 MiB `CachedSource`; top-level `ftyp`+`moov` stub → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`. Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
 
-**Approach** (mediabunny-aligned; keep `re_mp4`):
+**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; coalesce adjacent sample ranges.
 
-1. ~~`MediaSource`~~ — `MemorySource` + wasm `BlobSource`; ~8 MiB `CachedSource`. Native `FileSource` later.
-2. ~~Top-level box scan~~ — `ftyp`+`moov` stub → `re_mp4` (file-absolute sample offsets).
-3. ~~`Mp4VideoTrack` holds source~~ — async `encoded_sample` via `source.read`.
-4. ~~UI `open_blob(File)`~~ — demo no longer `array_buffer()`s the whole file.
-5. Defer full AVC sync-flag verify off the critical path (lazy / first GOP).
-6. Keep `open_mp4_bytes` for fixtures/tests (offset-consistency covered).
+**Out of scope:** stream-only sources without random access; fMP4/DASH; MSE remux.
 
-**Out of scope for this track:** stream-only sources without random access; fMP4/DASH; MSE remux.
-
-**Success:** BBB-class file opens to first paint without allocating the full media size in WASM.
-
-Details / ordering: `.ai/state.md` (In progress).
+**Success bar:** BBB-class file opens to first paint without allocating the full media size in WASM.
 
 ---
 
@@ -99,5 +92,5 @@ Details / ordering: `.ai/state.md` (In progress).
 - Gate client UI: `#[cfg(feature = "csr")]`.
 - Errors: `thiserror`; no `.unwrap()`/`.expect()` in production paths.
 - WebCodecs needs `web_sys_unstable_apis` (`.cargo/config.toml`).
-- **WebCodecs / media resources:** wrap types that need explicit release or unsafe clone in RAII owners + borrow helpers (pattern: `OwnedVideoFrame` / `AsVideoFrame`). Prefer **move into caches** and **borrow to draw**; never silent `Option` clone for residency. Do **not** wrap ordinary DOM / `Blob` / `window` / `console` handles.
-- **Mediabunny reference:** before implementing or fixing demux / decode / seek / playback pacing, check [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny) (docs + source) for the analogous approach; reimplement in Rust.
+- **WebCodecs / media resources:** RAII owners + borrow helpers (`OwnedVideoFrame` / `AsVideoFrame`); **move into caches**, **borrow to draw**. Gotchas: `skills/media.md`.
+- **Mediabunny reference:** before demux / decode / seek / playback work, check [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny); reimplement in Rust (`AGENTS.md`).

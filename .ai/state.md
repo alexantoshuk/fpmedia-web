@@ -1,5 +1,7 @@
 # State
 
+> In progress + Next up (+ Later) only. No Done list — finished items are deleted; durable lessons go to skills / product / architecture (`AGENTS.md` Documentation).
+
 ## In progress
 
 (none)
@@ -8,23 +10,12 @@
 
 ## Next up
 
-### Scrub / settle perf (Wing It follow-ups)
-
-Done: densify abort + seekToKey→seekTo on settle (~4.5s exact; was eng stuck at 0 / tab freeze). Probe: `e2e/perf.scrub.settle.spec.ts`.
-Done: settle drain / backpressure — same-pass prune-close, `held+decodeQ` vs `computeMaxQueueSize`, shallow seek-prune cap, `onQueueDequeue` wakes, idle main decoder before densify after exact (`mediabunny: src/media-sink.ts queueDequeue` / `computeMaxQueueSize`).
-Done: long-GOP settle interim — static best cached/key on canvas; warm seekTo salvages prune→dense (no blit) so densify after exact is cheap. Blit interim = fake play; dropping salvage = double decode (see `AGENTS.md` Suboptimal proposals).
-Done: drag densify vs settle — cancel checks inside `await_decode_capacity` / skip 2s `flush` on abort; fill task exits immediately on hold (probe: `e2e/perf.scrub.drag-settle.spec.ts`).
-Done: AVC Recovery Point SEI in `verifyKeyPackets` — exact SEI (`recovery_frame_cnt==0 && exact_match`) kept as sync except Chromium &lt;145 (`mediabunny: src/codec-data.ts determineVideoPacketType`; w3c/webcodecs#650). Wing It lying syncs demoted on old Chrome; kept on modern Blink / FF / Safari.
-Done: sync-index binary search — `sync_by_decode` + `by_decode` map; `nearest_keyframe` / `next_keyframe_after` O(log k), `gop_frame_ids` / `decode_window` O(gop).
-Done: rapid-scrub densify — finish in-flight GOP even when aim moves; retarget only the next gap (was mid-GOP cancel ≥8 frames → empty dense).
-Done: predictive densify — scrub `dir` biases `next_gap` along drag; neutral on settle/play (`nearer_gap_with_dir`).
-
 ### Media engine
 
 - Filmstrip thumbs via `ThumbCache` (caller-sized bitmaps; mediabunny `samplesAtTimestamps` later).
-- Audio track + shared A/V media clock (video slaves to audio once audio exists). Wall-clock play works until then.
+- Audio track + shared A/V media clock (video slaves to audio once audio exists; wall-clock play works until then).
 - HEVC bitstream key verify (AVC IDR + Recovery Point SEI done).
-- After progressive open: coalesce adjacent sample ranges; optional background sync-verify for huge files if open latency matters.
+- Progressive-open follow-ups: coalesce adjacent sample ranges; optional background / lazy AVC sync-verify for huge files if open latency matters.
 - Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
 - Temporary deps: workspace pins `alexantoshuk/re_mp4` @ `cd63eca` until [rerun-io/re_mp4#35](https://github.com/rerun-io/re_mp4/pull/35) merges.
 - Upstream/re_mp4: nested `skip_box(0)` livelock on QT size-0 padding (we work around in `SparseBoxReader`).

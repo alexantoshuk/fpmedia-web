@@ -9,11 +9,11 @@
 
 **webmedia** — frame-accurate custom web media player for precise frame-by-frame review in the browser.
 
-Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCodecs → canvas. Not a generic `<video>` wrapper — a Rust/Leptos analog with frame-primary control.
+Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via WebCodecs → canvas. Not a generic `<video>` wrapper — a Rust/Leptos analog with frame-primary control.
 
 **References**:
 - UX: Frame.io review player (precision scrub).
-- Implementation: **[mediabunny](https://github.com/Vanilagy/mediabunny)** is the standing reference for new media features and playback/decode bug fixes — adapt patterns into Rust; do **not** add it as a dependency.
+- Implementation: **[mediabunny](https://github.com/Vanilagy/mediabunny)** is the standing reference — adapt patterns into Rust; do **not** add it as a dependency. How: `AGENTS.md` Mediabunny-first; traps: `.ai/skills/media.md`.
 
 ---
 
@@ -21,7 +21,7 @@ Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCode
 
 | Surface | Purpose |
 | ------- | ------- |
-| **`video` crate** | Leptos `<Video>` + `VideoRef` — media element (canvas, open/play/seek/step); HTML `<video>` analog |
+| **`video` crate** | Leptos `<Video>` + `VideoRef` — media element (canvas, open/play/seek/step/scrub); HTML `<video>` analog |
 | **Demo app** | `app` / `frontend` — file picker, transport buttons, status (not production chrome) |
 | **Library API** | `webmedia` crate — demux + frame index + `Player` / `WebPlayer` |
 
@@ -33,13 +33,13 @@ Alpha goal: open an MP4, seek/step by presentation frame, play/pause via WebCode
 - Exact frame N uses keyframe cascade (nearest sync → decode → target), including B-frame / decode-order windows.
 - Player layout/state must allow **1–2 media sources** later (compare) — never hard-assume a single source forever.
 - `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, source metadata via `VideoRef::metadata` / `WebPlayer::metadata()`.
-- No audio in the first alpha slice; continuous play + audio come next.
+- Continuous play uses a **wall-clock** media timeline until an audio track exists; then video slaves to audio.
 
 ---
 
 ## Non-goals (for now)
 
 - Full FFmpeg-in-browser convert/mux toolkit (mediabunny’s full scope).
-- Multi-container write path; focus read + decode of MP4/H.264 first.
+- Multi-container write path; focus read + decode of MP4/H.264 first (HEVC key-verify still open).
 - Production auth, storage, or collaboration UI (lives in host apps).
 - Production player chrome — demo controls in `app` are temporary.
