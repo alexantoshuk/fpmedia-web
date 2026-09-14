@@ -36,6 +36,7 @@ webmedia/
 ├── app/                   ← demo host UI + shell()
 ├── frontend/              ← wasm mount (hydrate)
 ├── server/                ← Axum static site
+├── e2e/                   ← Playwright Chromium smoke (WebCodecs)
 ├── style/input.css
 ├── public/                ← sample MP4 fixtures served at /
 └── .ai/                   ← product / architecture / state / skills

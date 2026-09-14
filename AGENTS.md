@@ -95,4 +95,6 @@ cargo check -p server                                   # server (ssr) type chec
 cargo check --target wasm32-unknown-unknown -p frontend # CSR WASM client + UI
 cargo check --target wasm32-unknown-unknown -p video    # Video element crate
 cargo test -p webmedia                                  # media engine unit/integration tests
+npm install && npm run e2e:install                      # once: Playwright (+ Chromium if CDN ok)
+npm run e2e                                             # browser smoke (app up on :3000; Win uses system Chrome)
 ```

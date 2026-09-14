@@ -79,21 +79,22 @@ pub fn DemoPlayer() -> impl IntoView {
     });
 
     view! {
-        <div class="wm-player">
+        <div class="wm-player" data-testid="player">
             <div class="wm-media">
                 <Video video=video/>
                 <Scrubber video=video/>
             </div>
             <BufferMeters video=video/>
-            <p class="wm-meta">
+            <p class="wm-meta" data-testid="meta">
                 {move || video.metadata.get().as_ref().map(format_metadata).unwrap_or_default()}
             </p>
-            <div class="wm-controls">
+            <div class="wm-controls" data-testid="controls">
                 <label class="wm-file">
                     "Open MP4"
                     <input
                         type="file"
                         accept="video/mp4,video/*"
+                        data-testid="file-input"
                         on:change=move |ev: leptos::ev::Event| {
                             let input: HtmlInputElement = event_target(&ev);
                             let Some(files) = input.files() else { return };
@@ -109,6 +110,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 <button
                     type="button"
                     class="wm-btn wm-btn-primary"
+                    data-testid="btn-play"
                     prop:disabled=move || {
                         video.busy.get() || !video.ready.get() || video.playing.get()
                     }
@@ -119,6 +121,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 <button
                     type="button"
                     class="wm-btn"
+                    data-testid="btn-pause"
                     prop:disabled=move || !video.ready.get() || !video.playing.get()
                     on:click=move |_| video.pause()
                 >
@@ -133,6 +136,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             "wm-btn wm-btn-toggle"
                         }
                     }
+                    data-testid="btn-loop"
                     prop:disabled=move || !video.ready.get()
                     prop:aria-pressed=move || video.looping.get()
                     on:click=move |_| video.set_loop(!video.looping.get_untracked())
@@ -142,6 +146,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 <button
                     type="button"
                     class="wm-btn"
+                    data-testid="btn-prev"
                     prop:disabled=move || {
                         video.busy.get() || !video.ready.get() || video.playing.get()
                     }
@@ -152,6 +157,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 <button
                     type="button"
                     class="wm-btn"
+                    data-testid="btn-next"
                     prop:disabled=move || {
                         video.busy.get() || !video.ready.get() || video.playing.get()
                     }
@@ -162,6 +168,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 <input
                     type="number"
                     class="wm-frame-input"
+                    data-testid="frame-input"
                     min="0"
                     prop:value=move || video.playhead.get().to_string()
                     prop:disabled=move || {
@@ -177,6 +184,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 <button
                     type="button"
                     class="wm-btn"
+                    data-testid="btn-seek"
                     prop:disabled=move || {
                         video.busy.get() || !video.ready.get() || video.playing.get()
                     }
@@ -185,7 +193,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     "Seek"
                 </button>
             </div>
-            <p class="wm-status">
+            <p class="wm-status" data-testid="status">
                 {move || {
                     if video.busy.get() || !video.ready.get() {
                         video.status.get()
@@ -217,7 +225,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     }
                 }}
             </p>
-            <p class="wm-pipeline">
+            <p class="wm-pipeline" data-testid="pipeline">
                 {move || {
                     let Some(s) = video.pipeline.get() else {
                         return String::new();
@@ -248,7 +256,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     )
                 }}
             </p>
-            <p class="wm-error">{move || video.error.get().unwrap_or_default()}</p>
+            <p class="wm-error" data-testid="error">{move || video.error.get().unwrap_or_default()}</p>
         </div>
     }
 }
@@ -276,11 +284,13 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
     view! {
         <div
             class="wm-scrubber"
+            data-testid="scrubber"
             role="slider"
-            prop:aria-valuemin="0"
-            prop:aria-valuemax=move || video.frame_count.get().saturating_sub(1)
-            prop:aria-valuenow=move || video.playhead.get()
-            prop:aria-disabled=move || !video.ready.get()
+            attr:aria-valuemin="0"
+            attr:aria-valuemax=move || video.frame_count.get().saturating_sub(1).to_string()
+            attr:aria-valuenow=move || video.playhead.get().to_string()
+            attr:aria-disabled=move || (!video.ready.get()).to_string()
+            data-playhead=move || video.playhead.get().to_string()
             on:pointerdown=move |ev| {
                 if !video.ready.get_untracked() {
                     return;
@@ -319,6 +329,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
             <div class="wm-scrubber-track">
                 <div
                     class="wm-scrubber-progress"
+                    data-testid="scrubber-progress"
                     style:width=move || {
                         let max = video.frame_count.get().saturating_sub(1).max(1);
                         let pct = (video.playhead.get() as f64 / max as f64) * 100.0;
@@ -365,7 +376,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
 #[component]
 fn BufferMeters(video: VideoRef) -> impl IntoView {
     view! {
-        <div class="wm-buffer-meters">
+        <div class="wm-buffer-meters" data-testid="buffer-meters">
             <MeterRow
                 label="Prefetch queue"
                 detail=Signal::derive(move || {
@@ -440,15 +451,24 @@ fn MeterRow(
     detail: Signal<String>,
     fill_pct: Signal<f64>,
 ) -> impl IntoView {
+    let test_id = match label {
+        "Prefetch queue" => "meter-prefetch-queue",
+        "Prefetch ahead" => "meter-prefetch-ahead",
+        "Frame cache" => "meter-frame-cache",
+        _ => "meter",
+    };
     view! {
-        <div class="wm-meter">
+        <div class="wm-meter" data-testid=test_id>
             <div class="wm-meter-label">
                 <span>{label}</span>
-                <span class="wm-meter-detail">{move || detail.get()}</span>
+                <span class="wm-meter-detail" data-testid=format!("{test_id}-detail")>
+                    {move || detail.get()}
+                </span>
             </div>
             <div class="wm-meter-track">
                 <div
                     class="wm-meter-fill"
+                    data-testid=format!("{test_id}-fill")
                     style:width=move || format!("{:.3}%", fill_pct.get())
                 />
             </div>
