@@ -25,6 +25,16 @@ For **any** media feature, bug fix, or behaviour change in demux / decode / seek
 
 Rust/WASM specifics (Closures, `spawn_local`, no Promise ergonomics) are **adapters**, not a reason to skip the port. Most playback hangs here have been divergences from mediabunny wait/wake rules, not inherent Rust limits.
 
+## Suboptimal proposals
+
+If the user asks for a change that is **clearly less optimal** than the current design (double decode, worse latency, throwing away work already paid for, etc.):
+
+1. **Warn first** — explain the cost and the better alternative in a short reply.
+2. **Do not implement immediately** — wait for an explicit go-ahead after the warning.
+3. Record durable trade-offs in the relevant `.ai/skills/*.md` gotcha (not only chat).
+
+Example: dropping prune→dense salvage on settle “to avoid strip noise” re-decodes the whole GOP in densify — warn before removing it.
+
 ## Skills index
 
 | File | Read before touching |

@@ -492,7 +492,14 @@ impl WebPlayer {
                 self.shared.player.borrow_mut().commit_frame(frame)?;
                 return Ok(());
             }
-            self.goto_frame(frame, epoch).await
+            // Long-GOP exact: keep best cached/key on canvas while cascading;
+            // salvage pruned frames into dense (no blit) so densify is cheap after.
+            if let Some(preview) = self.scrub_preview_frame(frame) {
+                if preview != frame {
+                    let _ = self.present_from_cache(preview);
+                }
+            }
+            self.goto_frame_with_interim(frame, epoch).await
         }
         .await;
         self.shared.restarting.set(false);
@@ -526,8 +533,9 @@ impl WebPlayer {
     /// - **Drag** (`settle=false`): densify while moving (warm cache under the finger);
     ///   preview + best-effort exact may race the scrub decoder.
     /// - **Settle** (`settle=true`, pointer up): abort densify, seekToKey then warm
-    ///   seekTo (`goto_frame`) so exact owns HW — not while scrub densify holds
-    ///   `decodeQ`, and not via a `fill_gop` key re-feed that wedges long GOPs.
+    ///   seekTo with cache-only salvage (`goto_frame_with_interim`) — canvas stays
+    ///   on best cached/key until exact; pruned frames fill dense without blit
+    ///   (avoids a second full-GOP densify; strip may grow toward the target).
     pub async fn scrub_to(&self, frame: FrameId, settle: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         if settle {
@@ -584,11 +592,20 @@ impl WebPlayer {
                             self.shared.player.borrow_mut().commit_frame(frame)?;
                             return Ok(());
                         }
+                        // Keep best cached/key on canvas while warm seekTo runs —
+                        // seekToKey paint must not leave a worse key stuck for
+                        // seconds on long GOPs when a closer neighbor is cached.
+                        if let Some(preview) = self.scrub_preview_frame(frame) {
+                            if preview != frame {
+                                let _ = self.present_from_cache(preview);
+                            }
+                        }
                     }
                 }
+                self.goto_frame_with_interim(frame, epoch).await
+            } else {
+                self.goto_frame(frame, epoch).await
             }
-
-            self.goto_frame(frame, epoch).await
         }
         .await;
         self.shared.restarting.set(false);
@@ -1312,13 +1329,41 @@ impl WebPlayer {
         frame: FrameId,
         epoch: u64,
     ) -> Result<OwnedVideoFrame, MediaError> {
+        self.decode_frame_inner(track, frame, epoch, None).await
+    }
+
+    async fn decode_frame_with_interim_cb(
+        &self,
+        track: &crate::demux::Mp4VideoTrack,
+        frame: FrameId,
+        epoch: u64,
+        on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)>,
+    ) -> Result<OwnedVideoFrame, MediaError> {
+        self.decode_frame_inner(track, frame, epoch, Some(on_interim))
+            .await
+    }
+
+    async fn decode_frame_inner(
+        &self,
+        track: &crate::demux::Mp4VideoTrack,
+        frame: FrameId,
+        epoch: u64,
+        on_interim: Option<Box<dyn FnMut(FrameId, OwnedVideoFrame)>>,
+    ) -> Result<OwnedVideoFrame, MediaError> {
         let mut decoder = self.take_decoder(epoch).await?;
         if self.shared.decoder_reset.get() {
             decoder.reset()?;
             self.shared.decoder_reset.set(false);
         }
         let cancelled = || !self.is_current(epoch);
-        let result = decoder.decode_frame(track, frame, &cancelled).await;
+        let result = match on_interim {
+            Some(cb) => {
+                decoder
+                    .decode_frame_with_interim(track, frame, &cancelled, cb)
+                    .await
+            }
+            None => decoder.decode_frame(track, frame, &cancelled).await,
+        };
         let result = match result {
             // One hard reset + retry — orphan PTS after a raced invalidate.
             Err(MediaError::WebCodecs(msg))
@@ -1367,6 +1412,33 @@ impl WebPlayer {
     async fn goto_frame(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
         let track = self.shared.player.borrow().track_rc();
         let video_frame = self.decode_frame(track.as_ref(), frame, epoch).await?;
+        if !self.is_current(epoch) {
+            drop(video_frame);
+            return Err(MediaError::Cancelled);
+        }
+        self.present_and_cache(frame, video_frame)?;
+        self.shared.player.borrow_mut().commit_frame(frame)?;
+        Ok(())
+    }
+
+    /// Exact seek that salvages pruned early frames into dense (no canvas blit).
+    ///
+    /// Canvas stays on the caller's static best cached/key preview until exact.
+    /// One key→N pass warms the GOP so post-exact densify is cheap.
+    async fn goto_frame_with_interim(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
+        let track = self.shared.player.borrow().track_rc();
+        let shared = Rc::clone(&self.shared);
+        let on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)> =
+            Box::new(move |id: FrameId, video: OwnedVideoFrame| {
+                if let Ok(mut cache) = shared.dense_cache.try_borrow_mut() {
+                    cache.insert_frame(id, video);
+                } else {
+                    drop(video);
+                }
+            });
+        let video_frame = self
+            .decode_frame_with_interim_cb(track.as_ref(), frame, epoch, on_interim)
+            .await?;
         if !self.is_current(epoch) {
             drop(video_frame);
             return Err(MediaError::Cancelled);

@@ -108,9 +108,21 @@ pub struct WebCodecsDecoder {
     held: Vec<HeldFrame>,
     /// Packets fed since last `configure` (mediabunny `currentPacketIndex`).
     packets_fed: usize,
+    /// Optional: salvage pruned early frames during key→N into the host dense cache.
+    prune_interim: RefCell<Option<PruneInterim>>,
     _on_output: Closure<dyn FnMut(JsValue)>,
     _on_error: Closure<dyn FnMut(JsValue)>,
     _on_dequeue: Closure<dyn FnMut(JsValue)>,
+}
+
+/// Hands pruned PTS `< target` frames to the host instead of closing them.
+///
+/// Settle/seek installs this so one key→N cascade both yields exact **and** warms
+/// dense (densify after exact becomes mostly a no-op). Host must **not** blit —
+/// only `insert_frame` (blit looked like play from GOP start).
+struct PruneInterim {
+    pts_to_id: HashMap<i64, FrameId>,
+    on_frame: Box<dyn FnMut(FrameId, OwnedVideoFrame)>,
 }
 
 /// Max delta packets to feed after the target's decode_order to coax B-frame emit
@@ -228,6 +240,7 @@ impl WebCodecsDecoder {
             input_timestamps: Vec::new(),
             held: Vec::new(),
             packets_fed: 0,
+            prune_interim: RefCell::new(None),
             _on_output: on_output,
             _on_error: on_error,
             _on_dequeue: on_dequeue,
@@ -254,6 +267,8 @@ impl WebCodecsDecoder {
     }
 
     fn recreate(&mut self) -> Result<(), MediaError> {
+        // Keep dense-salvage sink across hard reset (All-Intra / wedge recovery).
+        let interim = self.prune_interim.borrow_mut().take();
         self.detach_decoder();
         let config = self.config.clone();
         let optimize_for_latency = self.optimize_for_latency;
@@ -266,6 +281,7 @@ impl WebCodecsDecoder {
         std::mem::forget(old_dequeue);
 
         *self = Self::from_config(config, optimize_for_latency)?;
+        *self.prune_interim.borrow_mut() = interim;
         Ok(())
     }
 
@@ -349,7 +365,8 @@ impl WebCodecsDecoder {
         let mut i = 0;
         while i < self.held.len() {
             if self.held[i].pts_us < target_us {
-                let _ = self.held.swap_remove(i);
+                let h = self.held.swap_remove(i);
+                self.deliver_or_drop_pruned(h.pts_us, h.frame);
                 dropped = true;
             } else {
                 i += 1;
@@ -364,6 +381,9 @@ impl WebCodecsDecoder {
     /// same pass (mediabunny closes early samples in the output callback before
     /// they enter `sampleQueue`). Park-then-prune a turn later left `decodeQ`
     /// elevated with `held=0` mid key→N and starved the VideoFrame pool.
+    ///
+    /// When [`Self::prune_interim`] is set, pruned frames go to the host dense
+    /// cache instead of close — one cascade warms cache + yields exact.
     fn collect_and_prune_held(&mut self, target_us: i64) -> Result<(), MediaError> {
         let mut dropped = false;
         for frame in self.frames.borrow_mut().drain(..) {
@@ -373,7 +393,7 @@ impl WebCodecsDecoder {
             };
             self.input_timestamps.remove(0);
             if pts_us < target_us {
-                drop(frame);
+                self.deliver_or_drop_pruned(pts_us, frame);
                 dropped = true;
             } else {
                 self.held.push(HeldFrame { pts_us, frame });
@@ -384,6 +404,17 @@ impl WebCodecsDecoder {
             self.wake_dequeue_waiters();
         }
         Ok(())
+    }
+
+    fn deliver_or_drop_pruned(&self, pts_us: i64, frame: OwnedVideoFrame) {
+        let mut slot = self.prune_interim.borrow_mut();
+        if let Some(interim) = slot.as_mut() {
+            if let Some(id) = interim.pts_to_id.remove(&pts_us) {
+                (interim.on_frame)(id, frame);
+                return;
+            }
+        }
+        drop(frame);
     }
 
     fn decode_queue_size(&self) -> u32 {
@@ -404,6 +435,53 @@ impl WebCodecsDecoder {
     ///
     /// `is_cancelled` — host op epoch (rapid PREV/seek); bail with [`MediaError::Cancelled`].
     pub async fn decode_frame(
+        &mut self,
+        track: &Mp4VideoTrack,
+        frame: FrameId,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<OwnedVideoFrame, MediaError> {
+        self.decode_frame_inner(track, frame, is_cancelled).await
+    }
+
+    /// Like [`Self::decode_frame`], but salvages pruned PTS `< target` frames to
+    /// `on_interim` (dense insert only — do not blit). Avoids a second full-GOP
+    /// densify pass after long-GOP settle/seek.
+    pub async fn decode_frame_with_interim(
+        &mut self,
+        track: &Mp4VideoTrack,
+        frame: FrameId,
+        is_cancelled: &dyn Fn() -> bool,
+        on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)>,
+    ) -> Result<OwnedVideoFrame, MediaError> {
+        let key_id = track
+            .index()
+            .nearest_keyframe(frame)
+            .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
+        let gop_ids = track
+            .index()
+            .gop_frame_ids(key_id)
+            .unwrap_or_default();
+        let mut pts_to_id: HashMap<i64, FrameId> = HashMap::with_capacity(gop_ids.len());
+        for id in &gop_ids {
+            let e = track
+                .index()
+                .get(*id)
+                .ok_or(MediaError::FrameOutOfRange(*id, track.frame_count()))?;
+            pts_to_id.insert(
+                ticks_to_micros(e.composition_timestamp_ticks, e.timescale),
+                *id,
+            );
+        }
+        *self.prune_interim.borrow_mut() = Some(PruneInterim {
+            pts_to_id,
+            on_frame: on_interim,
+        });
+        let result = self.decode_frame_inner(track, frame, is_cancelled).await;
+        *self.prune_interim.borrow_mut() = None;
+        result
+    }
+
+    async fn decode_frame_inner(
         &mut self,
         track: &Mp4VideoTrack,
         frame: FrameId,
