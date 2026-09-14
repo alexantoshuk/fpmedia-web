@@ -1,6 +1,11 @@
 //! Presentation-order frame index built from demuxed samples.
+//!
+//! Sync lookup is O(log k) via a decode-order sync table; GOP / decode windows
+//! are O(gop) via a dense `decode_order → FrameId` map (not a full-frame scan).
+//! Local invention — mediabunny has no `FrameIndex` equivalent; packet cursors
+//! use their own key probes.
 
-use crate::types::{FrameId, GopProfile, Timestamp, SHORT_GOP_MAX_LEN, SHORT_GOP_MAX_SPREAD};
+use crate::types::{FrameId, GopProfile, SHORT_GOP_MAX_LEN, SHORT_GOP_MAX_SPREAD, Timestamp};
 
 /// One frame in presentation order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +39,10 @@ impl FrameEntry {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrameIndex {
     frames: Vec<FrameEntry>,
+    /// Sync samples sorted by `decode_order`: `(decode_order, frame_id)`.
+    sync_by_decode: Vec<(usize, FrameId)>,
+    /// Dense map: `by_decode[decode_order] = presentation FrameId`.
+    by_decode: Vec<FrameId>,
 }
 
 impl FrameIndex {
@@ -42,7 +51,40 @@ impl FrameIndex {
         for (i, entry) in entries.iter_mut().enumerate() {
             entry.frame = i as FrameId;
         }
-        Self { frames: entries }
+        let mut index = Self {
+            frames: entries,
+            sync_by_decode: Vec::new(),
+            by_decode: Vec::new(),
+        };
+        index.rebuild_aux();
+        index
+    }
+
+    fn rebuild_aux(&mut self) {
+        let n = self.frames.len();
+        if n == 0 {
+            self.by_decode.clear();
+            self.sync_by_decode.clear();
+            return;
+        }
+        let max_do = self
+            .frames
+            .iter()
+            .map(|e| e.decode_order)
+            .max()
+            .unwrap_or(0);
+        self.by_decode = vec![0; max_do + 1];
+        self.sync_by_decode.clear();
+        self.sync_by_decode.reserve(n);
+        for e in &self.frames {
+            if e.decode_order < self.by_decode.len() {
+                self.by_decode[e.decode_order] = e.frame;
+            }
+            if e.is_sync {
+                self.sync_by_decode.push((e.decode_order, e.frame));
+            }
+        }
+        self.sync_by_decode.sort_unstable_by_key(|(d, _)| *d);
     }
 
     pub fn len(&self) -> usize {
@@ -62,66 +104,79 @@ impl FrameIndex {
     }
 
     /// Update sync flag after bitstream verify (mediabunny `verifyKeyPackets`).
+    ///
+    /// Maintains [`Self::sync_by_decode`] incrementally (O(k) shift on insert/remove).
     pub fn set_sync(&mut self, frame: FrameId, is_sync: bool) {
-        if let Some(entry) = self.frames.get_mut(frame as usize) {
-            entry.is_sync = is_sync;
+        let Some(entry) = self.frames.get_mut(frame as usize) else {
+            return;
+        };
+        if entry.is_sync == is_sync {
+            return;
+        }
+        let decode_order = entry.decode_order;
+        entry.is_sync = is_sync;
+        if is_sync {
+            let pos = self
+                .sync_by_decode
+                .partition_point(|(d, _)| *d < decode_order);
+            self.sync_by_decode.insert(pos, (decode_order, frame));
+        } else if let Ok(pos) = self
+            .sync_by_decode
+            .binary_search_by_key(&decode_order, |(d, _)| *d)
+        {
+            self.sync_by_decode.remove(pos);
         }
     }
 
     /// Latest sync sample at or before `frame` in **decode** order.
     ///
     /// Uses `decode_order` (not DTS alone) so B-frame reordering stays correct.
+    /// O(log k) over sync samples.
     pub fn nearest_keyframe(&self, frame: FrameId) -> Option<FrameId> {
         let target = self.get(frame)?;
-        self.frames
-            .iter()
-            .filter(|e| e.is_sync && e.decode_order <= target.decode_order)
-            .max_by_key(|e| e.decode_order)
-            .map(|e| e.frame)
+        let i = self
+            .sync_by_decode
+            .partition_point(|(d, _)| *d <= target.decode_order);
+        if i == 0 {
+            return None;
+        }
+        Some(self.sync_by_decode[i - 1].1)
     }
 
     /// Next sync sample strictly after `frame` in decode order (start of next GOP).
+    /// O(log k) over sync samples.
     pub fn next_keyframe_after(&self, frame: FrameId) -> Option<FrameId> {
         let entry = self.get(frame)?;
-        self.frames
-            .iter()
-            .filter(|e| e.is_sync && e.decode_order > entry.decode_order)
-            .min_by_key(|e| e.decode_order)
-            .map(|e| e.frame)
+        let i = self
+            .sync_by_decode
+            .partition_point(|(d, _)| *d <= entry.decode_order);
+        self.sync_by_decode.get(i).map(|(_, f)| *f)
     }
 
-    /// All sync `FrameId`s in decode order (GOP starts).
+    /// All sync `FrameId`s in decode order (GOP starts). O(k).
     pub fn sync_frame_ids(&self) -> Vec<FrameId> {
-        let mut keys: Vec<(usize, FrameId)> = self
-            .frames
-            .iter()
-            .filter(|e| e.is_sync)
-            .map(|e| (e.decode_order, e.frame))
-            .collect();
-        keys.sort_by_key(|(decode_order, _)| *decode_order);
-        keys.into_iter().map(|(_, frame)| frame).collect()
+        self.sync_by_decode.iter().map(|(_, f)| *f).collect()
     }
 
     /// Presentation `FrameId`s in the GOP that begins at sync `key_frame`
     /// (exclusive of the next sync). `key_frame` must be a sync sample.
+    ///
+    /// O(gop + log k) via decode-order map + sync binary search.
     pub fn gop_frame_ids(&self, key_frame: FrameId) -> Option<Vec<FrameId>> {
         let key = self.get(key_frame)?;
         if !key.is_sync {
             return None;
         }
-        let next_do = self
+        let start = key.decode_order;
+        let end = self
             .next_keyframe_after(key_frame)
             .and_then(|n| self.get(n))
-            .map(|e| e.decode_order);
-        let mut ids: Vec<FrameId> = self
-            .frames
-            .iter()
-            .filter(|e| {
-                e.decode_order >= key.decode_order
-                    && next_do.map(|nd| e.decode_order < nd).unwrap_or(true)
-            })
-            .map(|e| e.frame)
-            .collect();
+            .map(|e| e.decode_order)
+            .unwrap_or(self.by_decode.len());
+        if start > end || end > self.by_decode.len() {
+            return None;
+        }
+        let mut ids: Vec<FrameId> = self.by_decode[start..end].to_vec();
         ids.sort_unstable();
         Some(ids)
     }
@@ -130,30 +185,28 @@ impl FrameIndex {
     ///
     /// Samples are ordered by `decode_order` so a decoder can be fed correctly
     /// even when composition timestamps are reordered (B-frames).
+    /// O(window + log k).
     pub fn decode_window(&self, frame: FrameId) -> Option<Vec<FrameId>> {
         let key = self.nearest_keyframe(frame)?;
         let target = self.get(frame)?;
         let key_entry = self.get(key)?;
 
-        let mut window: Vec<&FrameEntry> = self
-            .frames
-            .iter()
-            .filter(|e| {
-                e.decode_order >= key_entry.decode_order
-                    && e.decode_order <= target.decode_order
-            })
-            .collect();
-
-        window.sort_by_key(|e| e.decode_order);
-
-        if window.first().map(|e| e.frame) != Some(key) {
-            return None;
-        }
-        if !window.iter().any(|e| e.frame == frame) {
+        let start = key_entry.decode_order;
+        let end = target.decode_order;
+        if end < start || end >= self.by_decode.len() {
             return None;
         }
 
-        Some(window.into_iter().map(|e| e.frame).collect())
+        let window: Vec<FrameId> = self.by_decode[start..=end].to_vec();
+
+        if window.first().copied() != Some(key) {
+            return None;
+        }
+        if !window.iter().any(|&f| f == frame) {
+            return None;
+        }
+
+        Some(window)
     }
 
     /// Find the frame whose composition time is closest to `seconds`
@@ -184,12 +237,7 @@ impl FrameIndex {
         if syncs.is_empty() {
             return vec![self.frames.len() as u32];
         }
-        let max_do = self
-            .frames
-            .iter()
-            .map(|e| e.decode_order)
-            .max()
-            .unwrap_or(0);
+        let max_do = self.by_decode.len().saturating_sub(1);
         let mut lengths = Vec::with_capacity(syncs.len());
         for (i, &key) in syncs.iter().enumerate() {
             let start_do = self.get(key).map(|e| e.decode_order).unwrap_or(0);
@@ -313,6 +361,41 @@ mod tests {
         // Presentation frame 4 is P4 (decode_order 1) — only I0 + P4.
         assert_eq!(index.get(4).unwrap().decode_order, 1);
         assert_eq!(index.decode_window(4), Some(vec![0, 4]));
+    }
+
+    #[test]
+    fn set_sync_demote_updates_nearest_and_gop() {
+        // Two syncs; demote the second → one long GOP from frame 0.
+        let mut index = FrameIndex::from_entries(vec![
+            entry(0, true, 0, 0),
+            entry(1, false, 1, 1),
+            entry(2, false, 2, 2),
+            entry(3, true, 3, 3),
+            entry(4, false, 4, 4),
+        ]);
+        assert_eq!(index.nearest_keyframe(4), Some(3));
+        index.set_sync(3, false);
+        assert_eq!(index.sync_frame_ids(), vec![0]);
+        assert_eq!(index.nearest_keyframe(4), Some(0));
+        assert_eq!(index.next_keyframe_after(0), None);
+        assert_eq!(index.gop_frame_ids(0), Some(vec![0, 1, 2, 3, 4]));
+        assert_eq!(index.gop_frame_ids(3), None); // no longer sync
+    }
+
+    #[test]
+    fn set_sync_promote_inserts_in_decode_order() {
+        let mut index = FrameIndex::from_entries(vec![
+            entry(0, true, 0, 0),
+            entry(1, false, 1, 1),
+            entry(2, false, 2, 2),
+            entry(3, false, 3, 3),
+            entry(4, false, 4, 4),
+        ]);
+        index.set_sync(3, true);
+        assert_eq!(index.sync_frame_ids(), vec![0, 3]);
+        assert_eq!(index.nearest_keyframe(4), Some(3));
+        assert_eq!(index.gop_frame_ids(0), Some(vec![0, 1, 2]));
+        assert_eq!(index.gop_frame_ids(3), Some(vec![3, 4]));
     }
 
     #[test]
