@@ -42,7 +42,7 @@ pub use types::{
     CodecConfig, DEFAULT_SCRUB_CACHE_MIB, EncodedSample, FrameId, GopProfile,
     MAX_SCRUB_CACHE_FRAMES, MIN_SCRUB_CACHE_FRAMES, SCRUB_CACHE_EDGE_MARGIN, SHORT_GOP_MAX_LEN,
     SHORT_GOP_MAX_SPREAD, Timestamp, VideoCodec, VideoMetadata, estimated_decoded_frame_bytes,
-    scrub_cache_frame_budget, scrub_preview_choice,
+    nearer_gap_with_dir, scrub_cache_frame_budget, scrub_preview_choice,
 };
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]

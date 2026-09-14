@@ -43,6 +43,39 @@ pub fn scrub_preview_choice(
     }
 }
 
+/// Dense-cache gap pick for scrub densify.
+///
+/// - `dir > 0` — hard prefer `ahead` (scrub right); fallback `behind`.
+/// - `dir < 0` — hard prefer `behind` (scrub left); fallback `ahead`.
+/// - `dir == 0` — min `|gap − playhead|`; tie → behind (PREV-friendly neutral).
+///
+/// Local invention (predictive densify); mediabunny has no equivalent.
+pub fn nearer_gap_with_dir(
+    playhead: FrameId,
+    behind: Option<FrameId>,
+    ahead: Option<FrameId>,
+    dir: i8,
+) -> Option<FrameId> {
+    if dir > 0 {
+        return ahead.or(behind);
+    }
+    if dir < 0 {
+        return behind.or(ahead);
+    }
+    match (behind, ahead) {
+        (Some(b), Some(a)) => {
+            if playhead.abs_diff(b) <= playhead.abs_diff(a) {
+                Some(b)
+            } else {
+                Some(a)
+            }
+        }
+        (Some(b), None) => Some(b),
+        (None, Some(a)) => Some(a),
+        (None, None) => None,
+    }
+}
+
 /// Estimated decoded-frame size in bytes (coded width × height × 1.5).
 pub fn estimated_decoded_frame_bytes(width: u32, height: u32) -> u64 {
     let w = width.max(1) as u64;
@@ -247,6 +280,22 @@ mod tests {
         assert_eq!(scrub_preview_choice(50, Some(40), Some(60)), Some(60));
         assert_eq!(scrub_preview_choice(50, Some(0), None), Some(0));
         assert_eq!(scrub_preview_choice(50, None, Some(44)), Some(44));
+    }
+
+    #[test]
+    fn nearer_gap_with_dir_prefers_along_scrub() {
+        assert_eq!(nearer_gap_with_dir(150, Some(99), Some(201), 1), Some(201));
+        assert_eq!(nearer_gap_with_dir(150, Some(99), Some(201), -1), Some(99));
+        // Equal distance — neutral still prefers behind.
+        assert_eq!(nearer_gap_with_dir(150, Some(99), Some(201), 0), Some(99));
+        assert_eq!(nearer_gap_with_dir(120, Some(99), Some(201), 0), Some(99));
+        assert_eq!(nearer_gap_with_dir(180, Some(99), Some(201), 0), Some(201));
+        // Missing side along dir → fallback.
+        assert_eq!(nearer_gap_with_dir(0, None, Some(8), -1), Some(8));
+        assert_eq!(nearer_gap_with_dir(5, Some(3), None, 1), Some(3));
+        let behind = 0u64.checked_sub(1);
+        let ahead = 7u64.checked_add(1).filter(|&a| a <= 100);
+        assert_eq!(nearer_gap_with_dir(0, behind, ahead, 0), Some(8));
     }
 
     #[test]

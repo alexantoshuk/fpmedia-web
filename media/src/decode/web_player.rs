@@ -41,7 +41,7 @@ struct QueuedFrame {
 enum CacheFillMode {
     /// Ahead via presentation queue; gap-fill cancelled.
     Play,
-    /// Paused/scrub: fill visited gaps both sides of the playhead.
+    /// Paused/scrub: fill gaps near playhead (predictive along scrub dir when set).
     Scrub,
 }
 
@@ -79,6 +79,10 @@ struct Shared {
     decoder_reset: Cell<bool>,
     /// After fill stalls (no progress), skip restart until aim leaves this frame.
     fill_stalled_aim: Cell<Option<FrameId>>,
+    /// Scrub drag direction for predictive densify: `+1` ahead, `-1` behind, `0` neutral.
+    scrub_dir: Cell<i8>,
+    /// Last aim seen while updating `scrub_dir` (drag samples only).
+    prev_scrub_aim: Cell<Option<FrameId>>,
 }
 
 /// Why a frame is marked ready on the demo timeline strip.
@@ -232,6 +236,8 @@ impl WebPlayer {
             op_epoch: Cell::new(0),
             decoder_reset: Cell::new(false),
             fill_stalled_aim: Cell::new(None),
+            scrub_dir: Cell::new(0),
+            prev_scrub_aim: Cell::new(None),
         });
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
@@ -335,6 +341,7 @@ impl WebPlayer {
     pub fn cancel_ops_and_scrub_fill(&self) {
         self.cancel_ops();
         self.abort_scrub_fill(true);
+        self.clear_scrub_direction();
     }
 
     /// Stop densify immediately and free the scrub `VideoDecoder` HW session.
@@ -351,6 +358,25 @@ impl WebPlayer {
         }
     }
 
+    /// Update predictive densify direction from a drag sample (`sign(aim − prev)`).
+    fn note_scrub_direction(&self, aim: FrameId) {
+        if let Some(prev) = self.shared.prev_scrub_aim.get() {
+            if aim > prev {
+                self.shared.scrub_dir.set(1);
+            } else if aim < prev {
+                self.shared.scrub_dir.set(-1);
+            }
+            // Equal aim: keep last dir (micro-jitter / hold).
+        }
+        self.shared.prev_scrub_aim.set(Some(aim));
+    }
+
+    /// Neutral gap pick after settle / play (no motion bias).
+    fn clear_scrub_direction(&self) {
+        self.shared.scrub_dir.set(0);
+        self.shared.prev_scrub_aim.set(None);
+    }
+
     /// Pointer-up settle entry from the UI host — before the async op runs.
     ///
     /// Must not call [`Self::note_scrub_frame`] / densify kick: that starved exact
@@ -358,6 +384,7 @@ impl WebPlayer {
     pub fn prepare_scrub_settle(&self, frame: FrameId) {
         self.abort_scrub_fill(true);
         self.shared.hold_densify_for_exact.set(true);
+        self.clear_scrub_direction();
         self.cancel_ops();
         // Drop in-flight main-decoder cascade from the preceding drag sample so
         // settle does not inherit a wedged `decodeQueueSize`.
@@ -525,13 +552,15 @@ impl WebPlayer {
 
     /// Scrub pointer sample (drag / hold). Same cache pipeline as pause + release.
     pub fn note_scrub_frame(&self, frame: FrameId) {
+        self.note_scrub_direction(frame);
         self.enter_scrub_cache_pipeline(frame);
     }
 
     /// Async timeline scrub (mediabunny `seekToKey` then `seekTo` under one epoch).
     ///
     /// - **Drag** (`settle=false`): densify while moving (warm cache under the finger);
-    ///   preview + best-effort exact may race the scrub decoder.
+    ///   preview + best-effort exact may race the scrub decoder. Gap pick follows
+    ///   scrub direction (predictive densify).
     /// - **Settle** (`settle=true`, pointer up): abort densify, seekToKey then warm
     ///   seekTo with cache-only salvage (`goto_frame_with_interim`) — canvas stays
     ///   on best cached/key until exact; pruned frames fill dense without blit
@@ -542,11 +571,13 @@ impl WebPlayer {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
             self.abort_scrub_fill(true);
             self.shared.hold_densify_for_exact.set(true);
+            self.clear_scrub_direction();
             self.shared.restarting.set(true);
             self.aim_scrub_cache(frame);
         } else {
             self.shared.hold_densify_for_exact.set(false);
             self.shared.restarting.set(true);
+            self.note_scrub_direction(frame);
             // Drag: kick densify immediately so the strip fills while the finger moves.
             self.enter_scrub_cache_pipeline(frame);
         }
@@ -1746,8 +1777,8 @@ fn playhead_and_last(shared: &Shared) -> (FrameId, FrameId) {
     (playhead, last)
 }
 
-/// Next missing frame nearest the playhead, or `None` when saturated /
-/// disarmed / stalled at this aim.
+/// Next missing frame nearest the playhead (biased by scrub `dir`), or `None`
+/// when saturated / disarmed / stalled at this aim.
 fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     let (playhead, last) = playhead_and_last(shared);
     if shared.fill_stalled_aim.get() == Some(playhead) {
@@ -1757,11 +1788,12 @@ fn next_gap_target(shared: &Shared) -> Option<FrameId> {
         // Aim moved off the stalled frame — fill may run again.
         shared.fill_stalled_aim.set(None);
     }
+    let dir = shared.scrub_dir.get();
     let cache = shared.dense_cache.borrow();
-    if cache.gaps_saturated(playhead, last) || !cache.gap_fill_armed(playhead) {
+    if cache.gaps_saturated(playhead, last, dir) || !cache.gap_fill_armed(playhead) {
         return None;
     }
-    cache.next_gap_frame(playhead, last)
+    cache.next_gap_frame(playhead, last, dir)
 }
 
 /// Densify the GOP containing `target`. Returns whether the cache gained frames.

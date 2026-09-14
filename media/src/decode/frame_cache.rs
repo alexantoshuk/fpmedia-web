@@ -11,7 +11,7 @@ use std::ops::Bound;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::error::MediaError;
-use crate::types::{FrameId, SCRUB_CACHE_EDGE_MARGIN};
+use crate::types::{FrameId, SCRUB_CACHE_EDGE_MARGIN, nearer_gap_with_dir};
 use lru::LruCache;
 
 /// Scrub/filmstrip keyframe GOPs retained.
@@ -109,7 +109,10 @@ impl FrameRunIndex {
         self.playhead_run.set(Some((lo, hi)));
     }
 
-    /// Nearest missing id to `playhead` within `[0, last]` (prefer behind on ties).
+    /// Nearest missing id to `playhead` within `[0, last]`.
+    ///
+    /// `dir > 0` / `dir < 0` → predictive densify (prefer ahead / behind).
+    /// `dir == 0` → min distance, tie → behind.
     pub fn search<V>(
         &self,
         frames: &BTreeMap<FrameId, V>,
@@ -118,6 +121,7 @@ impl FrameRunIndex {
         last: FrameId,
         no_gaps: bool,
         extent: Option<(FrameId, FrameId)>,
+        dir: i8,
     ) -> Option<FrameId> {
         if last == 0 && !frames.contains_key(&0) {
             return Some(0);
@@ -127,7 +131,7 @@ impl FrameRunIndex {
             return Some(playhead);
         }
         if no_gaps {
-            return next_gap_outside_extent(playhead, last, extent);
+            return next_gap_outside_extent(playhead, last, extent, dir);
         }
 
         // Do not use `.then_some(playhead - 1)` — the subtraction is eager and
@@ -137,19 +141,19 @@ impl FrameRunIndex {
             .then(|| playhead + 1)
             .filter(|a| !frames.contains_key(a));
         if behind_adj.is_some() && ahead_adj.is_some() {
-            return nearer_gap_prefer_behind(playhead, behind_adj, ahead_adj);
+            return nearer_gap_with_dir(playhead, behind_adj, ahead_adj, dir);
         }
         if behind_adj.is_some() || ahead_adj.is_some() {
             let (run_lo, run_hi) = self.run_bounds(frames, aim, playhead);
             let behind = behind_adj.or_else(|| run_lo.checked_sub(1));
             let ahead = ahead_adj.or_else(|| (run_hi < last).then_some(run_hi + 1));
-            return nearer_gap_prefer_behind(playhead, behind, ahead);
+            return nearer_gap_with_dir(playhead, behind, ahead, dir);
         }
 
         let (run_lo, run_hi) = self.run_bounds(frames, aim, playhead);
         let behind = run_lo.checked_sub(1);
         let ahead = (run_hi < last).then_some(run_hi + 1);
-        nearer_gap_prefer_behind(playhead, behind, ahead)
+        nearer_gap_with_dir(playhead, behind, ahead, dir)
     }
 
     fn run_bounds<V>(
@@ -200,11 +204,12 @@ fn next_gap_outside_extent(
     playhead: FrameId,
     last: FrameId,
     extent: Option<(FrameId, FrameId)>,
+    dir: i8,
 ) -> Option<FrameId> {
     let (lo, hi) = extent?;
     let behind = lo.checked_sub(1);
     let ahead = hi.checked_add(1).filter(|&a| a <= last);
-    nearer_gap_prefer_behind(playhead, behind, ahead)
+    nearer_gap_with_dir(playhead, behind, ahead, dir)
 }
 
 /// Exact-frame residency: `BTreeMap` owns handles; [`FrameRunIndex`] tracks gaps.
@@ -429,8 +434,10 @@ impl DenseFrameCache {
     }
 
     /// Nearest missing presentation frame to `playhead` within `[0, last]`.
-    /// Prefer behind on distance ties (helps PREV).
-    pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId) -> Option<FrameId> {
+    ///
+    /// `dir`: scrub motion (`+1` ahead / `-1` behind / `0` neutral). See
+    /// [`crate::nearer_gap_with_dir`].
+    pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId, dir: i8) -> Option<FrameId> {
         self.runs.search(
             &self.frames,
             self.playhead,
@@ -438,13 +445,14 @@ impl DenseFrameCache {
             last,
             self.no_gaps,
             self.extent(),
+            dir,
         )
     }
 
     /// True when every frame in `[0, last]` is cached, or cache is at capacity
     /// with no nearer gaps than the current extent allows under budget.
-    pub fn gaps_saturated(&self, playhead: FrameId, last: FrameId) -> bool {
-        let gap = self.next_gap_frame(playhead, last);
+    pub fn gaps_saturated(&self, playhead: FrameId, last: FrameId, dir: i8) -> bool {
+        let gap = self.next_gap_frame(playhead, last, dir);
         gap.is_none()
             || self.frame_count() >= self.max_frames
                 && gap.is_some_and(|g| self.would_evict_closer_than(g, playhead))
@@ -531,26 +539,6 @@ impl DenseFrameCache {
                 false
             }
         };
-    }
-}
-
-/// Pick nearer of `behind` / `ahead` to `playhead`; on distance ties prefer behind.
-pub(crate) fn nearer_gap_prefer_behind(
-    playhead: FrameId,
-    behind: Option<FrameId>,
-    ahead: Option<FrameId>,
-) -> Option<FrameId> {
-    match (behind, ahead) {
-        (Some(b), Some(a)) => {
-            if playhead.abs_diff(b) <= playhead.abs_diff(a) {
-                Some(b)
-            } else {
-                Some(a)
-            }
-        }
-        (Some(b), None) => Some(b),
-        (None, Some(a)) => Some(a),
-        (None, None) => None,
     }
 }
 
@@ -652,31 +640,14 @@ mod tests {
     #[test]
     fn next_gap_prefers_nearest_behind_on_tie() {
         let mut c = DenseFrameCache::new(8);
-        assert_eq!(c.next_gap_frame(5, 10), Some(5));
+        assert_eq!(c.next_gap_frame(5, 10, 0), Some(5));
         let _ = &mut c;
     }
 
     #[test]
     fn next_gap_expands_both_directions() {
         let c = DenseFrameCache::new(8);
-        assert_eq!(c.next_gap_frame(3, 9), Some(3));
-    }
-
-    #[test]
-    fn nearer_gap_outside_extent_prefers_behind_on_tie() {
-        assert_eq!(nearer_gap_prefer_behind(150, Some(99), Some(201)), Some(99));
-        assert_eq!(nearer_gap_prefer_behind(120, Some(99), Some(201)), Some(99));
-        assert_eq!(
-            nearer_gap_prefer_behind(180, Some(99), Some(201)),
-            Some(201)
-        );
-    }
-
-    #[test]
-    fn gap_outside_extent_lo_zero_has_no_behind() {
-        let behind = 0u64.checked_sub(1);
-        let ahead = 7u64.checked_add(1).filter(|&a| a <= 100);
-        assert_eq!(nearer_gap_prefer_behind(0, behind, ahead), Some(8));
+        assert_eq!(c.next_gap_frame(3, 9, 0), Some(3));
     }
 
     #[test]

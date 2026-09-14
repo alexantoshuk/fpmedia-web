@@ -17,6 +17,7 @@ Done: drag densify vs settle — cancel checks inside `await_decode_capacity` / 
 Done: AVC Recovery Point SEI in `verifyKeyPackets` — exact SEI (`recovery_frame_cnt==0 && exact_match`) kept as sync except Chromium &lt;145 (`mediabunny: src/codec-data.ts determineVideoPacketType`; w3c/webcodecs#650). Wing It lying syncs demoted on old Chrome; kept on modern Blink / FF / Safari.
 Done: sync-index binary search — `sync_by_decode` + `by_decode` map; `nearest_keyframe` / `next_keyframe_after` O(log k), `gop_frame_ids` / `decode_window` O(gop).
 Done: rapid-scrub densify — finish in-flight GOP even when aim moves; retarget only the next gap (was mid-GOP cancel ≥8 frames → empty dense).
+Done: predictive densify — scrub `dir` biases `next_gap` along drag; neutral on settle/play (`nearer_gap_with_dir`).
 
 ### Media engine
 
