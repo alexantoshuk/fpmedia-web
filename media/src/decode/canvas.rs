@@ -61,14 +61,7 @@ pub fn draw_frame_with_context(
 ) -> Result<(), MediaError> {
     let buf_w = canvas.width().max(1);
     let buf_h = canvas.height().max(1);
-    ctx
-        .draw_image_with_video_frame_and_dw_and_dh(
-            frame,
-            0.0,
-            0.0,
-            buf_w as f64,
-            buf_h as f64,
-        )
+    ctx.draw_image_with_video_frame_and_dw_and_dh(frame, 0.0, 0.0, buf_w as f64, buf_h as f64)
         .map_err(MediaError::from)?;
     Ok(())
 }

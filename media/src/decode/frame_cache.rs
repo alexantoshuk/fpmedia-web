@@ -132,9 +132,7 @@ impl FrameRunIndex {
 
         // Do not use `.then_some(playhead - 1)` — the subtraction is eager and
         // overflows when playhead == 0 (debug panic / release wrap).
-        let behind_adj = playhead
-            .checked_sub(1)
-            .filter(|b| !frames.contains_key(b));
+        let behind_adj = playhead.checked_sub(1).filter(|b| !frames.contains_key(b));
         let ahead_adj = (playhead < last)
             .then(|| playhead + 1)
             .filter(|a| !frames.contains_key(a));
@@ -288,12 +286,7 @@ impl DenseFrameCache {
         if self.frame_count() < self.max_frames {
             return true;
         }
-        scrub_gap_fill_armed(
-            true,
-            playhead,
-            self.extent(),
-            SCRUB_CACHE_EDGE_MARGIN,
-        )
+        scrub_gap_fill_armed(true, playhead, self.extent(), SCRUB_CACHE_EDGE_MARGIN)
     }
 
     /// Contiguous runs among cached ids (demo meter “chunks”).
@@ -507,17 +500,8 @@ impl DenseFrameCache {
     }
 
     fn max_dist_from_playhead(&self, playhead: FrameId) -> Option<u64> {
-        let lo = self
-            .frames
-            .keys()
-            .copied()
-            .find(|&f| f != playhead)?;
-        let hi = self
-            .frames
-            .keys()
-            .copied()
-            .rev()
-            .find(|&f| f != playhead)?;
+        let lo = self.frames.keys().copied().find(|&f| f != playhead)?;
+        let hi = self.frames.keys().copied().rev().find(|&f| f != playhead)?;
         Some(lo.abs_diff(playhead).max(hi.abs_diff(playhead)))
     }
 
@@ -680,10 +664,7 @@ mod tests {
 
     #[test]
     fn nearer_gap_outside_extent_prefers_behind_on_tie() {
-        assert_eq!(
-            nearer_gap_prefer_behind(150, Some(99), Some(201)),
-            Some(99)
-        );
+        assert_eq!(nearer_gap_prefer_behind(150, Some(99), Some(201)), Some(99));
         assert_eq!(nearer_gap_prefer_behind(120, Some(99), Some(201)), Some(99));
         assert_eq!(
             nearer_gap_prefer_behind(180, Some(99), Some(201)),

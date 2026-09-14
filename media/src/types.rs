@@ -240,20 +240,11 @@ mod tests {
     #[test]
     fn scrub_preview_prefers_closer_cache_over_key() {
         // Hole at 50; cache at 40; key at 0 → cache wins.
-        assert_eq!(
-            scrub_preview_choice(50, Some(0), Some(40)),
-            Some(40)
-        );
+        assert_eq!(scrub_preview_choice(50, Some(0), Some(40)), Some(40));
         // Key at 48 closer than cache at 20 → key.
-        assert_eq!(
-            scrub_preview_choice(50, Some(48), Some(20)),
-            Some(48)
-        );
+        assert_eq!(scrub_preview_choice(50, Some(48), Some(20)), Some(48));
         // Tie → cache (no decode flicker).
-        assert_eq!(
-            scrub_preview_choice(50, Some(40), Some(60)),
-            Some(60)
-        );
+        assert_eq!(scrub_preview_choice(50, Some(40), Some(60)), Some(60));
         assert_eq!(scrub_preview_choice(50, Some(0), None), Some(0));
         assert_eq!(scrub_preview_choice(50, None, Some(44)), Some(44));
     }

@@ -128,11 +128,7 @@ fn demux_with_b_frames_reorder_windows() {
     let cascade = block_on(player.window_at(1)).expect("cascade");
     assert_eq!(cascade.target_frame, 1);
     assert_eq!(
-        cascade
-            .samples
-            .iter()
-            .map(|s| s.frame)
-            .collect::<Vec<_>>(),
+        cascade.samples.iter().map(|s| s.frame).collect::<Vec<_>>(),
         vec![0, 3, 1]
     );
     assert!(cascade.samples[0].is_keyframe);
@@ -148,8 +144,7 @@ fn progressive_source_open_matches_bytes_offsets() {
     }
     let bytes = std::fs::read(&path).expect("read");
     let full = open_mp4_path(&path).expect("full open");
-    let source: Arc<dyn webmedia::MediaSource> =
-        Arc::new(MemorySource::from_vec(bytes));
+    let source: Arc<dyn webmedia::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
     let progressive = block_on(open_mp4_source(
         source,
         OpenMp4Options {
@@ -159,7 +154,12 @@ fn progressive_source_open_matches_bytes_offsets() {
     .expect("progressive open");
 
     assert_eq!(full.frame_count(), progressive.frame_count());
-    for (a, b) in full.index().frames().iter().zip(progressive.index().frames()) {
+    for (a, b) in full
+        .index()
+        .frames()
+        .iter()
+        .zip(progressive.index().frames())
+    {
         assert_eq!(a.offset, b.offset);
         assert_eq!(a.size, b.size);
         assert_eq!(a.is_sync, b.is_sync);

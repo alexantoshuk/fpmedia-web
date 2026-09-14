@@ -3,10 +3,10 @@
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_use::use_event_listener;
+use video::{ReadyFrameKind, Video, VideoMetadata, VideoRef};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Blob, Element, HtmlInputElement, window};
-use video::{ReadyFrameKind, Video, VideoMetadata, VideoRef};
 
 /// Coalesce scrub engine work after the Leptos/tachys event callback releases its
 /// `RefCell`. Duplicate targets (left-edge clamp spams `frame=0`) collapse to one
@@ -446,11 +446,7 @@ fn BufferMeters(video: VideoRef) -> impl IntoView {
 }
 
 #[component]
-fn MeterRow(
-    label: &'static str,
-    detail: Signal<String>,
-    fill_pct: Signal<f64>,
-) -> impl IntoView {
+fn MeterRow(label: &'static str, detail: Signal<String>, fill_pct: Signal<f64>) -> impl IntoView {
     let test_id = match label {
         "Prefetch queue" => "meter-prefetch-queue",
         "Prefetch ahead" => "meter-prefetch-ahead",
@@ -498,7 +494,5 @@ fn format_metadata(meta: &VideoMetadata) -> String {
 }
 
 fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> T {
-    ev.target()
-        .expect("event target")
-        .unchecked_into::<T>()
+    ev.target().expect("event target").unchecked_into::<T>()
 }

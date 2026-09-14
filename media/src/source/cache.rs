@@ -77,11 +77,7 @@ impl<S: MediaSource> MediaSource for CachedSource<S> {
         Box::pin(async move {
             let size = self.inner.size();
             if offset > size {
-                return Err(MediaError::ReadOutOfRange {
-                    offset,
-                    len,
-                    size,
-                });
+                return Err(MediaError::ReadOutOfRange { offset, len, size });
             }
 
             let available = (size - offset) as usize;
@@ -133,8 +129,8 @@ impl<S: MediaSource> MediaSource for CachedSource<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::source::MemorySource;

@@ -25,7 +25,10 @@ pub(crate) enum HostOp {
     SeekKeyframe(u32),
     /// Timeline drag — cancelable; latest target wins (does not latch `busy`).
     /// `settle` = pointer up (exact-first densify hold); drag keeps densify on.
-    Scrub { frame: u32, settle: bool },
+    Scrub {
+        frame: u32,
+        settle: bool,
+    },
     Step(bool),
     /// Prime presentation queue then start the play session / rAF.
     PlayPrime,
@@ -78,13 +81,7 @@ impl OpQueue {
         let id = self.bump();
         let mut st = self.inner.borrow_mut();
         st.pending.clear();
-        st.pending.push_back((
-            id,
-            HostOp::Open {
-                blob,
-                canvas,
-            },
-        ));
+        st.pending.push_back((id, HostOp::Open { blob, canvas }));
         self.busy.set(true);
         self.begin_drain_locked(&mut st)
     }
@@ -95,10 +92,8 @@ impl OpQueue {
     pub fn enqueue_scrub(&self, frame: u32, settle: bool) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
-        st.pending
-            .retain(|(_, o)| matches!(o, HostOp::Open { .. }));
-        st.pending
-            .push_back((id, HostOp::Scrub { frame, settle }));
+        st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
+        st.pending.push_back((id, HostOp::Scrub { frame, settle }));
         self.begin_drain_locked(&mut st)
     }
 
@@ -115,8 +110,7 @@ impl OpQueue {
         ));
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
-        st.pending
-            .retain(|(_, o)| matches!(o, HostOp::Open { .. }));
+        st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
         st.pending.push_back((id, op));
         self.busy.set(true);
         self.begin_drain_locked(&mut st)

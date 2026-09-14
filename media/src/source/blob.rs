@@ -37,11 +37,7 @@ impl MediaSource for BlobSource {
         Box::pin(async move {
             let size = blob.size() as u64;
             if offset > size {
-                return Err(MediaError::ReadOutOfRange {
-                    offset,
-                    len,
-                    size,
-                });
+                return Err(MediaError::ReadOutOfRange { offset, len, size });
             }
             let available = (size - offset) as usize;
             let want = len.min(available);
@@ -63,9 +59,7 @@ impl MediaSource for BlobSource {
                 .map_err(MediaError::from)?;
             let array = Uint8Array::new(&buffer);
             let out = array.to_vec();
-            web_sys::console::log_1(
-                &format!("webmedia: blob read ok got={}", out.len()).into(),
-            );
+            web_sys::console::log_1(&format!("webmedia: blob read ok got={}", out.len()).into());
             Ok(out)
         })
     }

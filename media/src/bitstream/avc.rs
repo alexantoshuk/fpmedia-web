@@ -241,9 +241,7 @@ pub fn determine_avc_packet_type_with(
             return Some(PacketType::Key);
         }
         // 6 SEI — Recovery Point may count as key (before a following I-slice).
-        if nal_type == NAL_SEI
-            && accept_recovery_point_sei
-            && sei_nal_is_exact_recovery_point(nal)
+        if nal_type == NAL_SEI && accept_recovery_point_sei && sei_nal_is_exact_recovery_point(nal)
         {
             return Some(PacketType::Key);
         }
@@ -401,10 +399,7 @@ mod tests {
     fn lying_sync_demoted_by_type() {
         // Container would say sync; bitstream is P-slice.
         let data = au(&[&[0x01, 0xff]], 4);
-        assert_ne!(
-            determine_avc_packet_type(&data, 4),
-            Some(PacketType::Key)
-        );
+        assert_ne!(determine_avc_packet_type(&data, 4), Some(PacketType::Key));
     }
 
     #[test]
@@ -485,6 +480,9 @@ mod tests {
     #[test]
     fn remove_emulation_prevention() {
         let raw = [0x00, 0x00, 0x03, 0x01];
-        assert_eq!(remove_emulation_prevention_bytes(&raw), vec![0x00, 0x00, 0x01]);
+        assert_eq!(
+            remove_emulation_prevention_bytes(&raw),
+            vec![0x00, 0x00, 0x01]
+        );
     }
 }

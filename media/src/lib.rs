@@ -24,30 +24,30 @@ pub use bitstream::{
     PacketType, accept_avc_recovery_point_sei, avc_nal_length_size, determine_avc_packet_type,
     determine_avc_packet_type_with, sanitize_avc_packet_for_chromium,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use demux::open_mp4_path;
 pub use demux::{
     Mp4VideoTrack, OpenMp4Options, TopLevelBox, load_ftyp_moov, open_mp4_bytes, open_mp4_source,
     open_mp4_source_cached, open_mp4_source_cached_with_progress, open_mp4_source_with_progress,
     parse_mp4_progressive, parse_mp4_progressive_with_progress, read_ftyp_moov_stub,
     scan_top_level,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub use demux::open_mp4_path;
 pub use error::MediaError;
 pub use frame_index::{FrameEntry, FrameIndex};
 pub use player::{DecodeWindow, Player, PlayerState};
-pub use source::{CachedSource, DEFAULT_CACHE_SIZE, MediaSource, MemorySource, ReadFuture};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use source::BlobSource;
+pub use source::{CachedSource, DEFAULT_CACHE_SIZE, MediaSource, MemorySource, ReadFuture};
 pub use types::{
-    CodecConfig, EncodedSample, FrameId, GopProfile, Timestamp, VideoCodec, VideoMetadata,
-    DEFAULT_SCRUB_CACHE_MIB, MAX_SCRUB_CACHE_FRAMES, MIN_SCRUB_CACHE_FRAMES, SHORT_GOP_MAX_LEN,
-    SHORT_GOP_MAX_SPREAD, SCRUB_CACHE_EDGE_MARGIN, estimated_decoded_frame_bytes,
+    CodecConfig, DEFAULT_SCRUB_CACHE_MIB, EncodedSample, FrameId, GopProfile,
+    MAX_SCRUB_CACHE_FRAMES, MIN_SCRUB_CACHE_FRAMES, SCRUB_CACHE_EDGE_MARGIN, SHORT_GOP_MAX_LEN,
+    SHORT_GOP_MAX_SPREAD, Timestamp, VideoCodec, VideoMetadata, estimated_decoded_frame_bytes,
     scrub_cache_frame_budget, scrub_preview_choice,
 };
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use decode::{
-    DuePresent, AsVideoFrame, OwnedVideoFrame, PipelineStats, PRESENTATION_QUEUE_CAP, ReadyFrameKind,
-    ReadyFrameMark, WebCodecsDecoder, WebPlayer, canvas_2d, configure_canvas_for_video,
-    draw_frame_to_canvas, draw_frame_with_context,
+    AsVideoFrame, DuePresent, OwnedVideoFrame, PRESENTATION_QUEUE_CAP, PipelineStats,
+    ReadyFrameKind, ReadyFrameMark, WebCodecsDecoder, WebPlayer, canvas_2d,
+    configure_canvas_for_video, draw_frame_to_canvas, draw_frame_with_context,
 };

@@ -9,9 +9,7 @@ use crate::bitstream::{PacketType, avc_nal_length_size, determine_avc_packet_typ
 use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
 use crate::source::{CachedSource, MediaSource, MemorySource};
-use crate::types::{
-    CodecConfig, EncodedSample, FrameId, VideoCodec, VideoMetadata,
-};
+use crate::types::{CodecConfig, EncodedSample, FrameId, VideoCodec, VideoMetadata};
 use crate::util::block_on;
 
 /// Options for [`open_mp4_source`].
@@ -74,10 +72,7 @@ impl Mp4VideoTrack {
             .index
             .get(frame)
             .ok_or(MediaError::FrameOutOfRange(frame, self.frame_count()))?;
-        let data = self
-            .source
-            .read(entry.offset, entry.size as usize)
-            .await?;
+        let data = self.source.read(entry.offset, entry.size as usize).await?;
         if data.len() != entry.size as usize {
             return Err(MediaError::Mp4(format!(
                 "short sample read at {}: got {} want {}",
@@ -158,9 +153,7 @@ impl Mp4VideoTrack {
             .iter()
             .filter(|e| {
                 e.decode_order > after_do
-                    && next_key_do
-                        .map(|nk| e.decode_order < nk)
-                        .unwrap_or(true)
+                    && next_key_do.map(|nk| e.decode_order < nk).unwrap_or(true)
             })
             .collect();
         entries.sort_by_key(|e| e.decode_order);
@@ -204,7 +197,8 @@ pub async fn open_mp4_source_with_progress(
     options: OpenMp4Options,
     mut progress: impl FnMut(&str),
 ) -> Result<Mp4VideoTrack, MediaError> {
-    let mp4 = crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
+    let mp4 =
+        crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
     // Verify separately (async) — `block_on` cannot drive BlobSource reads.
     let mut track = build_track(
         mp4,
@@ -236,7 +230,8 @@ pub async fn open_mp4_source_cached_with_progress(
     options: OpenMp4Options,
     mut progress: impl FnMut(&str),
 ) -> Result<Mp4VideoTrack, MediaError> {
-    let mp4 = crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
+    let mp4 =
+        crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
     // Verify on the raw source first — CachedSource's 8 MiB prefetch on every
     // scattered keyframe would thrash WASM (BBB ≈600 syncs → multi‑GB of Blob reads).
     let mut track = build_track(

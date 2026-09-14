@@ -6,7 +6,7 @@ use std::rc::Rc;
 use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use leptos_use::utils::Pausable;
-use leptos_use::{use_raf_fn_with_options, use_resize_observer, UseRafFnOptions};
+use leptos_use::{UseRafFnOptions, use_raf_fn_with_options, use_resize_observer};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
@@ -172,10 +172,7 @@ pub fn Video(
                     return;
                 }
 
-                let restarting = session
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|s| s.restarting);
+                let restarting = session.borrow().as_ref().is_some_and(|s| s.restarting);
                 if restarting {
                     return;
                 }
@@ -233,9 +230,8 @@ pub fn Video(
                                 Ok(()) => {
                                     if let Some(s) = session.borrow_mut().as_mut() {
                                         s.media_origin = 0.0;
-                                        s.wall_origin = performance_now_ms()
-                                            .map(|n| n / 1000.0)
-                                            .unwrap_or(0.0);
+                                        s.wall_origin =
+                                            performance_now_ms().map(|n| n / 1000.0).unwrap_or(0.0);
                                         s.restarting = false;
                                     }
                                 }
@@ -341,19 +337,8 @@ pub fn Video(
                     match op {
                         HostOp::Open { blob, canvas } => {
                             run_open(
-                                &queue,
-                                id,
-                                blob,
-                                canvas,
-                                &player,
-                                &sync_ui,
-                                &fps_meter,
-                                ready,
-                                metadata,
-                                error,
-                                status,
-                                fps,
-                                pipeline,
+                                &queue, id, blob, canvas, &player, &sync_ui, &fps_meter, ready,
+                                metadata, error, status, fps, pipeline,
                             )
                             .await;
                         }
@@ -383,7 +368,10 @@ pub fn Video(
                             )
                             .await;
                         }
-                        HostOp::Scrub { frame: target, settle } => {
+                        HostOp::Scrub {
+                            frame: target,
+                            settle,
+                        } => {
                             queue.set_scrub_inflight(true);
                             run_seek_or_step(
                                 &queue,
@@ -456,9 +444,7 @@ pub fn Video(
             status.set(format!("Opening (~{size_kb} KB, progressive)…"));
             fps_meter.borrow_mut().reset();
             #[cfg(target_arch = "wasm32")]
-            web_sys::console::log_1(
-                &format!("webmedia: open_blob start ~{size_kb} KB").into(),
-            );
+            web_sys::console::log_1(&format!("webmedia: open_blob start ~{size_kb} KB").into());
             if queue.enqueue_open(blob, canvas) {
                 kick_drain();
             }
@@ -977,9 +963,7 @@ async fn open_blob_staged(
     )
     .await
     .map_err(|e| e.to_string())?;
-    web_sys::console::log_1(
-        &format!("webmedia: demux ok, {} frames", track.frame_count()).into(),
-    );
+    web_sys::console::log_1(&format!("webmedia: demux ok, {} frames", track.frame_count()).into());
     on_status(&format!(
         "moov ok — {} frames, creating decoder…",
         track.frame_count()

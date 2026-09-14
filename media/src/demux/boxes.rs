@@ -156,9 +156,8 @@ fn sanitize_moov_padding(bytes: &mut Vec<u8>) -> Result<(), MediaError> {
     }
     bytes.truncate(pos);
 
-    let new_size = u32::try_from(bytes.len()).map_err(|_| {
-        MediaError::Mp4("moov too large after padding trim".into())
-    })?;
+    let new_size = u32::try_from(bytes.len())
+        .map_err(|_| MediaError::Mp4("moov too large after padding trim".into()))?;
     bytes[0..4].copy_from_slice(&new_size.to_be_bytes());
     Ok(())
 }

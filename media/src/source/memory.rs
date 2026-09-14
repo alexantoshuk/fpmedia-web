@@ -43,11 +43,7 @@ impl MediaSource for MemorySource {
 fn read_slice(bytes: &[u8], offset: u64, len: usize) -> Result<Vec<u8>, MediaError> {
     let size = bytes.len() as u64;
     if offset > size {
-        return Err(MediaError::ReadOutOfRange {
-            offset,
-            len,
-            size,
-        });
+        return Err(MediaError::ReadOutOfRange { offset, len, size });
     }
     let start = offset as usize;
     let end = start.saturating_add(len).min(bytes.len());

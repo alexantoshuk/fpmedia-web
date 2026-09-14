@@ -48,11 +48,7 @@ pub enum MediaError {
     Source(String),
 
     #[error("read past end: offset={offset} len={len} size={size}")]
-    ReadOutOfRange {
-        offset: u64,
-        len: usize,
-        size: u64,
-    },
+    ReadOutOfRange { offset: u64, len: usize, size: u64 },
 }
 
 impl MediaError {

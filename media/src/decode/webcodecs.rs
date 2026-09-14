@@ -149,19 +149,14 @@ impl WebCodecsDecoder {
         Self::from_config(config, optimize_for_latency)
     }
 
-    fn from_config(
-        config: DecoderConfig,
-        optimize_for_latency: bool,
-    ) -> Result<Self, MediaError> {
+    fn from_config(config: DecoderConfig, optimize_for_latency: bool) -> Result<Self, MediaError> {
         let web_config = config.to_web_config(optimize_for_latency);
 
         let generation = Rc::new(Cell::new(0));
         let frames: Rc<RefCell<Vec<OwnedVideoFrame>>> = Rc::new(RefCell::new(Vec::new()));
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-        let output_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
-            Rc::new(RefCell::new(Vec::new()));
-        let dequeue_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
-            Rc::new(RefCell::new(Vec::new()));
+        let output_waiters: Rc<RefCell<Vec<js_sys::Function>>> = Rc::new(RefCell::new(Vec::new()));
+        let dequeue_waiters: Rc<RefCell<Vec<js_sys::Function>>> = Rc::new(RefCell::new(Vec::new()));
 
         let gen_cb = Rc::clone(&generation);
         let my_gen = gen_cb.get();
@@ -457,10 +452,7 @@ impl WebCodecsDecoder {
             .index()
             .nearest_keyframe(frame)
             .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
-        let gop_ids = track
-            .index()
-            .gop_frame_ids(key_id)
-            .unwrap_or_default();
+        let gop_ids = track.index().gop_frame_ids(key_id).unwrap_or_default();
         let mut pts_to_id: HashMap<i64, FrameId> = HashMap::with_capacity(gop_ids.len());
         for id in &gop_ids {
             let e = track
@@ -525,7 +517,8 @@ impl WebCodecsDecoder {
             if is_cancelled() {
                 return Err(MediaError::Cancelled);
             }
-            self.feed_sample(&key_sample, true, target_us, is_cancelled).await?;
+            self.feed_sample(&key_sample, true, target_us, is_cancelled)
+                .await?;
             self.fed_through_order = Some(key_do);
             // Poll with macrotasks (see `poll_output_or_macrotask`) — microtask-only
             // never saw HW output on Wing It and forced flush.
@@ -554,7 +547,8 @@ impl WebCodecsDecoder {
             if key_id == frame {
                 let coax = track.samples_after_in_gop(key_do, key_do, 1).await?;
                 if let Some(sample) = coax.first() {
-                    self.feed_sample(sample, false, target_us, is_cancelled).await?;
+                    self.feed_sample(sample, false, target_us, is_cancelled)
+                        .await?;
                     self.fed_through_order = Some(sample.decode_order);
                     for _ in 0..32 {
                         if is_cancelled() {
@@ -583,7 +577,8 @@ impl WebCodecsDecoder {
                     if is_cancelled() {
                         return Err(MediaError::Cancelled);
                     }
-                    self.feed_sample(&key_sample, true, target_us, is_cancelled).await?;
+                    self.feed_sample(&key_sample, true, target_us, is_cancelled)
+                        .await?;
                     self.fed_through_order = Some(key_do);
                     for _ in 0..48 {
                         if is_cancelled() {
@@ -639,18 +634,14 @@ impl WebCodecsDecoder {
 
             let fed = self.fed_through_order.unwrap_or(key_do);
             let past_target = fed >= target_do;
-            let force_flush = past_target
-                && fed.saturating_sub(target_do) >= REORDER_FEED_SLACK;
+            let force_flush = past_target && fed.saturating_sub(target_do) >= REORDER_FEED_SLACK;
             let next = if force_flush {
                 Vec::new()
             } else {
                 track.samples_after_in_gop(key_do, fed, 1).await?
             };
             if next.is_empty() {
-                if let Some(ready) = self
-                    .finish_gop_for_target(target_us, is_cancelled)
-                    .await?
-                {
+                if let Some(ready) = self.finish_gop_for_target(target_us, is_cancelled).await? {
                     return Ok(ready);
                 }
                 return Err(MediaError::WebCodecs(format!(
@@ -660,7 +651,8 @@ impl WebCodecsDecoder {
             }
 
             let sample = &next[0];
-            self.feed_sample(sample, false, target_us, is_cancelled).await?;
+            self.feed_sample(sample, false, target_us, is_cancelled)
+                .await?;
             self.fed_through_order = Some(sample.decode_order);
             // If the decoder is idle with no output, it is waiting for more input
             // (typical B-frame reorder) — do not block; feed the next packet.
@@ -913,15 +905,13 @@ impl WebCodecsDecoder {
         let timestamp_i32 = timestamp_us.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
 
         // mediabunny: Chromium first-packet AVC AUD / reserved-NAL sanitize.
-        let sanitized = if self.packets_fed == 0
-            && is_chromium()
-            && self.config.codec.starts_with("avc1")
-        {
-            avc_nal_length_size(&self.config.description)
-                .and_then(|len_size| sanitize_avc_packet_for_chromium(&sample.data, len_size))
-        } else {
-            None
-        };
+        let sanitized =
+            if self.packets_fed == 0 && is_chromium() && self.config.codec.starts_with("avc1") {
+                avc_nal_length_size(&self.config.description)
+                    .and_then(|len_size| sanitize_avc_packet_for_chromium(&sample.data, len_size))
+            } else {
+                None
+            };
         if let Some(ref cleaned) = sanitized {
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(
@@ -935,11 +925,7 @@ impl WebCodecsDecoder {
         }
         let bytes = sanitized.as_deref().unwrap_or(sample.data.as_slice());
 
-        let init = EncodedVideoChunkInit::new(
-            &Uint8Array::from(bytes),
-            timestamp_i32,
-            chunk_type,
-        );
+        let init = EncodedVideoChunkInit::new(&Uint8Array::from(bytes), timestamp_i32, chunk_type);
         let duration_us = ticks_to_micros(sample.duration_ticks as i64, sample.timescale);
         if duration_us > 0 {
             init.set_duration(duration_us.clamp(0, u32::MAX as i64) as u32);

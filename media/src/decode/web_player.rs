@@ -13,7 +13,7 @@ use crate::decode::owned_video_frame::OwnedVideoFrame;
 
 use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, draw_frame_with_context};
 use crate::decode::frame_cache::{
-    DenseFrameCache, ThumbCache, DEFAULT_MAX_THUMBS, DEFAULT_MAX_THUMB_GOPS,
+    DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, DenseFrameCache, ThumbCache,
 };
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
@@ -187,7 +187,10 @@ impl WebPlayer {
     }
 
     /// Progressive open from a browser [`web_sys::Blob`] / `File`.
-    pub async fn open_blob(blob: web_sys::Blob, canvas: HtmlCanvasElement) -> Result<Self, MediaError> {
+    pub async fn open_blob(
+        blob: web_sys::Blob,
+        canvas: HtmlCanvasElement,
+    ) -> Result<Self, MediaError> {
         let source: std::sync::Arc<dyn crate::MediaSource> =
             std::sync::Arc::new(crate::BlobSource::new(blob));
         Self::open_mp4_source(source, canvas).await
@@ -212,10 +215,7 @@ impl WebPlayer {
             player: RefCell::new(player),
             presentation: RefCell::new(VecDeque::new()),
             dense_cache: RefCell::new(DenseFrameCache::new(max_frames)),
-            thumb_cache: RefCell::new(ThumbCache::new(
-                DEFAULT_MAX_THUMB_GOPS,
-                DEFAULT_MAX_THUMBS,
-            )),
+            thumb_cache: RefCell::new(ThumbCache::new(DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS)),
             scrub_decoder: RefCell::new(None),
             scrub_epoch: Cell::new(0),
             scrub_busy: Cell::new(false),
@@ -398,10 +398,7 @@ impl WebPlayer {
                 presentation.len(),
                 presentation.front().map(|q| q.frame),
                 presentation.back().map(|q| q.frame),
-                presentation
-                    .iter()
-                    .map(|q| q.frame)
-                    .collect::<Vec<_>>(),
+                presentation.iter().map(|q| q.frame).collect::<Vec<_>>(),
             )
         };
         let (cache_chunks, cache_frames, cache_cap, cache_no_gaps, ready_frames, win_from, win_to) = {
@@ -471,7 +468,10 @@ impl WebPlayer {
             .track()
             .index()
             .get(frame)
-            .ok_or(MediaError::FrameOutOfRange(frame, player.state().frame_count))?;
+            .ok_or(MediaError::FrameOutOfRange(
+                frame,
+                player.state().frame_count,
+            ))?;
         if entry.duration_ticks == 0 || entry.timescale == 0 {
             return Err(MediaError::MissingFrameDuration(frame));
         }
@@ -639,11 +639,7 @@ impl WebPlayer {
     ///
     /// Cache hits draw in place. Key (uncached) previews decode without inserting
     /// into dense — orphan syncs must not punch holes outside the scrub window.
-    async fn draw_frame_unccommitted(
-        &self,
-        frame: FrameId,
-        epoch: u64,
-    ) -> Result<(), MediaError> {
+    async fn draw_frame_unccommitted(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
         if self.present_from_cache(frame)? {
             return Ok(());
         }
@@ -822,7 +818,10 @@ impl WebPlayer {
             .track()
             .index()
             .get(frame)
-            .ok_or(MediaError::FrameOutOfRange(frame, player.state().frame_count))?;
+            .ok_or(MediaError::FrameOutOfRange(
+                frame,
+                player.state().frame_count,
+            ))?;
         Ok(entry.composition_timestamp().seconds)
     }
 
@@ -1092,10 +1091,7 @@ impl WebPlayer {
         self.shared
             .presentation
             .borrow_mut()
-            .push_back(QueuedFrame {
-                frame: next,
-                video,
-            });
+            .push_back(QueuedFrame { frame: next, video });
         Ok(true)
     }
 
@@ -1118,9 +1114,10 @@ impl WebPlayer {
     fn catch_up_frame(&self, next: FrameId, behind_seconds: f64) -> Result<FrameId, MediaError> {
         let player = self.shared.player.borrow();
         let index = player.track().index();
-        let next_entry = index
-            .get(next)
-            .ok_or(MediaError::FrameOutOfRange(next, player.state().frame_count))?;
+        let next_entry = index.get(next).ok_or(MediaError::FrameOutOfRange(
+            next,
+            player.state().frame_count,
+        ))?;
         let timescale = next_entry.timescale.max(1) as f64;
         let desired_ticks =
             next_entry.composition_timestamp_ticks as f64 + behind_seconds * timescale;
@@ -1223,10 +1220,7 @@ impl WebPlayer {
     fn park_presentation_into_cache(&self) {
         let items: Vec<(FrameId, OwnedVideoFrame)> = {
             let mut presentation = self.shared.presentation.borrow_mut();
-            presentation
-                .drain(..)
-                .map(|q| (q.frame, q.video))
-                .collect()
+            presentation.drain(..).map(|q| (q.frame, q.video)).collect()
         };
         for (frame, video) in items {
             let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() else {
@@ -1272,7 +1266,10 @@ impl WebPlayer {
         cache.touch_playhead(frame, key);
     }
 
-    fn clone_from_dense_cache(&self, frame: FrameId) -> Result<Option<OwnedVideoFrame>, MediaError> {
+    fn clone_from_dense_cache(
+        &self,
+        frame: FrameId,
+    ) -> Result<Option<OwnedVideoFrame>, MediaError> {
         let Ok(cache) = self.shared.dense_cache.try_borrow() else {
             return Ok(None);
         };
@@ -1285,11 +1282,7 @@ impl WebPlayer {
             return Ok(false);
         };
         let drawn = cache.with_frame(frame, |video| {
-            draw_frame_with_context(
-                &self.shared.canvas,
-                &self.shared.ctx,
-                video.as_web_sys(),
-            )
+            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys())
         });
         match drawn {
             Some(Ok(())) => Ok(true),
@@ -1453,11 +1446,8 @@ impl WebPlayer {
     /// Inserts by **move** after draw — do not rely on `VideoFrame.clone()`
     /// (mediabunny keeps samples; browser clone often fails → empty cache).
     fn present_and_cache(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
-        let result = draw_frame_with_context(
-            &self.shared.canvas,
-            &self.shared.ctx,
-            video.as_web_sys(),
-        );
+        let result =
+            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
         if let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() {
             cache.insert_frame(frame, video);
         } else {
@@ -1468,11 +1458,8 @@ impl WebPlayer {
 
     /// Draw without inserting (play path — presentation queue owns ahead frames).
     fn present_only(&self, video: OwnedVideoFrame) -> Result<(), MediaError> {
-        let result = draw_frame_with_context(
-            &self.shared.canvas,
-            &self.shared.ctx,
-            video.as_web_sys(),
-        );
+        let result =
+            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
         drop(video);
         result
     }
@@ -1487,9 +1474,8 @@ impl WebPlayer {
             return Ok(video);
         }
         self.scrub_fill_frame(frame).await?;
-        self.clone_from_dense_cache(frame)?.ok_or_else(|| {
-            MediaError::WebCodecs(format!("frame_at miss after gap fill ({frame})"))
-        })
+        self.clone_from_dense_cache(frame)?
+            .ok_or_else(|| MediaError::WebCodecs(format!("frame_at miss after gap fill ({frame})")))
     }
 
     /// Sparse timestamps API — filmstrip follow-up (mediabunny `samplesAtTimestamps`).
@@ -1665,10 +1651,16 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
 
             match fill_one_gap(Rc::clone(&shared), target, scrub_epoch).await {
                 Ok(made_progress) => {
-                    idle_passes = if made_progress { 0 } else { idle_passes.saturating_add(1) };
+                    idle_passes = if made_progress {
+                        0
+                    } else {
+                        idle_passes.saturating_add(1)
+                    };
                     // No progress repeatedly (oversized GOP / budget) — stop spinning.
                     if idle_passes >= 3 {
-                        shared.fill_stalled_aim.set(Some(playhead_and_last(&shared).0));
+                        shared
+                            .fill_stalled_aim
+                            .set(Some(playhead_and_last(&shared).0));
                         return Ok(());
                     }
                     // Macrotask so paused rAF can refresh the ready strip.
@@ -1681,7 +1673,7 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
                         shared.scrub_pending.set(true);
                         return Ok(());
                     }
-                    // Re-aim / epoch bump — continue while paused/scrub.
+                    // scrub_epoch bump (abort) — adopt and keep densifying while scrubbing.
                     idle_passes = 0;
                     sleep_ms(0).await;
                 }
@@ -1689,7 +1681,9 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
                     // Transient WebCodecs fault — keep densifying (do not kill the task).
                     idle_passes = idle_passes.saturating_add(1);
                     if idle_passes >= 3 {
-                        shared.fill_stalled_aim.set(Some(playhead_and_last(&shared).0));
+                        shared
+                            .fill_stalled_aim
+                            .set(Some(playhead_and_last(&shared).0));
                         return Ok(());
                     }
                     sleep_ms(0).await;
@@ -1771,12 +1765,16 @@ fn next_gap_target(shared: &Shared) -> Option<FrameId> {
 }
 
 /// Densify the GOP containing `target`. Returns whether the cache gained frames.
+///
+/// Once a GOP decode starts, **finish it** even if the scrub aim moves — rapid
+/// drag used to cancel mid-GOP (≥8 frames / other key) and left dense empty.
+/// Aim only picks the *next* gap after this GOP completes. Still abort on settle
+/// hold, play, or scrub-epoch bump.
 async fn fill_one_gap(
     shared: Rc<Shared>,
     target: FrameId,
     scrub_epoch: u64,
 ) -> Result<bool, MediaError> {
-    let start_playhead = playhead_and_last(&shared).0;
     let key = shared
         .player
         .borrow()
@@ -1786,30 +1784,10 @@ async fn fill_one_gap(
         .unwrap_or(target);
 
     let cancelled = || {
-        if shared.scrub_epoch.get() != scrub_epoch
+        shared.scrub_epoch.get() != scrub_epoch
             || shared.fill_mode.get() == CacheFillMode::Play
             || shared.player.borrow().state().playing
             || shared.hold_densify_for_exact.get()
-        {
-            return true;
-        }
-        let (playhead, last) = playhead_and_last(&shared);
-        if playhead.abs_diff(start_playhead) < 8 {
-            return false;
-        }
-        match shared.dense_cache.borrow().next_gap_frame(playhead, last) {
-            Some(n) => {
-                let n_key = shared
-                    .player
-                    .borrow()
-                    .track()
-                    .index()
-                    .nearest_keyframe(n)
-                    .unwrap_or(n);
-                n_key != key && n.abs_diff(playhead) + 1 < target.abs_diff(playhead)
-            }
-            None => false,
-        }
     };
     if cancelled() {
         return Err(MediaError::Cancelled);
@@ -1822,10 +1800,7 @@ async fn fill_one_gap(
         // If the gap `target` is still missing, the complete check is stale /
         // inconsistent — fall through and decode.
         let cache = shared.dense_cache.borrow();
-        if !ids.is_empty()
-            && cache.gop_complete(key, &ids)
-            && cache.has_frame(target, key)
-        {
+        if !ids.is_empty() && cache.gop_complete(key, &ids) && cache.has_frame(target, key) {
             // Gap already closed — count as progress so idle_passes does not trip.
             return Ok(true);
         }
