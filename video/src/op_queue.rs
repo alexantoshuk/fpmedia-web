@@ -145,6 +145,17 @@ impl OpQueue {
         self.sync_busy();
     }
 
+    /// Abort in-flight work and drop every pending op (close / unload).
+    pub fn cancel_all(&self) {
+        self.bump();
+        let mut st = self.inner.borrow_mut();
+        st.pending.clear();
+        st.scrub_inflight = false;
+        if !st.draining {
+            self.busy.set(false);
+        }
+    }
+
     /// Pop the next command for the drain loop.
     pub fn pop_next(&self) -> Option<(u64, HostOp)> {
         self.inner.borrow_mut().pending.pop_front()

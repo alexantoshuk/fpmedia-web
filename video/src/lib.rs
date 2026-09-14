@@ -20,6 +20,9 @@ pub struct VideoRef {
     pub ready: RwSignal<bool>,
     pub playing: RwSignal<bool>,
     pub looping: RwSignal<bool>,
+    /// True after playback stops because the last frame was reached (`loop` off).
+    /// Cleared on [`Self::open_blob`], [`Self::close`], seek/scrub/step, and play.
+    pub ended: RwSignal<bool>,
     /// Engine-committed presentation frame (may lag during async scrub).
     pub frame: RwSignal<u32>,
     /// UI / transport playhead — scrubber, Prev/Next/Seek/Play/Pause target.
@@ -42,6 +45,8 @@ pub(crate) struct VideoOps {
     pub open_blob: Rc<dyn Fn(web_sys::Blob)>,
     pub play: Rc<dyn Fn()>,
     pub pause: Rc<dyn Fn()>,
+    /// Tear down the decode session and free caches (keeps the mounted canvas).
+    pub close: Rc<dyn Fn()>,
     pub seek_frame: Rc<dyn Fn(u32)>,
     /// Scrub-drag preview: nearest sync at/before frame (mediabunny `seekToKey`).
     pub seek_keyframe: Rc<dyn Fn(u32)>,
@@ -60,6 +65,7 @@ impl VideoRef {
             ready: RwSignal::new(false),
             playing: RwSignal::new(false),
             looping: RwSignal::new(false),
+            ended: RwSignal::new(false),
             frame: RwSignal::new(0),
             playhead: RwSignal::new(0),
             frame_count: RwSignal::new(0),
@@ -87,7 +93,19 @@ impl VideoRef {
         }
     }
 
+    /// Drop the decode session (decoder + caches). Canvas stays mounted for a later open.
+    pub fn close(&self) {
+        if let Some(close) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.close)))
+            .flatten()
+        {
+            close();
+        }
+    }
+
     pub fn play(&self) {
+        self.ended.set(false);
         // Start from the UI playhead (may be ahead of engine after scrub).
         let ph = self.playhead.get_untracked();
         if self.frame.get_untracked() != ph {
@@ -120,6 +138,7 @@ impl VideoRef {
     pub fn seek_frame(&self, frame: u32) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
+        self.ended.set(false);
         self.playhead.set(frame);
         if let Some(seek) = self
             .ops
@@ -134,6 +153,7 @@ impl VideoRef {
     pub fn seek_keyframe(&self, frame: u32) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
+        self.ended.set(false);
         self.playhead.set(frame);
         if let Some(seek) = self
             .ops
@@ -159,6 +179,7 @@ impl VideoRef {
     fn scrub_frame_inner(&self, frame: u32, settle: bool) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
+        self.ended.set(false);
         self.playhead.set(frame);
         if let Some(scrub) = self
             .ops
@@ -172,6 +193,7 @@ impl VideoRef {
     pub fn next_frame(&self) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let ph = self.playhead.get_untracked().saturating_add(1).min(max);
+        self.ended.set(false);
         self.playhead.set(ph);
         let engine = self.frame.get_untracked();
         if engine < max && engine + 1 == ph {
@@ -193,6 +215,7 @@ impl VideoRef {
 
     pub fn previous_frame(&self) {
         let ph = self.playhead.get_untracked().saturating_sub(1);
+        self.ended.set(false);
         self.playhead.set(ph);
         let engine = self.frame.get_untracked();
         if engine > 0 && engine - 1 == ph {

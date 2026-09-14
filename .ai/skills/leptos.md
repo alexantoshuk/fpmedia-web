@@ -11,6 +11,8 @@
 | ------- | ---------- |
 | Open never finishes / console stops at `open_blob start` | File-input `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
 | Play / Next / Prev disabled or silent no-op | UI-owned `playing`; recover when session is `None` |
+| EOF with `loop` off — host never notified | `VideoRef::ended`; clear on open/close/seek/play |
+| Decoder/cache leak after leaving a clip | `VideoRef::close()` (also on unmount) |
 | `RefCell already borrowed` in Loop / sync_ui / tachys | No borrow across `.await`; defer scrub work off `on:pointer*` |
 | Start stutter / low measured fps after Play | Set wall-clock origins **after** `prime_playback` |
 | Scrub pointer jank / re-entrant park | Don’t `pause` every `pointermove` while paused; async scrub |
@@ -75,5 +77,6 @@ Only classes that appear **literally** in `.rs` / `.css` are emitted. Do not bui
 16. **Quick Pause→Play** — cancelled prefetch may still hold the decoder slot; engine `decode_frame` must wait/yield (not fail `decoder busy`). Stale play tasks must not stop the new session unless `async_id` still matches.
 17. **Scrub pointer events** — do not call `WebPlayer::pause` / heavy park on every `pointermove` while already paused (re-enters scrub pipeline). Defer `scrub_frame` / `scrub_settle` with `wasm_bindgen_futures::spawn_local` so work runs after tachys releases the event-callback `RefCell` — sync engine work inside `on:pointer*` can nest into the same handler → panic `RefCell already borrowed` in `tachys` `event.rs`. Drag → `scrub_frame` (densify on); pointer up → `scrub_settle` (exact-first). Async scrub (`HostOp::Scrub`): cancel in-flight + latest wins, no `busy`; key preview then exact. Sync Prev/Next/Seek latch `busy` and wait their turn (preempt scrub only).
 18. **UI playhead** — `VideoRef::playhead` is the potential frame (scrubber / Prev / Next / Seek / Play / Pause). Scrub updates it immediately and does not latch `busy`. Sync ops promote playhead and drive the engine from it (adjacent step uses `previous_frame`/`next_frame` when `frame` is next to playhead; otherwise `seek_frame`). `sync_ui` copies engine → playhead only while playing or when `frame_count` changes (new clip) — never clobber a paused scrub target.
+19. **`ended` + `close`** — `DuePresent::Ended` (loop off) sets `VideoRef::ended` then `stop_playback`; pause alone must **not** set `ended`. Clear `ended` on open / close / play / seek / scrub / step. `close()` = `OpQueue::cancel_all` + drop `WebPlayer` (decoder/caches) while keeping the canvas mounted; call from `on_cleanup` too. Hosts (playlist handoff) watch `ended` and call `close` on the retiring slot.
 
 Decode / scrub / densify engine traps: `skills/media.md`.

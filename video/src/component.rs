@@ -82,6 +82,7 @@ pub fn Video(
     let ready = video.ready;
     let playing = video.playing;
     let looping = video.looping;
+    let ended = video.ended;
     let frame = video.frame;
     let playhead = video.playhead;
     let frame_count = video.frame_count;
@@ -212,7 +213,9 @@ pub fn Video(
 
                 match outcome {
                     Ok(DuePresent::Ended) => {
+                        ended.set(true);
                         stop_playback();
+                        status.set("Ended.".into());
                     }
                     Ok(DuePresent::NeedsLoop) => {
                         if let Some(s) = session.borrow_mut().as_mut() {
@@ -436,6 +439,7 @@ pub fn Video(
             // Always supersede in-flight work (mediabunny asyncId++ on new file).
             stop_playback();
             ready.set(false);
+            ended.set(false);
             error.set(None);
             fps.set(None);
             pipeline.set(None);
@@ -582,10 +586,40 @@ pub fn Video(
         }) as Rc<dyn Fn(bool)>
     };
 
+    let close_fn = {
+        let player = Rc::clone(&player);
+        let session = Rc::clone(&session);
+        let fps_meter = Rc::clone(&fps_meter);
+        let queue = queue.clone();
+        Rc::new(move || {
+            queue.cancel_all();
+            playing.set(false);
+            let _ = session.borrow_mut().take();
+            // Drop WebPlayer (decoder + caches); cancel_ops via Drop.
+            let retiring = player.borrow_mut().take();
+            if let Some(p) = retiring {
+                p.pause();
+            }
+            fps_meter.borrow_mut().reset();
+            ready.set(false);
+            ended.set(false);
+            frame.set(0);
+            playhead.set(0);
+            frame_count.set(0);
+            timestamp.set(0.0);
+            fps.set(None);
+            metadata.set(None);
+            pipeline.set(None);
+            error.set(None);
+            status.set("Closed.".into());
+        }) as Rc<dyn Fn()>
+    };
+
     video.ops.set_value(Some(VideoOps {
         open_blob,
         play: play_fn,
         pause: stop_playback,
+        close: Rc::clone(&close_fn),
         seek_frame: seek_fn,
         seek_keyframe: seek_keyframe_fn,
         scrub_frame: scrub_fn,
@@ -596,7 +630,15 @@ pub fn Video(
 
     on_cleanup({
         let ops = video.ops;
-        move || ops.set_value(None)
+        move || {
+            let close = ops
+                .try_with_value(|o| o.as_ref().map(|v| Rc::clone(&v.close)))
+                .flatten();
+            if let Some(close) = close {
+                close();
+            }
+            ops.set_value(None);
+        }
     });
 
     let root_class = class.unwrap_or_else(|| "wm-stage".into());
