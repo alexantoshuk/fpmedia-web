@@ -525,7 +525,7 @@ impl WebCodecsDecoder {
             if is_cancelled() {
                 return Err(MediaError::Cancelled);
             }
-            self.feed_sample(&key_sample, true, target_us).await?;
+            self.feed_sample(&key_sample, true, target_us, is_cancelled).await?;
             self.fed_through_order = Some(key_do);
             // Poll with macrotasks (see `poll_output_or_macrotask`) — microtask-only
             // never saw HW output on Wing It and forced flush.
@@ -554,7 +554,7 @@ impl WebCodecsDecoder {
             if key_id == frame {
                 let coax = track.samples_after_in_gop(key_do, key_do, 1).await?;
                 if let Some(sample) = coax.first() {
-                    self.feed_sample(sample, false, target_us).await?;
+                    self.feed_sample(sample, false, target_us, is_cancelled).await?;
                     self.fed_through_order = Some(sample.decode_order);
                     for _ in 0..32 {
                         if is_cancelled() {
@@ -583,7 +583,7 @@ impl WebCodecsDecoder {
                     if is_cancelled() {
                         return Err(MediaError::Cancelled);
                     }
-                    self.feed_sample(&key_sample, true, target_us).await?;
+                    self.feed_sample(&key_sample, true, target_us, is_cancelled).await?;
                     self.fed_through_order = Some(key_do);
                     for _ in 0..48 {
                         if is_cancelled() {
@@ -660,7 +660,7 @@ impl WebCodecsDecoder {
             }
 
             let sample = &next[0];
-            self.feed_sample(sample, false, target_us).await?;
+            self.feed_sample(sample, false, target_us, is_cancelled).await?;
             self.fed_through_order = Some(sample.decode_order);
             // If the decoder is idle with no output, it is waiting for more input
             // (typical B-frame reorder) — do not block; feed the next packet.
@@ -724,8 +724,14 @@ impl WebCodecsDecoder {
         if is_cancelled() {
             return self.abort_gop_partial();
         }
-        self.feed_sample_gop(&key_sample, true, &mut pts_to_id, on_frame)
-            .await?;
+        match self
+            .feed_sample_gop(&key_sample, true, &mut pts_to_id, on_frame, is_cancelled)
+            .await
+        {
+            Ok(()) => {}
+            Err(MediaError::Cancelled) => return self.abort_gop_partial(),
+            Err(e) => return Err(e),
+        }
         self.fed_through_order = Some(key_do);
         self.await_outputs_if_pending().await?;
         self.collect_outputs_into_held()?;
@@ -743,8 +749,14 @@ impl WebCodecsDecoder {
             if next.is_empty() {
                 break;
             }
-            self.feed_sample_gop(&next[0], false, &mut pts_to_id, on_frame)
-                .await?;
+            match self
+                .feed_sample_gop(&next[0], false, &mut pts_to_id, on_frame, is_cancelled)
+                .await
+            {
+                Ok(()) => {}
+                Err(MediaError::Cancelled) => return self.abort_gop_partial(),
+                Err(e) => return Err(e),
+            }
             self.fed_through_order = Some(next[0].decode_order);
             self.await_outputs_if_pending().await?;
             self.collect_outputs_into_held()?;
@@ -766,6 +778,10 @@ impl WebCodecsDecoder {
             let _ = JsFuture::from(sleep_promise_ms(0)).await;
         }
         if !self.input_timestamps.is_empty() || self.decode_queue_size() > 0 {
+            // Settle abort must not wait out a 2s flush while exact owns HW.
+            if is_cancelled() {
+                return self.abort_gop_partial();
+            }
             let _ = self.flush_with_timeout().await;
             self.collect_outputs_into_held()?;
             self.flush_held_into_gop(on_frame, &mut pts_to_id);
@@ -852,11 +868,15 @@ impl WebCodecsDecoder {
         sample: &EncodedSample,
         force_key: bool,
         prune_before_us: i64,
+        is_cancelled: &dyn Fn() -> bool,
     ) -> Result<(), MediaError> {
         // Prune before/during backpressure so a long key→target cascade (PREV)
         // does not pin dozens of VideoFrames and wedge decodeQueueSize.
-        self.await_decode_capacity(Some(prune_before_us), None)
+        self.await_decode_capacity(Some(prune_before_us), None, Some(is_cancelled))
             .await?;
+        if is_cancelled() {
+            return Err(MediaError::Cancelled);
+        }
         self.decode_encoded_sample(sample, force_key)
     }
 
@@ -868,9 +888,13 @@ impl WebCodecsDecoder {
         force_key: bool,
         pts_to_id: &mut HashMap<i64, FrameId>,
         on_frame: &mut dyn FnMut(FrameId, OwnedVideoFrame),
+        is_cancelled: &dyn Fn() -> bool,
     ) -> Result<(), MediaError> {
-        self.await_decode_capacity(None, Some((pts_to_id, on_frame)))
+        self.await_decode_capacity(None, Some((pts_to_id, on_frame)), Some(is_cancelled))
             .await?;
+        if is_cancelled() {
+            return Err(MediaError::Cancelled);
+        }
         self.decode_encoded_sample(sample, force_key)
     }
 
@@ -965,9 +989,13 @@ impl WebCodecsDecoder {
             &mut HashMap<i64, FrameId>,
             &mut dyn FnMut(FrameId, OwnedVideoFrame),
         )>,
+        is_cancelled: Option<&dyn Fn() -> bool>,
     ) -> Result<(), MediaError> {
         let mut spins = 0u32;
         loop {
+            if is_cancelled.is_some_and(|f| f()) {
+                return Err(MediaError::Cancelled);
+            }
             self.check_error()?;
             // Remap + prune before measuring queue pressure.
             if let Some(us) = drop_before_us {

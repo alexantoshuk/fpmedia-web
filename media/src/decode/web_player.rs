@@ -1675,7 +1675,13 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
                     sleep_ms(0).await;
                 }
                 Err(MediaError::Cancelled) => {
-                    // Re-aim, epoch bump, or hold-for-exact — continue while paused/scrub.
+                    // Settle/seek hold — exit so scrub HW yields immediately
+                    // (do not spin/sleep; was competing with exact after long drag).
+                    if shared.hold_densify_for_exact.get() {
+                        shared.scrub_pending.set(true);
+                        return Ok(());
+                    }
+                    // Re-aim / epoch bump — continue while paused/scrub.
                     idle_passes = 0;
                     sleep_ms(0).await;
                 }
