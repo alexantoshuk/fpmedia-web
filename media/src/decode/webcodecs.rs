@@ -30,6 +30,19 @@ const MAX_DECODE_QUEUE_WITH_HELD: u32 = 8;
 /// Cap when the held/output buffers are empty — some browsers need a deeper
 /// encoded queue before emitting reordered frames.
 const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
+/// While key→N prune closes every output before the target (`held` stays empty),
+/// keep the encoded queue shallow so we pace on close instead of piling
+/// `decodeQ≈10` with nothing retained (VideoFrame pool / densify starvation).
+const SEEK_PRUNE_MAX_QUEUE: u32 = 4;
+
+fn compute_max_queue_size(decoded_sample_queue_size: u32) -> u32 {
+    // mediabunny `computeMaxQueueSize`
+    if decoded_sample_queue_size == 0 {
+        MAX_DECODE_QUEUE_EMPTY
+    } else {
+        MAX_DECODE_QUEUE_WITH_HELD
+    }
+}
 
 #[derive(Clone)]
 struct DecoderConfig {
@@ -142,6 +155,7 @@ impl WebCodecsDecoder {
         let my_gen = gen_cb.get();
         let frames_cb = Rc::clone(&frames);
         let waiters_cb = Rc::clone(&output_waiters);
+        let dequeue_on_output = Rc::clone(&dequeue_waiters);
         let on_output = Closure::wrap(Box::new(move |value: JsValue| {
             if gen_cb.get() != my_gen {
                 if let Ok(frame) = value.dyn_into::<VideoFrame>() {
@@ -156,6 +170,10 @@ impl WebCodecsDecoder {
             // Defer resolves — sync wake from inside this Closure re-enters Rust
             // (decode → recreate → drop Closure) and panics with
             // "closure invoked recursively or after being dropped".
+            wake_waiters_deferred(waiting);
+            // mediabunny: `onQueueDequeue()` on every decoder output (even when
+            // the sample will be closed) so the encode pump unblocks.
+            let waiting = std::mem::take(&mut *dequeue_on_output.borrow_mut());
             wake_waiters_deferred(waiting);
         }) as Box<dyn FnMut(JsValue)>);
 
@@ -293,6 +311,12 @@ impl WebCodecsDecoder {
         self.held.clear();
     }
 
+    /// mediabunny `onQueueDequeue` after consumer take / early sample close.
+    fn wake_dequeue_waiters(&self) {
+        let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
+        wake_waiters_deferred(waiting);
+    }
+
     fn push_input_timestamp(&mut self, pts_us: i64) {
         let i = self.input_timestamps.partition_point(|&t| t < pts_us);
         self.input_timestamps.insert(i, pts_us);
@@ -314,27 +338,51 @@ impl WebCodecsDecoder {
 
     fn take_held(&mut self, target_us: i64) -> Option<OwnedVideoFrame> {
         let idx = self.held.iter().position(|h| h.pts_us == target_us)?;
-        Some(self.held.remove(idx).frame)
+        let frame = self.held.remove(idx).frame;
+        // Consumer took a sample — unblock encode pump (mediabunny `onQueueDequeue`).
+        self.wake_dequeue_waiters();
+        Some(frame)
     }
 
     fn drop_held_before(&mut self, target_us: i64) {
+        let mut dropped = false;
         let mut i = 0;
         while i < self.held.len() {
             if self.held[i].pts_us < target_us {
                 let _ = self.held.swap_remove(i);
+                dropped = true;
             } else {
                 i += 1;
             }
         }
+        if dropped {
+            self.wake_dequeue_waiters();
+        }
     }
 
-    /// Move decoder outputs into `held`, then close anything strictly before the
-    /// seek target. mediabunny frees `sampleQueue` as the consumer pulls; we only
-    /// need `target_us`, so early frames must not stay open — a full `held` stalls
-    /// WebCodecs (`decodeQueueSize` never drains → backpressure timeout on PREV).
+    /// Remap outputs and close anything strictly before the seek target in the
+    /// same pass (mediabunny closes early samples in the output callback before
+    /// they enter `sampleQueue`). Park-then-prune a turn later left `decodeQ`
+    /// elevated with `held=0` mid key→N and starved the VideoFrame pool.
     fn collect_and_prune_held(&mut self, target_us: i64) -> Result<(), MediaError> {
-        self.collect_outputs_into_held()?;
+        let mut dropped = false;
+        for frame in self.frames.borrow_mut().drain(..) {
+            let Some(pts_us) = self.input_timestamps.first().copied() else {
+                drop(frame);
+                continue;
+            };
+            self.input_timestamps.remove(0);
+            if pts_us < target_us {
+                drop(frame);
+                dropped = true;
+            } else {
+                self.held.push(HeldFrame { pts_us, frame });
+            }
+        }
         self.drop_held_before(target_us);
+        if dropped {
+            self.wake_dequeue_waiters();
+        }
         Ok(())
     }
 
@@ -658,6 +706,9 @@ impl WebCodecsDecoder {
         on_frame: &mut dyn FnMut(FrameId, OwnedVideoFrame),
         pts_to_id: &mut HashMap<i64, FrameId>,
     ) {
+        if self.held.is_empty() {
+            return;
+        }
         for h in self.held.drain(..) {
             if let Some(id) = pts_to_id.remove(&h.pts_us) {
                 on_frame(id, h.frame);
@@ -665,6 +716,8 @@ impl WebCodecsDecoder {
                 drop(h.frame);
             }
         }
+        // Consumer drained sampleQueue — mediabunny `onQueueDequeue`.
+        self.wake_dequeue_waiters();
     }
 
     /// Cancel path: hard-reset so in-flight browser outputs cannot desync PTS remap.
@@ -818,7 +871,9 @@ impl WebCodecsDecoder {
     ///
     /// `drop_before_us`: close held frames strictly before the seek target so
     /// `held` does not stay non-empty forever during a long key→N cascade (that
-    /// kept max=8 and stalled the browser queue — rapid PREV timeout).
+    /// kept max=8 and stalled the browser queue — rapid PREV timeout). While
+    /// pruning with an empty held buffer, keep the encoded queue shallow so we
+    /// pace on close rather than sit at `decodeQ≈10` with `held=0`.
     ///
     /// `gop`: when densifying a full GOP, drain remapped frames to the consumer
     /// each spin so `held` stays empty (consumer take → max queue 40, not 8).
@@ -836,20 +891,25 @@ impl WebCodecsDecoder {
         let mut spins = 0u32;
         loop {
             self.check_error()?;
-            // Move raw outputs into `held` so the empty/non-empty max is accurate.
-            self.collect_outputs_into_held()?;
+            // Remap + prune before measuring queue pressure.
             if let Some(us) = drop_before_us {
-                self.drop_held_before(us);
+                self.collect_and_prune_held(us)?;
+            } else {
+                self.collect_outputs_into_held()?;
             }
             if let Some((pts_to_id, on_frame)) = gop.as_mut() {
                 self.flush_held_into_gop(*on_frame, pts_to_id);
             }
-            let max = if self.held.is_empty() {
-                MAX_DECODE_QUEUE_EMPTY
-            } else {
-                MAX_DECODE_QUEUE_WITH_HELD
-            };
-            if self.decode_queue_size() <= max {
+            let decoded = self.held.len() as u32;
+            let mut max = compute_max_queue_size(decoded);
+            // Seek prune with nothing kept yet: stay shallow (we close every
+            // early output). Empty-queue depth 40 is for play / GOP fill where
+            // outputs are retained.
+            if drop_before_us.is_some() && decoded == 0 {
+                max = max.min(SEEK_PRUNE_MAX_QUEUE);
+            }
+            // mediabunny: sampleQueue.length + decodeQueueSize > maxQueueSize
+            if decoded + self.decode_queue_size() <= max {
                 break;
             }
             spins += 1;

@@ -2,7 +2,7 @@
 
 ## In progress
 
-(none — scrub settle fix shipped; remaining items under Next up)
+(none — settle drain/backpressure shipped; remaining items under Next up)
 
 ---
 
@@ -11,8 +11,8 @@
 ### Scrub / settle perf (Wing It follow-ups)
 
 Done: densify abort + seekToKey→seekTo on settle (~4.5s exact; was eng stuck at 0 / tab freeze). Probe: `e2e/perf.scrub.settle.spec.ts`.
+Done: settle drain / backpressure — same-pass prune-close, `held+decodeQ` vs `computeMaxQueueSize`, shallow seek-prune cap, `onQueueDequeue` wakes, idle main decoder before densify after exact (`mediabunny: src/media-sink.ts queueDequeue` / `computeMaxQueueSize`).
 
-- Drain / backpressure on settle: do not sit at `decodeQ≈10` with `held=0` mid key→N (mediabunny `queueDequeue` / prune); settle still leaves `decodeQ` elevated after exact.
 - Long-GOP interim UX: show nearest cached / key while warm seekTo runs so canvas is not “stuck on key” for seconds on GOP ~124.
 - Drag densify vs settle: after long drag, confirm scrub HW fully yields before exact (abort path OK on click; re-check multi-second densify storms).
 - Wing It lying syncs (~frames 202/239) — mid-play / skip-behind risk if non-IDR still marked sync (AVC IDR verify is in place; Recovery Point SEI still open).

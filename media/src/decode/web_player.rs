@@ -497,6 +497,8 @@ impl WebPlayer {
         .await;
         self.shared.restarting.set(false);
         self.shared.hold_densify_for_exact.set(false);
+        // Exact seek can leave main decodeQ elevated; idle before densify.
+        self.invalidate_decoder();
         if !self.is_current(epoch) {
             return Err(MediaError::Cancelled);
         }
@@ -591,6 +593,12 @@ impl WebPlayer {
         .await;
         self.shared.restarting.set(false);
         self.shared.hold_densify_for_exact.set(false);
+        if settle {
+            // Exact key→N can leave main `decodeQ` elevated; densify uses the scrub
+            // decoder — idle main first (mediabunny closes the sample iterator on
+            // return). Avoids main HW competing with GOP fill after settle.
+            self.invalidate_decoder();
+        }
         // Settle / drag end: densify at the final focus (also re-arms after hold).
         self.enter_scrub_cache_pipeline(frame);
         if !self.is_current(epoch) {
