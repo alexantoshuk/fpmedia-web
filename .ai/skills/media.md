@@ -15,6 +15,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Settle eng stuck / `q=41` or `flush/idle` | Scrub cache + `begin_key_cascade` | windowed salvage; recreate on key change; one cascade |
 | Dense empty while scrubbing | Predictive densify, Scrub cache | finish in-flight GOP; don’t cancel mid-GOP on aim move |
 | Play freezes / low fps / mid-GOP `flush/idle` | `present_only`, presentation cap, warm held drain | do not pin play frames into dense; park PTS `>= target` |
+| Regress play/seek after a “local” decode knob tweak | `AGENTS.md` Mediabunny-first pre-edit gate | cite mediabunny path first — no latency/prune/queue invent |
 | Pause→Seek same / Prev→Next ≠ pause frame | Scrub cache `put_presented_frame` | canvas must replace dense resident |
 | Play lag right after scrub (long GOP) | Scrub cache + `skills/leptos.md` Play after scrub | seek restart / densify before PlayPrime |
 | A/V desync / silent play with audio track | [Audio + media clock](#audio--media-clock) | video must use `WebPlayer::media_time()` (AudioContext), not host wall-clock |

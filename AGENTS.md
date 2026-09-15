@@ -34,6 +34,18 @@ For **any** media feature, bug fix, or behaviour change in demux / decode / seek
 
 Rust/WASM specifics (Closures, `spawn_local`, no Promise ergonomics) are **adapters**, not a reason to skip the port. Most playback hangs here have been divergences from mediabunny wait/wake rules, not inherent Rust limits.
 
+### Pre-edit gate (media) — hard stop
+
+Before asking for approve-to-edit on media work, the plan **must** include:
+
+1. **Cite** — `mediabunny: <path> <symbol>` for the behaviour being changed (or explicit **no equivalent** + why).
+2. **Path match** — which mediabunny flow maps here (e.g. `samplesAtTimestamps` vs `samples()` / playback iterator vs single-timestamp seek).
+3. **Defaults** — do not flip global decoder/sink knobs (`optimizeForLatency`, prune/close policy, max queue depth, PTS assign FIFO vs chunk timestamp) unless the cite shows mediabunny’s default or the same branch.
+
+**Refuse to edit** (even after a vague `ok` on a knob-only plan) until that cite is in the plan. Probe-driven local hypotheses are fine for *diagnosis*; they do not authorize *implementation* without the port step.
+
+Anti-pattern we already paid for: invent `drop PTS > target` / global `optimizeForLatency: false` to clear Wing It `flush/idle`, then break play warm-ahead — mediabunny keeps consumer queue samples and leaves latency optional.
+
 ## Suboptimal proposals
 
 If the user asks for a change that is **clearly less optimal** than the current design (double decode, worse latency, throwing away work already paid for, etc.):
@@ -49,9 +61,10 @@ Example: dropping prune→dense salvage on settle “to avoid strip noise” re-
 Before **any** write to the repo (code, config, docs, generated assets):
 
 1. **Describe the plan first** — short: what, where, why (files/symbols if known).
-2. **Do not edit until the user explicitly consents** (e.g. `ok`, `go`, `да`, `approve`).
-3. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
-4. **Exception:** only if the user explicitly says to skip approval for that task or session.
+2. **Media changes:** plan must satisfy [Pre-edit gate (media)](#pre-edit-gate-media--hard-stop) (mediabunny cite or explicit no-equivalent).
+3. **Do not edit until the user explicitly consents** (e.g. `ok`, `go`, `да`, `approve`).
+4. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
+5. **Exception:** only if the user explicitly says to skip approval for that task or session.
 
 If the plan changes mid-work (scope creep, different files), stop and re-approve before further edits.
 
