@@ -28,7 +28,7 @@ use crate::bitstream::{avc_nal_length_size, sanitize_avc_packet_for_chromium};
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
-use crate::types::{EncodedSample, FrameId, VideoMetadata};
+use crate::types::{EncodedSample, FrameId, GopProfile, VideoMetadata};
 
 /// Max in-flight encoded chunks when decoded frames are already buffered
 /// (mediabunny `computeMaxQueueSize` when `decodedSampleQueueSize > 0`).
@@ -46,6 +46,11 @@ const SEEK_PRUNE_MAX_QUEUE: u32 = 4;
 /// Max delta packets to feed after the target's decode_order to coax B-frame emit
 /// before flushing (mediabunny feeds ahead; whole-GOP feed is unnecessary).
 const REORDER_FEED_SLACK: usize = 24;
+/// Only salvage pruned frames within this PTS gap of the seek target. Farther
+/// frames are closed immediately — keeping every key→N VideoFrame alive exhausts
+/// Chromium's pool and wedges at `decodeQ≈41, held=0` (Wing It seek/settle).
+/// ~8 frames @24 fps / ~10 @30 fps; densify still fills the rest after exact.
+const INTERIM_SALVAGE_MAX_BEHIND_US: i64 = 333_333;
 /// Pump safety valve: `decodeQueueSize == 0` means no `ondequeue` can ever fire,
 /// so only a consumer take / prune can shrink `held`. With the dual-async split a
 /// take is expected, but the consumer may be waiting for a frame that is still
@@ -120,10 +125,15 @@ type GopSink<'a> = (
 /// Hands pruned PTS `< target` frames to the host instead of closing them.
 ///
 /// Settle/seek installs this so one key→N cascade both yields exact **and** warms
-/// dense (densify after exact becomes mostly a no-op). Host must **not** blit —
+/// dense near the target (densify after exact is cheaper). Host must **not** blit —
 /// only `insert_frame` (blit looked like play from GOP start).
+///
+/// Only frames within [`INTERIM_SALVAGE_MAX_BEHIND_US`] of `target_us` are kept;
+/// farther ones are closed so the VideoFrame pool stays drained (mediabunny closes
+/// early samples in the output callback).
 struct PruneInterim {
     pts_to_id: HashMap<i64, FrameId>,
+    target_us: i64,
     on_frame: Box<dyn FnMut(FrameId, OwnedVideoFrame)>,
 }
 
@@ -156,6 +166,8 @@ struct DecoderCore {
     held: Vec<HeldFrame>,
     /// Packets fed since last `configure` (mediabunny `currentPacketIndex`).
     packets_fed: usize,
+    /// When true, every sample is a sync — soft key switch is OK (no long cascade).
+    all_intra: bool,
     /// Optional: salvage pruned early frames during key→N into the host dense cache.
     prune_interim: RefCell<Option<PruneInterim>>,
     _on_output: Closure<dyn FnMut(JsValue)>,
@@ -168,6 +180,7 @@ impl DecoderCore {
         config: DecoderConfig,
         optimize_for_latency: bool,
         pump_epoch: Rc<Cell<u64>>,
+        all_intra: bool,
     ) -> Result<Self, MediaError> {
         let web_config = config.to_web_config(optimize_for_latency);
 
@@ -258,6 +271,7 @@ impl DecoderCore {
             input_timestamps: Vec::new(),
             held: Vec::new(),
             packets_fed: 0,
+            all_intra,
             prune_interim: RefCell::new(None),
             _on_output: on_output,
             _on_error: on_error,
@@ -291,6 +305,7 @@ impl DecoderCore {
     fn recreate(&mut self) -> Result<(), MediaError> {
         // Keep dense-salvage sink across hard reset (All-Intra / wedge recovery).
         let interim = self.prune_interim.borrow_mut().take();
+        let all_intra = self.all_intra;
         self.detach_decoder();
         let config = self.config.clone();
         let optimize_for_latency = self.optimize_for_latency;
@@ -303,17 +318,17 @@ impl DecoderCore {
         std::mem::forget(old_error);
         std::mem::forget(old_dequeue);
 
-        *self = Self::from_config(config, optimize_for_latency, pump_epoch)?;
+        *self = Self::from_config(config, optimize_for_latency, pump_epoch, all_intra)?;
         *self.prune_interim.borrow_mut() = interim;
         Ok(())
     }
 
     /// Start a new key→… cascade.
     ///
-    /// Soft-clear only when the browser queue is empty **and** no PTS remap is
-    /// pending. Otherwise hard-`recreate` — soft-switching over in-flight HW
-    /// output desyncs timestamps (All-Intra scrub → wrong frame / hung decode /
-    /// `decoder busy` while flush holds the slot).
+    /// - Busy / `force_hard` / new sync on non-AllIntra → full [`Self::recreate`].
+    /// - Soft-clear alone on a new Long-GOP sync left Chromium warm from the
+    ///   previous GOP; key→N ≈111 then failed with `flush/idle without pts`.
+    /// - All-Intra keeps soft key switch (every frame is a sync).
     fn begin_key_cascade(&mut self, key_do: usize, force_hard: bool) -> Result<(), MediaError> {
         // Pull any already-delivered outputs before deciding idle vs hard reset.
         let _ = self.collect_outputs_into_held();
@@ -324,12 +339,14 @@ impl DecoderCore {
 
         let pending_remap = !self.input_timestamps.is_empty();
         let busy = self.decode_queue_size() > 0 || pending_remap;
-        if force_hard || busy {
+        let key_changed = matches!(self.key_order, Some(prev) if prev != key_do);
+        if force_hard || busy || (key_changed && !self.all_intra) {
             self.recreate()?;
         } else {
             self.input_timestamps.clear();
             self.fed_through_order = None;
             self.key_order = None;
+            self.packets_fed = 0;
         }
         self.key_order = Some(key_do);
         Ok(())
@@ -358,20 +375,48 @@ impl DecoderCore {
 
     fn collect_outputs_into_held(&mut self) -> Result<(), MediaError> {
         let before = self.held.len();
-        for frame in self.frames.borrow_mut().drain(..) {
-            let Some(pts_us) = self.input_timestamps.first().copied() else {
+        let pending: Vec<_> = self.frames.borrow_mut().drain(..).collect();
+        for frame in pending {
+            let Some(pts_us) = self.assign_output_pts(&frame) else {
                 // Late output after flush/cancel/recreate race — drop; do not
                 // poison the session (was: "decoded frame without queued input timestamp").
                 drop(frame);
                 continue;
             };
-            self.input_timestamps.remove(0);
             self.held.push(HeldFrame { pts_us, frame });
         }
         if self.held.len() > before {
             self.wake_not_empty_waiters();
         }
         Ok(())
+    }
+
+    /// PTS for a decoded frame: prefer the chunk timestamp we fed (survives on the
+    /// `VideoFrame`). Sorted FIFO remap assumes presentation-order emission;
+    /// Chromium + `optimizeForLatency` often emits decode order, which made long
+    /// key→N miss the target (`flush/idle` past ~50 frames on Wing It).
+    /// `mediabunny: src/media-sink.ts sampleHandler` — non-WebKit path.
+    fn assign_output_pts(&mut self, frame: &OwnedVideoFrame) -> Option<i64> {
+        let chunk_pts = {
+            let ts = frame.as_web_sys().timestamp();
+            if ts.is_finite() {
+                Some(ts.round() as i64)
+            } else {
+                None
+            }
+        };
+        if let Some(pts) = chunk_pts {
+            if let Some(i) = self.input_timestamps.iter().position(|&t| t == pts) {
+                self.input_timestamps.remove(i);
+            } else if !self.input_timestamps.is_empty() {
+                // Bookkeeping drift — drop one pending stamp.
+                self.input_timestamps.remove(0);
+            }
+            return Some(pts);
+        }
+        let pts = self.input_timestamps.first().copied()?;
+        self.input_timestamps.remove(0);
+        Some(pts)
     }
 
     fn take_held(&mut self, target_us: i64) -> Option<OwnedVideoFrame> {
@@ -410,12 +455,12 @@ impl DecoderCore {
     fn collect_and_prune_held(&mut self, target_us: i64) -> Result<(), MediaError> {
         let before = self.held.len();
         let mut dropped = false;
-        for frame in self.frames.borrow_mut().drain(..) {
-            let Some(pts_us) = self.input_timestamps.first().copied() else {
+        let pending: Vec<_> = self.frames.borrow_mut().drain(..).collect();
+        for frame in pending {
+            let Some(pts_us) = self.assign_output_pts(&frame) else {
                 drop(frame);
                 continue;
             };
-            self.input_timestamps.remove(0);
             if pts_us < target_us {
                 self.deliver_or_drop_pruned(pts_us, frame);
                 dropped = true;
@@ -435,11 +480,14 @@ impl DecoderCore {
 
     fn deliver_or_drop_pruned(&self, pts_us: i64, frame: OwnedVideoFrame) {
         let mut slot = self.prune_interim.borrow_mut();
-        if let Some(interim) = slot.as_mut()
-            && let Some(id) = interim.pts_to_id.remove(&pts_us)
-        {
-            (interim.on_frame)(id, frame);
-            return;
+        if let Some(interim) = slot.as_mut() {
+            let behind = interim.target_us.saturating_sub(pts_us);
+            if behind <= INTERIM_SALVAGE_MAX_BEHIND_US
+                && let Some(id) = interim.pts_to_id.remove(&pts_us)
+            {
+                (interim.on_frame)(id, frame);
+                return;
+            }
         }
         drop(frame);
     }
@@ -577,7 +625,13 @@ impl WebCodecsDecoder {
             return Err(MediaError::CodecUnsupported(config.codec.clone()));
         }
         let pump_epoch = Rc::new(Cell::new(0));
-        let core = DecoderCore::from_config(config, optimize_for_latency, Rc::clone(&pump_epoch))?;
+        let all_intra = matches!(meta.gop_profile, GopProfile::AllIntra);
+        let core = DecoderCore::from_config(
+            config,
+            optimize_for_latency,
+            Rc::clone(&pump_epoch),
+            all_intra,
+        )?;
         Ok(Self {
             core: Rc::new(RefCell::new(core)),
             pump_epoch,
@@ -632,6 +686,13 @@ impl WebCodecsDecoder {
             .index()
             .nearest_keyframe(frame)
             .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
+        let target_us = {
+            let entry = track
+                .index()
+                .get(frame)
+                .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
+            ticks_to_micros(entry.composition_timestamp_ticks, entry.timescale)
+        };
         let gop_ids = track.index().gop_frame_ids(key_id).unwrap_or_default();
         let mut pts_to_id: HashMap<i64, FrameId> = HashMap::with_capacity(gop_ids.len());
         for id in &gop_ids {
@@ -646,6 +707,7 @@ impl WebCodecsDecoder {
         }
         *self.core.borrow().prune_interim.borrow_mut() = Some(PruneInterim {
             pts_to_id,
+            target_us,
             on_frame: on_interim,
         });
         let result = self.decode_frame_inner(track, frame, is_cancelled).await;

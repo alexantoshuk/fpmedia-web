@@ -255,6 +255,22 @@ impl DenseFrameCache {
         self.enforce_frame_budget(None);
     }
 
+    /// Drop farthest-from-`aim` residents until at most `max` frames remain.
+    ///
+    /// Available for pool-pressure recovery; do **not** call on every settle —
+    /// that wiped the scrub strip on pointer-up.
+    #[allow(dead_code)]
+    pub fn trim_to_near(&mut self, aim: FrameId, max: usize) {
+        let max = max.max(1);
+        self.playhead = aim;
+        while self.frame_count() > max {
+            if !self.evict_one(Some(aim)) {
+                break;
+            }
+        }
+        self.refresh_no_gaps();
+    }
+
     pub fn set_max_frames(&mut self, max_frames: usize) {
         let max_frames = max_frames.max(1);
         if max_frames == self.max_frames {

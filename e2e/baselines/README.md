@@ -20,7 +20,7 @@ Override with `WEBMEDIA_PERF_CLIP_BBB` / `WEBMEDIA_PERF_CLIP_WING`.
 
 Each scenario records drag time, settle-to-exact (`eng == playhead`) time, and sparse UI samples.
 
-**Known pre-refactor miss:** Wing It `slow-large` may time out with `eng` stuck behind playhead (long GOP densify vs exact). Save mode still writes the JSON; compare only flags a new exact failure if the baseline had `exactOk: true`.
+**Was:** Wing It `slow-large` timed out with `eng` stuck on key (`backpressure timed out (q=41, held=0)` from settle `goto_frame(key)` + warm-continue). Fixed: settle uses one key→N cascade. Re-save baselines after confirming exact.
 
 ## Commands
 

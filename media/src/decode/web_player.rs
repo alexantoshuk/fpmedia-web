@@ -537,6 +537,8 @@ impl WebPlayer {
         // settle does not inherit a wedged `decodeQueueSize`.
         self.invalidate_decoder();
         self.aim_scrub_cache(frame);
+        // Do **not** trim dense here — wiping the strip on pointer-up felt like
+        // the cache vanishing even when releasing on a warm region.
     }
 
     fn begin_op(&self) -> u64 {
@@ -707,8 +709,8 @@ impl WebPlayer {
     /// - **Drag** (`settle=false`): densify while moving (warm cache under the finger);
     ///   preview + best-effort exact may race the scrub decoder. Gap pick follows
     ///   scrub direction (predictive densify).
-    /// - **Settle** (`settle=true`, pointer up): abort densify, seekToKey then warm
-    ///   seekTo with cache-only salvage (`goto_frame_with_interim`) — canvas stays
+    /// - **Settle** (`settle=true`, pointer up): abort densify, then one key→exact
+    ///   cascade with cache-only salvage (`goto_frame_with_interim`) — canvas stays
     ///   on best cached/key until exact; pruned frames fill dense without blit
     ///   (avoids a second full-GOP densify; strip may grow toward the target).
     pub async fn scrub_to(&self, frame: FrameId, settle: bool) -> Result<(), MediaError> {
@@ -736,33 +738,17 @@ impl WebPlayer {
                 return Ok(());
             }
 
-            // Canvas-only key/neighbor preview — do not commit_frame (UI playhead stays).
+            // Canvas preview without committing playhead.
+            // Settle: cache-only — decoding the key here then continuing to exact
+            // wedges Chromium (`backpressure timed out (q=41, held=0)` on Wing It).
+            // Drag: may decode key/neighbor for interim paint.
             if let Some(preview) = self.scrub_preview_frame(frame)
                 && preview != frame
             {
-                self.draw_frame_unccommitted(preview, epoch).await?;
-                if !self.is_current(epoch) {
-                    return Err(MediaError::Cancelled);
-                }
-                if self.present_from_cache(frame)? {
-                    self.shared.player.borrow_mut().commit_frame(frame)?;
-                    return Ok(());
-                }
-            }
-
-            // Settle: mediabunny seekToKey → seekTo.
-            // Commit the key first (leaves frame 0), then continue the warm cascade
-            // to exact — do **not** `fill_gop` restart (re-feed of the same key after
-            // `goto_frame(key)` wedged at decodeQ≈11 on Wing It long GOPs).
-            if settle {
-                if let Some(key) = self.key_for(frame)
-                    && key != frame
-                {
-                    if self.present_from_cache(key)? {
-                        self.shared.player.borrow_mut().commit_frame(key)?;
-                    } else {
-                        self.goto_frame(key, epoch).await?;
-                    }
+                if settle {
+                    let _ = self.present_from_cache(preview);
+                } else {
+                    self.draw_frame_unccommitted(preview, epoch).await?;
                     if !self.is_current(epoch) {
                         return Err(MediaError::Cancelled);
                     }
@@ -770,9 +756,26 @@ impl WebPlayer {
                         self.shared.player.borrow_mut().commit_frame(frame)?;
                         return Ok(());
                     }
-                    // Keep best cached/key on canvas while warm seekTo runs —
-                    // seekToKey paint must not leave a worse key stuck for
-                    // seconds on long GOPs when a closer neighbor is cached.
+                }
+            }
+
+            // Settle: one key→N cascade (same as sync `seek_frame`).
+            // Do **not** decode key in a prior `goto_frame` / uncommitted preview then
+            // warm-continue — taking the key out of `held` and feeding deltas wedges
+            // at `decodeQ≈41, held=0` on Wing It long GOPs. Cache-hit key still
+            // commits early so eng leaves 0; decode stays a single session.
+            // Do **not** `fill_gop` restart after key (re-feed wedged at decodeQ≈11).
+            if settle {
+                if let Some(key) = self.key_for(frame)
+                    && key != frame
+                {
+                    if self.present_from_cache(key)? {
+                        self.shared.player.borrow_mut().commit_frame(key)?;
+                        if self.present_from_cache(frame)? {
+                            self.shared.player.borrow_mut().commit_frame(frame)?;
+                            return Ok(());
+                        }
+                    }
                     if let Some(preview) = self.scrub_preview_frame(frame)
                         && preview != frame
                     {
