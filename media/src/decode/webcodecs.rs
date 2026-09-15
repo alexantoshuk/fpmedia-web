@@ -37,8 +37,10 @@ const MAX_DECODE_QUEUE_WITH_HELD: u32 = 8;
 /// encoded queue before emitting reordered frames.
 const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
 /// Max delta packets to feed after the target's decode_order to coax B-frame emit
-/// before flushing (mediabunny feeds ahead; whole-GOP feed is unnecessary).
-const REORDER_FEED_SLACK: usize = 24;
+/// before flushing. Keep small so play/prefetch does not strand a deep decodeQ
+/// when the consumer returns (PumpStopGuard). Seek still feeds to GOP end when
+/// the target is not yet held (`holds_target` gate on early stop).
+const REORDER_FEED_SLACK: usize = 8;
 /// Only salvage pruned frames within this PTS gap of the seek target. Farther
 /// frames are closed immediately — keeping every key→N VideoFrame alive exhausts
 /// Chromium's pool and wedges at `decodeQ≈41, held=0` (Wing It seek/settle).
@@ -385,13 +387,8 @@ impl DecoderCore {
     }
 
     /// PTS for a decoded frame: prefer the chunk timestamp retained on the
-    /// `VideoFrame`. Chromium + `optimizeForLatency` often emits decode order;
-    /// sorted FIFO remap then mis-labels frames and short key→N already fails
-    /// (Wing It +40). Only fall back to FIFO when the chunk timestamp is absent.
-    /// On a present-but-unmatched chunk PTS, do **not** drop the FIFO head —
-    /// that desynced `input_timestamps` on long cascades.
-    /// `mediabunny: src/media-sink.ts sampleHandler` (WebKit keeps chunk time;
-    /// non-WebKit FIFO is wrong under decode-order emit here).
+    /// `VideoFrame` when it matches a fed stamp; otherwise FIFO (mediabunny
+    /// non-WebKit). Do not drop the FIFO head on an unmatched chunk PTS.
     fn assign_output_pts(&mut self, frame: &OwnedVideoFrame) -> Option<i64> {
         let chunk_pts = {
             let ts = frame.as_web_sys().timestamp();
@@ -404,9 +401,8 @@ impl DecoderCore {
         if let Some(pts) = chunk_pts {
             if let Some(i) = self.input_timestamps.iter().position(|&t| t == pts) {
                 self.input_timestamps.remove(i);
+                return Some(pts);
             }
-            // Unmatched: keep the stamp list; still trust the chunk PTS.
-            return Some(pts);
         }
         let pts = self.input_timestamps.first().copied()?;
         self.input_timestamps.remove(0);
@@ -422,10 +418,16 @@ impl DecoderCore {
         Some(frame)
     }
 
-    /// Remap outputs and keep only the seek target in `held` (mediabunny closes
-    /// non-matching samples in the output callback before they enter
-    /// `sampleQueue`). Decode-order emit can deliver PTS `> target` before the
-    /// target; parking those forced `MAX_DECODE_QUEUE_WITH_HELD` (8).
+    /// Remap outputs and close anything strictly before the seek target in the
+    /// same pass (mediabunny closes early samples in the output callback before
+    /// they enter `sampleQueue`). Park-then-prune a turn later left `decodeQ`
+    /// elevated with `held=0` mid key→N and starved the VideoFrame pool.
+    ///
+    /// Keep PTS `>= target` in `held` — playback/prefetch relies on warm ahead
+    /// frames surviving `take_held(target)`. Dropping post-target forced a fresh
+    /// key→N (or `flush/idle`) on every sequential frame (DRYP play lag / skip).
+    /// Seek still closes early frames; `optimizeForLatency: false` covers long
+    /// Wing It key→N without needing to discard ahead.
     ///
     /// When [`Self::prune_interim`] is set, pruned PTS `< target` go to the host
     /// dense cache instead of close — one cascade warms near-target cache.
@@ -438,28 +440,22 @@ impl DecoderCore {
                 drop(frame);
                 continue;
             };
-            if pts_us == target_us {
-                self.held.push(HeldFrame { pts_us, frame });
-            } else if pts_us < target_us {
+            if pts_us < target_us {
                 self.deliver_or_drop_pruned(pts_us, frame);
                 dropped = true;
             } else {
-                drop(frame);
-                dropped = true;
+                self.held.push(HeldFrame { pts_us, frame });
             }
         }
         if self.held.len() > before {
             self.wake_not_empty_waiters();
         }
+        // Drop any previously held frames that are now before the (new) target.
         let mut i = 0;
         while i < self.held.len() {
-            if self.held[i].pts_us != target_us {
+            if self.held[i].pts_us < target_us {
                 let h = self.held.swap_remove(i);
-                if h.pts_us < target_us {
-                    self.deliver_or_drop_pruned(h.pts_us, h.frame);
-                } else {
-                    drop(h.frame);
-                }
+                self.deliver_or_drop_pruned(h.pts_us, h.frame);
                 dropped = true;
             } else {
                 i += 1;
@@ -603,9 +599,9 @@ pub struct WebCodecsDecoder {
 impl WebCodecsDecoder {
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
         let config = DecoderConfig::from_meta(meta)?;
-        // `optimizeForLatency: true` wedges Chromium on long key→N (Wing It
-        // ≥~60 from sync → `flush/idle` with decodeQ≈18). VOD scrub/seek needs
-        // throughput; mediabunny leaves this optional and defaults unset.
+        // Prefer throughput configure — `optimizeForLatency: true` wedges Chromium
+        // on sustained play/deep key→N (`backpressure q≈41` / `flush/idle`).
+        // mediabunny leaves this optional; we set false for VOD scrub+play.
         let optimize_for_latency = false;
         let web_config = config.to_web_config(optimize_for_latency);
         let support = JsFuture::from(VideoDecoder::is_config_supported(&web_config))
@@ -743,6 +739,55 @@ impl WebCodecsDecoder {
             }
         }
 
+        // Warm feed-ahead may have fed past this target while outputs are still
+        // in flight. Poll briefly; if the PTS never appears, hard-recreate from
+        // the key (do not flush — that demands a key on the next delta and still
+        // misses when Chromium has wedged mid-GOP).
+        let fed_order = core.borrow().fed_through_order;
+        if fed_order.is_some_and(|fed| entry.decode_order <= fed) {
+            for _ in 0..24 {
+                if is_cancelled() {
+                    return Err(MediaError::Cancelled);
+                }
+                {
+                    let mut c = core.borrow_mut();
+                    c.collect_and_prune_held(target_us)?;
+                    if let Some(ready) = c.take_held(target_us) {
+                        return Ok(ready);
+                    }
+                    let idle = c.decode_queue_size() == 0
+                        && !c.raw_outputs_pending()
+                        && c.input_timestamps.is_empty();
+                    if idle {
+                        break;
+                    }
+                }
+                await_outputs_if_pending(&core).await?;
+                wait_for_frame_progress(&core).await;
+            }
+            if !holds_target(&core, target_us)
+                && fed_order.is_some_and(|fed| {
+                    fed.saturating_sub(entry.decode_order) >= REORDER_FEED_SLACK
+                })
+            {
+                self.run_key_cascade(
+                    track,
+                    frame,
+                    key_id,
+                    key_do,
+                    target_us,
+                    true,
+                    is_cancelled,
+                )
+                .await?;
+                let mut c = core.borrow_mut();
+                c.collect_and_prune_held(target_us)?;
+                if let Some(ready) = c.take_held(target_us) {
+                    return Ok(ready);
+                }
+            }
+        }
+
         // Restart when the GOP changes, or when the target was already emitted and
         // discarded (e.g. presentation queue cleared after prefetch) — WebCodecs
         // cannot re-emit a consumed frame without cascading from the key again.
@@ -808,6 +853,23 @@ impl WebCodecsDecoder {
                 c.check_error()?;
                 c.collect_and_prune_held(target_us)?;
                 if let Some(ready) = c.take_held(target_us) {
+                    // Stop feeding more packets, but drain already-decoded outputs
+                    // into `held` so the next play/prefetch frame is warm. Returning
+                    // immediately left decodeQ stranded → mid-GOP flush/idle (DRYP).
+                    signals.stop.set(true);
+                    drop(c);
+                    for _ in 0..12 {
+                        await_outputs_if_pending(&core).await?;
+                        let idle = {
+                            let mut c = core.borrow_mut();
+                            c.collect_and_prune_held(target_us)?;
+                            c.decode_queue_size() == 0 && !c.raw_outputs_pending()
+                        };
+                        if idle {
+                            break;
+                        }
+                        wait_for_frame_progress(&core).await;
+                    }
                     return Ok(ready);
                 }
             }
@@ -1288,7 +1350,7 @@ async fn finish_gop_for_target(
         !c.input_timestamps.is_empty() || c.decode_queue_size() > 0
     };
     if pending {
-        flush_with_timeout(core).await?;
+        let flushed = flush_with_timeout(core).await?;
         let mut c = core.borrow_mut();
         c.check_error()?;
         c.collect_and_prune_held(target_us)?;
@@ -1297,6 +1359,15 @@ async fn finish_gop_for_target(
             c.key_order = None;
             c.input_timestamps.clear();
             return Ok(Some(ready));
+        }
+        // Chromium requires a key chunk after flush — drop warm state even on miss
+        // so the next cascade recreates/feeds a key (play hit "key frame required"
+        // after finish_gop drained a warm GOP).
+        if flushed || c.decode_queue_size() == 0 {
+            c.fed_through_order = None;
+            c.key_order = None;
+            c.input_timestamps.clear();
+            c.packets_fed = 0;
         }
     }
     Ok(None)

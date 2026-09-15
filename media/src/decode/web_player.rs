@@ -22,7 +22,9 @@ use crate::player::{Player, PlayerState};
 use crate::types::{AudioMetadata, FrameId, GopProfile, VideoMetadata};
 
 /// Decoded frames held ready for canvas present (mediabunny-style prefetch).
-pub const PRESENTATION_QUEUE_CAP: usize = 16;
+/// Keep small — each slot pins a `VideoFrame`; 16 + in-flight decode starved
+/// Chromium's pool on DRYP play (`flush/idle` mid-GOP with `decodeQ≈12`).
+pub const PRESENTATION_QUEUE_CAP: usize = 6;
 /// Frames to decode before starting the media clock (rest filled by prefetch).
 const PLAY_PRIME_FRAMES: usize = 2;
 /// Start-of-clip frames prepared into `loop_prime` before EOF (one decoder).
@@ -1128,9 +1130,10 @@ impl WebPlayer {
             if lag_ms > 1.0 {
                 self.shared.last_behind_ms.set(Some(lag_ms));
             }
-            // Play presents are visited frames — park in dense so pause gap-fill
-            // starts from a playhead-centered window (not a stale open/seek island).
-            self.present_and_cache(queued.frame, queued.video)?;
+            // During play, close the presented frame — pinning every frame into
+            // dense + presentation starved Chromium's VideoFrame pool on DRYP
+            // (mid-GOP `flush/idle` with decodeQ≈12). Pause/scrub re-seeds dense.
+            self.present_only(queued.video)?;
             self.touch_playhead(queued.frame);
             self.shared.player.borrow_mut().commit_frame(queued.frame)?;
             did_draw = true;
