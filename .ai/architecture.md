@@ -23,7 +23,7 @@
 
 Long-lived chrome lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Details: `skills/leptos.md`.
 
-**Browser APIs in `video/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the media crate owns (WebCodecs). Future audio clock may use `AudioContext`.
+**Browser APIs in `video/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the media crate owns (WebCodecs / `AudioContext`). The **media clock** (wall or audio) is owned by `webmedia` (`MediaClock` / `AudioOutput`) — hosts call `WebPlayer::media_time()`, they do not open `AudioContext` themselves.
 
 ---
 
@@ -71,6 +71,7 @@ webmedia/
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
 | Progressive open via `MediaSource` | Ranged reads (`BlobSource` / `MemorySource` + `CachedSource`); parse `moov`, fetch samples by offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline, **`GopProfile`**: `.ai/skills/media.md`. |
+| Audio in engine, not `VideoRef` | Demux (`Mp4AudioTrack`) + `AudioDecoder` + `AudioContext` schedule + **`MediaClock`** live in `webmedia`. `WebPlayer` orchestrates A+V; `VideoRef` only volume/mute. Future `AudioPlayer` / `AudioRef` shares the same modules (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
 
 ---
 

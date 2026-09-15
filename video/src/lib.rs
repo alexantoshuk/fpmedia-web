@@ -36,6 +36,10 @@ pub struct VideoRef {
     pub error: RwSignal<Option<String>>,
     pub pipeline: RwSignal<Option<PipelineStats>>,
     pub status: RwSignal<String>,
+    /// True when the open file has a decodable audio track.
+    pub has_audio: RwSignal<bool>,
+    pub volume: RwSignal<f64>,
+    pub muted: RwSignal<bool>,
     /// Non-`Send` callbacks registered by the mounted [`Video`] component.
     pub(crate) ops: StoredValue<Option<VideoOps>, LocalStorage>,
 }
@@ -58,6 +62,8 @@ pub(crate) struct VideoOps {
     pub next_frame: Rc<dyn Fn()>,
     pub previous_frame: Rc<dyn Fn()>,
     pub set_loop: Rc<dyn Fn(bool)>,
+    pub set_volume: Rc<dyn Fn(f64)>,
+    pub set_muted: Rc<dyn Fn(bool)>,
 }
 
 impl VideoRef {
@@ -77,6 +83,9 @@ impl VideoRef {
             error: RwSignal::new(None),
             pipeline: RwSignal::new(None),
             status: RwSignal::new(String::from("Load an MP4 to begin.")),
+            has_audio: RwSignal::new(false),
+            volume: RwSignal::new(0.7),
+            muted: RwSignal::new(false),
             ops: StoredValue::new_local(None),
         }
     }
@@ -265,6 +274,29 @@ impl VideoRef {
             .flatten()
         {
             set_loop(on);
+        }
+    }
+
+    pub fn set_volume(&self, volume: f64) {
+        let v = volume.clamp(0.0, 1.0);
+        self.volume.set(v);
+        if let Some(set_volume) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.set_volume)))
+            .flatten()
+        {
+            set_volume(v);
+        }
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        self.muted.set(muted);
+        if let Some(set_muted) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.set_muted)))
+            .flatten()
+        {
+            set_muted(muted);
         }
     }
 }

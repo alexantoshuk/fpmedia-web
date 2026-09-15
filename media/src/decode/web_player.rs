@@ -9,16 +9,17 @@ use std::rc::Rc;
 
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-use crate::decode::owned_video_frame::OwnedVideoFrame;
-
+use crate::MediaClock;
+use crate::decode::audio_output::AudioOutput;
 use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, draw_frame_with_context};
 use crate::decode::frame_cache::{
     DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, DenseFrameCache, ThumbCache,
 };
+use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
-use crate::types::{FrameId, GopProfile, VideoMetadata};
+use crate::types::{AudioMetadata, FrameId, GopProfile, VideoMetadata};
 
 /// Decoded frames held ready for canvas present (mediabunny-style prefetch).
 pub const PRESENTATION_QUEUE_CAP: usize = 16;
@@ -83,6 +84,11 @@ struct Shared {
     scrub_dir: Cell<i8>,
     /// Last aim seen while updating `scrub_dir` (drag samples only).
     prev_scrub_aim: Cell<Option<FrameId>>,
+    /// Optional AAC (etc.) sink — drives [`MediaClock`] when present.
+    audio: RefCell<Option<Rc<AudioOutput>>>,
+    clock: RefCell<MediaClock>,
+    /// Wall `performance.now()/1000` origin while playing without audio.
+    wall_origin: Cell<Option<f64>>,
 }
 
 /// Why a frame is marked ready on the demo timeline strip.
@@ -171,8 +177,9 @@ impl WebPlayer {
         bytes: Vec<u8>,
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
-        let player = Player::open_mp4_bytes(bytes)?;
-        Self::from_player(player, canvas).await
+        let opened = crate::open_mp4_media_bytes(bytes)?;
+        let video = opened.video.ok_or(MediaError::NoVideoTrack)?;
+        Self::from_tracks(video, opened.audio, canvas).await
     }
 
     /// Progressive open from a ranged [`crate::MediaSource`] (Blob / memory).
@@ -180,14 +187,15 @@ impl WebPlayer {
         source: std::sync::Arc<dyn crate::MediaSource>,
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
-        let track = crate::open_mp4_source_cached(
+        let opened = crate::open_mp4_media_source_cached(
             source,
             crate::OpenMp4Options {
                 verify_avc_sync: true,
             },
         )
         .await?;
-        Self::from_track(track, canvas).await
+        let video = opened.video.ok_or(MediaError::NoVideoTrack)?;
+        Self::from_tracks(video, opened.audio, canvas).await
     }
 
     /// Progressive open from a browser [`web_sys::Blob`] / `File`.
@@ -205,16 +213,53 @@ impl WebPlayer {
         track: crate::demux::Mp4VideoTrack,
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
-        let player = Player::from_track(track)?;
-        Self::from_player(player, canvas).await
+        Self::from_tracks(track, None, canvas).await
     }
 
-    async fn from_player(player: Player, canvas: HtmlCanvasElement) -> Result<Self, MediaError> {
+    /// Video track plus optional audio (same container).
+    pub async fn from_tracks(
+        track: crate::demux::Mp4VideoTrack,
+        audio: Option<crate::demux::Mp4AudioTrack>,
+        canvas: HtmlCanvasElement,
+    ) -> Result<Self, MediaError> {
+        let player = Player::from_track(track)?;
+        Self::from_player(player, audio, canvas).await
+    }
+
+    async fn from_player(
+        player: Player,
+        audio_track: Option<crate::demux::Mp4AudioTrack>,
+        canvas: HtmlCanvasElement,
+    ) -> Result<Self, MediaError> {
         let meta = player.metadata().clone();
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
         let ctx = canvas_2d(&canvas)?;
         let max_frames = DenseFrameCache::budget_for_clip(&meta);
+        let audio = match audio_track {
+            Some(t) => match AudioOutput::create(t).await {
+                Ok(a) => {
+                    web_sys::console::log_1(
+                        &format!(
+                            "webmedia: audio track ready ({}, {} Hz, {} ch)",
+                            a.metadata().codec.codec_string.as_deref().unwrap_or("?"),
+                            a.metadata().sample_rate,
+                            a.metadata().number_of_channels
+                        )
+                        .into(),
+                    );
+                    Some(Rc::new(a))
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(&format!("webmedia: audio disabled ({e})").into());
+                    None
+                }
+            },
+            None => {
+                web_sys::console::log_1(&"webmedia: no audio track".into());
+                None
+            }
+        };
         let shared = Rc::new(Shared {
             player: RefCell::new(player),
             presentation: RefCell::new(VecDeque::new()),
@@ -238,6 +283,9 @@ impl WebPlayer {
             fill_stalled_aim: Cell::new(None),
             scrub_dir: Cell::new(0),
             prev_scrub_aim: Cell::new(None),
+            audio: RefCell::new(audio),
+            clock: RefCell::new(MediaClock::new()),
+            wall_origin: Cell::new(None),
         });
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
@@ -249,6 +297,101 @@ impl WebPlayer {
 
     pub fn metadata(&self) -> VideoMetadata {
         self.shared.player.borrow().metadata().clone()
+    }
+
+    pub fn audio_metadata(&self) -> Option<AudioMetadata> {
+        self.shared
+            .audio
+            .borrow()
+            .as_ref()
+            .map(|a| a.metadata().clone())
+    }
+
+    pub fn has_audio(&self) -> bool {
+        self.shared.audio.borrow().is_some()
+    }
+
+    pub fn set_volume(&self, volume: f64) {
+        if let Some(a) = self.shared.audio.borrow().as_ref() {
+            a.set_volume(volume);
+        }
+    }
+
+    pub fn volume(&self) -> f64 {
+        self.shared
+            .audio
+            .borrow()
+            .as_ref()
+            .map(|a| a.volume())
+            .unwrap_or(0.0)
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        if let Some(a) = self.shared.audio.borrow().as_ref() {
+            a.set_muted(muted);
+        }
+    }
+
+    pub fn muted(&self) -> bool {
+        self.shared
+            .audio
+            .borrow()
+            .as_ref()
+            .map(|a| a.muted())
+            .unwrap_or(true)
+    }
+
+    /// Media timeline seconds (audio `AudioContext` when present, else wall).
+    pub fn media_time(&self) -> f64 {
+        if let Some(a) = self.shared.audio.borrow().as_ref() {
+            if a.is_playing() {
+                return a.media_time();
+            }
+        }
+        let elapsed = self
+            .shared
+            .wall_origin
+            .get()
+            .and_then(|origin| performance_now_ms().map(|now| now / 1000.0 - origin));
+        self.shared.clock.borrow().media_time(elapsed)
+    }
+
+    /// Resume `AudioContext` while the Play click gesture is still warm.
+    /// Call **before** long `prime_playback` awaits.
+    pub async fn resume_audio_context(&self) -> Result<(), MediaError> {
+        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        if let Some(a) = audio {
+            a.resume_context().await?;
+        }
+        Ok(())
+    }
+
+    /// Arm the media clock after `prime_playback` (host play path).
+    ///
+    /// With an audio track this starts the decode/schedule pump (mediabunny
+    /// `play` + `runAudioIterator`). Without audio, uses wall `performance`.
+    pub async fn start_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
+        self.shared.clock.borrow_mut().start(media_time_secs);
+        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        if let Some(a) = audio {
+            self.shared.wall_origin.set(None);
+            a.start_spawned(media_time_secs).await?;
+        } else if let Some(now) = performance_now_ms() {
+            self.shared.wall_origin.set(Some(now / 1000.0));
+        }
+        Ok(())
+    }
+
+    /// Snap the media clock (pause / seek). Stops audio nodes if attached.
+    pub fn stop_media_clock(&self) -> f64 {
+        let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
+            a.stop()
+        } else {
+            self.media_time()
+        };
+        self.shared.wall_origin.set(None);
+        self.shared.clock.borrow_mut().snap(t);
+        t
     }
 
     pub fn state(&self) -> PlayerState {
@@ -285,6 +428,7 @@ impl WebPlayer {
         let was_playing = self.shared.player.borrow().state().playing;
         if was_playing {
             self.cancel_ops_and_scrub_fill();
+            let _ = self.stop_media_clock();
         }
         self.shared.player.borrow_mut().pause();
         self.clear_loop_prime();
@@ -353,7 +497,10 @@ impl WebPlayer {
         let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
         self.shared.scrub_epoch.set(scrub);
         self.shared.scrub_pending.set(rearm);
-        if let Some(mut d) = self.shared.scrub_decoder.borrow_mut().take() {
+        // Take under a short borrow — do not `if let … borrow_mut().take()` (RefMut
+        // spans the body; `reset` / Drop re-entry panics).
+        let taken = self.shared.scrub_decoder.borrow_mut().take();
+        if let Some(mut d) = taken {
             let _ = d.reset();
         }
     }
@@ -1264,13 +1411,19 @@ impl WebPlayer {
     }
 
     fn clear_dense_cache(&self) {
-        self.shared.dense_cache.borrow_mut().clear();
-        self.shared.thumb_cache.borrow_mut().clear();
-        // Abort in-flight gap fill.
+        // Abort in-flight gap fill first so the fill task drops the decoder slot.
         let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
         self.shared.scrub_epoch.set(scrub);
-        if let Some(mut d) = self.shared.scrub_decoder.borrow_mut().take() {
+        let taken = self.shared.scrub_decoder.borrow_mut().take();
+        if let Some(mut d) = taken {
             let _ = d.reset();
+        }
+        // Frame/`VideoFrame` drop can re-enter; skip nested clear rather than panic.
+        if let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() {
+            cache.clear();
+        }
+        if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut() {
+            thumbs.clear();
         }
     }
 
@@ -1323,7 +1476,8 @@ impl WebPlayer {
     }
 
     fn clear_loop_prime(&self) {
-        if let Some(buf) = self.shared.loop_prime.borrow_mut().take() {
+        let taken = self.shared.loop_prime.borrow_mut().take();
+        if let Some(buf) = taken {
             for q in buf {
                 drop(q.video);
             }
@@ -1335,10 +1489,13 @@ impl WebPlayer {
         // still holds in-flight chunks desyncs PTS remap → rare
         // `flush/idle without pts=… (held=0)` on rapid PREV.
         self.shared.decoder_reset.set(true);
-        if let Some(decoder) = self.decoder.borrow_mut().as_mut() {
+        // Take out so `reset()` does not hold the RefCell (JS re-entry / Drop).
+        let taken = self.decoder.borrow_mut().take();
+        if let Some(mut decoder) = taken {
             if decoder.reset().is_ok() {
                 self.shared.decoder_reset.set(false);
             }
+            *self.decoder.borrow_mut() = Some(decoder);
         }
     }
 
@@ -1423,7 +1580,8 @@ impl WebPlayer {
             if !self.is_current(epoch) {
                 return Err(MediaError::Cancelled);
             }
-            if let Some(decoder) = self.decoder.borrow_mut().take() {
+            let taken = self.decoder.borrow_mut().take();
+            if let Some(decoder) = taken {
                 return Ok(decoder);
             }
             sleep_ms(0).await;
@@ -1841,6 +1999,7 @@ async fn fill_one_gap(
     let meta = shared.player.borrow().metadata().clone();
     let track = shared.player.borrow().track_rc();
 
+    // Short borrow for take — never hold scrub_decoder RefMut across await/reset.
     let mut decoder = match shared.scrub_decoder.borrow_mut().take() {
         Some(d) => d,
         None => WebCodecsDecoder::create(&meta).await?,
@@ -1871,7 +2030,11 @@ async fn fill_one_gap(
     match decoded {
         Ok(()) => {
             *shared.scrub_decoder.borrow_mut() = Some(decoder);
-            let got_target = shared.dense_cache.borrow().has_frame(target, key);
+            let got_target = shared
+                .dense_cache
+                .try_borrow()
+                .map(|c| c.has_frame(target, key))
+                .unwrap_or(false);
             Ok(newly.get() > 0 || got_target)
         }
         Err(MediaError::Cancelled) => {

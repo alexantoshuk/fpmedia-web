@@ -170,3 +170,39 @@ fn progressive_source_open_matches_bytes_offsets() {
     let sample_prog = block_on(progressive.encoded_sample(12)).expect("prog sample");
     assert_eq!(sample_full.data, sample_prog.data);
 }
+
+#[test]
+fn demux_with_audio_track() {
+    use webmedia::{AudioCodec, open_mp4_media_bytes};
+
+    let path = fixture("with_audio.mp4");
+    if !path.exists() {
+        eprintln!("skip: missing fixture {}", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read fixture");
+    let opened = open_mp4_media_bytes(bytes).expect("open media");
+    let video = opened.video.expect("video");
+    let audio = opened.audio.expect("audio");
+
+    assert!(video.frame_count() > 0);
+    assert_eq!(audio.metadata().codec.codec, AudioCodec::Aac);
+    assert!(
+        audio
+            .metadata()
+            .codec
+            .codec_string
+            .as_deref()
+            .is_some_and(|s| s.starts_with("mp4a.40.")),
+        "codec_string={:?}",
+        audio.metadata().codec.codec_string
+    );
+    assert_eq!(audio.metadata().codec.description.len(), 2);
+    assert!(audio.metadata().sample_rate >= 8000);
+    assert!(audio.metadata().number_of_channels >= 1);
+    assert!(audio.sample_count() > 0);
+
+    let sample = block_on(audio.encoded_sample(0)).expect("audio sample 0");
+    assert!(!sample.data.is_empty());
+    assert!(sample.composition_timestamp().seconds >= 0.0);
+}

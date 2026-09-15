@@ -14,6 +14,8 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Scrub exact slow / tab freeze on settle | [Scrub cache](#scrub-cache), backpressure | seekToKey→seekTo + salvage; probes below |
 | Dense empty while scrubbing | Predictive densify, Scrub cache | finish in-flight GOP; don’t cancel mid-GOP on aim move |
 | Play freezes / low fps | Behind-deadline skip, Freeze cause | wall-clock prefetch spare time; skip-behind |
+| A/V desync / silent play with audio track | [Audio + media clock](#audio--media-clock) | video must use `WebPlayer::media_time()` (AudioContext), not host wall-clock |
+| `RefCell already borrowed` (decode / scrub / open / Drop) | [RefCell / WASM re-entry](#refcell--wasm-re-entry) | `if let`/`while let` + `borrow_mut`; JS re-entry |
 | QT / large `.mov` open freeze | Demux `re_mp4` sample ranges | size-0 `skip_box`; no `CachedSource` during verify |
 | UI stuck / controls dead (not decode) | `skills/leptos.md` triage | OpQueue, `playing`, `spawn_local` |
 
@@ -24,21 +26,41 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 ```
 media/src/                 ← package name: webmedia
 ├── lib.rs
-├── types.rs               ← FrameId, Timestamp, EncodedSample, VideoMetadata
+├── types.rs               ← FrameId, Timestamp, EncodedSample, Video/AudioMetadata
+├── clock.rs               ← MediaClock (wall until audio; then AudioContext driver)
 ├── bitstream/             ← AVC packet type (IDR + Recovery Point SEI)
 ├── source/                ← MediaSource + MemorySource + CachedSource (+ wasm BlobSource)
 ├── frame_index.rs         ← presentation order; sync_by_decode O(log k) + by_decode GOP map
 ├── demux/
 │   ├── boxes.rs           ← top-level ISOBMFF scan + ftyp/moov stub
-│   └── mp4.rs             ← re_mp4 → Mp4VideoTrack; open_mp4_bytes / open_mp4_source
+│   └── mp4.rs             ← re_mp4 → Mp4VideoTrack + Mp4AudioTrack; OpenedMp4
 ├── player.rs              ← play/pause/seek_frame/step → DecodeWindow
 └── decode/                ← cfg(wasm32 + webcodecs)
     ├── webcodecs.rs       ← VideoDecoder cascade + decode_gop
+    ├── audio_output.rs    ← AudioDecoder → AudioBuffer → AudioContext schedule
+    ├── owned_audio_data.rs← OwnedAudioData (close on drop)
     ├── frame_cache.rs     ← DenseFrameCache + FrameRunIndex + ThumbCache shell
     ├── owned_video_frame.rs ← OwnedVideoFrame (close on drop)
     ├── canvas.rs          ← draw VideoFrame
-    └── web_player.rs      ← WebPlayer façade (open_blob)
+    └── web_player.rs      ← WebPlayer façade (open_blob; optional audio)
 ```
+
+### Audio + media clock
+
+Layering (do **not** put decode/`AudioContext` in `VideoRef`):
+
+```text
+  Mp4AudioTrack (demux) ──► AudioOutput (decode + schedule)
+                                    │
+  MediaClock ◄── AudioContext.currentTime (when track exists)
+       │         else wall Performance clock
+       ▼
+  WebPlayer::media_time() ──► video present_due / host rAF
+```
+
+Future pure-audio: same demux + `AudioOutput` + `MediaClock` behind `AudioPlayer` / `AudioRef` (no canvas).
+
+**mediabunny:** `examples/media-player/media-player.ts` (`getPlaybackTime` = audio context clock even without audio track when context exists; `runAudioIterator` schedules `BufferSource` at `audioContextStartTime + timestamp - playbackTimeAtStart`); `AudioBufferSink` / `AudioSampleSink` (`src/media-sink.ts`). Do not open `AudioContext` only as a disposable clock (`resume` + early `close` → `Closed before resume completed`).
 
 ## Frame vs time
 
@@ -168,15 +190,42 @@ Demo strip: dense exact (green) + presentation ahead (blue). While paused, `vide
 - **`decodeQueueSize` backpressure** — mediabunny: `sampleQueue.length + decodeQueueSize > computeMaxQueueSize(…)` then `await queueDequeue` resolved on **new** sample output **or consumer take**. Port: `held.len() + decodeQueueSize` vs `compute_max_queue_size(held.len())`; wait on `ondequeue` / new `output` / `setTimeout(0)`. Wake dequeue waiters on output, `take_held`, prune-close, and GOP consumer drain (mediabunny `onQueueDequeue`). **Never** treat already-buffered `frames` as progress (instant re-wake while queue stuck → false `backpressure timed out` after ~2–3s). Do not count `held` toward the encoded cap beyond empty/non-empty max pick — held is B-frame reorder. **While cascading key→N (PREV / deep seek), close PTS `< target` in the same remap pass** (`collect_and_prune_held`) — do not park-then-prune a turn later (that left `decodeQ≈10` with `held=0`). While prune leaves `held` empty, cap encoded depth at `SEEK_PRUNE_MAX_QUEUE` (4) so settle paces on close. **After settle / sync exact:** `invalidate_decoder` before densify so leftover main `decodeQ` does not compete with the scrub decoder. **`decode_gop` (scrub fill):** drain remapped frames to `on_frame` / dense `insert_frame` as they emerge (`flush_held_into_gop` / `feed_sample_gop`) so `held` stays empty and the ready strip paints per tick — do **not** batch `insert_gop` after the whole GOP. Yield with **`setTimeout(0)`** (macrotask) between feeds so paused rAF can refresh the strip; microtask-only `Promise.resolve` chains starve painting. **Drag densify → settle:** `await_decode_capacity` / `feed_sample(_gop)` must honor cancel every spin (hold / scrub_epoch); do **not** run the 2s `flush_with_timeout` after cancel — abort hard-reset instead. Fill task on `Cancelled` + `hold_densify_for_exact` must **return immediately** (no sleep/continue) so `scrub_busy` clears and exact owns GPU.
 - **Closure reentrancy** — never `resolve.call0()` synchronously inside `output`/`dequeue` callbacks. Defer with **`spawn_local`**. On teardown: bump generation, `set_ondequeue(None)`, `close()`, **forget** old Closures.
 - **Op cancel** — `WebPlayer::op_epoch` / `cancel_ops` / `begin_op`. After every decode await, if epoch changed → drop owned frame (`OwnedVideoFrame` closes on drop) + `MediaError::Cancelled` (UI treats as soft). `pause()` bumps epoch. Prefetch returns `Ok(false)` on cancel. Host: open/play epoch guards so late async cannot install session/player. **Rapid PREV:** soft `invalidate` (clear timestamps/held only) while chunks are still in the browser decoder desyncs PTS remap → rare `flush/idle without pts=… (held=0)`. Fix: `decoder.reset()`/`recreate` on invalidate; `decoder_reset` flag when the slot is empty; cancel checks inside the decode pump; one reset+retry on flush/idle miss.
-- **Media clock** — wall-clock until audio track exists. Do not open `AudioContext` only as a clock: `resume()` + early `close()` throws `Closed before resume completed`.
+- **Media clock** — wall-clock until audio track exists; then video slaves to `AudioContext` (`MediaClock` + `AudioOutput`). Hosts must call `WebPlayer::media_time()` — do not keep a parallel wall timeline in `VideoRef` once audio is attached. Do not open `AudioContext` only as a clock: `resume()` + early `close()` throws `Closed before resume completed`. **Resume on Play before `prime_playback`** — a long prime after the click leaves the context `suspended` (silent). (`mediabunny: examples/media-player getPlaybackTime` / `runAudioIterator`)
+- **Audio schedule** — decode → `AudioData` → `f32-planar` → `AudioBuffer` → `AudioBufferSourceNode` at rounded sample-boundary start time; stop all nodes + bump epoch on pause/seek. Ahead throttle ~1s like mediabunny. AAC: rebuild ASC from esds profile/freq/chan when `re_mp4` drops raw description (`mp4a.40.{profile}`). Skip schedule when grain offset ≥ buffer duration. Borrow rules: [RefCell / WASM re-entry](#refcell--wasm-re-entry).
 - **Yields** — prefer `Promise.resolve` microtask for decode pump turns. `setTimeout`+`Closure::once` hung open on `Decoding frame 0` after key sample read. Still use Closure for `requestAnimationFrame` (do not pass bare Promise `resolve` into rAF). Never await WebCodecs `output` alone — poll + feed-ahead / flush-with-timeout.
 
 ### Resource wrappers
 
 Types that must `close()` (or equivalent) or whose browser `clone` is fallible get an RAII owner + borrow trait (`OwnedVideoFrame` / `AsVideoFrame`). Move into cache/queue; borrow to draw. `try_clone` → `Result` (never `Option`). Same pattern later for `AudioData` / similar — not for DOM/`Blob`/`window`.
 
-- **`park_presentation_into_cache`:** drain the presentation `RefCell` first, then `insert_frame` one-by-one — holding `presentation` across insert/evict can re-enter on `VideoFrame` drop (JS → Rust) and panic `RefCell already borrowed`. Same idea: do not hold `presentation` across the dense-cache borrow in `pipeline_stats`.
-- **Dense cache re-entry:** `insert_frame` eviction drops many `VideoFrame`s (esp. aim→0); Chromium may flush microtasks mid-drop and re-enter scrub/`touch_playhead` — use `try_borrow_mut` / `try_borrow` on `dense_cache` and skip nested work instead of panicking. Coalesce deferred scrub samples (left-edge clamp spams frame 0).
+### RefCell / WASM re-entry
+
+Browser work (`VideoFrame`/`AudioData` drop, decoder `output`/`reset`/`close`, tachys events) can **re-enter Rust on the same stack**. A live `RefMut` across that work → `RefCell already borrowed`.
+
+**Forbidden:** `while let` / `if let` scrutinee that calls `borrow_mut()` (or `borrow()`) when the body does more than bind — the guard spans the body.
+
+```rust
+// BAD — RefMut held through reset / schedule / await
+while let Some(x) = cell.borrow_mut().pop_front() { /* … */ }
+if let Some(mut d) = cell.borrow_mut().take() { d.reset(); }
+```
+
+**Required:**
+
+```rust
+let taken = cell.borrow_mut().take();
+if let Some(mut d) = taken { let _ = d.reset(); }
+
+loop {
+    let next = cell.borrow_mut().pop_front();
+    let Some(item) = next else { break };
+    // cell free
+}
+```
+
+Also: no `Ref`/`RefMut` across `.await`; clone `Rc`, await, put back. Teardown / nested paths: `try_borrow_mut` and skip (or drop) instead of panicking — `park_presentation_into_cache`, dense `insert_frame` eviction, `clear_dense_cache`, audio `stop`.
+
+Host UI: `skills/leptos.md` (no borrow across await; defer scrub off `on:pointer*`).
 
 ### Scrub cache
 

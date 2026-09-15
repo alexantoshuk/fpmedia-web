@@ -4,7 +4,7 @@
 
 ## In progress
 
-(none)
+- **Audio playback polish** — seek/scrub mute+flush already via `stop_media_clock` on pause; verify A/V sync on real files; volume UI in demo; optional `with_audio.mp4` in `public/`.
 
 ---
 
@@ -13,7 +13,7 @@
 ### Media engine
 
 - Filmstrip thumbs via `ThumbCache` (caller-sized bitmaps; mediabunny `samplesAtTimestamps` later).
-- Audio track + shared A/V media clock (video slaves to audio once audio exists; wall-clock play works until then).
+- Pure audio path later: `AudioPlayer` / `AudioRef` (no canvas) reusing demux + decode + clock.
 - HEVC bitstream key verify (AVC IDR + Recovery Point SEI done).
 - Progressive-open follow-ups: coalesce adjacent sample ranges; optional background / lazy AVC sync-verify for huge files if open latency matters.
 - Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.

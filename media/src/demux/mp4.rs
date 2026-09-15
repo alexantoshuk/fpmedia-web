@@ -6,6 +6,8 @@ use std::sync::Arc;
 use re_mp4::{Mp4, TrackKind};
 
 use crate::bitstream::{PacketType, avc_nal_length_size, determine_avc_packet_type};
+use crate::demux::Mp4AudioTrack;
+use crate::demux::audio::build_audio_track;
 use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
 use crate::source::{CachedSource, MediaSource, MemorySource};
@@ -166,21 +168,47 @@ impl Mp4VideoTrack {
     }
 }
 
+/// Demuxed video + optional audio from one MP4 parse.
+#[derive(Clone, Debug)]
+pub struct OpenedMp4 {
+    pub video: Option<Mp4VideoTrack>,
+    pub audio: Option<Mp4AudioTrack>,
+}
+
+impl OpenedMp4 {
+    pub fn require_video(self) -> Result<Mp4VideoTrack, MediaError> {
+        self.video.ok_or(MediaError::NoVideoTrack)
+    }
+
+    pub fn require_av(self) -> Result<Self, MediaError> {
+        if self.video.is_none() && self.audio.is_none() {
+            return Err(MediaError::NoAvTrack);
+        }
+        Ok(self)
+    }
+}
+
 /// Open an MP4 from an owned byte buffer (fixtures / sync API).
 ///
 /// Still parses the full buffer with `re_mp4` (fast for small fixtures) and keeps
 /// samples behind [`MemorySource`]. Prefer [`open_mp4_source`] for large Blobs.
 pub fn open_mp4_bytes(bytes: Vec<u8>) -> Result<Mp4VideoTrack, MediaError> {
+    open_mp4_media_bytes(bytes)?.require_video()
+}
+
+/// Like [`open_mp4_bytes`], but keeps an optional audio track.
+pub fn open_mp4_media_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
     let bytes: Arc<[u8]> = Arc::from(bytes);
     let mp4 = Mp4::read_bytes(bytes.as_ref())?;
     let source: Arc<dyn MediaSource> = Arc::new(MemorySource::new(Arc::clone(&bytes)));
-    build_track(
+    build_opened(
         mp4,
         source,
         OpenMp4Options {
             verify_avc_sync: true,
         },
-    )
+    )?
+    .require_av()
 }
 
 /// Progressive open: ranged `ftyp`+`moov` → sparse `re_mp4` parse → index (file offsets).
@@ -200,7 +228,7 @@ pub async fn open_mp4_source_with_progress(
     let mp4 =
         crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
     // Verify separately (async) — `block_on` cannot drive BlobSource reads.
-    let mut track = build_track(
+    let mut opened = build_opened(
         mp4,
         source,
         OpenMp4Options {
@@ -208,9 +236,11 @@ pub async fn open_mp4_source_with_progress(
         },
     )?;
     if options.verify_avc_sync {
-        verify_track_avc_sync_async(&mut track, &mut progress).await?;
+        if let Some(track) = opened.video.as_mut() {
+            verify_track_avc_sync_async(track, &mut progress).await?;
+        }
     }
-    Ok(track)
+    opened.require_video()
 }
 
 /// Open via progressive parse, then attach an 8 MiB [`CachedSource`] for sample I/O.
@@ -234,7 +264,7 @@ pub async fn open_mp4_source_cached_with_progress(
         crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
     // Verify on the raw source first — CachedSource's 8 MiB prefetch on every
     // scattered keyframe would thrash WASM (BBB ≈600 syncs → multi‑GB of Blob reads).
-    let mut track = build_track(
+    let mut opened = build_opened(
         mp4,
         Arc::clone(&source),
         OpenMp4Options {
@@ -242,10 +272,56 @@ pub async fn open_mp4_source_cached_with_progress(
         },
     )?;
     if options.verify_avc_sync {
-        verify_track_avc_sync_async(&mut track, &mut progress).await?;
+        if let Some(track) = opened.video.as_mut() {
+            verify_track_avc_sync_async(track, &mut progress).await?;
+        }
     }
-    track.source = Arc::new(CachedSource::new(source));
-    Ok(track)
+    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::new(source));
+    if let Some(v) = opened.video.as_mut() {
+        v.source = Arc::clone(&cached);
+    }
+    if let Some(a) = opened.audio.as_mut() {
+        a.set_source(Arc::clone(&cached));
+    }
+    opened.require_video()
+}
+
+/// Progressive cached open returning video + optional audio.
+pub async fn open_mp4_media_source_cached(
+    source: Arc<dyn MediaSource>,
+    options: OpenMp4Options,
+) -> Result<OpenedMp4, MediaError> {
+    open_mp4_media_source_cached_with_progress(source, options, |_| {}).await
+}
+
+/// Like [`open_mp4_media_source_cached`], with UI progress callbacks.
+pub async fn open_mp4_media_source_cached_with_progress(
+    source: Arc<dyn MediaSource>,
+    options: OpenMp4Options,
+    mut progress: impl FnMut(&str),
+) -> Result<OpenedMp4, MediaError> {
+    let mp4 =
+        crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
+    let mut opened = build_opened(
+        mp4,
+        Arc::clone(&source),
+        OpenMp4Options {
+            verify_avc_sync: false,
+        },
+    )?;
+    if options.verify_avc_sync {
+        if let Some(track) = opened.video.as_mut() {
+            verify_track_avc_sync_async(track, &mut progress).await?;
+        }
+    }
+    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::new(source));
+    if let Some(v) = opened.video.as_mut() {
+        v.source = Arc::clone(&cached);
+    }
+    if let Some(a) = opened.audio.as_mut() {
+        a.set_source(cached);
+    }
+    opened.require_av()
 }
 
 /// Open an MP4 from a filesystem path (native / tests).
@@ -255,24 +331,36 @@ pub fn open_mp4_path(path: impl AsRef<std::path::Path>) -> Result<Mp4VideoTrack,
     open_mp4_bytes(bytes)
 }
 
-fn build_track(
+fn build_opened(
     mp4: Mp4,
     source: Arc<dyn MediaSource>,
     options: OpenMp4Options,
-) -> Result<Mp4VideoTrack, MediaError> {
-    let track = mp4
+) -> Result<OpenedMp4, MediaError> {
+    let video = build_video_track(&mp4, Arc::clone(&source), options)?;
+    let audio = build_audio_track(&mp4, source)?;
+    Ok(OpenedMp4 { video, audio })
+}
+
+fn build_video_track(
+    mp4: &Mp4,
+    source: Arc<dyn MediaSource>,
+    options: OpenMp4Options,
+) -> Result<Option<Mp4VideoTrack>, MediaError> {
+    let Some(track) = mp4
         .tracks()
         .values()
         .find(|t| t.kind == Some(TrackKind::Video))
-        .ok_or(MediaError::NoVideoTrack)?;
+    else {
+        return Ok(None);
+    };
 
     if track.samples.is_empty() {
-        return Err(MediaError::EmptyTrack);
+        return Ok(None);
     }
 
-    let codec_string = track.codec_string(&mp4);
+    let codec_string = track.codec_string(mp4);
     let description = track
-        .raw_codec_config(&mp4)
+        .raw_codec_config(mp4)
         .ok_or(MediaError::UnsupportedCodec)?;
 
     let codec = classify_codec(codec_string.as_deref());
@@ -325,11 +413,11 @@ fn build_track(
         gop_profile,
     };
 
-    Ok(Mp4VideoTrack {
+    Ok(Some(Mp4VideoTrack {
         source,
         metadata,
         index,
-    })
+    }))
 }
 
 fn classify_codec(codec_string: Option<&str>) -> VideoCodec {

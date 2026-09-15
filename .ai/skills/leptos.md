@@ -14,7 +14,7 @@
 | EOF with `loop` off — host never notified | `VideoRef::ended`; clear on open/close/seek/play |
 | Decoder/cache leak after leaving a clip | `VideoRef::close()` (also on unmount) |
 | URL open hangs / CORS / full download | `VideoRef::open_url` = fetch→Blob→`open_blob` (not Range) |
-| `RefCell already borrowed` in Loop / sync_ui / tachys | No borrow across `.await`; defer scrub work off `on:pointer*` |
+| `RefCell already borrowed` in Loop / sync_ui / tachys | No borrow across `.await`; defer scrub work off `on:pointer*`; engine: `skills/media.md` RefCell / WASM re-entry |
 | Start stutter / low measured fps after Play | Set wall-clock origins **after** `prime_playback` |
 | Scrub pointer jank / re-entrant park | Don’t `pause` every `pointermove` while paused; async scrub |
 | Ops dropped / ignored while “busy” | OpQueue serialize — not `if busy { return }` |
@@ -64,7 +64,7 @@ Only classes that appear **literally** in `.rs` / `.css` are emitted. Do not bui
 2. Do not call `pause` / `is_playing` on the Rust player while another async method is awaiting (aliasing). Mirror play state in a Leptos signal for the UI. **Never hold `RefCell`/`borrow_mut` across `.await`** — clone the `Rc<WebPlayer>`, await, then put it back (otherwise Loop/sync_ui panics: `RefCell already borrowed`).
 3. Canvas: pass `HtmlCanvasElement` from `NodeRef` after mount; open player once canvas exists.
 4. Status **fps** is measured display rate (presents / wall time over ~1s), not container/`1/duration` — that stays near source fps even when decode lags. Source fps / codec / size come from `WebPlayer::metadata()` (shown in demo `.wm-meta`).
-5. **Playback pacing** — **wall-clock** media timeline + `requestAnimationFrame` presents (`present_due`). Not per-frame `setTimeout`; not `AudioContext` as a clock (resume/close races). **Set clock origins after `prime_playback`** — priming 1080p/B-frame clips can take hundreds of ms; starting the clock beforehand makes `present_due` skip immediately (start stutter, low measured fps).
+5. **Playback pacing** — prefer [`WebPlayer::media_time`] (engine `MediaClock`: wall until audio, then `AudioContext`). Not per-frame `setTimeout`; do not open `AudioContext` in the host. **`resume_audio_context` on Play before `prime_playback`** — priming can take hundreds of ms; late `resume()` leaves the context suspended → silent audio. Then arm the clock after prime.
 6. **Prefetch + skip** — prime on Play; background pump fills until `PRESENTATION_QUEUE_CAP` (not a lower threshold). Overdue frames are skipped in `present_due`. Prefetch is a separate `spawn_local` (not queued) and checks `async_id` + `playing`.
 7. **Play UI cost** — throttle `sync_ui` / fps (~100 ms). No `busy` toggles during the rAF loop.
 8. **Viewport layout** — `.wm-viewport` is a fixed media stage; canvas uses contain (`max-width/max-height: 100%` + source `aspect-ratio`). Call `WebPlayer::relayout()` after open; `use_resize_observer` on the viewport NodeRef also calls `relayout` (try_borrow — skip if player RefCell is busy).

@@ -33,7 +33,11 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - Exact frame N uses keyframe cascade (nearest sync → decode → target), including B-frame / decode-order windows.
 - Player layout/state must allow **1–2 media sources** later (compare) — never hard-assume a single source forever.
 - `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, source metadata via `VideoRef::metadata` / `WebPlayer::metadata()`.
-- Continuous play uses a **wall-clock** media timeline until an audio track exists; then video slaves to audio.
+- Continuous play uses a **wall-clock** media timeline until an audio track exists; then video slaves to audio
+  (`AudioContext` clock — mediabunny media-player pattern).
+- Audio decode/output lives in the **`webmedia` engine**, not inside `VideoRef`. UI hosts stay thin
+  (volume/mute/transport). A future pure-**`<Audio>` / `AudioRef`** reuses the same demux + decode + clock
+  without a video track or canvas.
 
 ---
 

@@ -335,3 +335,75 @@ impl EncodedSample {
         Timestamp::from_ticks(self.composition_timestamp_ticks, self.timescale)
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioCodec {
+    /// AAC-LC / HE-AAC in MP4 (`mp4a`).
+    Aac,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioCodecConfig {
+    pub codec: AudioCodec,
+    /// WebCodecs `AudioDecoderConfig.codec` (e.g. `mp4a.40.2`).
+    pub codec_string: Option<String>,
+    /// AudioSpecificConfig bytes for `description` (rebuilt from esds when needed).
+    pub description: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioMetadata {
+    pub sample_rate: u32,
+    pub number_of_channels: u32,
+    pub timescale: u64,
+    pub duration_ticks: u64,
+    pub sample_count: u64,
+    pub codec: AudioCodecConfig,
+}
+
+impl AudioMetadata {
+    pub fn duration(&self) -> Timestamp {
+        Timestamp::from_ticks(self.duration_ticks as i64, self.timescale)
+    }
+}
+
+/// One encoded audio access unit (WebCodecs `EncodedAudioChunk`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodedAudioSample {
+    pub sample: u64,
+    pub is_keyframe: bool,
+    pub decode_timestamp_ticks: i64,
+    pub composition_timestamp_ticks: i64,
+    pub duration_ticks: u64,
+    pub timescale: u64,
+    pub data: Vec<u8>,
+}
+
+impl EncodedAudioSample {
+    pub fn composition_timestamp(&self) -> Timestamp {
+        Timestamp::from_ticks(self.composition_timestamp_ticks, self.timescale)
+    }
+}
+
+/// Rebuild a 2-byte AAC AudioSpecificConfig from esds fields.
+///
+/// `re_mp4` parses ASC into profile/freq/chan but does not expose raw bytes for
+/// `mp4a` (`raw_codec_config` is `None`). WebCodecs still wants `description`.
+pub fn build_aac_asc(profile: u8, freq_index: u8, chan_conf: u8) -> Vec<u8> {
+    let profile = profile.max(1);
+    let byte0 = (profile << 3) | ((freq_index >> 1) & 0x07);
+    let byte1 = ((freq_index & 1) << 7) | ((chan_conf & 0x0F) << 3);
+    vec![byte0, byte1]
+}
+
+#[cfg(test)]
+mod aac_asc_tests {
+    use super::build_aac_asc;
+
+    #[test]
+    fn aac_lc_48k_stereo_asc() {
+        // profile=2 (AAC-LC), freq_index=3 (48k), chan=2
+        assert_eq!(build_aac_asc(2, 3, 2), vec![0x11, 0x90]);
+    }
+}

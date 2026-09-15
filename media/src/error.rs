@@ -10,11 +10,17 @@ pub enum MediaError {
     #[error("no video track in container")]
     NoVideoTrack,
 
-    #[error("unsupported or missing video codec config")]
+    #[error("no audio or video track in container")]
+    NoAvTrack,
+
+    #[error("unsupported or missing codec config")]
     UnsupportedCodec,
 
     #[error("frame {0} out of range (count={1})")]
     FrameOutOfRange(u64, u64),
+
+    #[error("audio sample {0} out of range (count={1})")]
+    AudioSampleOutOfRange(u64, u64),
 
     #[error("empty video track")]
     EmptyTrack,

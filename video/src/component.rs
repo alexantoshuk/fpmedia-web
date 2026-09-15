@@ -12,7 +12,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlCanvasElement, Response};
 use webmedia::{
-    BlobSource, DuePresent, OpenMp4Options, WebPlayer, open_mp4_source_cached_with_progress,
+    BlobSource, DuePresent, OpenMp4Options, WebPlayer, open_mp4_media_source_cached_with_progress,
 };
 
 use crate::op_queue::{HostOp, OpQueue};
@@ -92,6 +92,9 @@ pub fn Video(
     let error = video.error;
     let pipeline = video.pipeline;
     let status = video.status;
+    let has_audio = video.has_audio;
+    let volume = video.volume;
+    let muted = video.muted;
 
     // mediabunny CallSerializer + asyncId — one queue for open / seek / play-prime.
     let queue = OpQueue::new(busy);
@@ -188,15 +191,13 @@ pub fn Video(
                 }
 
                 let t = {
-                    let borrow = session.borrow();
-                    let Some(s) = borrow.as_ref() else {
-                        return;
-                    };
-                    // Wall-clock media timeline until an audio track drives the clock.
-                    if let Some(now) = performance_now_ms() {
-                        now / 1000.0 - s.wall_origin + s.media_origin
-                    } else {
-                        s.media_origin
+                    let borrow = player.borrow();
+                    match borrow.as_ref() {
+                        Some(p) => p.media_time(),
+                        None => {
+                            stop_playback();
+                            return;
+                        }
                     }
                 };
 
@@ -237,6 +238,7 @@ pub fn Video(
                                             performance_now_ms().map(|n| n / 1000.0).unwrap_or(0.0);
                                         s.restarting = false;
                                     }
+                                    let _ = p.start_media_clock(0.0).await;
                                 }
                                 Err(e) if e.is_cancelled() => {
                                     if let Some(s) = session.borrow_mut().as_mut() {
@@ -341,7 +343,7 @@ pub fn Video(
                         HostOp::Open { blob, canvas } => {
                             run_open(
                                 &queue, id, blob, canvas, &player, &sync_ui, &fps_meter, ready,
-                                metadata, error, status, fps, pipeline,
+                                metadata, error, status, fps, pipeline, has_audio, volume, muted,
                             )
                             .await;
                         }
@@ -651,6 +653,28 @@ pub fn Video(
         }) as Rc<dyn Fn(bool)>
     };
 
+    let set_volume_fn = {
+        let player = Rc::clone(&player);
+        Rc::new(move |v: f64| {
+            if let Ok(borrow) = player.try_borrow() {
+                if let Some(p) = borrow.as_ref() {
+                    p.set_volume(v);
+                }
+            }
+        }) as Rc<dyn Fn(f64)>
+    };
+
+    let set_muted_fn = {
+        let player = Rc::clone(&player);
+        Rc::new(move |m: bool| {
+            if let Ok(borrow) = player.try_borrow() {
+                if let Some(p) = borrow.as_ref() {
+                    p.set_muted(m);
+                }
+            }
+        }) as Rc<dyn Fn(bool)>
+    };
+
     let close_fn = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
@@ -675,6 +699,7 @@ pub fn Video(
             fps.set(None);
             metadata.set(None);
             pipeline.set(None);
+            has_audio.set(false);
             error.set(None);
             status.set("Closed.".into());
         }) as Rc<dyn Fn()>
@@ -692,6 +717,8 @@ pub fn Video(
         next_frame: next_fn,
         previous_frame: prev_fn,
         set_loop: set_loop_fn,
+        set_volume: set_volume_fn,
+        set_muted: set_muted_fn,
     }));
 
     on_cleanup({
@@ -811,6 +838,9 @@ async fn run_open(
     status: RwSignal<String>,
     fps: RwSignal<Option<f64>>,
     pipeline: RwSignal<Option<webmedia::PipelineStats>>,
+    has_audio: RwSignal<bool>,
+    volume: RwSignal<f64>,
+    muted: RwSignal<bool>,
 ) {
     web_sys::console::log_1(&"webmedia: open task running".into());
     if !queue.is_current(id) {
@@ -832,6 +862,11 @@ async fn run_open(
         Ok(p) => {
             let p = Rc::new(p);
             metadata.set(Some(p.metadata()));
+            has_audio.set(p.has_audio());
+            if p.has_audio() {
+                p.set_volume(volume.get_untracked());
+                p.set_muted(muted.get_untracked());
+            }
             let _ = p.relayout();
             *player.borrow_mut() = Some(Rc::clone(&p));
             status.set("Decoding frame 0…".into());
@@ -953,6 +988,14 @@ async fn run_play_prime(
 
     let still_mine = || queue.is_current(id) && playing.get_untracked();
 
+    // Unlock AudioContext during the Play click turn — before long prime awaits.
+    if let Err(e) = p.resume_audio_context().await {
+        web_sys::console::warn_1(&format!("webmedia: audio resume: {e}").into());
+    }
+    if !still_mine() {
+        return;
+    }
+
     web_sys::console::log_1(&"webmedia: play prime start".into());
     let prime_ok = match p.prime_playback().await {
         Ok(()) => true,
@@ -975,12 +1018,21 @@ async fn run_play_prime(
     }
 
     let media_origin = p.state().timestamp.seconds;
-    let wall_origin = performance_now_ms().map(|t| t / 1000.0).unwrap_or(0.0);
+    if let Err(e) = p.start_media_clock(media_origin).await {
+        if still_mine() {
+            error.set(Some(e.to_string()));
+            stop_playback();
+        }
+        return;
+    }
+    if !still_mine() {
+        return;
+    }
     let last_ui_ms = performance_now_ms().unwrap_or(0.0);
 
     *session.borrow_mut() = Some(PlaySession {
         media_origin,
-        wall_origin,
+        wall_origin: performance_now_ms().map(|t| t / 1000.0).unwrap_or(0.0),
         last_ui_ms,
         restarting: false,
     });
@@ -1092,7 +1144,7 @@ async fn open_blob_staged(
     on_status("Starting demux…");
     let source = std::sync::Arc::new(BlobSource::new(blob));
     web_sys::console::log_1(&"webmedia: demux start".into());
-    let track = open_mp4_source_cached_with_progress(
+    let opened = open_mp4_media_source_cached_with_progress(
         source,
         OpenMp4Options {
             // Mediabunny verifyKeyPackets — demote lying stss (non-IDR / inexact
@@ -1103,12 +1155,22 @@ async fn open_blob_staged(
     )
     .await
     .map_err(|e| e.to_string())?;
-    web_sys::console::log_1(&format!("webmedia: demux ok, {} frames", track.frame_count()).into());
+    let video = opened.video.ok_or_else(|| "no video track".to_string())?;
+    let audio = opened.audio;
+    web_sys::console::log_1(
+        &format!(
+            "webmedia: demux ok, {} frames, audio={}",
+            video.frame_count(),
+            audio.is_some()
+        )
+        .into(),
+    );
     on_status(&format!(
-        "moov ok — {} frames, creating decoder…",
-        track.frame_count()
+        "moov ok — {} frames{}, creating decoder…",
+        video.frame_count(),
+        if audio.is_some() { " + audio" } else { "" }
     ));
-    WebPlayer::from_track(track, canvas)
+    WebPlayer::from_tracks(video, audio, canvas)
         .await
         .map_err(|e| e.to_string())
 }
