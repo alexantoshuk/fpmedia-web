@@ -4,7 +4,7 @@ Respect `.agentignore`.
 
 ## Portable docs (no editor lock-in)
 
-Canonical project knowledge lives only in **`AGENTS.md`** + **`.ai/`**. It must stay usable by any editor or agent (Cursor, Zed, Claude Code, etc.).
+Canonical project knowledge lives in **`AGENTS.md`** + **`.ai/`** (+ **`CONTRIBUTING.md`** for commit / PR gates). It must stay usable by any editor or agent (Cursor, Zed, Claude Code, etc.).
 
 - **Do not** create or use a `.cursor/` tree (no `.cursor/rules`, no editor-only RULE.md mirrors).
 - **Do not** duplicate `.ai/` content into editor-specific rule folders, Copilot instructions, or parallel “agent notes” files.
@@ -75,6 +75,7 @@ Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, 
 | Engine traps / decode / scrub | `skills/media.md` | UI host points here for decode hangs |
 | Leptos / `<Video>` host traps | `skills/leptos.md` | Engine skill points here for UI stuck |
 | Dev commands | `AGENTS.md` | Do not duplicate in skills |
+| Commits / PR size / pre-push gates | `CONTRIBUTING.md` | One-line pointer only — do not restate |
 | Editor-specific agent rules | **nowhere** | Forbidden — use `.ai/` + this file |
 
 If two files disagree, fix the canonical home and delete the duplicate prose.
@@ -93,59 +94,28 @@ If two files disagree, fix the canonical home and delete the duplicate prose.
 - Finished work: delete the bullet (durable knowledge → skill/product/architecture).
 - Keep Next up actionable and short; no session narrative.
 
-**Before commit:** include `.ai/` when architecture, player UI, or a skill-worthy fix changed. **No** long duplicate prose across product, architecture, and skills.
+**Before commit / PR push:** follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** (format, Clippy, checks, tests, size). Include `.ai/` when architecture, player UI, or a skill-worthy fix changed.
 
 **End of session:** refresh `state.md` (drop finished items); append/trim skill triage + gotchas if any.
 
 ## Commits
 
-Semantic format:
-
-```
-<type>(<scope>): <short description>
-```
-
-| Type | When to use |
-| ---------- | ---------------------------- |
-| `feat` | new feature/behaviour |
-| `fix` | bug fix |
-| `refactor` | code change, not feat/fix |
-| `style` | formatting, CSS, no logic |
-| `test` | tests |
-| `chore` | tooling, deps, config, build |
-| `docs` | docs only |
-
-- Subject ≤ 72 chars, imperative (`add`, `fix`, `remove` — not `added`).
-- Scope optional: `feat(player)`, `fix(webcodecs)`.
-- Closes a state.md task → blank line then `closes: <task name>`.
-- **Always run `cargo fmt` (rustfmt) before committing** Rust changes; include any fmt-only touch-ups in the same commit.
-- Never commit code failing `cargo check` or `cargo leptos build`.
-
-### Commit / PR size
-
-Soft guidance. Split when a change exceeds “too much” unless it is inherently
-atomic (rename/format, lockfile, generated assets).
-
-| Metric | Optimal | Acceptable | Too much |
-| ------ | ------- | ---------- | -------- |
-| Lines changed | 50–200 | 200–400 | > 400 |
-| Files changed | 1–10 | 10–20 | > 20 |
-| Commits per PR | 1–5 | 5–10 | > 10 |
-
-- One commit = one logical theme.
-- Prefer several small commits over one large mixed commit.
-- Related `.ai/` updates may ship with the code they describe.
-- Line counts exclude lockfiles and generated files when judging size.
+Follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for commit message format, size limits, and mandatory pre-commit / pre-push gates (including `cargo clippy … -- -D warnings`). Do not restate those rules here.
 
 ## Dev commands
 
+Cheat sheet (mandatory gates + flags → [`CONTRIBUTING.md`](CONTRIBUTING.md)):
+
 ```sh
-cargo fmt                                               # rustfmt — required before every commit
+cargo fmt                                               # rustfmt
 cargo leptos watch                                      # dev → http://127.0.0.1:3000
 cargo leptos build                                      # build → target/site/
 cargo check -p server                                   # server (ssr) type check
 cargo check --target wasm32-unknown-unknown -p frontend # CSR WASM client + UI
 cargo check --target wasm32-unknown-unknown -p video    # Video element crate
+cargo clippy -p webmedia --all-targets --all-features -- -D warnings
+cargo clippy --target wasm32-unknown-unknown -p frontend -- -D warnings
+cargo clippy --target wasm32-unknown-unknown -p video -- -D warnings
 cargo test -p webmedia                                  # media engine unit/integration tests
 npm install && npm run e2e:install                      # once: Playwright (+ Chromium if CDN ok)
 npm run e2e                                             # browser smoke (app up on :3000; Win uses system Chrome)

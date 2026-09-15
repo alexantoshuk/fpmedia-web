@@ -12,4 +12,4 @@ npm install          # once
 npm run e2e          # Playwright smoke (app must be up; Windows uses system Chrome)
 ```
 
-See `AGENTS.md` and `.ai/` for the agent workflow.
+See `AGENTS.md` and `.ai/` for the agent workflow; `CONTRIBUTING.md` for commit / PR gates.
