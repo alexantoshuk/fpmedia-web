@@ -1011,7 +1011,16 @@ impl WebCodecsDecoder {
                 }
             }
             // mediabunny: sampleQueue.length + decodeQueueSize > maxQueueSize
-            if decoded + self.decode_queue_size() <= max {
+            let q = self.decode_queue_size();
+            if decoded + q <= max {
+                break;
+            }
+            // Waiting cannot shrink `held` when the browser queue is already
+            // empty — only take/prune/gop-drain can, and those already ran above.
+            // mediabunny unblocks via a *concurrent* consumer `shift()`; our pump
+            // is single-threaded, so spinning here deadlocks as
+            // `backpressure timed out (q=0, held=N)` on B-frame streams (BBB).
+            if q == 0 {
                 break;
             }
             spins += 1;

@@ -387,6 +387,9 @@ impl DenseFrameCache {
     /// (same rule as [`Self::gaps_saturated`]). Without this, playhead at 0
     /// expands ahead by evicting `end` then inserting `end+1`, leaving a lone
     /// keyframe outside a holed window.
+    ///
+    /// Does **not** replace an existing resident — densify/park keep the first
+    /// copy. Play/seek presents that must match canvas use [`Self::put_presented_frame`].
     pub fn insert_frame(&mut self, frame: FrameId, video: OwnedVideoFrame) -> bool {
         if self.frames.contains_key(&frame) {
             return false;
@@ -408,6 +411,43 @@ impl DenseFrameCache {
         self.runs.note_insert(&self.frames, self.playhead, frame);
         self.refresh_no_gaps();
         true
+    }
+
+    /// Store a frame that was just drawn to canvas so Pause→Seek/Prev/Next can
+    /// re-present the same bitmap.
+    ///
+    /// Unlike [`Self::insert_frame`]: **replaces** an existing resident, and will
+    /// not refuse for budget (evicts farther frames, then stale playhead if needed).
+    pub fn put_presented_frame(&mut self, frame: FrameId, video: OwnedVideoFrame) {
+        if self.frames.contains_key(&frame) {
+            if let Some(old) = self.frames.insert(frame, video) {
+                drop(old);
+            }
+            return;
+        }
+        while self.frame_count() >= self.max_frames {
+            if self.evict_one(Some(frame)) {
+                continue;
+            }
+            // Presented frame must win: aim may still be the previous playhead.
+            if self.playhead != frame && self.remove_frame(self.playhead) {
+                continue;
+            }
+            let other = self.frames.keys().copied().find(|&f| f != frame);
+            if let Some(victim) = other {
+                self.remove_frame(victim);
+                continue;
+            }
+            break;
+        }
+        if self.frame_count() >= self.max_frames {
+            // Capacity 0 / single-slot pathological — drop rather than leak.
+            drop(video);
+            return;
+        }
+        self.frames.insert(frame, video);
+        self.runs.note_insert(&self.frames, self.playhead, frame);
+        self.refresh_no_gaps();
     }
 
     /// Batch insert (tests / non-streaming callers). Scrub fill streams via

@@ -1670,11 +1670,14 @@ impl WebPlayer {
     ///
     /// Inserts by **move** after draw — do not rely on `VideoFrame.clone()`
     /// (mediabunny keeps samples; browser clone often fails → empty cache).
+    /// Uses [`DenseFrameCache::put_presented_frame`] so canvas and cache stay
+    /// identical (replace-on-hit / force-evict) — otherwise Pause→Seek same
+    /// frame or Prev→Next redraws a stale or missing cache entry.
     fn present_and_cache(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
         let result =
             draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
         if let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() {
-            cache.insert_frame(frame, video);
+            cache.put_presented_frame(frame, video);
         } else {
             drop(video);
         }

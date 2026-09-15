@@ -137,6 +137,7 @@ pub fn Video(
             // Abort in-flight play-prime / prefetch; drop queued PlayPrime.
             queue.bump();
             queue.clear_pending_play();
+            let leaving_play = playing.get_untracked();
             playing.set(false);
             let _ = session.borrow_mut().take();
             let p = player.borrow().as_ref().cloned();
@@ -146,6 +147,12 @@ pub fn Video(
             fps_meter.borrow_mut().reset();
             fps.set(None);
             sync_ui();
+            // `sync_ui` skips playhead while paused (preserve scrub targets). Leaving
+            // play must still align playhead to the committed canvas/engine frame —
+            // otherwise Pause→Seek/Prev/Next use a ~100ms-stale playhead.
+            if leaving_play {
+                playhead.set(frame.get_untracked());
+            }
             playing.set(false);
             // `busy` stays with the op queue (open/seek may still be draining).
         }) as Rc<dyn Fn()>

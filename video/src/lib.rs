@@ -151,17 +151,21 @@ impl VideoRef {
     }
 
     pub fn pause(&self) {
-        // Promote potential playhead to the transport target, then pause.
+        // Play→Pause: stop first, then snap playhead to committed engine/canvas.
+        // During play, UI playhead lags ~100ms behind (`sync_ui` throttle); seeking
+        // to that stale playhead jumped the picture on Pause→Seek / Prev→Next.
+        // Already paused with playhead ≠ frame (scrub target): promote via seek.
+        let was_playing = self.playing.get_untracked();
         let ph = self.playhead.get_untracked();
-        if self.frame.get_untracked() != ph {
-            self.seek_frame(ph);
-        }
         if let Some(pause) = self
             .ops
             .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.pause)))
             .flatten()
         {
             pause();
+        }
+        if !was_playing && self.frame.get_untracked() != ph {
+            self.seek_frame(ph);
         }
     }
 
