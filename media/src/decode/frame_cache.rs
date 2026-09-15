@@ -2,9 +2,10 @@
 //!
 //! - [`DenseFrameCache`] — residency, aim, budget / eviction.
 //! - [`FrameRunIndex`] — contiguous-run geometry + nearest-gap search.
-//! Eviction drops the frame farthest from the playhead. Thumbs stay separate.
+//!   Eviction drops the frame farthest from the playhead. Thumbs stay separate.
 
 use std::cell::Cell;
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
 use std::ops::Bound;
@@ -45,10 +46,10 @@ impl FrameRunIndex {
 
     /// Aim moved: keep the cache only if the new aim stays inside the run.
     pub fn on_aim_change(&self, new_aim: FrameId) {
-        if let Some((lo, hi)) = self.playhead_run.get() {
-            if new_aim < lo || new_aim > hi {
-                self.playhead_run.set(None);
-            }
+        if let Some((lo, hi)) = self.playhead_run.get()
+            && (new_aim < lo || new_aim > hi)
+        {
+            self.playhead_run.set(None);
         }
     }
 
@@ -113,6 +114,7 @@ impl FrameRunIndex {
     ///
     /// `dir > 0` / `dir < 0` → predictive densify (prefer ahead / behind).
     /// `dir == 0` → min distance, tie → behind.
+    #[allow(clippy::too_many_arguments)] // gap search needs aim/playhead/extent/dir knobs
     pub fn search<V>(
         &self,
         frames: &BTreeMap<FrameId, V>,
@@ -162,12 +164,12 @@ impl FrameRunIndex {
         aim: FrameId,
         playhead: FrameId,
     ) -> (FrameId, FrameId) {
-        if playhead == aim {
-            if let Some((lo, hi)) = self.playhead_run.get() {
-                if playhead >= lo && playhead <= hi {
-                    return (lo, hi);
-                }
-            }
+        if playhead == aim
+            && let Some((lo, hi)) = self.playhead_run.get()
+            && playhead >= lo
+            && playhead <= hi
+        {
+            return (lo, hi);
         }
         let (lo, hi) = walk_run_bounds(frames, playhead);
         if playhead == aim {
@@ -419,10 +421,8 @@ impl DenseFrameCache {
     /// Unlike [`Self::insert_frame`]: **replaces** an existing resident, and will
     /// not refuse for budget (evicts farther frames, then stale playhead if needed).
     pub fn put_presented_frame(&mut self, frame: FrameId, video: OwnedVideoFrame) {
-        if self.frames.contains_key(&frame) {
-            if let Some(old) = self.frames.insert(frame, video) {
-                drop(old);
-            }
+        if let Entry::Occupied(mut e) = self.frames.entry(frame) {
+            drop(e.insert(video));
             return;
         }
         while self.frame_count() >= self.max_frames {

@@ -101,8 +101,7 @@ pub fn scrub_cache_frame_budget(
     let budget_bytes = (max_mib as u64).saturating_mul(1024 * 1024);
     let by_bytes = (budget_bytes / per) as usize;
     by_bytes
-        .max(MIN_SCRUB_CACHE_FRAMES)
-        .min(MAX_SCRUB_CACHE_FRAMES)
+        .clamp(MIN_SCRUB_CACHE_FRAMES, MAX_SCRUB_CACHE_FRAMES)
         .min(n)
         .max(1)
 }

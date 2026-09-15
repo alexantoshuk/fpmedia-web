@@ -4,7 +4,7 @@
 
 ## In progress
 
-_(none — pick from Next up)_
+- (none — decode sink dual-async landed; gate with `npm run e2e:baseline:compare`)
 
 ---
 
@@ -12,6 +12,7 @@ _(none — pick from Next up)_
 
 ### Media engine
 
+- Investigate Wing It `slow-large` settle miss (eng stuck behind playhead; densify vs exact) — still fails pre- and post-sink.
 - Filmstrip thumbs via `ThumbCache` (caller-sized bitmaps; mediabunny `samplesAtTimestamps` later).
 - Spot-check A/V sync on long clips (Wing It / real AAC) after seek+play — mute/flush + volume UI shipped; clock already audio-driven when a track exists.
 - Pure audio path later: `AudioPlayer` / `AudioRef` (no canvas) reusing demux + decode + clock.
@@ -23,7 +24,7 @@ _(none — pick from Next up)_
 
 ### Later
 
-- Packet / sample / canvas sink layering (mediabunny mental model).
+- Broader packet / sample / canvas sink layering (decode pump+consumer shipped).
 - Dual-source compare layout hooks.
 - Publish `webmedia` / `video` crates for reuse by host apps.
 - Production player chrome (demo controls in `app` stay for now).

@@ -202,7 +202,7 @@ impl FrameIndex {
         if window.first().copied() != Some(key) {
             return None;
         }
-        if !window.iter().any(|&f| f == frame) {
+        if !window.contains(&frame) {
             return None;
         }
 
@@ -285,7 +285,7 @@ fn median_u32(values: &[u32]) -> u32 {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         // Lower median for even counts — stable, no float.
         sorted[mid - 1]
     } else {

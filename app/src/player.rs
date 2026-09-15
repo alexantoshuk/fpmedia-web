@@ -25,10 +25,7 @@ fn defer_scrub(video: VideoRef, frame: u32, settle: bool) {
     }
     SCHEDULED.with(|s| s.set(true));
     spawn_local(async move {
-        loop {
-            let Some((frame, settle)) = PENDING.with(|p| p.take()) else {
-                break;
-            };
+        while let Some((frame, settle)) = PENDING.with(|p| p.take()) {
             if settle {
                 video.scrub_settle(frame);
             } else {
@@ -337,7 +334,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         None => String::new(),
                     };
                     format!(
-                        "held {} · decodeQ {} · skipped {}{}",
+                        "held {} · decodeQ {} · skipped {}{}{}",
                         if s.held_len == usize::MAX {
                             "busy".into()
                         } else {
@@ -349,7 +346,8 @@ pub fn DemoPlayer() -> impl IntoView {
                             s.decode_queue_size.to_string()
                         },
                         s.frames_skipped,
-                        format!("{range}{lag}")
+                        range,
+                        lag,
                     )
                 }}
             </p>
@@ -399,7 +397,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     let _ = html.set_pointer_capture(ev.pointer_id());
                 }
                 scrubbing.set(true);
-                if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
+                if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
                     defer_scrub(video, frame, false);
                 }
             }
@@ -410,7 +408,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 let Ok(el) = ev.current_target().unwrap().dyn_into::<Element>() else {
                     return;
                 };
-                if let Some(frame) = frame_from_client_x(&el, ev.client_x() as f64) {
+                if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
                     defer_scrub(video, frame, false);
                 }
             }

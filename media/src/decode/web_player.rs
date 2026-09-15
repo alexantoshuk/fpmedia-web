@@ -343,10 +343,10 @@ impl WebPlayer {
 
     /// Media timeline seconds (audio `AudioContext` when present, else wall).
     pub fn media_time(&self) -> f64 {
-        if let Some(a) = self.shared.audio.borrow().as_ref() {
-            if a.is_playing() {
-                return a.media_time();
-            }
+        if let Some(a) = self.shared.audio.borrow().as_ref()
+            && a.is_playing()
+        {
+            return a.media_time();
         }
         let elapsed = self
             .shared
@@ -668,10 +668,10 @@ impl WebPlayer {
             }
             // Long-GOP exact: keep best cached/key on canvas while cascading;
             // salvage pruned frames into dense (no blit) so densify is cheap after.
-            if let Some(preview) = self.scrub_preview_frame(frame) {
-                if preview != frame {
-                    let _ = self.present_from_cache(preview);
-                }
+            if let Some(preview) = self.scrub_preview_frame(frame)
+                && preview != frame
+            {
+                let _ = self.present_from_cache(preview);
             }
             self.goto_frame_with_interim(frame, epoch).await
         }
@@ -737,16 +737,16 @@ impl WebPlayer {
             }
 
             // Canvas-only key/neighbor preview — do not commit_frame (UI playhead stays).
-            if let Some(preview) = self.scrub_preview_frame(frame) {
-                if preview != frame {
-                    self.draw_frame_unccommitted(preview, epoch).await?;
-                    if !self.is_current(epoch) {
-                        return Err(MediaError::Cancelled);
-                    }
-                    if self.present_from_cache(frame)? {
-                        self.shared.player.borrow_mut().commit_frame(frame)?;
-                        return Ok(());
-                    }
+            if let Some(preview) = self.scrub_preview_frame(frame)
+                && preview != frame
+            {
+                self.draw_frame_unccommitted(preview, epoch).await?;
+                if !self.is_current(epoch) {
+                    return Err(MediaError::Cancelled);
+                }
+                if self.present_from_cache(frame)? {
+                    self.shared.player.borrow_mut().commit_frame(frame)?;
+                    return Ok(());
                 }
             }
 
@@ -755,28 +755,28 @@ impl WebPlayer {
             // to exact — do **not** `fill_gop` restart (re-feed of the same key after
             // `goto_frame(key)` wedged at decodeQ≈11 on Wing It long GOPs).
             if settle {
-                if let Some(key) = self.key_for(frame) {
-                    if key != frame {
-                        if self.present_from_cache(key)? {
-                            self.shared.player.borrow_mut().commit_frame(key)?;
-                        } else {
-                            self.goto_frame(key, epoch).await?;
-                        }
-                        if !self.is_current(epoch) {
-                            return Err(MediaError::Cancelled);
-                        }
-                        if self.present_from_cache(frame)? {
-                            self.shared.player.borrow_mut().commit_frame(frame)?;
-                            return Ok(());
-                        }
-                        // Keep best cached/key on canvas while warm seekTo runs —
-                        // seekToKey paint must not leave a worse key stuck for
-                        // seconds on long GOPs when a closer neighbor is cached.
-                        if let Some(preview) = self.scrub_preview_frame(frame) {
-                            if preview != frame {
-                                let _ = self.present_from_cache(preview);
-                            }
-                        }
+                if let Some(key) = self.key_for(frame)
+                    && key != frame
+                {
+                    if self.present_from_cache(key)? {
+                        self.shared.player.borrow_mut().commit_frame(key)?;
+                    } else {
+                        self.goto_frame(key, epoch).await?;
+                    }
+                    if !self.is_current(epoch) {
+                        return Err(MediaError::Cancelled);
+                    }
+                    if self.present_from_cache(frame)? {
+                        self.shared.player.borrow_mut().commit_frame(frame)?;
+                        return Ok(());
+                    }
+                    // Keep best cached/key on canvas while warm seekTo runs —
+                    // seekToKey paint must not leave a worse key stuck for
+                    // seconds on long GOPs when a closer neighbor is cached.
+                    if let Some(preview) = self.scrub_preview_frame(frame)
+                        && preview != frame
+                    {
+                        let _ = self.present_from_cache(preview);
                     }
                 }
                 self.goto_frame_with_interim(frame, epoch).await
@@ -831,7 +831,7 @@ impl WebPlayer {
             return Ok(());
         }
         let track = self.shared.player.borrow().track_rc();
-        let video_frame = self.decode_frame(track.as_ref(), frame, epoch).await?;
+        let video_frame = self.decode_frame(&track, frame, epoch).await?;
         if !self.is_current(epoch) {
             drop(video_frame);
             return Err(MediaError::Cancelled);
@@ -1210,7 +1210,7 @@ impl WebPlayer {
                 }
                 return Ok(());
             }
-            match self.decode_frame(track.as_ref(), frame, epoch).await {
+            match self.decode_frame(&track, frame, epoch).await {
                 Ok(video) => buf.push_back(QueuedFrame { frame, video }),
                 Err(MediaError::Cancelled) => {
                     for q in buf.drain(..) {
@@ -1293,7 +1293,7 @@ impl WebPlayer {
             }
             (player.track_rc(), next)
         };
-        let video = match self.decode_frame(track.as_ref(), next, epoch).await {
+        let video = match self.decode_frame(&track, next, epoch).await {
             Ok(v) => v,
             Err(MediaError::Cancelled) => return Ok(false),
             Err(e) => return Err(e),
@@ -1312,10 +1312,10 @@ impl WebPlayer {
     pub async fn prefetch_until(&self, deadline_ms: f64) -> Result<usize, MediaError> {
         let mut decoded = 0usize;
         while self.is_playing() && self.presentation_len() < PRESENTATION_QUEUE_CAP {
-            if let Some(now) = performance_now_ms() {
-                if now + PREFETCH_DEADLINE_SLACK_MS >= deadline_ms {
-                    break;
-                }
+            if let Some(now) = performance_now_ms()
+                && now + PREFETCH_DEADLINE_SLACK_MS >= deadline_ms
+            {
+                break;
             }
             if !self.prefetch_one().await? {
                 break;
@@ -1345,12 +1345,11 @@ impl WebPlayer {
             }
         }
 
-        if behind_seconds >= BIG_LAG_SECONDS {
-            if let Some(key) = index.nearest_keyframe(target) {
-                if key >= next {
-                    return Ok(key);
-                }
-            }
+        if behind_seconds >= BIG_LAG_SECONDS
+            && let Some(key) = index.nearest_keyframe(target)
+            && key >= next
+        {
+            return Ok(key);
         }
         Ok(target)
     }
@@ -1542,7 +1541,7 @@ impl WebPlayer {
     /// cancelled prefetch must put the decoder back before prime can run).
     async fn decode_frame(
         &self,
-        track: &crate::demux::Mp4VideoTrack,
+        track: &Rc<crate::demux::Mp4VideoTrack>,
         frame: FrameId,
         epoch: u64,
     ) -> Result<OwnedVideoFrame, MediaError> {
@@ -1551,7 +1550,7 @@ impl WebPlayer {
 
     async fn decode_frame_with_interim_cb(
         &self,
-        track: &crate::demux::Mp4VideoTrack,
+        track: &Rc<crate::demux::Mp4VideoTrack>,
         frame: FrameId,
         epoch: u64,
         on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)>,
@@ -1560,9 +1559,11 @@ impl WebPlayer {
             .await
     }
 
+    /// The decoder's packet pump outlives this call's borrow, so the track must
+    /// be shared (`Rc`) rather than borrowed.
     async fn decode_frame_inner(
         &self,
-        track: &crate::demux::Mp4VideoTrack,
+        track: &Rc<crate::demux::Mp4VideoTrack>,
         frame: FrameId,
         epoch: u64,
         on_interim: Option<Box<dyn FnMut(FrameId, OwnedVideoFrame)>>,
@@ -1585,6 +1586,7 @@ impl WebPlayer {
             // One hard reset + retry — orphan PTS after a raced invalidate.
             Err(MediaError::WebCodecs(msg))
                 if msg.contains("flush/idle without pts=")
+                    || msg.contains("decode pump stalled")
                     || msg.contains("exhausted GOP before pts=") =>
             {
                 if cancelled() {
@@ -1629,7 +1631,7 @@ impl WebPlayer {
 
     async fn goto_frame(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
         let track = self.shared.player.borrow().track_rc();
-        let video_frame = self.decode_frame(track.as_ref(), frame, epoch).await?;
+        let video_frame = self.decode_frame(&track, frame, epoch).await?;
         if !self.is_current(epoch) {
             drop(video_frame);
             return Err(MediaError::Cancelled);
@@ -1655,7 +1657,7 @@ impl WebPlayer {
                 }
             });
         let video_frame = self
-            .decode_frame_with_interim_cb(track.as_ref(), frame, epoch, on_interim)
+            .decode_frame_with_interim_cb(&track, frame, epoch, on_interim)
             .await?;
         if !self.is_current(epoch) {
             drop(video_frame);
@@ -1796,16 +1798,16 @@ impl WebPlayer {
             };
             cache.insert_frame(id, video);
             drop(cache);
-            if present_when == Some(id) && !presented.get() {
-                if present_cached_frame(&shared, id) {
-                    if shared.player.borrow_mut().commit_frame(id).is_ok() {
-                        presented.set(true);
-                    }
-                }
+            if present_when == Some(id)
+                && !presented.get()
+                && present_cached_frame(&shared, id)
+                && shared.player.borrow_mut().commit_frame(id).is_ok()
+            {
+                presented.set(true);
             }
         };
         let decoded = decoder
-            .decode_gop(track.as_ref(), key, &cancelled, &mut on_frame)
+            .decode_gop(&track, key, &cancelled, &mut on_frame)
             .await;
         match decoded {
             Ok(()) => {
@@ -2039,7 +2041,8 @@ async fn fill_one_gap(
     let track = shared.player.borrow().track_rc();
 
     // Short borrow for take — never hold scrub_decoder RefMut across await/reset.
-    let mut decoder = match shared.scrub_decoder.borrow_mut().take() {
+    let taken = shared.scrub_decoder.borrow_mut().take();
+    let mut decoder = match taken {
         Some(d) => d,
         None => WebCodecsDecoder::create(&meta).await?,
     };
@@ -2064,7 +2067,7 @@ async fn fill_one_gap(
         }
     };
     let decoded = decoder
-        .decode_gop(track.as_ref(), key, &cancelled, &mut on_frame)
+        .decode_gop(&track, key, &cancelled, &mut on_frame)
         .await;
     match decoded {
         Ok(()) => {

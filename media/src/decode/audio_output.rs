@@ -15,7 +15,8 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     AudioBuffer, AudioBufferSourceNode, AudioContext, AudioContextOptions, AudioContextState,
     AudioData, AudioDataCopyToOptions, AudioDecoder, AudioDecoderConfig, AudioDecoderInit,
-    AudioSampleFormat, EncodedAudioChunk, EncodedAudioChunkInit, EncodedAudioChunkType, GainNode,
+    AudioSampleFormat, AudioScheduledSourceNode, EncodedAudioChunk, EncodedAudioChunkInit,
+    EncodedAudioChunkType, GainNode,
 };
 
 use crate::decode::owned_audio_data::OwnedAudioData;
@@ -158,10 +159,10 @@ impl AudioOutput {
 
     /// Current media time from the audio context clock while playing.
     pub fn media_time(&self) -> f64 {
-        if self.playing.get() {
-            if let Some(origin) = self.ctx_origin.get() {
-                return self.context.current_time() - origin + self.media_at_start.get();
-            }
+        if self.playing.get()
+            && let Some(origin) = self.ctx_origin.get()
+        {
+            return self.context.current_time() - origin + self.media_at_start.get();
         }
         self.media_at_start.get()
     }
@@ -200,10 +201,10 @@ impl AudioOutput {
         if let Ok(mut q) = self.pending.try_borrow_mut() {
             q.clear();
         }
-        if let Ok(dec) = self.decoder.try_borrow() {
-            if let Some(dec) = dec.as_ref() {
-                let _ = dec.reset();
-            }
+        if let Ok(dec) = self.decoder.try_borrow()
+            && let Some(dec) = dec.as_ref()
+        {
+            let _ = dec.reset();
         }
         t
     }
@@ -214,7 +215,8 @@ impl AudioOutput {
         };
         for node in queued.drain(..) {
             // Ignore errors — node may already have ended.
-            let _ = node.stop_with_when(0.0);
+            let scheduled = node.unchecked_ref::<AudioScheduledSourceNode>();
+            let _ = scheduled.stop();
         }
     }
 
@@ -230,14 +232,16 @@ impl AudioOutput {
         self.playing.set(true);
         *self.error.borrow_mut() = None;
 
-        if let Some(dec) = self.decoder.borrow().as_ref() {
+        let taken = self.decoder.borrow_mut().take();
+        if let Some(dec) = taken {
             let meta = self.track.metadata();
             let codec = meta
                 .codec
                 .codec_string
                 .as_deref()
                 .ok_or(MediaError::UnsupportedCodec)?;
-            configure_decoder(dec, meta, codec).await?;
+            configure_decoder(&dec, meta, codec).await?;
+            *self.decoder.borrow_mut() = Some(dec);
         }
         web_sys::console::log_1(
             &format!(
@@ -263,10 +267,10 @@ impl AudioOutput {
         let epoch = self.begin(media_time_secs).await?;
         let this = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = this.run_pump(epoch, media_time_secs).await {
-                if !e.is_cancelled() {
-                    web_sys::console::warn_1(&format!("webmedia: audio pump error: {e}").into());
-                }
+            if let Err(e) = this.run_pump(epoch, media_time_secs).await
+                && !e.is_cancelled()
+            {
+                web_sys::console::warn_1(&format!("webmedia: audio pump error: {e}").into());
             }
         });
         Ok(())
@@ -318,8 +322,10 @@ impl AudioOutput {
         }
 
         // Flush remaining outputs.
-        if let Some(dec) = self.decoder.borrow().as_ref() {
+        let taken = self.decoder.borrow_mut().take();
+        if let Some(dec) = taken {
             let _ = JsFuture::from(dec.flush()).await;
+            *self.decoder.borrow_mut() = Some(dec);
         }
         loop {
             let next = self.pending.borrow_mut().pop_front();
@@ -446,7 +452,9 @@ fn audio_data_to_buffer(
         let mut bytes = vec![0u8; nbytes as usize];
         data.copy_to_with_u8_slice(&mut bytes, &opts)?;
         let floats: Vec<f32> = bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let f32_arr = Float32Array::new_with_length(floats.len() as u32);

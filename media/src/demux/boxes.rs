@@ -398,12 +398,11 @@ impl Seek for SparseBoxReader {
         if next < self.pos
             && self.pos - next == HEADER_SIZE as u64
             && self.after_read_pos == self.pos
+            && let Some(hdr) = self.peek_at(next, HEADER_SIZE)
+            && hdr.len() >= 4
+            && u32::from_be_bytes(hdr[0..4].try_into().unwrap()) == 0
         {
-            if let Some(hdr) = self.peek_at(next, HEADER_SIZE) {
-                if hdr.len() >= 4 && u32::from_be_bytes(hdr[0..4].try_into().unwrap()) == 0 {
-                    return Ok(self.pos);
-                }
-            }
+            return Ok(self.pos);
         }
         self.pos = next;
         Ok(self.pos)

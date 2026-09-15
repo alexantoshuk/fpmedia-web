@@ -15,20 +15,12 @@ use crate::types::{CodecConfig, EncodedSample, FrameId, VideoCodec, VideoMetadat
 use crate::util::block_on;
 
 /// Options for [`open_mp4_source`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct OpenMp4Options {
     /// Mediabunny-style bitstream sync verify (AVC IDR / Recovery Point SEI).
     /// For progressive/Blob opens this runs **async** after moov parse (do not
     /// use `block_on` on Blob).
     pub verify_avc_sync: bool,
-}
-
-impl Default for OpenMp4Options {
-    fn default() -> Self {
-        Self {
-            verify_avc_sync: false,
-        }
-    }
 }
 
 /// Demuxed H.264/H.265 (etc.) video track with a presentation-order frame index.
@@ -235,10 +227,10 @@ pub async fn open_mp4_source_with_progress(
             verify_avc_sync: false,
         },
     )?;
-    if options.verify_avc_sync {
-        if let Some(track) = opened.video.as_mut() {
-            verify_track_avc_sync_async(track, &mut progress).await?;
-        }
+    if options.verify_avc_sync
+        && let Some(track) = opened.video.as_mut()
+    {
+        verify_track_avc_sync_async(track, &mut progress).await?;
     }
     opened.require_video()
 }
@@ -271,10 +263,10 @@ pub async fn open_mp4_source_cached_with_progress(
             verify_avc_sync: false,
         },
     )?;
-    if options.verify_avc_sync {
-        if let Some(track) = opened.video.as_mut() {
-            verify_track_avc_sync_async(track, &mut progress).await?;
-        }
+    if options.verify_avc_sync
+        && let Some(track) = opened.video.as_mut()
+    {
+        verify_track_avc_sync_async(track, &mut progress).await?;
     }
     let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::new(source));
     if let Some(v) = opened.video.as_mut() {
@@ -309,10 +301,10 @@ pub async fn open_mp4_media_source_cached_with_progress(
             verify_avc_sync: false,
         },
     )?;
-    if options.verify_avc_sync {
-        if let Some(track) = opened.video.as_mut() {
-            verify_track_avc_sync_async(track, &mut progress).await?;
-        }
+    if options.verify_avc_sync
+        && let Some(track) = opened.video.as_mut()
+    {
+        verify_track_avc_sync_async(track, &mut progress).await?;
     }
     let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::new(source));
     if let Some(v) = opened.video.as_mut() {

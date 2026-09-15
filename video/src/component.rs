@@ -190,10 +190,10 @@ pub fn Video(
 
                 {
                     let want = looping.get_untracked();
-                    if let Ok(borrow) = player.try_borrow() {
-                        if let Some(p) = borrow.as_ref() {
-                            p.set_loop(want);
-                        }
+                    if let Ok(borrow) = player.try_borrow()
+                        && let Some(p) = borrow.as_ref()
+                    {
+                        p.set_loop(want);
                     }
                 }
 
@@ -260,28 +260,26 @@ pub fn Video(
                         });
                     }
                     Ok(DuePresent::Playing { did_draw }) => {
-                        if did_draw {
-                            if let Some(measured) = fps_meter.borrow_mut().note_present() {
-                                let now_ms = performance_now_ms();
-                                let should_publish = {
-                                    let borrow = session.borrow();
-                                    borrow.as_ref().is_some_and(|s| {
-                                        now_ms.is_some_and(|n| n - s.last_ui_ms >= 100.0)
-                                    })
-                                };
-                                if should_publish {
-                                    fps.set(Some(measured));
-                                }
+                        if did_draw && let Some(measured) = fps_meter.borrow_mut().note_present() {
+                            let now_ms = performance_now_ms();
+                            let should_publish = {
+                                let borrow = session.borrow();
+                                borrow.as_ref().is_some_and(|s| {
+                                    now_ms.is_some_and(|n| n - s.last_ui_ms >= 100.0)
+                                })
+                            };
+                            if should_publish {
+                                fps.set(Some(measured));
                             }
                         }
                         if let Some(now) = performance_now_ms() {
                             let mut borrow = session.borrow_mut();
-                            if let Some(s) = borrow.as_mut() {
-                                if now - s.last_ui_ms >= 100.0 {
-                                    s.last_ui_ms = now;
-                                    drop(borrow);
-                                    sync_ui();
-                                }
+                            if let Some(s) = borrow.as_mut()
+                                && now - s.last_ui_ms >= 100.0
+                            {
+                                s.last_ui_ms = now;
+                                drop(borrow);
+                                sync_ui();
                             }
                         }
                     }
@@ -652,10 +650,10 @@ pub fn Video(
         let player = Rc::clone(&player);
         let sync_ui = Rc::clone(&sync_ui);
         Rc::new(move |on: bool| {
-            if let Ok(borrow) = player.try_borrow() {
-                if let Some(p) = borrow.as_ref() {
-                    p.set_loop(on);
-                }
+            if let Ok(borrow) = player.try_borrow()
+                && let Some(p) = borrow.as_ref()
+            {
+                p.set_loop(on);
             }
             sync_ui();
         }) as Rc<dyn Fn(bool)>
@@ -664,10 +662,10 @@ pub fn Video(
     let set_volume_fn = {
         let player = Rc::clone(&player);
         Rc::new(move |v: f64| {
-            if let Ok(borrow) = player.try_borrow() {
-                if let Some(p) = borrow.as_ref() {
-                    p.set_volume(v);
-                }
+            if let Ok(borrow) = player.try_borrow()
+                && let Some(p) = borrow.as_ref()
+            {
+                p.set_volume(v);
             }
         }) as Rc<dyn Fn(f64)>
     };
@@ -675,10 +673,10 @@ pub fn Video(
     let set_muted_fn = {
         let player = Rc::clone(&player);
         Rc::new(move |m: bool| {
-            if let Ok(borrow) = player.try_borrow() {
-                if let Some(p) = borrow.as_ref() {
-                    p.set_muted(m);
-                }
+            if let Ok(borrow) = player.try_borrow()
+                && let Some(p) = borrow.as_ref()
+            {
+                p.set_muted(m);
             }
         }) as Rc<dyn Fn(bool)>
     };
@@ -832,6 +830,7 @@ enum SeekOrStep {
     Step(bool),
 }
 
+#[allow(clippy::too_many_arguments)] // Leptos open task wires many signals.
 async fn run_open(
     queue: &OpQueue,
     id: u64,
@@ -855,12 +854,9 @@ async fn run_open(
         return;
     }
     *player.borrow_mut() = None;
-    let opened = open_blob_staged(blob, canvas, {
-        let status = status;
-        move |msg: &str| {
-            web_sys::console::log_1(&format!("webmedia: status {msg}").into());
-            status.set(msg.to_string());
-        }
+    let opened = open_blob_staged(blob, canvas, move |msg: &str| {
+        web_sys::console::log_1(&format!("webmedia: status {msg}").into());
+        status.set(msg.to_string());
     })
     .await;
     if !queue.is_current(id) {
@@ -911,6 +907,7 @@ async fn run_open(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_seek_or_step(
     queue: &OpQueue,
     id: u64,
@@ -968,15 +965,16 @@ async fn run_seek_or_step(
         Err(_) => "err",
     };
     web_sys::console::log_1(&format!("webmedia: {label} done {done}").into());
-    if let Err(e) = &result {
-        if !e.is_cancelled() {
-            error.set(Some(e.to_string()));
-        }
+    if let Err(e) = &result
+        && !e.is_cancelled()
+    {
+        error.set(Some(e.to_string()));
     }
     sync_ui();
     playing.set(false);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_play_prime(
     queue: &OpQueue,
     id: u64,

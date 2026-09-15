@@ -1,0 +1,334 @@
+{
+  "version": 1,
+  "tag": "pre-decode-sink",
+  "clipId": "wing-it",
+  "clipLabel": "WING IT - Blender Open Movie",
+  "clipBasename": "WING IT - Blender Open Movie.mp4",
+  "createdAt": "2026-09-15T19:56:56.361Z",
+  "openMs": 412,
+  "afterOpen": {
+    "status": "frame 0 / 5709 · GOP ~57 (max 159) · 0.000s",
+    "meta": "1920×1080 · 24.000 fps · avc1.640028 · 237.917s · 5710 frames · audio",
+    "lastFrame": 5709,
+    "frameCache": "10f / 1c · dense · no_gaps · win 0–9"
+  },
+  "scenarios": [
+    {
+      "id": "fast-large",
+      "label": "fast scrub across large range",
+      "from": 0.12,
+      "to": 0.78,
+      "steps": 8,
+      "stepDelayMs": 0,
+      "dragMs": 531,
+      "settleMs": 318,
+      "settleTimedOut": false,
+      "exactOk": true,
+      "endPlayhead": 4453,
+      "endEngine": 4453,
+      "endStatus": "frame 4453 / 5709 · GOP ~57 (max 159) · 185.542s",
+      "endPipeline": "held 0 · decodeQ 0 · skipped 0",
+      "endFrameCache": "28f / 4c · dense · win 0–4462",
+      "samples": [
+        {
+          "tMs": 773,
+          "playhead": 1156,
+          "engine": 0,
+          "seconds": 0,
+          "status": "frame 1156 (eng 0) / 5709 · GOP ~57 (max 159) · 0.000s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "10f / 1c · dense · no_gaps · win 0–9",
+          "scrubPct": 20.248015873015873
+        },
+        {
+          "tMs": 846,
+          "playhead": 1627,
+          "engine": 1156,
+          "seconds": 48.167,
+          "status": "frame 1627 (eng 1156) / 5709 · GOP ~57 (max 159) · 48.167s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "11f / 2c · dense · win 0–1156",
+          "scrubPct": 28.497023809523807
+        },
+        {
+          "tMs": 936,
+          "playhead": 2098,
+          "engine": 1156,
+          "seconds": 48.167,
+          "status": "frame 2098 (eng 1156) / 5709 · GOP ~57 (max 159) · 48.167s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "11f / 2c · dense · win 0–1156",
+          "scrubPct": 36.748511904761905
+        },
+        {
+          "tMs": 1008,
+          "playhead": 2569,
+          "engine": 1156,
+          "seconds": 48.167,
+          "status": "frame 2569 (eng 1156) / 5709 · GOP ~57 (max 159) · 48.167s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "11f / 2c · dense · win 0–1156",
+          "scrubPct": 44.99751984126984
+        },
+        {
+          "tMs": 1067,
+          "playhead": 3040,
+          "engine": 1156,
+          "seconds": 48.167,
+          "status": "frame 3040 (eng 1156) / 5709 · GOP ~57 (max 159) · 48.167s",
+          "pipeline": "held 1 · decodeQ 0 · skipped 0",
+          "frameCache": "12f / 3c · dense · win 0–3040",
+          "scrubPct": 53.24652777777777
+        },
+        {
+          "tMs": 1127,
+          "playhead": 3511,
+          "engine": 3040,
+          "seconds": 126.667,
+          "status": "frame 3511 (eng 3040) / 5709 · GOP ~57 (max 159) · 126.667s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "12f / 3c · dense · win 0–3040",
+          "scrubPct": 61.49801587301587
+        },
+        {
+          "tMs": 1174,
+          "playhead": 3982,
+          "engine": 3040,
+          "seconds": 126.667,
+          "status": "frame 3982 (eng 3040) / 5709 · GOP ~57 (max 159) · 126.667s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "12f / 3c · dense · win 0–3040",
+          "scrubPct": 69.74950396825396
+        },
+        {
+          "tMs": 1229,
+          "playhead": 4453,
+          "engine": 3040,
+          "seconds": 126.667,
+          "status": "frame 4453 (eng 3040) / 5709 · GOP ~57 (max 159) · 126.667s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "12f / 3c · dense · win 0–3040",
+          "scrubPct": 77.9985119047619
+        },
+        {
+          "tMs": 1276,
+          "playhead": 4453,
+          "engine": 3040,
+          "seconds": 126.667,
+          "status": "frame 4453 (eng 3040) / 5709 · GOP ~57 (max 159) · 126.667s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "12f / 3c · win 0–3040",
+          "scrubPct": 77.9985119047619
+        },
+        {
+          "tMs": 1597,
+          "playhead": 4453,
+          "engine": 4453,
+          "seconds": 185.542,
+          "status": "frame 4453 / 5709 · GOP ~57 (max 159) · 185.542s",
+          "pipeline": "held 0 · decodeQ 0 · skipped 0",
+          "frameCache": "28f / 4c · dense · win 0–4462",
+          "scrubPct": 77.9985119047619
+        }
+      ]
+    },
+    {
+      "id": "slow-small",
+      "label": "slow scrub on small range",
+      "from": 0.42,
+      "to": 0.5,
+      "steps": 36,
+      "stepDelayMs": 45,
+      "dragMs": 2538,
+      "settleMs": 2476,
+      "settleTimedOut": false,
+      "exactOk": true,
+      "endPlayhead": 2855,
+      "endEngine": 2855,
+      "endStatus": "frame 2855 / 5709 · GOP ~57 (max 159) · 118.958s",
+      "endPipeline": "held 0 · decodeQ 0 · skipped 0",
+      "endFrameCache": "40f / 6c · dense · win 0–4462",
+      "samples": [
+        {
+          "tMs": 2079,
+          "playhead": 2474,
+          "engine": 4453,
+          "seconds": 185.542,
+          "status": "frame 2474 (eng 4453) / 5709 · GOP ~57 (max 159) · 185.542s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "28f / 4c · dense · win 0–4462",
+          "scrubPct": 43.333333333333336
+        },
+        {
+          "tMs": 2500,
+          "playhead": 2550,
+          "engine": 4453,
+          "seconds": 185.542,
+          "status": "frame 2550 (eng 4453) / 5709 · GOP ~57 (max 159) · 185.542s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "28f / 4c · dense · win 0–4462",
+          "scrubPct": 44.66517857142857
+        },
+        {
+          "tMs": 2899,
+          "playhead": 2626,
+          "engine": 4453,
+          "seconds": 185.542,
+          "status": "frame 2626 (eng 4453) / 5709 · GOP ~57 (max 159) · 185.542s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "28f / 4c · dense · win 0–4462",
+          "scrubPct": 45.99702380952381
+        },
+        {
+          "tMs": 3312,
+          "playhead": 2702,
+          "engine": 4453,
+          "seconds": 185.542,
+          "status": "frame 2702 (eng 4453) / 5709 · GOP ~57 (max 159) · 185.542s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "28f / 4c · dense · win 0–4462",
+          "scrubPct": 47.32886904761905
+        },
+        {
+          "tMs": 3721,
+          "playhead": 2778,
+          "engine": 4453,
+          "seconds": 185.542,
+          "status": "frame 2778 (eng 4453) / 5709 · GOP ~57 (max 159) · 185.542s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "28f / 4c · dense · win 0–4462",
+          "scrubPct": 48.65823412698413
+        },
+        {
+          "tMs": 4140,
+          "playhead": 2855,
+          "engine": 4453,
+          "seconds": 185.542,
+          "status": "frame 2855 (eng 4453) / 5709 · GOP ~57 (max 159) · 185.542s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "28f / 4c · dense · win 0–4462",
+          "scrubPct": 50.00744047619048
+        },
+        {
+          "tMs": 4199,
+          "playhead": 2855,
+          "engine": 4453,
+          "seconds": 185.542,
+          "status": "frame 2855 (eng 4453) / 5709 · GOP ~57 (max 159) · 185.542s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "28f / 4c · win 0–4462",
+          "scrubPct": 50.00744047619048
+        },
+        {
+          "tMs": 6678,
+          "playhead": 2855,
+          "engine": 2855,
+          "seconds": 118.958,
+          "status": "frame 2855 / 5709 · GOP ~57 (max 159) · 118.958s",
+          "pipeline": "held 0 · decodeQ 0 · skipped 0",
+          "frameCache": "40f / 6c · dense · win 0–4462",
+          "scrubPct": 50.00744047619048
+        }
+      ]
+    },
+    {
+      "id": "slow-large",
+      "label": "slow scrub across large range",
+      "from": 0.1,
+      "to": 0.72,
+      "steps": 48,
+      "stepDelayMs": 35,
+      "dragMs": 2944,
+      "settleMs": 120130,
+      "settleTimedOut": true,
+      "exactOk": false,
+      "endPlayhead": 4110,
+      "endEngine": 3999,
+      "endStatus": "frame 4110 (eng 3999) / 5709 · GOP ~57 (max 159) · 166.625s",
+      "endPipeline": "held 0 · decodeQ 41 · skipped 0",
+      "endFrameCache": "62f / 8c · win 0–4462",
+      "samples": [
+        {
+          "tMs": 7337,
+          "playhead": 1161,
+          "engine": 792,
+          "seconds": 33,
+          "status": "frame 1161 (eng 792) / 5709 · GOP ~57 (max 159) · 33.000s",
+          "pipeline": "held 0 · decodeQ 0 · skipped 0",
+          "frameCache": "51f / 7c · dense · win 0–4462",
+          "scrubPct": 20.334821428571427
+        },
+        {
+          "tMs": 7882,
+          "playhead": 1751,
+          "engine": 1161,
+          "seconds": 48.375,
+          "status": "frame 1751 (eng 1161) / 5709 · GOP ~57 (max 159) · 48.375s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "51f / 7c · dense · win 0–4462",
+          "scrubPct": 30.669642857142858
+        },
+        {
+          "tMs": 8301,
+          "playhead": 2341,
+          "engine": 1161,
+          "seconds": 48.375,
+          "status": "frame 2341 (eng 1161) / 5709 · GOP ~57 (max 159) · 48.375s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "51f / 7c · dense · win 0–4462",
+          "scrubPct": 41.004464285714285
+        },
+        {
+          "tMs": 8745,
+          "playhead": 2931,
+          "engine": 1161,
+          "seconds": 48.375,
+          "status": "frame 2931 (eng 1161) / 5709 · GOP ~57 (max 159) · 48.375s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "51f / 7c · dense · win 0–4462",
+          "scrubPct": 51.33928571428571
+        },
+        {
+          "tMs": 9204,
+          "playhead": 3521,
+          "engine": 1161,
+          "seconds": 48.375,
+          "status": "frame 3521 (eng 1161) / 5709 · GOP ~57 (max 159) · 48.375s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "51f / 7c · dense · win 0–4462",
+          "scrubPct": 61.67410714285714
+        },
+        {
+          "tMs": 9628,
+          "playhead": 4110,
+          "engine": 1161,
+          "seconds": 48.375,
+          "status": "frame 4110 (eng 1161) / 5709 · GOP ~57 (max 159) · 48.375s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "51f / 7c · dense · win 0–4462",
+          "scrubPct": 71.99156746031747
+        },
+        {
+          "tMs": 9660,
+          "playhead": 4110,
+          "engine": 1161,
+          "seconds": 48.375,
+          "status": "frame 4110 (eng 1161) / 5709 · GOP ~57 (max 159) · 48.375s",
+          "pipeline": "held busy · decodeQ busy · skipped 0",
+          "frameCache": "51f / 7c · dense · win 0–4462",
+          "scrubPct": 71.99156746031747
+        },
+        {
+          "tMs": 129953,
+          "playhead": 4110,
+          "engine": 3999,
+          "seconds": 166.625,
+          "status": "frame 4110 (eng 3999) / 5709 · GOP ~57 (max 159) · 166.625s",
+          "pipeline": "held 0 · decodeQ 41 · skipped 0",
+          "frameCache": "62f / 8c · win 0–4462",
+          "scrubPct": 71.99156746031747
+        }
+      ]
+    }
+  ]
+}
