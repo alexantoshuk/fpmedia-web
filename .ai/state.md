@@ -4,7 +4,7 @@
 
 ## In progress
 
-- **Audio playback polish** — seek/scrub mute+flush already via `stop_media_clock` on pause; verify A/V sync on real files; volume UI in demo; optional `with_audio.mp4` in `public/`.
+_(none — pick from Next up)_
 
 ---
 
@@ -13,6 +13,7 @@
 ### Media engine
 
 - Filmstrip thumbs via `ThumbCache` (caller-sized bitmaps; mediabunny `samplesAtTimestamps` later).
+- Spot-check A/V sync on long clips (Wing It / real AAC) after seek+play — mute/flush + volume UI shipped; clock already audio-driven when a track exists.
 - Pure audio path later: `AudioPlayer` / `AudioRef` (no canvas) reusing demux + decode + clock.
 - HEVC bitstream key verify (AVC IDR + Recovery Point SEI done).
 - Progressive-open follow-ups: coalesce adjacent sample ranges; optional background / lazy AVC sync-verify for huge files if open latency matters.

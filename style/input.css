@@ -192,6 +192,10 @@ body {
   margin-top: 0.5rem;
 }
 
+.wm-controls.wm-audio {
+  margin-top: 0.5rem;
+}
+
 .wm-btn,
 .wm-file {
   appearance: none;
@@ -261,6 +265,29 @@ body {
   padding: 0.35rem 0.5rem;
   border: 1px solid #b7b0a3;
   font: inherit;
+}
+
+.wm-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--wm-muted);
+  font-size: 0.9em;
+}
+
+.wm-volume-label {
+  user-select: none;
+}
+
+.wm-volume-input {
+  width: 6.5rem;
+  accent-color: var(--wm-accent);
+  cursor: pointer;
+}
+
+.wm-volume-input:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .wm-status {

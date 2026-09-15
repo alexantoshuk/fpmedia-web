@@ -11,6 +11,7 @@ Also copy video fixtures into `public/` so the Leptos demo can fetch them:
 ```sh
 cp media/tests/fixtures/short_gop.mp4 public/short_gop.mp4
 cp media/tests/fixtures/with_b_frames.mp4 public/with_b_frames.mp4
+cp media/tests/fixtures/with_audio.mp4 public/with_audio.mp4
 ```
 
 Regenerate:
@@ -32,4 +33,5 @@ ffmpeg -y -f lavfi -i "sine=frequency=440:duration=2" \
 
 cp media/tests/fixtures/short_gop.mp4 public/short_gop.mp4
 cp media/tests/fixtures/with_b_frames.mp4 public/with_b_frames.mp4
+cp media/tests/fixtures/with_audio.mp4 public/with_audio.mp4
 ```

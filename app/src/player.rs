@@ -88,7 +88,21 @@ pub fn DemoPlayer() -> impl IntoView {
             </div>
             <BufferMeters video=video/>
             <p class="wm-meta" data-testid="meta">
-                {move || video.metadata.get().as_ref().map(format_metadata).unwrap_or_default()}
+                {move || {
+                    let mut s = video
+                        .metadata
+                        .get()
+                        .as_ref()
+                        .map(format_metadata)
+                        .unwrap_or_default();
+                    if video.has_audio.get() {
+                        if !s.is_empty() {
+                            s.push_str(" · ");
+                        }
+                        s.push_str("audio");
+                    }
+                    s
+                }}
             </p>
             <div class="wm-controls" data-testid="controls">
                 <button
@@ -176,6 +190,47 @@ pub fn DemoPlayer() -> impl IntoView {
                 >
                     "Seek"
                 </button>
+            </div>
+            <div class="wm-controls wm-audio" data-testid="audio-controls">
+                <button
+                    type="button"
+                    class=move || {
+                        if video.muted.get() {
+                            "wm-btn wm-btn-toggle is-on"
+                        } else {
+                            "wm-btn wm-btn-toggle"
+                        }
+                    }
+                    data-testid="btn-mute"
+                    prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+                    prop:aria-pressed=move || video.muted.get()
+                    on:click=move |_| video.set_muted(!video.muted.get_untracked())
+                >
+                    {move || if video.muted.get() { "Unmute" } else { "Mute" }}
+                </button>
+                <label
+                    class="wm-volume"
+                    data-testid="volume"
+                    title="Volume"
+                >
+                    <span class="wm-volume-label">"Vol"</span>
+                    <input
+                        type="range"
+                        class="wm-volume-input"
+                        data-testid="volume-input"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        prop:value=move || video.volume.get().to_string()
+                        prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+                        on:input=move |ev| {
+                            let input: HtmlInputElement = event_target(&ev);
+                            if let Ok(v) = input.value().parse::<f64>() {
+                                video.set_volume(v);
+                            }
+                        }
+                    />
+                </label>
             </div>
             <div class="wm-controls wm-source" data-testid="source">
                 <label class="wm-file">

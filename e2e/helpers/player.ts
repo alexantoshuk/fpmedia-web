@@ -4,6 +4,7 @@ import path from "node:path";
 export const FIXTURES = {
   shortGop: path.resolve("public/short_gop.mp4"),
   withBFrames: path.resolve("public/with_b_frames.mp4"),
+  withAudio: path.resolve("public/with_audio.mp4"),
 } as const;
 
 /** Parsed ready-state status line, e.g. `frame 3 / 29 · … · 0.100s · playing`. */

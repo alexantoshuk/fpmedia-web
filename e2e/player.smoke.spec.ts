@@ -76,4 +76,36 @@ test.describe("demo player smoke", () => {
 
     expect(await player.error.innerText()).toBe("");
   });
+
+  test("open audio fixture enables volume and mute", async ({ page }) => {
+    const player = new DemoPlayer(page);
+    await player.goto();
+    await player.openFixture(FIXTURES.withAudio);
+
+    const s0 = await player.readStatus();
+    expect(s0.ready).toBe(true);
+    await expect(player.meta).toContainText("audio");
+
+    const mute = page.getByTestId("btn-mute");
+    const volume = page.getByTestId("volume-input");
+    await expect(mute).toBeEnabled();
+    await expect(volume).toBeEnabled();
+
+    await mute.click();
+    await expect(mute).toHaveAttribute("aria-pressed", "true");
+    await expect(mute).toHaveText("Unmute");
+
+    await volume.fill("0.25");
+    await expect(volume).toHaveValue("0.25");
+
+    await player.play.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(true);
+    await player.pause.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(false);
+    expect(await player.error.innerText()).toBe("");
+  });
 });
