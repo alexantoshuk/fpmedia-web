@@ -31,8 +31,11 @@ const MAX_DECODE_QUEUE_WITH_HELD: u32 = 8;
 /// encoded queue before emitting reordered frames.
 const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
 /// While key→N prune closes every output before the target (`held` stays empty),
-/// keep the encoded queue shallow so we pace on close instead of piling
-/// `decodeQ≈10` with nothing retained (VideoFrame pool / densify starvation).
+/// prefer a shallow encoded queue so settle paces on close rather than sitting at
+/// `decodeQ≈10` with nothing retained. **Never** hard-cap below the current
+/// `decodeQueueSize` when there is nothing left to collect — that deadlocks
+/// B-frame reorder (need feed-ahead to emit → wait for q drop → timeout at
+/// `q=5, held=0`). mediabunny uses empty-queue depth 40 for this reason.
 const SEEK_PRUNE_MAX_QUEUE: u32 = 4;
 
 fn compute_max_queue_size(decoded_sample_queue_size: u32) -> u32 {
@@ -994,11 +997,18 @@ impl WebCodecsDecoder {
             }
             let decoded = self.held.len() as u32;
             let mut max = compute_max_queue_size(decoded);
-            // Seek prune with nothing kept yet: stay shallow (we close every
-            // early output). Empty-queue depth 40 is for play / GOP fill where
-            // outputs are retained.
+            // Seek prune with nothing kept yet: prefer a shallow encoded queue
+            // while we still have raw outputs to collect (pace on close). If the
+            // browser queue is already above that shallow cap and `frames` is
+            // empty, keep mediabunny's empty depth (40) so we can feed ahead —
+            // B-frame reorder otherwise deadlocks: wait for q to drop, but q
+            // needs more input to emit → `backpressure timed out (q=5, held=0)`.
             if drop_before_us.is_some() && decoded == 0 {
-                max = max.min(SEEK_PRUNE_MAX_QUEUE);
+                let raw_pending = !self.frames.borrow().is_empty();
+                let q = self.decode_queue_size();
+                if raw_pending || q <= SEEK_PRUNE_MAX_QUEUE {
+                    max = max.min(SEEK_PRUNE_MAX_QUEUE);
+                }
             }
             // mediabunny: sampleQueue.length + decodeQueueSize > maxQueueSize
             if decoded + self.decode_queue_size() <= max {
