@@ -36,13 +36,6 @@ const MAX_DECODE_QUEUE_WITH_HELD: u32 = 8;
 /// Cap when the held/output buffers are empty — some browsers need a deeper
 /// encoded queue before emitting reordered frames.
 const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
-/// While key→N prune closes every output before the target (`held` stays empty),
-/// prefer a shallow encoded queue so settle paces on close rather than sitting at
-/// `decodeQ≈10` with nothing retained. **Never** hard-cap below the current
-/// `decodeQueueSize` when there is nothing left to collect — that deadlocks
-/// B-frame reorder (need feed-ahead to emit → wait for q drop → timeout at
-/// `q=5, held=0`). mediabunny uses empty-queue depth 40 for this reason.
-const SEEK_PRUNE_MAX_QUEUE: u32 = 4;
 /// Max delta packets to feed after the target's decode_order to coax B-frame emit
 /// before flushing (mediabunny feeds ahead; whole-GOP feed is unnecessary).
 const REORDER_FEED_SLACK: usize = 24;
@@ -391,11 +384,14 @@ impl DecoderCore {
         Ok(())
     }
 
-    /// PTS for a decoded frame: prefer the chunk timestamp we fed (survives on the
-    /// `VideoFrame`). Sorted FIFO remap assumes presentation-order emission;
-    /// Chromium + `optimizeForLatency` often emits decode order, which made long
-    /// key→N miss the target (`flush/idle` past ~50 frames on Wing It).
-    /// `mediabunny: src/media-sink.ts sampleHandler` — non-WebKit path.
+    /// PTS for a decoded frame: prefer the chunk timestamp retained on the
+    /// `VideoFrame`. Chromium + `optimizeForLatency` often emits decode order;
+    /// sorted FIFO remap then mis-labels frames and short key→N already fails
+    /// (Wing It +40). Only fall back to FIFO when the chunk timestamp is absent.
+    /// On a present-but-unmatched chunk PTS, do **not** drop the FIFO head —
+    /// that desynced `input_timestamps` on long cascades.
+    /// `mediabunny: src/media-sink.ts sampleHandler` (WebKit keeps chunk time;
+    /// non-WebKit FIFO is wrong under decode-order emit here).
     fn assign_output_pts(&mut self, frame: &OwnedVideoFrame) -> Option<i64> {
         let chunk_pts = {
             let ts = frame.as_web_sys().timestamp();
@@ -408,10 +404,8 @@ impl DecoderCore {
         if let Some(pts) = chunk_pts {
             if let Some(i) = self.input_timestamps.iter().position(|&t| t == pts) {
                 self.input_timestamps.remove(i);
-            } else if !self.input_timestamps.is_empty() {
-                // Bookkeeping drift — drop one pending stamp.
-                self.input_timestamps.remove(0);
             }
+            // Unmatched: keep the stamp list; still trust the chunk PTS.
             return Some(pts);
         }
         let pts = self.input_timestamps.first().copied()?;
@@ -428,30 +422,13 @@ impl DecoderCore {
         Some(frame)
     }
 
-    fn drop_held_before(&mut self, target_us: i64) {
-        let mut dropped = false;
-        let mut i = 0;
-        while i < self.held.len() {
-            if self.held[i].pts_us < target_us {
-                let h = self.held.swap_remove(i);
-                self.deliver_or_drop_pruned(h.pts_us, h.frame);
-                dropped = true;
-            } else {
-                i += 1;
-            }
-        }
-        if dropped {
-            self.wake_dequeue_waiters();
-        }
-    }
-
-    /// Remap outputs and close anything strictly before the seek target in the
-    /// same pass (mediabunny closes early samples in the output callback before
-    /// they enter `sampleQueue`). Park-then-prune a turn later left `decodeQ`
-    /// elevated with `held=0` mid key→N and starved the VideoFrame pool.
+    /// Remap outputs and keep only the seek target in `held` (mediabunny closes
+    /// non-matching samples in the output callback before they enter
+    /// `sampleQueue`). Decode-order emit can deliver PTS `> target` before the
+    /// target; parking those forced `MAX_DECODE_QUEUE_WITH_HELD` (8).
     ///
-    /// When [`Self::prune_interim`] is set, pruned frames go to the host dense
-    /// cache instead of close — one cascade warms cache + yields exact.
+    /// When [`Self::prune_interim`] is set, pruned PTS `< target` go to the host
+    /// dense cache instead of close — one cascade warms near-target cache.
     fn collect_and_prune_held(&mut self, target_us: i64) -> Result<(), MediaError> {
         let before = self.held.len();
         let mut dropped = false;
@@ -461,17 +438,33 @@ impl DecoderCore {
                 drop(frame);
                 continue;
             };
-            if pts_us < target_us {
+            if pts_us == target_us {
+                self.held.push(HeldFrame { pts_us, frame });
+            } else if pts_us < target_us {
                 self.deliver_or_drop_pruned(pts_us, frame);
                 dropped = true;
             } else {
-                self.held.push(HeldFrame { pts_us, frame });
+                drop(frame);
+                dropped = true;
             }
         }
         if self.held.len() > before {
             self.wake_not_empty_waiters();
         }
-        self.drop_held_before(target_us);
+        let mut i = 0;
+        while i < self.held.len() {
+            if self.held[i].pts_us != target_us {
+                let h = self.held.swap_remove(i);
+                if h.pts_us < target_us {
+                    self.deliver_or_drop_pruned(h.pts_us, h.frame);
+                } else {
+                    drop(h.frame);
+                }
+                dropped = true;
+            } else {
+                i += 1;
+            }
+        }
         if dropped {
             self.wake_dequeue_waiters();
         }
@@ -610,9 +603,10 @@ pub struct WebCodecsDecoder {
 impl WebCodecsDecoder {
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
         let config = DecoderConfig::from_meta(meta)?;
-        // Keep the previously working open path (`optimizeForLatency: true`).
-        // Throughput tweaks must not block `isConfigSupported` / first seek.
-        let optimize_for_latency = true;
+        // `optimizeForLatency: true` wedges Chromium on long key→N (Wing It
+        // ≥~60 from sync → `flush/idle` with decodeQ≈18). VOD scrub/seek needs
+        // throughput; mediabunny leaves this optional and defaults unset.
+        let optimize_for_latency = false;
         let web_config = config.to_web_config(optimize_for_latency);
         let support = JsFuture::from(VideoDecoder::is_config_supported(&web_config))
             .await
@@ -823,8 +817,11 @@ impl WebCodecsDecoder {
                     return Ok(ready);
                 }
                 return Err(MediaError::WebCodecs(format!(
-                    "flush/idle without pts={target_us}µs (held={})",
-                    core.borrow().held.len()
+                    "flush/idle without pts={target_us}µs (held={}, q={}, fed={:?}, stamps={})",
+                    core.borrow().held.len(),
+                    core.borrow().decode_queue_size(),
+                    core.borrow().fed_through_order,
+                    core.borrow().input_timestamps.len(),
                 )));
             }
 
@@ -1143,7 +1140,13 @@ impl FramePump {
                 break;
             }
             let fed = self.core.borrow().fed_through_order.unwrap_or(self.key_do);
-            if fed >= self.target_do && fed - self.target_do >= REORDER_FEED_SLACK {
+            // Stop early only once the target is already remapped — otherwise keep
+            // feeding to GOP end. Fixed slack alone still missed deep Wing It
+            // seeks (`flush/idle` with decodeQ≈18): target never entered `held`.
+            if fed >= self.target_do
+                && fed - self.target_do >= REORDER_FEED_SLACK
+                && holds_target(&self.core, self.target_us)
+            {
                 break;
             }
             let next = match self.track.samples_after_in_gop(self.key_do, fed, 1).await {
@@ -1364,9 +1367,7 @@ async fn flush_with_timeout_ms(
 ///
 /// `drop_before_us`: close held frames strictly before the seek target so
 /// `held` does not stay non-empty forever during a long key→N cascade (that
-/// kept max=8 and stalled the browser queue — rapid PREV timeout). While
-/// pruning with an empty held buffer, keep the encoded queue shallow so we
-/// pace on close rather than sit at `decodeQ≈10` with `held=0`.
+/// kept max=8 and stalled the browser queue — rapid PREV timeout).
 ///
 /// `gop`: when densifying a full GOP, drain remapped frames to the consumer
 /// each spin so `held` stays empty (consumer take → max queue 40, not 8).
@@ -1405,20 +1406,8 @@ async fn await_decode_capacity(
                 c.flush_held_into_gop(*on_frame, pts_to_id);
             }
             let decoded = c.held.len() as u32;
-            let mut max = compute_max_queue_size(decoded);
-            // Seek prune with nothing kept yet: prefer a shallow encoded queue
-            // while we still have raw outputs to collect (pace on close). If the
-            // browser queue is already above that shallow cap and `frames` is
-            // empty, keep mediabunny's empty depth (40) so we can feed ahead —
-            // B-frame reorder otherwise deadlocks: wait for q to drop, but q
-            // needs more input to emit → `backpressure timed out (q=5, held=0)`.
+            let max = compute_max_queue_size(decoded);
             let q = c.decode_queue_size();
-            if drop_before_us.is_some()
-                && decoded == 0
-                && (c.raw_outputs_pending() || q <= SEEK_PRUNE_MAX_QUEUE)
-            {
-                max = max.min(SEEK_PRUNE_MAX_QUEUE);
-            }
             // mediabunny: sampleQueue.length + decodeQueueSize > maxQueueSize
             (decoded + q <= max, q, decoded)
         };

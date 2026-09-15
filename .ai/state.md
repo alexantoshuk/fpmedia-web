@@ -4,7 +4,7 @@
 
 ## In progress
 
-- Wing It deep key→N (≥~60 frames from sync, e.g. frame 4110 / `slow-large`) still `flush/idle without pts` — cold settle @0.85 / seek≤~40 from key OK after settle cascade fixes.
+- (none)
 
 ---
 
@@ -12,7 +12,6 @@
 
 ### Media engine
 
-- Fix long key→N `flush/idle` on Wing It (threshold ~50–60 frames from key; `decodeQ≈18` after flush timeout). Settle one-cascade + windowed salvage + key-change recreate + chunk PTS assign landed (no dense trim on settle — wiped strip).
 - Re-save scrub baselines after deep-seek fix (`npm run e2e:baseline:save` then compare).
 - Filmstrip thumbs via `ThumbCache` (caller-sized bitmaps; mediabunny `samplesAtTimestamps` later).
 - Spot-check A/V sync on long clips (Wing It / real AAC) after seek+play — mute/flush + volume UI shipped; clock already audio-driven when a track exists.
