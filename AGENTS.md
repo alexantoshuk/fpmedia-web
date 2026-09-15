@@ -44,6 +44,17 @@ If the user asks for a change that is **clearly less optimal** than the current 
 
 Example: dropping prune→dense salvage on settle “to avoid strip noise” re-decodes the whole GOP in densify — warn before removing it.
 
+## Approve-before-edit
+
+Before **any** write to the repo (code, config, docs, generated assets):
+
+1. **Describe the plan first** — short: what, where, why (files/symbols if known).
+2. **Do not edit until the user explicitly consents** (e.g. `ok`, `go`, `да`, `approve`).
+3. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
+4. **Exception:** only if the user explicitly says to skip approval for that task or session.
+
+If the plan changes mid-work (scope creep, different files), stop and re-approve before further edits.
+
 ## Skills index
 
 | File | Read before touching |
@@ -68,6 +79,7 @@ Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, 
 | Topic | Canonical home | Elsewhere |
 | ----- | -------------- | --------- |
 | Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
+| Approve-before-edit | `AGENTS.md` | Do not restate |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
 | Crate layout, layers, ADRs | `architecture.md` | Skills may keep a **module map** for one crate |
