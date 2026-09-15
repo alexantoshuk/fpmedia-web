@@ -126,6 +126,8 @@ impl OpQueue {
     }
 
     /// Play-prime: replace a pending PlayPrime; do not cancel an in-flight open/seek.
+    /// Pending scrub settle is kept — Play waits for it (same playhead) instead of
+    /// cancelling and restarting the key→N cascade (`VideoRef::play` used to seek).
     /// Returns `true` to start drain.
     pub fn enqueue_play(&self) -> bool {
         let id = self.async_id.get();
@@ -134,6 +136,15 @@ impl OpQueue {
         st.pending.push_back((id, HostOp::PlayPrime));
         self.busy.set(true);
         self.begin_drain_locked(&mut st)
+    }
+
+    /// True when a PlayPrime is waiting (settle should skip densify arm).
+    pub fn has_pending_play(&self) -> bool {
+        self.inner
+            .borrow()
+            .pending
+            .iter()
+            .any(|(_, o)| matches!(o, HostOp::PlayPrime))
     }
 
     /// Drop queued play-prime (pause). Caller bumps epoch separately.

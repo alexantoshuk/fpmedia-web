@@ -415,6 +415,7 @@ pub fn Video(
                                 &resume_raf,
                                 ready,
                                 playing,
+                                playhead,
                                 error,
                                 fps,
                             )
@@ -939,7 +940,15 @@ async fn run_seek_or_step(
     let result = match op {
         SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
         SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
-        SeekOrStep::Scrub { target, settle } => p.scrub_to(u64::from(target), settle).await,
+        SeekOrStep::Scrub { target, settle } => {
+            let r = p.scrub_to(u64::from(target), settle).await;
+            // Settle no longer arms densify inside the engine — if Play is queued,
+            // keep the warm main decoder for prime (play-after-scrub).
+            if settle && r.is_ok() && queue.is_current(id) && !queue.has_pending_play() {
+                p.arm_scrub_densify_after_exact(u64::from(target));
+            }
+            r
+        }
         SeekOrStep::Step(true) => p.next_frame().await,
         SeekOrStep::Step(false) => p.previous_frame().await,
     };
@@ -971,6 +980,7 @@ async fn run_play_prime(
     resume_raf: &impl Fn(),
     ready: RwSignal<bool>,
     playing: RwSignal<bool>,
+    playhead: RwSignal<u32>,
     error: RwSignal<Option<String>>,
     fps: RwSignal<Option<f64>>,
 ) {
@@ -980,6 +990,28 @@ async fn run_play_prime(
     let Some(p) = player.borrow().as_ref().cloned() else {
         return;
     };
+
+    // Sync engine to UI playhead only if still mismatched (e.g. settle cancelled
+    // by seek/step, or play without a prior settle). Do this *before* `play()` so
+    // we do not cancel an in-flight scrub that was already targeting playhead —
+    // that op finished ahead of us in the drain queue.
+    let ph = playhead.get_untracked();
+    if p.state().frame != u64::from(ph) {
+        web_sys::console::log_1(
+            &format!("webmedia: play sync seek {ph} (engine {})", p.state().frame).into(),
+        );
+        match p.seek_frame(u64::from(ph)).await {
+            Ok(()) => {}
+            Err(e) if e.is_cancelled() => return,
+            Err(e) => {
+                error.set(Some(e.to_string()));
+                return;
+            }
+        }
+        if !queue.is_current(id) {
+            return;
+        }
+    }
 
     p.play();
     fps_meter.borrow_mut().reset();

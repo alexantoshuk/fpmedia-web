@@ -513,13 +513,19 @@ impl DenseFrameCache {
         Some(lo.abs_diff(playhead).max(hi.abs_diff(playhead)))
     }
 
-    fn remove_frame(&mut self, frame: FrameId) -> bool {
-        if self.frames.remove(&frame).is_none() {
-            return false;
-        }
+    /// Move a resident frame out (play prime lifts dense → presentation queue).
+    ///
+    /// Prefer this over [`Self::try_clone_frame`] — browser `VideoFrame.clone` often
+    /// fails; play handoff should **move**, then pause parks back via insert.
+    pub fn take_frame(&mut self, frame: FrameId) -> Option<OwnedVideoFrame> {
+        let video = self.frames.remove(&frame)?;
         self.runs.note_remove(self.playhead, frame);
         self.refresh_no_gaps();
-        true
+        Some(video)
+    }
+
+    fn remove_frame(&mut self, frame: FrameId) -> bool {
+        self.take_frame(frame).is_some()
     }
 
     fn refresh_no_gaps(&mut self) {

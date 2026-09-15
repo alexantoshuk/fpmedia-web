@@ -679,12 +679,11 @@ impl WebPlayer {
         self.shared.restarting.set(false);
         self.shared.hold_densify_for_exact.set(false);
         // Exact seek can leave main decodeQ elevated; idle before densify.
-        self.invalidate_decoder();
         if !self.is_current(epoch) {
             return Err(MediaError::Cancelled);
         }
         result?;
-        self.enter_scrub_cache_pipeline(self.state().frame);
+        self.arm_scrub_densify_after_exact(self.state().frame);
         Ok(())
     }
 
@@ -788,19 +787,29 @@ impl WebPlayer {
         .await;
         self.shared.restarting.set(false);
         self.shared.hold_densify_for_exact.set(false);
-        if settle {
-            // Exact key→N can leave main `decodeQ` elevated; densify uses the scrub
-            // decoder — idle main first (mediabunny closes the sample iterator on
-            // return). Avoids main HW competing with GOP fill after settle.
-            self.invalidate_decoder();
-        }
-        // Settle / drag end: densify at the final focus (also re-arms after hold).
-        self.enter_scrub_cache_pipeline(frame);
+        // Cancelled (superseded drag / seek): do not kick densify — a following
+        // PlayPrime must keep a warm main decoder when possible.
         if !self.is_current(epoch) {
             return Err(MediaError::Cancelled);
         }
+        if settle {
+            // Densify is armed by the host *after* the drain loop can see a queued
+            // PlayPrime — otherwise invalidate + scrub HW kick cause play-after-scrub
+            // lag on long GOPs (Wing It). Drag still densifies below.
+        } else {
+            self.enter_scrub_cache_pipeline(frame);
+        }
         result?;
         Ok(())
+    }
+
+    /// After exact settle / sync seek: idle main decoder, then densify.
+    ///
+    /// Call only when play is **not** about to start — PlayPrime wants the warm
+    /// cascade left by seekTo, not a cold `invalidate` + competing scrub decoder.
+    pub fn arm_scrub_densify_after_exact(&self, focus: FrameId) {
+        self.invalidate_decoder();
+        self.enter_scrub_cache_pipeline(focus);
     }
 
     /// Best interim canvas frame while exact `target` is missing from dense cache.
@@ -987,7 +996,34 @@ impl WebPlayer {
             return Ok(());
         }
         let epoch = self.shared.op_epoch.get();
+        // Scrub salvage / densify often already holds the next frames — move them
+        // into the presentation queue so Play after settle does not re-decode.
+        self.lift_dense_ahead_into_presentation();
         self.fill_presentation_queue(epoch).await
+    }
+
+    /// Move contiguous dense frames after the committed playhead into presentation.
+    ///
+    /// Ownership moves (no `VideoFrame.clone`). Pause parks them back via
+    /// [`Self::park_presentation_into_cache`].
+    fn lift_dense_ahead_into_presentation(&self) {
+        let mut next = self.state().frame.saturating_add(1);
+        while self.presentation_len() < PRESENTATION_QUEUE_CAP {
+            let taken = {
+                let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() else {
+                    break;
+                };
+                cache.take_frame(next)
+            };
+            let Some(video) = taken else {
+                break;
+            };
+            self.shared
+                .presentation
+                .borrow_mut()
+                .push_back(QueuedFrame { frame: next, video });
+            next = next.saturating_add(1);
+        }
     }
 
     pub fn frame_timestamp_seconds(&self, frame: FrameId) -> Result<f64, MediaError> {

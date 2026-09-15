@@ -137,11 +137,10 @@ impl VideoRef {
 
     pub fn play(&self) {
         self.ended.set(false);
-        // Start from the UI playhead (may be ahead of engine after scrub).
-        let ph = self.playhead.get_untracked();
-        if self.frame.get_untracked() != ph {
-            self.seek_frame(ph);
-        }
+        // Do **not** `seek_frame` here when `frame != playhead`. After scrub, settle
+        // is already cascading key→playhead; a Play-time seek cancels that work and
+        // restarts the GOP (multi-second lag on Wing It–class clips). PlayPrime
+        // waits behind settle (or seeks only if still mismatched after).
         if let Some(play) = self
             .ops
             .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.play)))
