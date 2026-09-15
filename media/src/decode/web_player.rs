@@ -1130,10 +1130,11 @@ impl WebPlayer {
             if lag_ms > 1.0 {
                 self.shared.last_behind_ms.set(Some(lag_ms));
             }
-            // During play, close the presented frame — pinning every frame into
-            // dense + presentation starved Chromium's VideoFrame pool on DRYP
-            // (mid-GOP `flush/idle` with decodeQ≈12). Pause/scrub re-seeds dense.
-            self.present_only(queued.video)?;
+            // Play presents are visited frames — park in dense so the strip stays
+            // continuous (lift_dense_ahead takes ahead into presentation; without
+            // put-back, playhead+ahead stays a hole and prefetch re-decodes).
+            // `present_only` is scrub preview only — see skills/media.md Scrub cache.
+            self.present_and_cache(queued.frame, queued.video)?;
             self.touch_playhead(queued.frame);
             self.shared.player.borrow_mut().commit_frame(queued.frame)?;
             did_draw = true;
