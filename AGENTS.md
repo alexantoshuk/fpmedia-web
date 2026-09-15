@@ -2,6 +2,15 @@
 
 Respect `.agentignore`.
 
+## Portable docs (no editor lock-in)
+
+Canonical project knowledge lives only in **`AGENTS.md`** + **`.ai/`**. It must stay usable by any editor or agent (Cursor, Zed, Claude Code, etc.).
+
+- **Do not** create or use a `.cursor/` tree (no `.cursor/rules`, no editor-only RULE.md mirrors).
+- **Do not** duplicate `.ai/` content into editor-specific rule folders, Copilot instructions, or parallel “agent notes” files.
+- Editor/IDE config that is not documentation (e.g. debug launch) is fine if it does not restate product/architecture/skills.
+- New durable guidance → the table in [Documentation (`.ai/`)](#documentation-ai) / [One source of truth](#one-source-of-truth). One-line pointers elsewhere only.
+
 ## Start of session
 
 1. Read `.ai/product.md` — domain + UX.
@@ -59,12 +68,14 @@ Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, 
 | Topic | Canonical home | Elsewhere |
 | ----- | -------------- | --------- |
 | Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
+| Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
 | Crate layout, layers, ADRs | `architecture.md` | Skills may keep a **module map** for one crate |
 | Backlog / priorities | `state.md` | Never a Done list; never copy into skills |
 | Engine traps / decode / scrub | `skills/media.md` | UI host points here for decode hangs |
 | Leptos / `<Video>` host traps | `skills/leptos.md` | Engine skill points here for UI stuck |
 | Dev commands | `AGENTS.md` | Do not duplicate in skills |
+| Editor-specific agent rules | **nowhere** | Forbidden — use `.ai/` + this file |
 
 If two files disagree, fix the canonical home and delete the duplicate prose.
 
