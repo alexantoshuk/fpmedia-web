@@ -1618,16 +1618,27 @@ impl WebPlayer {
     }
 
     async fn take_decoder(&self, epoch: u64) -> Result<WebCodecsDecoder, MediaError> {
-        // Macrotask yields — the peer that holds the decoder awaits `setTimeout(0)` /
-        // WebCodecs output. Microtask-only spins (Promise.resolve) can burn the
-        // whole wait in one turn and return "decoder busy" before the holder resumes.
-        for _ in 0..120 {
+        // Wait for a peer that holds the slot (prefetch / seek / GOP fill). Yield
+        // macrotasks — microtask-only spins can return busy before the holder
+        // resumes. Cap by wall-clock: Chromium often clamps `setTimeout(0)` to
+        // ~4ms, so a fixed 120-spin budget was only ~0.5s and false-fired
+        // `decoder busy` under play load (Firefox was fine).
+        // mediabunny: no shared slot — iterators use `terminated`; we cancel via
+        // `op_epoch` and must keep waiting while the epoch is current
+        // (`skills/leptos.md` Quick Pause→Play).
+        const TAKE_DECODER_WAIT_MS: f64 = 5_000.0;
+        let start = performance_now_ms().unwrap_or(0.0);
+        loop {
             if !self.is_current(epoch) {
                 return Err(MediaError::Cancelled);
             }
             let taken = self.decoder.borrow_mut().take();
             if let Some(decoder) = taken {
                 return Ok(decoder);
+            }
+            let now = performance_now_ms().unwrap_or(start);
+            if now - start >= TAKE_DECODER_WAIT_MS {
+                break;
             }
             sleep_ms(0).await;
         }

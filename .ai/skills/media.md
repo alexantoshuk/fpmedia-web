@@ -9,7 +9,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Symptom | Look first | Notes |
 | ------- | ---------- | ----- |
 | Hang / stuck on open, Play disabled | [WebCodecs decode](#webcodecs-decode), Chromium first AVC packet | `flush` hang, `busy`/`!ready`, lying sync |
-| `decoder busy` / `needs a key chunk` | Decoder lifecycle, Op cancel, Yields | macrotask `take_decoder`; clear warm state after `flush` |
+| `decoder busy` / `needs a key chunk` | Decoder lifecycle, Op cancel, Yields | `take_decoder` waits ~5s wall-clock (Chrome clamps `setTimeout(0)`); clear warm state after `flush` |
 | `backpressure timed out` | `decodeQueueSize` backpressure | wake on **new** output / take; dual-async pump waits at `q==0`; single-task (`decode_gop` / key cascade) still escapes |
 | Scrub exact slow / tab freeze on settle | [Scrub cache](#scrub-cache), backpressure | one key→N cascade + salvage; probes below |
 | Settle eng stuck / `q=41` or `flush/idle` | Scrub cache + `begin_key_cascade` | windowed salvage; recreate on key change; one cascade |
