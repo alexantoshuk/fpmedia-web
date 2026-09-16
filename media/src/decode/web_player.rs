@@ -19,7 +19,9 @@ use crate::decode::frame_cache::{
     ThumbCache,
 };
 use crate::decode::owned_video_frame::OwnedVideoFrame;
-use crate::decode::scrub_encode::{EncodeCanvasSlot, draw_image_bitmap, image_bitmap_from_chunk};
+use crate::decode::scrub_encode::{
+    EncodeCanvasSlot, SCRUB_SKIP_PLAY_WEBP_DATA_URL, draw_image_bitmap, image_bitmap_from_chunk,
+};
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
@@ -1655,7 +1657,15 @@ impl WebPlayer {
         let target_h = ((self.shared.canvas.height() as f64) / dpr)
             .round()
             .max(1.0) as u32;
-        let _ = ingest_scrub_frame_at(&self.shared, frame, video, true, target_w, target_h);
+        let _ = ingest_scrub_frame_at(
+            &self.shared,
+            frame,
+            video,
+            true,
+            target_w,
+            target_h,
+            SCRUB_SKIP_PLAY_WEBP_DATA_URL,
+        );
     }
 
     /// Draw a scrub-store hit via ImageBitmap LRU (`createImageBitmap` on miss).
@@ -2173,7 +2183,7 @@ fn ingest_scrub_frame_shared(
     // Match playback canvas (viewport × DPR); never larger than the frame display.
     let target_w = shared.canvas.width().max(1);
     let target_h = shared.canvas.height().max(1);
-    ingest_scrub_frame_at(shared, frame, video, replace, target_w, target_h)
+    ingest_scrub_frame_at(shared, frame, video, replace, target_w, target_h, false)
 }
 
 fn ingest_scrub_frame_at(
@@ -2183,9 +2193,15 @@ fn ingest_scrub_frame_at(
     replace: bool,
     target_w: u32,
     target_h: u32,
+    skip_data_url: bool,
 ) -> bool {
     let encoded = shared.encode_canvas.with_encoder(|enc| {
-        enc.encode_webp_with_blit(video.as_web_sys(), target_w.max(1), target_h.max(1))
+        enc.encode_webp_with_blit(
+            video.as_web_sys(),
+            target_w.max(1),
+            target_h.max(1),
+            skip_data_url,
+        )
     });
     drop(video);
     let Ok(encoded) = encoded else {

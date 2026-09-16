@@ -29,6 +29,11 @@ use crate::error::MediaError;
 /// Keep well below 1.0 — Chromium treats 1.0 as lossless and stalls encode.
 pub const SCRUB_WEBP_QUALITY: f64 = 0.5;
 
+/// **A/B (done):** Play ingest with transfer-only (no `toDataURL`) was smooth on
+/// fullscreen — jank is `toDataURL`, not blit/transfer. Keep `false` (real WebP);
+/// Worker v2 should move encode off main. Set `true` only to re-run the probe.
+pub const SCRUB_SKIP_PLAY_WEBP_DATA_URL: bool = false;
+
 /// One compressed Exact frame in system RAM.
 #[derive(Clone, Debug)]
 #[allow(dead_code)] // width/height reserved for blit scale / filmstrip
@@ -92,11 +97,14 @@ impl EncodeCanvas {
     /// Draw `frame` at viewport size (≤ source × monitor) → sync `ImageBitmap` + WebP.
     ///
     /// `target_w`/`target_h` are the playback canvas buffer pixels (layout × DPR).
+    /// When `skip_data_url`, stops after `transferToImageBitmap` (no `toDataURL`) —
+    /// A/B probe (`SCRUB_SKIP_PLAY_WEBP_DATA_URL`); bitmap is `black_box`'d then closed.
     pub fn encode_webp_with_blit(
         &self,
         frame: &VideoFrame,
         target_w: u32,
         target_h: u32,
+        skip_data_url: bool,
     ) -> Result<EncodedScrubFrame, MediaError> {
         let src_w = frame.display_width().max(1);
         let src_h = frame.display_height().max(1);
@@ -117,6 +125,18 @@ impl EncodeCanvas {
             .offscreen
             .transfer_to_image_bitmap()
             .map_err(MediaError::from)?;
+
+        if skip_data_url {
+            // Keep transfer work observable; do **not** call toDataURL (that would
+            // still encode and defeat the A/B). Quality const stays live for the
+            // real path below / across crates.
+            let bitmap = std::hint::black_box(bitmap);
+            std::hint::black_box(SCRUB_WEBP_QUALITY);
+            bitmap.close();
+            return Err(MediaError::WebCodecs(
+                "TEMP A/B: skip toDataURL (transfer-only)".into(),
+            ));
+        }
 
         if self.canvas.width() != width {
             self.canvas.set_width(width);

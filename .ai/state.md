@@ -4,7 +4,6 @@
 
 ## In progress
 
-- Play Exact: confirmed fullscreen jank = sync WebP ingest; choose off-on-Play / size-gate / Worker v2.
 - Spot-check BBB Play across GOP boundaries after soft sequential key switch (encode size = viewport ≤ source×monitor).
 
 ---
@@ -19,7 +18,8 @@
 
 ### Play Exact trail (follow-ups)
 
-- v2 (optional): post-present Worker WebP → store; abort backlog on underrun — only if v1 gates still leave main-thread encode starving rAF.
+- Fullscreen jank = sync `toDataURL` (A/B: transfer-only OK). Next: Worker WebP encode off main, or disable Play ingest / size-gate; densify stays sync.
+- v2: post-present Worker WebP → store; abort backlog on underrun.
 
 ### Media engine
 
