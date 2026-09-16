@@ -15,17 +15,25 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Settle eng stuck / `q=41` or `flush/idle` | Scrub cache + `begin_key_cascade` | windowed salvage; recreate on key change; one cascade |
 | Dense empty while scrubbing | Predictive densify, Scrub cache | finish in-flight GOP; don’t cancel mid-GOP on aim move |
 | Play freezes / low fps / mid-GOP `flush/idle` | presentation cap, warm held drain | small `PRESENTATION_QUEUE_CAP`; park PTS `>= target` |
-| Play underrun / huge `skipped`+`lag` then `q=41` | Behind-deadline skip | empty present queue + clock ahead → one `skip_behind` (not per-frame drip) |
-| Play start hole at playhead+ahead / strip stops filling | `present_and_cache` on play path | not `present_only`; densify is pause/scrub-only |
+| Periodic ~0.5s Play freeze every N frames (BBB) | GOP boundary cascade / `finish_gop` | soft sequential next-key (no recreate); short pre-flush drain |
+| Chrome `flush/idle` at GOP end (`fed=N,q>0`) | `finish_gop_for_target` | wall-clock drain before flush; DRYP frame 49 |
+| Play underrun / huge `skipped`+`lag` then `q=41` | Underrun clock hold | empty present → freeze media clock; resume when buffered (not skip spiral) |
+| Chrome play stutter / strip wipe / `flush/idle` mid-GOP (FF OK) | Play VideoFrame pool + underrun hold | keep densify trail (no play trim); DRYP |
+| Dense wiped on Play | `present_play_frame` / prime | do **not** trim Exact trail — budget/aim eviction only |
+| Scrub blit `source image could not be decoded` | WebP `atob` bytes | `char_code_at`, not `into_bytes`; soft miss → decode |
+| Cached scrub / Next-Prev lag on large viewport | Scrub WebP encode | encode = viewport ≤ source×monitor; abort densify on step |
+| Play stutter with growing Exact strip | densify must stay off | `abort_scrub_fill(false)` on Play; no fill rearm |
+| Dense stuck empty after Pause | `pause` densify kick + hold latch | clear `hold_densify_for_exact`; deferred kick if `scrub_busy` race |
 | Regress play/seek after a “local” decode knob tweak | `AGENTS.md` Mediabunny-first pre-edit gate | cite mediabunny path first — no latency/prune/queue invent |
-| Pause→Seek same / Prev→Next ≠ pause frame | Scrub cache `put_presented_frame` | canvas must replace dense resident |
+| Pause→Seek same / Prev→Next ≠ pause frame | Scrub cache `put_chunk` / present_and_cache | canvas must replace scrub resident |
 | Play lag right after scrub (long GOP) | Scrub cache + `skills/leptos.md` Play after scrub | seek restart / densify before PlayPrime |
+| Play after scrub no-op (esp. after EOF) | `skills/leptos.md` Play after scrub | UI `playing` before prime + stale clock → Ended kills PlayPrime |
 | A/V desync / silent play with audio track | [Audio + media clock](#audio--media-clock) | video must use `WebPlayer::media_time()` (AudioContext), not host wall-clock |
 | `RefCell already borrowed` (decode / scrub / open / Drop) | [RefCell / WASM re-entry](#refcell--wasm-re-entry) | `if let`/`while let` + `borrow_mut`; JS re-entry |
 | QT / large `.mov` open freeze | Demux `re_mp4` sample ranges | size-0 `skip_box`; no `CachedSource` during verify |
 | UI stuck / controls dead (not decode) | `skills/leptos.md` triage | OpQueue, `playing`, `spawn_local` |
 
-**Probes:** `e2e/player.smoke.spec.ts`; scrub settle `e2e/perf.scrub.settle.spec.ts`; drag→settle `e2e/perf.scrub.drag-settle.spec.ts`; general scrub `e2e/perf.scrub.probe.spec.ts`. **Decode-sink gate:** `e2e/perf.scrub.baseline.spec.ts` / `npm run e2e:baseline:save|compare` (BBB + Wing It; `e2e/baselines/`).
+**Probes:** `e2e/player.smoke.spec.ts`; **Chrome DRYP play** `e2e/player.play.dryp.spec.ts`; scrub settle `e2e/perf.scrub.settle.spec.ts`; drag→settle `e2e/perf.scrub.drag-settle.spec.ts`; general scrub `e2e/perf.scrub.probe.spec.ts`. **Decode-sink gate:** `e2e/perf.scrub.baseline.spec.ts` / `npm run e2e:baseline:save|compare` (BBB + Wing It; `e2e/baselines/`).
 
 ## Module map (`media/src`)
 
@@ -45,7 +53,8 @@ media/src/                 ← package name: webmedia
     ├── webcodecs.rs       ← DecoderCore + dual-async decode_frame; decode_gop
     ├── audio_output.rs    ← AudioDecoder → AudioBuffer → AudioContext schedule
     ├── owned_audio_data.rs← OwnedAudioData (close on drop)
-    ├── frame_cache.rs     ← DenseFrameCache + FrameRunIndex + ThumbCache shell
+    ├── frame_cache.rs     ← ScrubChunkStore + FrameRunIndex + ThumbCache shell
+    ├── scrub_encode.rs    ← VideoFrame → WebP + ImageBitmap blit
     ├── owned_video_frame.rs ← OwnedVideoFrame (close on drop)
     ├── canvas.rs          ← draw VideoFrame
     └── web_player.rs      ← WebPlayer façade (open_blob; optional audio)
@@ -105,7 +114,7 @@ UI host patterns (spawn_local, OpQueue, `playing` ownership, wall-clock play loo
 
 ## Frame and decode caches
 
-Decoded `VideoFrame` residency (`wasm` + `webcodecs`). Dual `VideoDecoder` so scrub fill does not steal play.
+Decoded Exact residency is **WebP chunks** (not long-lived `VideoFrame`s). Dual `VideoDecoder` so scrub fill does not steal play.
 
 ```text
   Play path                          Scrub / pause path
@@ -113,28 +122,30 @@ Decoded `VideoFrame` residency (`wasm` + `webcodecs`). Dual `VideoDecoder` so sc
   main VideoDecoder                  scrub VideoDecoder
        │                                    │
        ▼                                    ▼
-  presentation queue                 DenseFrameCache
-  (ahead, ~16 frames)                (visited + gap-fill)
+  presentation queue                 ScrubChunkStore (WebP)
+  (ahead, ~6 VideoFrames)            + ImageBitmap blit LRU (~4)
        │                                    │
        └──────────► canvas ◄────────────────┘
 ```
 
 | Store | Role | Ownership |
 | ----- | ---- | --------- |
-| **Presentation queue** | Play-ahead for deadline present | `WebPlayer` deque; `PRESENTATION_QUEUE_CAP` (16) |
-| **`DenseFrameCache`** | Exact-frame hits for scrub / step / seek | `BTreeMap` residency + aim/budget; `FrameRunIndex` for gaps |
-| **`ThumbCache`** | Filmstrip bitmaps (shell; not wired) | Separate LRU / budget from dense |
+| **Presentation queue** | Play-ahead for deadline present | `WebPlayer` deque; `PRESENTATION_QUEUE_CAP` (6) |
+| **`ScrubChunkStore`** | Exact scrub/step/seek residency | WebP bytes in RAM + `FrameRunIndex`; densify encodes then drops VF |
+| **`ScrubBlitLru`** | Live scrub blit | `createImageBitmap` LRU (`SCRUB_BLIT_LRU` = 4) |
+| **`ThumbCache`** | Filmstrip bitmaps (shell; not wired) | Separate from Exact chunks |
 
 | Constant | Default | Meaning |
 | -------- | ------- | ------- |
-| `DEFAULT_SCRUB_CACHE_MIB` | 1280 | Dense-cache RAM budget (decoded-frame estimate; clamped by `MAX_SCRUB_CACHE_FRAMES`) |
+| `DEFAULT_SCRUB_CACHE_MIB` | 1280 | Scrub-store frame budget (decoded-frame estimate; clamped by `MAX_SCRUB_CACHE_FRAMES`) |
 | `MIN_SCRUB_CACHE_FRAMES` / `MAX_SCRUB_CACHE_FRAMES` | 8 / 512 | Floor / ceiling after MiB→frames |
-| `PRESENTATION_QUEUE_CAP` | 16 | Play prefetch depth (independent of dense) |
+| `PRESENTATION_QUEUE_CAP` | 6 | Play prefetch depth (independent of scrub store) |
+| `SCRUB_BLIT_LRU` | 96 | Live ImageBitmap handles for scrub present (warm after encode) |
 | `SCRUB_CACHE_EDGE_MARGIN` | 24 | After `no_gaps`, re-arm fill only within N of either cache edge |
 
-**Byte → frames:** `scrub_cache_frame_budget(count, w, h, mib)` ≈ `mib×1024² / (w×h×1.5)` (YUV 4:2:0), then clamp to `[MIN, MAX]` and `frame_count`. Same budget for every `GopProfile`; short clips that fit stay fully resident. Wire via `VideoMetadata::scrub_cache_frame_budget`.
+**Byte → frames:** `scrub_cache_frame_budget(count, w, h, mib)` ≈ `mib×1024² / (w×h×1.5)` (YUV 4:2:0), then clamp to `[MIN, MAX]` and `frame_count`. Same budget for every `GopProfile`; short clips that fit stay fully resident. Wire via `VideoMetadata::scrub_cache_frame_budget`. (Compressed byte-budget eviction is a follow-up.)
 
-Eviction (dense): drop farthest from **aim**; protect the aim frame (victim = endpoint of **evictable** keys). Gap geometry lives in **`FrameRunIndex`**: O(1) when `no_gaps` / playhead missing / adjacent hole / cached `playhead_run`; else one BTree walk of the local run. Gap pick uses **predictive densify** (below). **Never** `(playhead > 0).then_some(playhead - 1)` — `then_some` evaluates the subtrahend eagerly and overflows at frame 0; use `checked_sub` / `filter`. Ownership: move into cache; borrow to draw (`with_frame` / `AsVideoFrame`) — see [Resource wrappers](#resource-wrappers).
+Eviction (scrub store): drop farthest from **aim**; protect the aim frame. Gap geometry lives in **`FrameRunIndex`**. Gap pick uses **predictive densify** (below). **Never** `(playhead > 0).then_some(playhead - 1)` — use `checked_sub` / `filter`. Encode: canvas `toDataURL('image/webp', 1.0)` at **playback buffer size** (viewport contain × DPR, ≤ source display **and** monitor `screen`×DPR) sync in densify `on_frame` so VF closes immediately (Chrome pool; lossy in practice). Blit: `createImageBitmap(Blob)` → draw. `relayout` size change clears scrub store + blit. Play does **not** inflate WebP→VideoFrame for the presentation queue (re-decode / prefetch). `mediabunny:` CanvasSink small canvas pool — no WebP store equivalent.
 
 ### Predictive densify (scrub direction)
 
@@ -171,11 +182,11 @@ Local invention (mediabunny has no equivalent) — fill policy + budget sizing; 
 | **Play** | Off (scrub epoch cancelled) | Present + prefetch into presentation queue |
 | **Scrub / paused** | On via scrub decoder (skipped for All-Intra) | Seeks / steps / PREV GOP fill as needed |
 
-**One entry:** `WebPlayer::enter_scrub_cache_pipeline(focus)` for pause, scrub drag/hold/release, and post-seek/step: scrub mode → park presentation queue into dense → aim at `focus` → `scrub_cache_fill_task` densifies the **GOP** of the next gap (predictive along scrub `dir` when set; else nearest, tie→behind) until budget-saturated. `play()` switches to Play mode and cancels scrub fill. **In-flight GOP densify is not cancelled when aim moves** (rapid drag used to abort mid-GOP and leave dense empty); aim only retargets the *next* gap after the current GOP finishes. Abort densify only on settle hold / play / scrub-epoch. **Scrub hybrid:** drag (`scrub_to(..., settle=false)`) keeps densify on; pointer-up settle calls `prepare_scrub_settle` (abort scrub epoch + reset scrub decoder + invalidate main + hold) **before** the async op — never `note_scrub_frame` on settle. Exact: **one** key→N cascade (`goto_frame_with_interim`, same as sync `seek_frame`). Cache-hit key may `commit_frame` early; do **not** `goto_frame(key)` then warm-continue (take key from `held` → `backpressure timed out (q=41, held=0)` on Wing It). Re-present `scrub_preview_choice` while exact runs. Salvage pruned PTS `< target` into dense **without blit** (`PruneInterim`) — do **not** drop salvage for strip aesthetics. Never blit interim. Fill task **exits** on hold. PREV still uses mid-GOP `fill_gop_into_cache` present.
+**One entry:** `WebPlayer::enter_scrub_cache_pipeline(focus)` for pause, scrub drag/hold/release, and post-seek/step: scrub mode → park presentation into **ScrubChunkStore** (WebP encode) → aim at `focus` → `scrub_cache_fill_task` densifies the **GOP** of the next gap until budget-saturated. `play()` switches to Play mode and cancels scrub fill. **In-flight GOP densify is not cancelled when aim moves**. Abort densify only on settle hold / play / scrub-epoch. **Scrub hybrid:** drag keeps densify on; pointer-up settle calls `prepare_scrub_settle` **before** the async op. Exact: **one** key→N cascade (`goto_frame_with_interim`). Salvage pruned PTS `< target` into scrub store **without blit**. Never blit interim. Fill task **exits** on hold. PREV uses mid-GOP `fill_gop_into_cache` present.
 
-**Contiguous arming:** `DenseFrameCache::no_gaps` when the extent is a single run. While `no_gaps` **and under frame budget**, keep expanding (`lo−1` / `hi+1`). Edge-idle (`SCRUB_CACHE_EDGE_MARGIN`) applies only when **at capacity** (shift window when playhead nears an edge). Visited scrub frames stay until budget eviction (farthest from aim) — do **not** wipe other runs on aim change.
+**Contiguous arming:** `ScrubChunkStore::no_gaps` when the extent is a single run. While `no_gaps` **and under frame budget**, keep expanding. Edge-idle (`SCRUB_CACHE_EDGE_MARGIN`) applies only when **at capacity**. Visited scrub frames stay until budget eviction (farthest from aim).
 
-Demo strip: dense exact (green) + presentation ahead (blue). While paused, `video` keeps rAF ticking so marks update during fill. Gap-fill streams each decoded frame into dense immediately (not a post-GOP batch).
+Demo strip: Exact WebP marks (green) + presentation ahead (blue). While paused, `video` keeps rAF ticking so marks update during fill. Gap-fill streams each decoded frame into the scrub store immediately (encode + drop VF).
 
 ## Gotchas
 
@@ -191,7 +202,7 @@ Demo strip: dense exact (green) + presentation ahead (blue). While paused, `vide
 ### WebCodecs decode
 
 - **Target match** — pick the sample with `frame == target_frame`. Never use `samples.last()`.
-- **Decoder lifecycle** — warm decode-order pump (`decode_frame`): feed next packets in the GOP until the target PTS is in `held`. Prefer feeding ahead over `flush()`. Do **not** `flush()` between playback frames in the same GOP. **After `flush()`, clear `key_order`/`fed_through`** — Chromium then requires a key chunk (`VideoDecoder needs a key chunk`); Play prime after open seek-0 failed when we flushed frame 0 but left warm state. Prefer one coax delta feed to emit the keyframe instead of flush. **`take_decoder` waits up to ~5s wall-clock** with macrotask yields — a fixed ~120×`setTimeout(0)` was only ~0.5s on Chromium (4ms clamp) and false-fired `decoder busy` during play while Firefox was fine. Cancel only on `op_epoch` change. **All-Intra:** never early-exit the key poll while `input_timestamps` remain; avoid multi-second flush (pins the slot) — hard re-feed once, short flush only as last resort. Soft `begin_key_cascade` only when queue empty and no pending remap.
+- **Decoder lifecycle** — warm decode-order pump (`decode_frame`): feed next packets in the GOP until the target PTS is in `held`. Prefer feeding ahead over `flush()`. Do **not** `flush()` between playback frames in the same GOP. **Play across GOP:** soft `begin_key_cascade(..., sequential_next_key=true)` when idle — feed the next IDR without `VideoDecoder` recreate (mediabunny range pump). Non-adjacent scrub jumps still hard-recreate. **After `flush()`, clear `key_order`/`fed_through`** — Chromium then requires a key chunk (`VideoDecoder needs a key chunk`); Play prime after open seek-0 failed when we flushed frame 0 but left warm state. Prefer one coax delta feed to emit the keyframe instead of flush. **`take_decoder` waits up to ~5s wall-clock** with macrotask yields — a fixed ~120×`setTimeout(0)` was only ~0.5s on Chromium (4ms clamp) and false-fired `decoder busy` during play while Firefox was fine. Cancel only on `op_epoch` change. **All-Intra:** never early-exit the key poll while `input_timestamps` remain; avoid multi-second flush (pins the slot) — hard re-feed once, short flush only as last resort. Soft `begin_key_cascade` only when queue empty and no pending remap.
 - **B-frame held buffer + PTS remap** — park not-yet-presented frames in `held` (`PTS >= target` during seek prune — never drop post-target or play/prefetch loses warm ahead). Prefer matching `VideoFrame.timestamp()` when present in `input_timestamps`, else FIFO. After taking the target, briefly drain already-decoded outputs into `held` before stopping the pump. **`optimizeForLatency: false`** for VOD (true → `backpressure q≈41` / mid-GOP wedge on DRYP play). Do **not** require `prefer-hardware` in `isConfigSupported`.
 - **`decodeQueueSize` backpressure** — mediabunny: `sampleQueue.length + decodeQueueSize > computeMaxQueueSize(…)` then `await queueDequeue` resolved on **new** sample output **or consumer take**. Port: `held.len() + decodeQueueSize` vs `compute_max_queue_size(held.len())`; wait on `ondequeue` / new `output` / `setTimeout(0)`. Wake dequeue waiters on output, `take_held`, prune-close, and GOP consumer drain (mediabunny `onQueueDequeue`). **Never** treat already-buffered `frames` as progress (instant re-wake while queue stuck → false `backpressure timed out` after ~2–3s). Do not count `held` toward the encoded cap beyond empty/non-empty max pick — held is B-frame reorder. **Dual-async `decode_frame`** (`DecoderCore` + `spawn_local` pump + consumer pull; `mediabunny: src/media-sink.ts mediaSamplesInRange`): pump sets `wait_for_consumer` and awaits at `q==0` until take/prune (starved-spin safety if the needed frame is still unfed). **Single-task paths** (`decode_gop`, key cascade) still escape at `q==0` — no concurrent taker. Wake consumer via `not_empty_waiters` when `held` gains samples. **While cascading key→N, close PTS `< target` in the same remap pass** (`collect_and_prune_held`) — park `>= target` so play/prefetch warm-continue works. Use mediabunny empty/non-empty depths (40/8) only. After `flush()`, clear `key_order`/`fed_through` even on miss (else next delta → `key frame required`). **Play:** `present_and_cache` (not `present_only`); keep `PRESENTATION_QUEUE_CAP` small (6). **`backpressure timed out (q≈41, held=0)`:** one hard `reset`+retry (same as flush/idle) — wedged Chromium after underrun catch-up. **After settle / sync exact:** `invalidate_decoder` before densify so leftover main `decodeQ` does not compete with the scrub decoder. **`decode_gop` (scrub fill):** drain remapped frames to `on_frame` / dense `insert_frame` as they emerge (`flush_held_into_gop` / `feed_sample_gop`) so `held` stays empty and the ready strip paints per tick — do **not** batch `insert_gop` after the whole GOP. Yield with **`setTimeout(0)`** (macrotask) between feeds so paused rAF can refresh the strip; microtask-only `Promise.resolve` chains starve painting. **Drag densify → settle:** `await_decode_capacity` / `feed_sample(_gop)` must honor cancel every spin (hold / scrub_epoch); do **not** run the 2s `flush_with_timeout` after cancel — abort hard-reset instead. Fill task on `Cancelled` + `hold_densify_for_exact` must **return immediately** (no sleep/continue) so `scrub_busy` clears and exact owns GPU.
 - **Closure reentrancy** — never `resolve.call0()` synchronously inside `output`/`dequeue` callbacks. Defer with **`spawn_local`**. On teardown: bump generation, `set_ondequeue(None)`, `close()`, **forget** old Closures.
@@ -229,7 +240,7 @@ loop {
 }
 ```
 
-Also: no `Ref`/`RefMut` across `.await`; clone `Rc`, await, put back. Teardown / nested paths: `try_borrow_mut` and skip (or drop) instead of panicking — `park_presentation_into_cache`, dense `insert_frame` eviction, `clear_dense_cache`, audio `stop`.
+Also: no `Ref`/`RefMut` across `.await`; clone `Rc`, await, put back. Teardown / nested paths: `try_borrow_mut` and skip (or drop) instead of panicking — `park_presentation_into_cache`, scrub `put_chunk` eviction, `clear_scrub_store`, audio `stop`.
 
 Host UI: `skills/leptos.md` (no borrow across await; defer scrub off `on:pointer*`).
 
@@ -237,26 +248,29 @@ Host UI: `skills/leptos.md` (no borrow across await; defer scrub off `on:pointer
 
 Model: [Frame and decode caches](#frame-and-decode-caches).
 
-- Visited frames via `present_and_cache` (**move**, not silent clone) — including the **play** present path (not `present_only`; that left dense stuck on the open/seek island so pause gap-fill saw holes around the real playhead). `present_only` is for uncommitted scrub preview only. **Must `put_presented_frame` (replace + force budget):** plain `insert_frame` skips existing ids / refuses far inserts → canvas shows A while dense keeps stale/missing A → Pause→Seek same frame or Prev→Next paints the wrong bitmap.
-- `seek_frame` must **not** `clear_dense_cache` / invalidate on every call.
+- Visited Exact frames via `present_and_cache` → WebP `put_chunk` (replace). Play presents use `present_play_frame` (draw + drop VF, no scrub ingest). `present_only` is for uncommitted scrub preview only.
+- `seek_frame` must **not** wipe scrub store / invalidate on every call.
+- **Long key→N / play mid-GOP `flush/idle`** — `optimizeForLatency: false` for VOD; park `PTS >= target` in seek `held`; after take, drain decodeQ into held; keep `PRESENTATION_QUEUE_CAP` small (6). Play does **not** ingest scrub chunks on present. After flush clear warm state. **GOP-end:** pump may finish with `q>0` (DRYP frame 49 `fed=49,q=5`); `finish_gop_for_target` short drain (~80ms) then flush if needed — a 400ms pre-flush drain underran Play every GOP on 1080p BBB. Soft sequential next-key on Play (no recreate). `e2e/perf.scrub.settle.spec.ts`, baseline `slow-large`.
+- **Periodic Play freeze ~0.5s every GOP** — was Long-GOP recreate on key change + long `finish_gop` drain → underrun hold. Soft sequential next-key when idle; scrub non-adjacent still hard. `mediabunny: src/media-sink.ts` continuous range.
+- **Play after scrub:** host must not `seek_frame` from `VideoRef::play` while settle targets the same playhead (restarts key→N). Settle success arms densify via `arm_scrub_densify_after_exact` only when no pending PlayPrime; cancelled settle must not densify/invalidate. `prime_playback` re-decodes into the presentation queue (no VF lift from scrub store).
 - Timeline drag: async `scrub_to` — interim canvas via `scrub_preview_choice`: **cached neighbor if `|c−t| ≤ |key−t|`**, else key (tie → cache; avoids key-flicker across holes). Never `commit_frame` **or densify** the preview (`present_only` / cache draw).
 - **Predictive densify:** drag updates `scrub_dir` (`note_scrub_direction`); `next_gap` hard-prefers along `dir` (`nearer_gap_with_dir`); settle/play `clear_scrub_direction` (neutral). Do **not** cancel an in-flight GOP densify when aim jumps (was: ≥8 frames / other key → constant cancel on rapid scrub, dense stayed empty). Aim only picks the next gap after the GOP completes; budget eviction still drops farthest-from-aim.
-- Pointer-up → `prepare_scrub_settle` (abort scrub epoch, reset scrub decoder, invalidate main decoder, set hold, clear dir) then **one** `goto_frame_with_interim(target)` (cache-hit key may commit first). Prune salvages PTS `< target` into dense only (no canvas blit). Exact commits when ready; densify after is cheap on that GOP.
-- **Settle / seek VideoFrame pool** — salvaging every pruned key→N `VideoFrame` into dense can pressure Chromium's pool. Symptom → close prune salvage farther than `INTERIM_SALVAGE_MAX_BEHIND_US`. Do **not** `trim_to_near` the whole dense strip on settle (pointer-up looked like cache vanishing on a warm region).
-- **Long key→N / play mid-GOP `flush/idle`** — `optimizeForLatency: false` for VOD; park `PTS >= target` in seek `held`; after take, drain decodeQ into held; keep `PRESENTATION_QUEUE_CAP` small (6). Play presents still use `present_and_cache` (not `present_only` — that left holes at playhead+ahead after `lift_dense_ahead`). After flush clear warm state. `e2e/perf.scrub.settle.spec.ts`, baseline `slow-large`.
-- **Play after scrub:** host must not `seek_frame` from `VideoRef::play` while settle targets the same playhead (restarts key→N). Settle success arms densify via `arm_scrub_densify_after_exact` only when no pending PlayPrime; cancelled settle must not densify/invalidate. `prime_playback` **moves** contiguous dense frames ahead of playhead into presentation (`take_frame`) before decoding.
+- Pointer-up → `prepare_scrub_settle` (abort scrub epoch, reset scrub decoder, invalidate main decoder, set hold, clear dir) then **one** `goto_frame_with_interim(target)` (cache-hit key may commit first). Prune salvages PTS `< target` into scrub store only (no canvas blit). Exact commits when ready; densify after is cheap on that GOP.
+- **Settle / seek VideoFrame pool** — salvaging every pruned key→N `VideoFrame` into the scrub encode path can pressure Chromium's pool. Symptom → close prune salvage farther than `INTERIM_SALVAGE_MAX_BEHIND_US`. Do **not** wipe the Exact trail on settle.
 - **Do not** blit interim (fake play). **Do not** drop salvage to “clean” the strip (forces a second full-GOP decode — warn user per `AGENTS.md` Suboptimal proposals). Do **not** `fill_gop` restart after key on settle — re-feeding the same key wedged at `decodeQ≈11` on Wing It. Do **not** `note_scrub_frame` on settle.
 - Fill task must **return** on hold (clear `scrub_busy`) and **must not respawn** while hold is set. Sync seek also `abort_scrub_fill` + salvage. Do **not** compact/wipe other runs on aim change — eviction is farthest-from-aim only.
-- `decode_gop` cancel hard-resets (`abort_gop_partial`); already-streamed frames stay in dense. Late empty-`input_timestamps` outputs are dropped (not hard-error). At capacity, `insert_frame` refuses farther-than-resident candidates.
+- `decode_gop` cancel hard-resets (`abort_gop_partial`); already-streamed frames stay in scrub store. Late empty-`input_timestamps` outputs are dropped (not hard-error). At capacity, insert refuses farther-than-resident candidates.
 - **Fill progress ≠ `frame_count` growth** — at capacity, evict+insert keeps len stable; count newly resident ids (or gap closed). After `idle_passes≥3`, set `fill_stalled_aim` so the task does not respawn until aim moves / `enter_scrub_cache_pipeline`. Hold optimistic scrub preview until `video.frame` matches.
-- PREV miss = whole GOP into dense (streamed); present target mid-GOP via `fill_gop_into_cache(..., Some(prev))`. `pause()` must not bump `scrub_epoch` when already paused; cache-hit PREV/NEXT must not `begin_op`.
+- PREV miss = whole GOP into scrub store (streamed); present target mid-GOP via `fill_gop_into_cache(..., Some(prev))`. `pause()` must not bump `scrub_epoch` when already paused; cache-hit PREV/NEXT must not `begin_op`.
 - **All-Intra:** soft key switch when idle (`begin_key_cascade`); **skip** gap-fill densify (1-packet seek).
 
 ### Playback and host
 
 Engine-side pacing notes; UI queue / signals: `skills/leptos.md`.
 
-- **Behind-deadline skip** — host rAF calls `skip_behind(lag)` when the presentation queue is empty and media time is ≥ ~0.5s past the next frame (`WebPlayer::play_underrun_behind`): one jump to catch-up (nearest keyframe if lag ≥ ~0.5s), invalidate on big lag. Do **not** let the clock run for seconds while prefetch drips (that became `skipped≈100`, `lag≈7s`, then `backpressure q=41,held=0`). Overdue frames already in the queue are still skipped inside `present_due`.
+- **Underrun clock hold** — when the presentation queue is empty mid-play, **freeze** the media clock (`hold_media_clock_for_underrun` / stop audio) and let prefetch refill; resume with `start_media_clock` at the snapped time. Do **not** prefer `skip_behind` here — Chrome DRYP raced audio → `skipped≈242` then Ended before EOF. `skip_behind` remains for explicit catch-up APIs; same-GOP soft (no dense wipe). EOF: do not `Ended` while presentation still holds frames. Probe: `e2e/player.play.dryp.spec.ts`.
+- **Play VideoFrame pool** — densify stays **off** while playing (`abort_scrub_fill(false)` on Play — no rearm). Exact marks live in **`ScrubChunkStore`** (WebP) and **must not** be cleared/trimmed on Play — only budget / farthest-from-aim eviction. Play does not lift chunks into the presentation queue (re-decode). Presentation queue stays small (`PRESENTATION_QUEUE_CAP`). **Pause** clears densify hold and kicks fill. Drag: `clear_densify_hold`. Probes: `e2e/player.smoke.spec.ts` (Pause densifies; Play preserves Exact trail); `e2e/player.play.dryp.spec.ts`.
+- **Scrub WebP encode** — densify: OffscreenCanvas `transferToImageBitmap` (sync blit) + `toDataURL` WebP at **viewport buffer** capped by source display + monitor (`screen`×DPR; was fixed edge 640). Blit eviction = farthest from playhead (classic LRU wiped Prev). Cache-hit Next/Prev: `touch_playhead` only — do **not** `enter_scrub_cache_pipeline` (re-kick densify encode). **Never** `atob`→`into_bytes`. Pause parks current frame only. Large viewport → slower densify (abort fill on step still).
 - **Freeze cause** — filling the whole prefetch queue *after* each present blocks the deadline (feels like short freezes on long/heavy clips). Prefetch must use wall-clock spare time instead.
 - **Playback tasks** — wall-clock media timeline + rAF present task and a **separate** prefetch task. `present_due` / `prefetch_one` take `&self` with interior mutability so decode awaits never block presents.
 - **Commit position after decode** — `window_at` + `commit_frame` so a failed decode does not advance the frame counter.
@@ -265,6 +279,6 @@ Engine-side pacing notes; UI queue / signals: `skills/leptos.md`.
 - **Timestamps in web-sys** — `EncodedVideoChunkInit` uses `i32` µs / `u32` duration; clamp long timelines.
 - **Workspace isolation** — do not import `video` / `app` / Leptos into `media/`.
 - **Mobile / LAN HTTP** — WebCodecs needs a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). `http://localhost` OK; LAN IP HTTP is not.
-- **Playback canvas size** — blit at CSS contain size × DPR (cap edge 1280), measured from the **parent viewport** box (object-fit: contain), not full coded res. **Lock** buffer size + CSS `aspect-ratio` on open / `WebPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. `video`: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`.
+- **Playback canvas size** — blit at CSS contain size × DPR, capped by **source display** and **monitor** (`screen` × DPR; removed fixed edge-1280). Measured from the **parent viewport** box (object-fit: contain). **Lock** buffer size + CSS `aspect-ratio` on open / `WebPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. `video`: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`.
 - **Throttle play UI** — do not `sync_ui` / update fps signals every frame; ~10 Hz is enough. Reactive status updates every present compete with decode/draw on the main thread.
 - **Prefetch at EOF** — if `prefetch_one` returns `false` (end of track / full), the background pump **must** `await` rAF (or sleep). `continue` without yield spins the main thread and freezes the tab.

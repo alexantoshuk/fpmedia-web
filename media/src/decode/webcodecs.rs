@@ -121,7 +121,7 @@ type GopSink<'a> = (
 ///
 /// Settle/seek installs this so one key→N cascade both yields exact **and** warms
 /// dense near the target (densify after exact is cheaper). Host must **not** blit —
-/// only `insert_frame` (blit looked like play from GOP start).
+/// only ingest into the scrub store (blit looked like play from GOP start).
 ///
 /// Only frames within [`INTERIM_SALVAGE_MAX_BEHIND_US`] of `target_us` are kept;
 /// farther ones are closed so the VideoFrame pool stays drained (mediabunny closes
@@ -320,11 +320,17 @@ impl DecoderCore {
 
     /// Start a new key→… cascade.
     ///
-    /// - Busy / `force_hard` / new sync on non-AllIntra → full [`Self::recreate`].
-    /// - Soft-clear alone on a new Long-GOP sync left Chromium warm from the
-    ///   previous GOP; key→N ≈111 then failed with `flush/idle without pts`.
-    /// - All-Intra keeps soft key switch (every frame is a sync).
-    fn begin_key_cascade(&mut self, key_do: usize, force_hard: bool) -> Result<(), MediaError> {
+    /// - Busy / `force_hard` → full [`Self::recreate`].
+    /// - Non-adjacent Long-GOP jump (scrub seek) → recreate — soft-clear alone
+    ///   left Chromium warm from the previous GOP; key→N then `flush/idle`.
+    /// - **Sequential** next sync (Play across GOP) or All-Intra → soft switch
+    ///   when idle (mediabunny range pump feeds the next IDR without recreate).
+    fn begin_key_cascade(
+        &mut self,
+        key_do: usize,
+        force_hard: bool,
+        sequential_next_key: bool,
+    ) -> Result<(), MediaError> {
         // Pull any already-delivered outputs before deciding idle vs hard reset.
         let _ = self.collect_outputs_into_held();
         self.clear_held();
@@ -335,7 +341,8 @@ impl DecoderCore {
         let pending_remap = !self.input_timestamps.is_empty();
         let busy = self.decode_queue_size() > 0 || pending_remap;
         let key_changed = matches!(self.key_order, Some(prev) if prev != key_do);
-        if force_hard || busy || (key_changed && !self.all_intra) {
+        let soft_ok = self.all_intra || sequential_next_key || !key_changed;
+        if force_hard || busy || (key_changed && !soft_ok) {
             self.recreate()?;
         } else {
             self.input_timestamps.clear();
@@ -766,9 +773,8 @@ impl WebCodecsDecoder {
                 wait_for_frame_progress(&core).await;
             }
             if !holds_target(&core, target_us)
-                && fed_order.is_some_and(|fed| {
-                    fed.saturating_sub(entry.decode_order) >= REORDER_FEED_SLACK
-                })
+                && fed_order
+                    .is_some_and(|fed| fed.saturating_sub(entry.decode_order) >= REORDER_FEED_SLACK)
             {
                 self.run_key_cascade(
                     track,
@@ -777,6 +783,7 @@ impl WebCodecsDecoder {
                     key_do,
                     target_us,
                     true,
+                    false,
                     is_cancelled,
                 )
                 .await?;
@@ -791,12 +798,19 @@ impl WebCodecsDecoder {
         // Restart when the GOP changes, or when the target was already emitted and
         // discarded (e.g. presentation queue cleared after prefetch) — WebCodecs
         // cannot re-emit a consumed frame without cascading from the key again.
-        let (needs_cascade, target_consumed) = {
+        let (needs_cascade, target_consumed, sequential_next) = {
             let c = core.borrow();
             let consumed = c.fed_through_order.is_some_and(|fed| {
                 entry.decode_order <= fed && !c.input_timestamps.contains(&target_us)
             });
-            (c.key_order != Some(key_do) || consumed, consumed)
+            let sequential = c
+                .key_order
+                .is_some_and(|prev| is_sequential_next_key(track, prev, key_do));
+            (
+                c.key_order != Some(key_do) || consumed,
+                consumed,
+                sequential,
+            )
         };
         if needs_cascade {
             self.run_key_cascade(
@@ -806,6 +820,7 @@ impl WebCodecsDecoder {
                 key_do,
                 target_us,
                 target_consumed,
+                sequential_next,
                 is_cancelled,
             )
             .await?;
@@ -913,6 +928,9 @@ impl WebCodecsDecoder {
     ///
     /// Single-task on purpose: the browser needs the key chunk before any
     /// further packet is useful, and the retry ladder recreates the decoder.
+    ///
+    /// `sequential_next_key`: Play advancing into the adjacent GOP — soft switch
+    /// when idle (no recreate). Scrub jumps keep this false.
     #[allow(clippy::too_many_arguments)]
     async fn run_key_cascade(
         &mut self,
@@ -922,12 +940,14 @@ impl WebCodecsDecoder {
         key_do: usize,
         target_us: i64,
         force_hard: bool,
+        sequential_next_key: bool,
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<(), MediaError> {
         let core = Rc::clone(&self.core);
-        // Soft key switch when idle — All-Intra hits a new sync every scrub step.
-        // Hard recreate only if the previous cascade left in-flight work / held.
-        core.borrow_mut().begin_key_cascade(key_do, force_hard)?;
+        // Soft key switch when idle — All-Intra / sequential Play GOP boundary.
+        // Hard recreate only if busy, force_hard, or non-adjacent Long-GOP jump.
+        core.borrow_mut()
+            .begin_key_cascade(key_do, force_hard, sequential_next_key)?;
         let key_sample = track.encoded_sample(key_id).await?;
         if is_cancelled() {
             return Err(MediaError::Cancelled);
@@ -1034,7 +1054,7 @@ impl WebCodecsDecoder {
             );
         }
 
-        core.borrow_mut().begin_key_cascade(key_do, false)?;
+        core.borrow_mut().begin_key_cascade(key_do, false, false)?;
 
         let key_sample = track.encoded_sample(key_frame).await?;
         if is_cancelled() {
@@ -1286,6 +1306,28 @@ fn holds_target(core: &Rc<RefCell<DecoderCore>>, target_us: i64) -> bool {
     core.borrow().held.iter().any(|h| h.pts_us == target_us)
 }
 
+/// True when `new_key_do` is the sync that immediately follows `prev_key_do`
+/// (Play crossing a GOP boundary). Scrub jumps to a non-adjacent key are false.
+fn is_sequential_next_key(track: &Mp4VideoTrack, prev_key_do: usize, new_key_do: usize) -> bool {
+    if new_key_do <= prev_key_do {
+        return false;
+    }
+    let Some(prev_key_frame) = track
+        .index()
+        .frames()
+        .iter()
+        .find(|e| e.is_sync && e.decode_order == prev_key_do)
+        .map(|e| e.frame)
+    else {
+        return false;
+    };
+    track
+        .index()
+        .next_keyframe_after(prev_key_frame)
+        .and_then(|nk| track.index().get(nk))
+        .is_some_and(|e| e.decode_order == new_key_do)
+}
+
 /// Drain outputs for up to `turns` macrotasks; `true` once the target is held.
 async fn poll_for_target(
     core: &Rc<RefCell<DecoderCore>>,
@@ -1316,61 +1358,117 @@ async fn poll_for_target(
 }
 
 /// End-of-input / reorder-slack: drain outputs, then flush once.
+///
+/// Chrome HW often still has `decodeQueueSize > 0` when the packet pump hits
+/// GOP end (DRYP frame 49: `fed=49, q=5, stamps=9`). A short fixed spin then
+/// `flush()` raced to timeout and reported `flush/idle` while work remained.
+/// mediabunny: `await decoder.flush()` after packets exhaust — wait for real
+/// drain/emit first (`src/media-sink.ts` mediaSamplesInRange).
 async fn finish_gop_for_target(
     core: &Rc<RefCell<DecoderCore>>,
     target_us: i64,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<OwnedVideoFrame>, MediaError> {
-    for _ in 0..32 {
-        if is_cancelled() {
-            return Err(MediaError::Cancelled);
-        }
-        await_outputs_if_pending(core).await?;
-        let idle = {
-            let mut c = core.borrow_mut();
-            c.collect_and_prune_held(target_us)?;
-            if let Some(ready) = c.take_held(target_us) {
-                return Ok(Some(ready));
-            }
-            c.decode_queue_size() == 0 && !c.raw_outputs_pending()
-        };
-        if idle {
-            break;
-        }
-    }
+    /// Brief drain for in-flight decodeQ at GOP end. Was 400ms — blocked
+    /// prefetch long enough for presentation (cap 6 ≈250ms) to underrun →
+    /// ~0.5s Play freeze every GOP on 1080p BBB. mediabunny awaits emit without
+    /// a long pre-flush sleep (`src/media-sink.ts` mediaSamplesInRange).
+    const DRAIN_BEFORE_FLUSH_MS: f64 = 80.0;
+    /// Extra wait after a timed-out flush while q/stamps remain.
+    const DRAIN_AFTER_FLUSH_MS: f64 = 800.0;
+
+    if let Some(ready) =
+        drain_for_target(core, target_us, DRAIN_BEFORE_FLUSH_MS, is_cancelled).await?
     {
-        let mut c = core.borrow_mut();
-        c.collect_and_prune_held(target_us)?;
-        if let Some(ready) = c.take_held(target_us) {
-            return Ok(Some(ready));
-        }
+        return Ok(Some(ready));
     }
+
     let pending = {
         let c = core.borrow();
         !c.input_timestamps.is_empty() || c.decode_queue_size() > 0
     };
     if pending {
-        let flushed = flush_with_timeout(core).await?;
-        let mut c = core.borrow_mut();
-        c.check_error()?;
-        c.collect_and_prune_held(target_us)?;
-        if let Some(ready) = c.take_held(target_us) {
-            c.fed_through_order = None;
-            c.key_order = None;
-            c.input_timestamps.clear();
-            return Ok(Some(ready));
+        // mediabunny awaits flush to completion; Chromium HW may need a few
+        // seconds for the last GOP frames — but do **not** spin 5s *before*
+        // flush (that starved play vs the audio clock on DRYP: skipped≈242).
+        let flushed = flush_with_timeout_ms(core, 3_000).await?;
+        {
+            let mut c = core.borrow_mut();
+            c.check_error()?;
+            c.collect_and_prune_held(target_us)?;
+            if let Some(ready) = c.take_held(target_us) {
+                c.fed_through_order = None;
+                c.key_order = None;
+                c.input_timestamps.clear();
+                return Ok(Some(ready));
+            }
         }
-        // Chromium requires a key chunk after flush — drop warm state even on miss
-        // so the next cascade recreates/feeds a key (play hit "key frame required"
-        // after finish_gop drained a warm GOP).
-        if flushed || c.decode_queue_size() == 0 {
-            c.fed_through_order = None;
-            c.key_order = None;
-            c.input_timestamps.clear();
-            c.packets_fed = 0;
+        if !flushed {
+            // Timer won while q still full — keep draining; do not clear warm yet.
+            if let Some(ready) =
+                drain_for_target(core, target_us, DRAIN_AFTER_FLUSH_MS, is_cancelled).await?
+            {
+                let mut c = core.borrow_mut();
+                c.fed_through_order = None;
+                c.key_order = None;
+                c.input_timestamps.clear();
+                return Ok(Some(ready));
+            }
+        }
+        {
+            let mut c = core.borrow_mut();
+            c.collect_and_prune_held(target_us)?;
+            if let Some(ready) = c.take_held(target_us) {
+                c.fed_through_order = None;
+                c.key_order = None;
+                c.input_timestamps.clear();
+                return Ok(Some(ready));
+            }
+            // Chromium requires a key chunk after flush — drop warm state even on
+            // miss so the next cascade recreates/feeds a key.
+            if flushed || c.decode_queue_size() == 0 {
+                c.fed_through_order = None;
+                c.key_order = None;
+                c.input_timestamps.clear();
+                c.packets_fed = 0;
+            }
         }
     }
     Ok(None)
+}
+
+/// Wait up to `budget_ms` for `target_us` to appear in `held`, or for the
+/// decoder to go fully idle.
+async fn drain_for_target(
+    core: &Rc<RefCell<DecoderCore>>,
+    target_us: i64,
+    budget_ms: f64,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Option<OwnedVideoFrame>, MediaError> {
+    let deadline = now_ms() + budget_ms;
+    loop {
+        if is_cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+        await_outputs_if_pending(core).await?;
+        {
+            let mut c = core.borrow_mut();
+            c.collect_and_prune_held(target_us)?;
+            if let Some(ready) = c.take_held(target_us) {
+                return Ok(Some(ready));
+            }
+            let idle = c.decode_queue_size() == 0
+                && !c.raw_outputs_pending()
+                && c.input_timestamps.is_empty();
+            if idle || now_ms() >= deadline {
+                break;
+            }
+        }
+        wait_for_frame_progress(core).await;
+    }
+    let mut c = core.borrow_mut();
+    c.collect_and_prune_held(target_us)?;
+    Ok(c.take_held(target_us))
 }
 
 async fn feed_sample(

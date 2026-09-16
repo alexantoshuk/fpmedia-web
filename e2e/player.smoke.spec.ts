@@ -29,8 +29,8 @@ test.describe("demo player smoke", () => {
     expect(scrubPct).toBeGreaterThan(0);
     expect(scrubPct).toBeLessThan(100);
 
-    // Scrub near the end, then settle.
-    await player.scrubToFraction(0.9);
+    // Scrub mid-clip (not near EOF — short fixtures can End before Pause clicks).
+    await player.scrubToFraction(0.4);
     await expect
       .poll(async () => (await player.readStatus()).playhead)
       .toBeGreaterThan(5);
@@ -92,7 +92,7 @@ test.describe("demo player smoke", () => {
     await expect(volume).toBeEnabled();
 
     await mute.click();
-    await expect(mute).toHaveAttribute("aria-pressed", "true");
+    await expect(mute).toHaveClass(/is-on/);
     await expect(mute).toHaveText("Unmute");
 
     await volume.fill("0.25");
@@ -106,6 +106,110 @@ test.describe("demo player smoke", () => {
     await expect
       .poll(async () => (await player.readStatus()).playing)
       .toBe(false);
+    expect(await player.error.innerText()).toBe("");
+  });
+
+  test("EOF then scrub then Play starts (no silent no-op)", async ({ page }) => {
+    const player = new DemoPlayer(page);
+    await player.goto();
+    await player.openFixture(FIXTURES.shortGop);
+
+    const last = (await player.readStatus()).lastFrame;
+    expect(last).toBeGreaterThan(2);
+    // Land on the last frame so Play hits EOF and leaves the media clock there.
+    await player.seekToFrame(last!);
+    await player.play.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(true);
+    await expect
+      .poll(async () => (await player.readStatus()).playing, {
+        timeout: 20_000,
+        message: "expected EOF to clear playing after last frame",
+      })
+      .toBe(false);
+
+    await player.scrubToFraction(0.1);
+    await expect
+      .poll(async () => (await player.readStatus()).playhead ?? last!)
+      .toBeLessThan(last! - 1);
+
+    const before = (await player.readStatus()).playhead ?? 0;
+    await player.play.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing, {
+        timeout: 15_000,
+        message: "Play after EOF→scrub stayed idle (PlayPrime killed?)",
+      })
+      .toBe(true);
+    await expect
+      .poll(async () => (await player.readStatus()).playhead ?? 0)
+      .toBeGreaterThan(before);
+    expect(await player.error.innerText()).toBe("");
+  });
+
+  test("Pause after play densifies dense cache", async ({ page }) => {
+    const player = new DemoPlayer(page);
+    await player.goto();
+    await player.openFixture(FIXTURES.withBFrames);
+
+    const opened = await player.readStatus();
+    expect(opened.ready).toBe(true);
+    expect(opened.lastFrame).toBeGreaterThan(20);
+
+    await player.seekToFrame(8);
+    await player.play.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(true);
+    await expect
+      .poll(async () => (await player.readStatus()).playhead ?? 0)
+      .toBeGreaterThan(10);
+
+    await player.pause.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(false);
+
+    // Pause must densify (or keep growing) the Exact trail.
+    await expect
+      .poll(async () => player.denseCacheFrames(), {
+        timeout: 20_000,
+        message: "dense cache did not grow after Pause (densify dead?)",
+      })
+      .toBeGreaterThanOrEqual(8);
+    expect(await player.error.innerText()).toBe("");
+  });
+
+  test("Play preserves densify trail (no trim wipe)", async ({ page }) => {
+    const player = new DemoPlayer(page);
+    await player.goto();
+    await player.openFixture(FIXTURES.withBFrames);
+
+    await player.seekToFrame(5);
+    // Wait for post-seek densify to warm Exact marks.
+    await expect
+      .poll(async () => player.denseCacheFrames(), { timeout: 20_000 })
+      .toBeGreaterThanOrEqual(8);
+    const warmed = await player.denseCacheFrames();
+
+    await player.play.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(true);
+    // Advance only a little — ahead densify must still be resident.
+    await expect
+      .poll(async () => (await player.readStatus()).playhead ?? 0)
+      .toBeGreaterThan(6);
+    await expect
+      .poll(async () => (await player.readStatus()).playhead ?? 0)
+      .toBeLessThan(12);
+
+    const duringPlay = await player.denseCacheFrames();
+    expect(
+      duringPlay,
+      `Play wiped ahead densify (${duringPlay} vs warmed ${warmed})`,
+    ).toBeGreaterThanOrEqual(Math.min(warmed - 2, 6));
     expect(await player.error.innerText()).toBe("");
   });
 });

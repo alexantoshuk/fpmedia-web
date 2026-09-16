@@ -13,9 +13,11 @@ use crate::MediaClock;
 use crate::decode::audio_output::AudioOutput;
 use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, draw_frame_with_context};
 use crate::decode::frame_cache::{
-    DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, DenseFrameCache, ThumbCache,
+    DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, SCRUB_BLIT_LRU, ScrubBlitLru, ScrubChunkStore,
+    ThumbCache,
 };
 use crate::decode::owned_video_frame::OwnedVideoFrame;
+use crate::decode::scrub_encode::{EncodeCanvasSlot, draw_image_bitmap, image_bitmap_from_chunk};
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
@@ -51,9 +53,13 @@ enum CacheFillMode {
 struct Shared {
     player: RefCell<Player>,
     presentation: RefCell<VecDeque<QueuedFrame>>,
-    /// Unified playhead cache (visited + gap-filled frames).
-    dense_cache: RefCell<DenseFrameCache>,
-    /// Filmstrip thumbs (caller-sized); separate budget from dense.
+    /// Exact scrub store (WebP chunks) — densify / seek / step residency.
+    scrub_chunks: RefCell<ScrubChunkStore>,
+    /// Live blit LRU for scrub present (`createImageBitmap`).
+    scrub_blit: RefCell<ScrubBlitLru>,
+    /// Reusable canvas for VideoFrame → WebP encode.
+    encode_canvas: EncodeCanvasSlot,
+    /// Filmstrip thumbs (caller-sized); separate budget from scrub chunks.
     thumb_cache: RefCell<ThumbCache>,
     /// Second decoder for background gap fill (does not steal main playback).
     scrub_decoder: RefCell<Option<WebCodecsDecoder>>,
@@ -96,9 +102,9 @@ struct Shared {
 /// Why a frame is marked ready on the demo timeline strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadyFrameKind {
-    /// Exact decoded frame in the playhead cache.
+    /// Exact frame in the scrub WebP chunk store.
     Exact,
-    /// In the play presentation / ahead queue.
+    /// In the play presentation / ahead queue (live `VideoFrame`).
     Ahead,
 }
 
@@ -237,7 +243,7 @@ impl WebPlayer {
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
         let ctx = canvas_2d(&canvas)?;
-        let max_frames = DenseFrameCache::budget_for_clip(&meta);
+        let max_frames = meta.scrub_cache_frame_budget();
         let audio = match audio_track {
             Some(t) => match AudioOutput::create(t).await {
                 Ok(a) => {
@@ -265,7 +271,9 @@ impl WebPlayer {
         let shared = Rc::new(Shared {
             player: RefCell::new(player),
             presentation: RefCell::new(VecDeque::new()),
-            dense_cache: RefCell::new(DenseFrameCache::new(max_frames)),
+            scrub_chunks: RefCell::new(ScrubChunkStore::new(max_frames)),
+            scrub_blit: RefCell::new(ScrubBlitLru::new(SCRUB_BLIT_LRU)),
+            encode_canvas: EncodeCanvasSlot::default(),
             thumb_cache: RefCell::new(ThumbCache::new(DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS)),
             scrub_decoder: RefCell::new(None),
             scrub_epoch: Cell::new(0),
@@ -396,6 +404,16 @@ impl WebPlayer {
         t
     }
 
+    /// Freeze the media clock while the presentation queue is empty.
+    ///
+    /// Prefer this over `skip_behind` when Chromium decode briefly lags the
+    /// audio clock (DRYP: skip spiral → `skipped≈242` then End before EOF).
+    /// Keeps `playing` true; host resumes via [`Self::start_media_clock`] once
+    /// prefetch has frames again.
+    pub fn hold_media_clock_for_underrun(&self) -> f64 {
+        self.stop_media_clock()
+    }
+
     pub fn state(&self) -> PlayerState {
         self.shared.player.borrow().state()
     }
@@ -405,9 +423,29 @@ impl WebPlayer {
     }
 
     /// Recompute canvas buffer from current CSS layout × DPR (call on container resize).
+    ///
+    /// Scrub WebP chunks match the playback buffer size — wipe Exact trail + blit
+    /// LRU when the buffer changes so Pause→seek is not soft from an old encode.
     pub fn relayout(&self) -> Result<(), MediaError> {
         let meta = self.metadata();
-        configure_canvas_for_video(&self.shared.canvas, meta.width, meta.height)
+        let before = (self.shared.canvas.width(), self.shared.canvas.height());
+        configure_canvas_for_video(&self.shared.canvas, meta.width, meta.height)?;
+        let after = (self.shared.canvas.width(), self.shared.canvas.height());
+        if before != after {
+            self.invalidate_scrub_store_for_resize();
+        }
+        Ok(())
+    }
+
+    /// Drop viewport-sized scrub residency after layout change (densify rebuilds).
+    fn invalidate_scrub_store_for_resize(&self) {
+        self.abort_scrub_fill(true);
+        if let Ok(mut cache) = self.shared.scrub_chunks.try_borrow_mut() {
+            cache.clear();
+        }
+        if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+            blit.clear();
+        }
     }
 
     pub fn is_playing(&self) -> bool {
@@ -416,9 +454,12 @@ impl WebPlayer {
 
     pub fn play(&self) {
         self.shared.fill_mode.set(CacheFillMode::Play);
-        // WASM is single-threaded — cancel scrub cache fill so it cannot
-        // steal the event loop from present/prefetch.
-        self.cancel_ops_and_scrub_fill();
+        // Cancel densify hard — do **not** rearm `scrub_pending` (Play must not
+        // keep filling gaps). Leave Exact scrub-store residency alone — eviction
+        // is budget / farthest-from-aim only, never wipe on Play.
+        self.cancel_ops();
+        self.abort_scrub_fill(false);
+        self.clear_scrub_direction();
         self.shared.player.borrow_mut().play();
         self.shared.frames_skipped.set(0);
         self.shared.last_behind_ms.set(None);
@@ -434,8 +475,43 @@ impl WebPlayer {
         }
         self.shared.player.borrow_mut().pause();
         self.clear_loop_prime();
+        // Never leave densify blocked behind a settle hold after pause / transport stop.
+        // (`prepare_scrub_settle` + cancelled settle, or play-after-scrub skipping arm,
+        // could latch hold/pending with no running fill task.)
+        self.shared.hold_densify_for_exact.set(false);
         // Same pipeline as scrub drag / hold / release.
         self.enter_scrub_cache_pipeline(self.state().frame);
+        if was_playing {
+            // Cancelled fill may still have `scrub_busy` until its finally runs;
+            // schedule only latches pending then. Kick again after a turn so pause
+            // densify is not lost when the busy race clears without want_again.
+            self.shared.scrub_pending.set(true);
+            let shared = Rc::clone(&self.shared);
+            wasm_bindgen_futures::spawn_local(async move {
+                yield_event_loop().await;
+                if shared.hold_densify_for_exact.get()
+                    || shared.fill_mode.get() == CacheFillMode::Play
+                    || shared.player.borrow().state().playing
+                    || matches!(
+                        shared.player.borrow().metadata().gop_profile,
+                        GopProfile::AllIntra
+                    )
+                {
+                    return;
+                }
+                if shared.scrub_busy.get() {
+                    shared.scrub_pending.set(true);
+                    return;
+                }
+                if next_gap_target(&shared).is_none() {
+                    return;
+                }
+                shared.scrub_busy.set(true);
+                shared.scrub_pending.set(false);
+                let again = Rc::clone(&shared);
+                let _ = scrub_cache_fill_task(again).await;
+            });
+        }
     }
 
     /// Aim + park only — no densify kick. Used while the main decoder owns an
@@ -543,6 +619,30 @@ impl WebPlayer {
         // the cache vanishing even when releasing on a warm region.
     }
 
+    /// Drag sample entry — clear exact-hold so densify can run under the finger.
+    ///
+    /// `prepare_scrub_settle` may have latched hold; if settle is superseded by a
+    /// new drag before `scrub_to` clears it, densify stayed dead until Pause.
+    pub fn clear_densify_hold(&self) {
+        if !self.shared.hold_densify_for_exact.get() {
+            return;
+        }
+        self.shared.hold_densify_for_exact.set(false);
+        self.schedule_scrub_cache_fill();
+    }
+
+    /// Snap the paused media clock to the committed playhead.
+    ///
+    /// Scrub/seek update `Player` frame but used to leave `MediaClock` at the
+    /// prior pause/EOF time. PlayPrime must not let rAF see that stale time
+    /// (Ended → stop_playback mid-prime); snapping also keeps `media_time()`
+    /// honest while paused. mediabunny: seek updates `playbackTime`.
+    fn snap_media_clock_to_playhead(&self) {
+        let t = self.state().timestamp.seconds;
+        self.shared.wall_origin.set(None);
+        self.shared.clock.borrow_mut().snap(t);
+    }
+
     fn begin_op(&self) -> u64 {
         self.cancel_ops();
         self.shared.op_epoch.get()
@@ -580,7 +680,7 @@ impl WebPlayer {
             )
         };
         let (cache_chunks, cache_frames, cache_cap, cache_no_gaps, ready_frames, win_from, win_to) = {
-            let cache = self.shared.dense_cache.borrow();
+            let cache = self.shared.scrub_chunks.borrow();
             let extent = cache.extent();
             let mut ready = Vec::new();
             for id in cache.cached_frame_ids() {
@@ -595,8 +695,6 @@ impl WebPlayer {
                         frame,
                         kind: ReadyFrameKind::Ahead,
                     });
-                } else if let Some(m) = ready.iter_mut().find(|m| m.frame == frame) {
-                    m.kind = ReadyFrameKind::Ahead;
                 }
             }
             ready.sort_by_key(|m| m.frame);
@@ -666,7 +764,7 @@ impl WebPlayer {
             self.shared.player.borrow_mut().pause();
             self.clear_loop_prime();
             self.aim_scrub_cache(frame);
-            if self.present_from_cache(frame)? {
+            if self.present_from_cache(frame).await? {
                 self.shared.player.borrow_mut().commit_frame(frame)?;
                 return Ok(());
             }
@@ -675,7 +773,7 @@ impl WebPlayer {
             if let Some(preview) = self.scrub_preview_frame(frame)
                 && preview != frame
             {
-                let _ = self.present_from_cache(preview);
+                let _ = self.present_from_cache(preview).await;
             }
             self.goto_frame_with_interim(frame, epoch).await
         }
@@ -687,6 +785,7 @@ impl WebPlayer {
             return Err(MediaError::Cancelled);
         }
         result?;
+        self.snap_media_clock_to_playhead();
         self.arm_scrub_densify_after_exact(self.state().frame);
         Ok(())
     }
@@ -735,7 +834,7 @@ impl WebPlayer {
             self.shared.player.borrow_mut().pause();
             self.clear_loop_prime();
 
-            if self.present_from_cache(frame)? {
+            if self.present_from_cache(frame).await? {
                 self.shared.player.borrow_mut().commit_frame(frame)?;
                 return Ok(());
             }
@@ -748,13 +847,13 @@ impl WebPlayer {
                 && preview != frame
             {
                 if settle {
-                    let _ = self.present_from_cache(preview);
+                    let _ = self.present_from_cache(preview).await;
                 } else {
                     self.draw_frame_unccommitted(preview, epoch).await?;
                     if !self.is_current(epoch) {
                         return Err(MediaError::Cancelled);
                     }
-                    if self.present_from_cache(frame)? {
+                    if self.present_from_cache(frame).await? {
                         self.shared.player.borrow_mut().commit_frame(frame)?;
                         return Ok(());
                     }
@@ -771,9 +870,9 @@ impl WebPlayer {
                 if let Some(key) = self.key_for(frame)
                     && key != frame
                 {
-                    if self.present_from_cache(key)? {
+                    if self.present_from_cache(key).await? {
                         self.shared.player.borrow_mut().commit_frame(key)?;
-                        if self.present_from_cache(frame)? {
+                        if self.present_from_cache(frame).await? {
                             self.shared.player.borrow_mut().commit_frame(frame)?;
                             return Ok(());
                         }
@@ -781,7 +880,7 @@ impl WebPlayer {
                     if let Some(preview) = self.scrub_preview_frame(frame)
                         && preview != frame
                     {
-                        let _ = self.present_from_cache(preview);
+                        let _ = self.present_from_cache(preview).await;
                     }
                 }
                 self.goto_frame_with_interim(frame, epoch).await
@@ -801,10 +900,13 @@ impl WebPlayer {
             // Densify is armed by the host *after* the drain loop can see a queued
             // PlayPrime — otherwise invalidate + scrub HW kick cause play-after-scrub
             // lag on long GOPs (Wing It). Drag still densifies below.
+            // Do **not** `schedule_scrub_cache_fill` here when Play is pending — host
+            // skips `arm_scrub_densify_after_exact` on purpose; Pause restarts fill.
         } else {
             self.enter_scrub_cache_pipeline(frame);
         }
         result?;
+        self.snap_media_clock_to_playhead();
         Ok(())
     }
 
@@ -823,7 +925,7 @@ impl WebPlayer {
     /// cache: already decoded, no key jump). Otherwise the nearest sync key.
     fn scrub_preview_frame(&self, target: FrameId) -> Option<FrameId> {
         let key = self.key_for(target);
-        let cached = self.shared.dense_cache.borrow().nearest_frame(target);
+        let cached = self.shared.scrub_chunks.borrow().nearest_frame(target);
         crate::scrub_preview_choice(target, key, cached)
     }
 
@@ -832,7 +934,7 @@ impl WebPlayer {
     /// Cache hits draw in place. Key (uncached) previews decode without inserting
     /// into dense — orphan syncs must not punch holes outside the scrub window.
     async fn draw_frame_unccommitted(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
-        if self.present_from_cache(frame)? {
+        if self.present_from_cache(frame).await? {
             return Ok(());
         }
         let track = self.shared.player.borrow().track_rc();
@@ -846,6 +948,8 @@ impl WebPlayer {
 
     pub async fn next_frame(&self) -> Result<(), MediaError> {
         self.shared.player.borrow_mut().pause();
+        // Stop background densify encode — sync WebP on the main thread stalls steps.
+        self.abort_scrub_fill(false);
         let next = self.state().frame.saturating_add(1);
         // Reuse prefetch when present — clearing the queue would close the only
         // copy of frames the warm decoder already emitted.
@@ -857,33 +961,39 @@ impl WebPlayer {
                 self.present_and_cache(queued.frame, queued.video)?;
                 self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                 self.enter_scrub_cache_pipeline(queued.frame);
+                self.snap_media_clock_to_playhead();
                 return Ok(());
             }
         }
-        // Instant next from dense cache (e.g. after stepping back).
-        if self.present_from_cache(next)? {
+        // Instant next from scrub blit / chunk store (e.g. after stepping back).
+        if self.present_from_cache(next).await? {
             self.shared.player.borrow_mut().commit_frame(next)?;
-            self.enter_scrub_cache_pipeline(next);
+            // Aim only — do not re-kick densify (sync WebP encode was stalling steps).
+            self.touch_playhead(next);
+            self.snap_media_clock_to_playhead();
             return Ok(());
         }
         let epoch = self.begin_op();
         self.enter_scrub_cache_pipeline(next);
         self.goto_frame(next, epoch).await?;
         self.enter_scrub_cache_pipeline(self.state().frame);
+        self.snap_media_clock_to_playhead();
         Ok(())
     }
 
     pub async fn previous_frame(&self) -> Result<(), MediaError> {
         self.shared.player.borrow_mut().pause();
+        self.abort_scrub_fill(false);
         let cur = self.state().frame;
         if cur == 0 {
             return Err(MediaError::FrameOutOfRange(0, self.state().frame_count));
         }
         let prev = cur - 1;
-        // Prefer dense cache — key→N cascade is multi-second on long GOPs.
-        if self.present_from_cache(prev)? {
+        // Prefer scrub blit / chunk — key→N cascade is multi-second on long GOPs.
+        if self.present_from_cache(prev).await? {
             self.shared.player.borrow_mut().commit_frame(prev)?;
-            self.enter_scrub_cache_pipeline(prev);
+            self.touch_playhead(prev);
+            self.snap_media_clock_to_playhead();
             return Ok(());
         }
         let epoch = self.begin_op();
@@ -896,11 +1006,12 @@ impl WebPlayer {
                     if !self.is_current(epoch) {
                         return Err(MediaError::Cancelled);
                     }
-                    if self.state().frame == prev || self.present_from_cache(prev)? {
+                    if self.state().frame == prev || self.present_from_cache(prev).await? {
                         if self.state().frame != prev {
                             self.shared.player.borrow_mut().commit_frame(prev)?;
                         }
                         self.enter_scrub_cache_pipeline(prev);
+                        self.snap_media_clock_to_playhead();
                         return Ok(());
                     }
                 }
@@ -913,6 +1024,7 @@ impl WebPlayer {
         self.invalidate_decoder();
         self.goto_frame(prev, epoch).await?;
         self.enter_scrub_cache_pipeline(self.state().frame);
+        self.snap_media_clock_to_playhead();
         Ok(())
     }
 
@@ -958,8 +1070,8 @@ impl WebPlayer {
             if presentation.front().is_some_and(|f| f.frame == target) {
                 let queued = presentation.pop_front().expect("front checked");
                 drop(presentation);
-                // Visited play frames belong in dense (same as goto / step).
-                self.present_and_cache(queued.frame, queued.video)?;
+                // Play path: playhead-only dense (same as present_due).
+                self.present_play_frame(queued.frame, queued.video)?;
                 self.touch_playhead(queued.frame);
                 self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                 return Ok(self.has_more_playback());
@@ -967,8 +1079,21 @@ impl WebPlayer {
         }
 
         self.clear_presentation();
-        if behind_seconds >= BIG_LAG_SECONDS {
-            self.clear_dense_cache();
+        // Soft catch-up (mediabunny `updateNextFrame` loop): keep warm decode +
+        // dense when the target stays in the same GOP. Hard invalidate only when
+        // catch-up crosses into a later GOP — a full key→N after wipe was Chrome
+        // DRYP's stutter loop (play a few → clear strip → flush/idle mid-GOP).
+        // Do **not** `clear_scrub_store` here — scrub residency is unrelated to
+        // underrun and wiping it was the visible "cache vanishes" symptom.
+        let hard_seek = !self.is_all_intra() && {
+            let player = self.shared.player.borrow();
+            let index = player.track().index();
+            match (index.nearest_keyframe(next), index.nearest_keyframe(target)) {
+                (Some(nk), Some(tk)) => tk != nk,
+                _ => true,
+            }
+        };
+        if hard_seek {
             self.invalidate_decoder();
         }
         let epoch = self.shared.op_epoch.get();
@@ -1001,34 +1126,10 @@ impl WebPlayer {
             return Ok(());
         }
         let epoch = self.shared.op_epoch.get();
-        // Scrub salvage / densify often already holds the next frames — move them
-        // into the presentation queue so Play after settle does not re-decode.
-        self.lift_dense_ahead_into_presentation();
+        // Scrub store is WebP-only — play re-decodes into the presentation queue.
+        // Do **not** trim scrub residency on Play — eviction is
+        // budget / farthest-from-aim only (Pause densify paid for that trail).
         self.fill_presentation_queue(epoch).await
-    }
-
-    /// Move contiguous dense frames after the committed playhead into presentation.
-    ///
-    /// Ownership moves (no `VideoFrame.clone`). Pause parks them back via
-    /// [`Self::park_presentation_into_cache`].
-    fn lift_dense_ahead_into_presentation(&self) {
-        let mut next = self.state().frame.saturating_add(1);
-        while self.presentation_len() < PRESENTATION_QUEUE_CAP {
-            let taken = {
-                let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() else {
-                    break;
-                };
-                cache.take_frame(next)
-            };
-            let Some(video) = taken else {
-                break;
-            };
-            self.shared
-                .presentation
-                .borrow_mut()
-                .push_back(QueuedFrame { frame: next, video });
-            next = next.saturating_add(1);
-        }
     }
 
     pub fn frame_timestamp_seconds(&self, frame: FrameId) -> Result<f64, MediaError> {
@@ -1048,22 +1149,38 @@ impl WebPlayer {
         self.shared.presentation.borrow().len()
     }
 
-    /// Media-clock seconds ahead of the next needed frame while the presentation
-    /// queue is empty (play underrun). `None` if not underrunning or lag below
-    /// [`BIG_LAG_SECONDS`]. Host should call [`Self::skip_behind`] once — not
-    /// drip-decode every missed present (that wedges `q≈41, held=0`).
-    pub fn play_underrun_behind(&self) -> Option<f64> {
+    /// True underrun: presentation empty while the next frame is already due.
+    ///
+    /// Used to freeze the media clock (not for `skip_behind`). Distinct from a
+    /// healthy empty queue while waiting for the next frame's deadline.
+    pub fn play_underrun_hold(&self) -> bool {
         if !self.is_playing() || self.shared.restarting.get() {
-            return None;
+            return false;
         }
         if self.presentation_len() > 0 {
-            return None;
+            return false;
         }
         let state = self.state();
         let next = state.frame.saturating_add(1);
         if next >= state.frame_count {
+            return false;
+        }
+        let Ok(start) = self.frame_timestamp_seconds(next) else {
+            return false;
+        };
+        self.media_time() >= start
+    }
+
+    /// Media-clock seconds ahead of the next needed frame while the presentation
+    /// queue is empty (play underrun). `None` if not underrunning or lag below
+    /// [`BIG_LAG_SECONDS`]. Prefer [`Self::play_underrun_hold`] + clock freeze for
+    /// Chrome; `skip_behind` remains for explicit catch-up.
+    pub fn play_underrun_behind(&self) -> Option<f64> {
+        if !self.play_underrun_hold() {
             return None;
         }
+        let state = self.state();
+        let next = state.frame.saturating_add(1);
         let start = self.frame_timestamp_seconds(next).ok()?;
         let behind = self.media_time() - start;
         (behind >= BIG_LAG_SECONDS).then_some(behind)
@@ -1105,12 +1222,18 @@ impl WebPlayer {
                 + (last.duration_ticks as f64 / last.timescale.max(1) as f64)
         };
         if media_time_secs >= last_end {
-            if self.is_looping() {
+            // Do not End while decoded frames remain — audio can reach duration
+            // while video is still draining the presentation queue after an
+            // underrun hold (DRYP stopped at 347/368 with empty error).
+            if self.presentation_len() > 0 {
+                // Fall through to present remaining due frames at EOF.
+            } else if self.is_looping() {
                 return Ok(DuePresent::NeedsLoop);
+            } else {
+                self.shared.player.borrow_mut().pause();
+                self.clear_presentation();
+                return Ok(DuePresent::Ended);
             }
-            self.shared.player.borrow_mut().pause();
-            self.clear_presentation();
-            return Ok(DuePresent::Ended);
         }
 
         let mut did_draw = false;
@@ -1151,11 +1274,8 @@ impl WebPlayer {
             if lag_ms > 1.0 {
                 self.shared.last_behind_ms.set(Some(lag_ms));
             }
-            // Play presents are visited frames — park in dense so the strip stays
-            // continuous (lift_dense_ahead takes ahead into presentation; without
-            // put-back, playhead+ahead stays a hole and prefetch re-decodes).
-            // `present_only` is scrub preview only — see skills/media.md Scrub cache.
-            self.present_and_cache(queued.frame, queued.video)?;
+            // Play: keep densify ahead of playhead; drop only behind (pool pressure).
+            self.present_play_frame(queued.frame, queued.video)?;
             self.touch_playhead(queued.frame);
             self.shared.player.borrow_mut().commit_frame(queued.frame)?;
             did_draw = true;
@@ -1215,7 +1335,7 @@ impl WebPlayer {
         };
 
         self.clear_presentation();
-        self.clear_dense_cache();
+        self.clear_scrub_store();
         self.present_and_cache(first.frame, first.video)?;
         self.touch_playhead(first.frame);
         self.shared.player.borrow_mut().commit_frame(first.frame)?;
@@ -1272,7 +1392,7 @@ impl WebPlayer {
         let result = async {
             self.clear_loop_prime();
             self.clear_presentation();
-            self.clear_dense_cache();
+            self.clear_scrub_store();
             self.invalidate_decoder();
             self.goto_frame(0, epoch).await?;
             if self.is_playing() && self.is_current(epoch) {
@@ -1389,7 +1509,7 @@ impl WebPlayer {
                 if front.frame == frame {
                     let queued = presentation.pop_front().expect("front checked");
                     drop(presentation);
-                    self.present_and_cache(queued.frame, queued.video)?;
+                    self.present_for_mode(queued.frame, queued.video)?;
                     self.touch_playhead(queued.frame);
                     self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                     return Ok(());
@@ -1401,7 +1521,7 @@ impl WebPlayer {
                     if presentation.front().is_some_and(|f| f.frame == frame) {
                         let queued = presentation.pop_front().expect("front checked");
                         drop(presentation);
-                        self.present_and_cache(queued.frame, queued.video)?;
+                        self.present_for_mode(queued.frame, queued.video)?;
                         self.touch_playhead(queued.frame);
                         self.shared.player.borrow_mut().commit_frame(queued.frame)?;
                         return Ok(());
@@ -1453,27 +1573,27 @@ impl WebPlayer {
         }
     }
 
-    /// Move presentation-queue frames into the dense cache (pause / scrub handoff).
+    /// Park presentation VFs on pause/scrub: encode **current** only, drop the rest.
     ///
-    /// Drain the queue first, then insert — do not hold `presentation` across
-    /// `insert_frame` (evict/drop of `VideoFrame` can re-enter JS → Rust and
-    /// panic with `RefCell already borrowed`).
+    /// Sync WebP of the whole queue (up to `PRESENTATION_QUEUE_CAP` full frames)
+    /// made Pause feel stuck. Densify refills Exact; one encode keeps Pause→Seek.
     fn park_presentation_into_cache(&self) {
         let items: Vec<(FrameId, OwnedVideoFrame)> = {
             let mut presentation = self.shared.presentation.borrow_mut();
             presentation.drain(..).map(|q| (q.frame, q.video)).collect()
         };
+        let current = self.state().frame;
         for (frame, video) in items {
-            let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() else {
-                // Nested re-entry during another insert — drop rather than panic.
+            if frame == current {
+                self.ingest_scrub_frame(frame, video, true);
+            } else {
                 drop(video);
-                continue;
-            };
-            cache.insert_frame(frame, video);
+            }
         }
     }
 
-    fn clear_dense_cache(&self) {
+    /// Drop Exact scrub store + blit + thumbs (open teardown / loop restart).
+    fn clear_scrub_store(&self) {
         // Abort in-flight gap fill first so the fill task drops the decoder slot.
         let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
         self.shared.scrub_epoch.set(scrub);
@@ -1481,9 +1601,11 @@ impl WebPlayer {
         if let Some(mut d) = taken {
             let _ = d.reset();
         }
-        // Frame/`VideoFrame` drop can re-enter; skip nested clear rather than panic.
-        if let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() {
+        if let Ok(mut cache) = self.shared.scrub_chunks.try_borrow_mut() {
             cache.clear();
+        }
+        if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+            blit.clear();
         }
         if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut() {
             thumbs.clear();
@@ -1500,42 +1622,60 @@ impl WebPlayer {
     }
 
     fn touch_playhead(&self, frame: FrameId) {
-        let Some(key) = self.key_for(frame) else {
-            return;
-        };
-        // `insert_frame` eviction drops `VideoFrame`s; Chromium may flush microtasks
-        // mid-drop and re-enter scrub (`note_scrub` → here) while the cache RefCell
-        // is still mutably borrowed — common when aim jumps to 0 and many far frames
-        // evict. Skip the nested aim update; the outer insert still completes.
-        let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() else {
-            return;
-        };
-        cache.touch_playhead(frame, key);
+        if let Ok(mut cache) = self.shared.scrub_chunks.try_borrow_mut() {
+            cache.touch_playhead(frame);
+        }
+        if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+            blit.set_playhead(frame);
+        }
     }
 
-    fn clone_from_dense_cache(
-        &self,
-        frame: FrameId,
-    ) -> Result<Option<OwnedVideoFrame>, MediaError> {
-        let Ok(cache) = self.shared.dense_cache.try_borrow() else {
-            return Ok(None);
-        };
-        cache.try_clone_frame(frame)
+    /// Encode `video` into the scrub chunk store and drop the `VideoFrame`.
+    fn ingest_scrub_frame(&self, frame: FrameId, video: OwnedVideoFrame, replace: bool) {
+        ingest_scrub_frame_shared(&self.shared, frame, video, replace);
     }
 
-    /// Draw a cached frame without cloning the `VideoFrame` (clone often fails).
-    fn present_from_cache(&self, frame: FrameId) -> Result<bool, MediaError> {
-        let Ok(cache) = self.shared.dense_cache.try_borrow() else {
+    /// Draw a scrub-store hit via ImageBitmap LRU (`createImageBitmap` on miss).
+    ///
+    /// Decode failures return `Ok(false)` so callers fall through to key→N decode
+    /// (corrupt chunks must not kill scrub).
+    async fn present_from_cache(&self, frame: FrameId) -> Result<bool, MediaError> {
+        {
+            let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() else {
+                return Ok(false);
+            };
+            if let Some(bitmap) = blit.get(frame) {
+                draw_image_bitmap(&self.shared.canvas, &self.shared.ctx, bitmap)?;
+                return Ok(true);
+            }
+        }
+        let chunk = {
+            let Ok(store) = self.shared.scrub_chunks.try_borrow() else {
+                return Ok(false);
+            };
+            store.get(frame).cloned()
+        };
+        let Some(chunk) = chunk else {
             return Ok(false);
         };
-        let drawn = cache.with_frame(frame, |video| {
-            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys())
-        });
-        match drawn {
-            Some(Ok(())) => Ok(true),
-            Some(Err(e)) => Err(e),
-            None => Ok(false),
+        let bitmap = match image_bitmap_from_chunk(&chunk).await {
+            Ok(b) => b,
+            Err(e) => {
+                web_sys::console::warn_1(
+                    &format!("webmedia: scrub blit miss frame={frame} ({e})").into(),
+                );
+                invalidate_scrub_chunk(&self.shared, frame);
+                return Ok(false);
+            }
+        };
+        draw_image_bitmap(&self.shared.canvas, &self.shared.ctx, &bitmap)?;
+        if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+            blit.set_playhead(self.state().frame);
+            blit.put(frame, bitmap);
+        } else {
+            bitmap.close();
         }
+        Ok(true)
     }
 
     fn clear_loop_prime(&self) {
@@ -1681,7 +1821,7 @@ impl WebPlayer {
         Ok(())
     }
 
-    /// Exact seek that salvages pruned early frames into dense (no canvas blit).
+    /// Exact seek that salvages pruned early frames into the scrub WebP store (no canvas blit).
     ///
     /// Canvas stays on the caller's static best cached/key preview until exact.
     /// One key→N pass warms the GOP so post-exact densify is cheap.
@@ -1690,11 +1830,7 @@ impl WebPlayer {
         let shared = Rc::clone(&self.shared);
         let on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)> =
             Box::new(move |id: FrameId, video: OwnedVideoFrame| {
-                if let Ok(mut cache) = shared.dense_cache.try_borrow_mut() {
-                    cache.insert_frame(id, video);
-                } else {
-                    drop(video);
-                }
+                ingest_scrub_frame_shared(&shared, id, video, false);
             });
         let video_frame = self
             .decode_frame_with_interim_cb(&track, frame, epoch, on_interim)
@@ -1708,25 +1844,42 @@ impl WebPlayer {
         Ok(())
     }
 
-    /// Draw and remember a visited frame in the dense cache.
+    /// Draw and remember a visited frame in the scrub WebP store.
     ///
-    /// Inserts by **move** after draw — do not rely on `VideoFrame.clone()`
-    /// (mediabunny keeps samples; browser clone often fails → empty cache).
-    /// Uses [`DenseFrameCache::put_presented_frame`] so canvas and cache stay
-    /// identical (replace-on-hit / force-evict) — otherwise Pause→Seek same
-    /// frame or Prev→Next redraws a stale or missing cache entry.
+    /// Encodes after draw then drops the `VideoFrame` — Exact residency is compressed
+    /// RAM, not Chromium's pool. Replace-on-hit so Pause→Seek/Prev/Next match canvas.
     fn present_and_cache(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
         let result =
             draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
-        if let Ok(mut cache) = self.shared.dense_cache.try_borrow_mut() {
-            cache.put_presented_frame(frame, video);
-        } else {
-            drop(video);
-        }
+        self.ingest_scrub_frame(frame, video, true);
         result
     }
 
-    /// Draw without inserting (play path — presentation queue owns ahead frames).
+    /// Play present: draw + drop the live `VideoFrame` (tiny presentation pool).
+    ///
+    /// Densify stays off during Play. Do **not** touch scrub-store residency —
+    /// Exact chunks survive until budget / farthest-from-aim eviction only.
+    fn present_play_frame(
+        &self,
+        _frame: FrameId,
+        video: OwnedVideoFrame,
+    ) -> Result<(), MediaError> {
+        let result =
+            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
+        drop(video);
+        result
+    }
+
+    /// Play mode → draw+drop VF (no scrub ingest); scrub/seek → `present_and_cache`.
+    fn present_for_mode(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
+        if self.is_playing() && self.shared.fill_mode.get() == CacheFillMode::Play {
+            self.present_play_frame(frame, video)
+        } else {
+            self.present_and_cache(frame, video)
+        }
+    }
+
+    /// Draw without inserting (scrub preview — presentation queue owns ahead frames).
     fn present_only(&self, video: OwnedVideoFrame) -> Result<(), MediaError> {
         let result =
             draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
@@ -1734,18 +1887,15 @@ impl WebPlayer {
         result
     }
 
-    /// Exact frame from dense cache or scrub decode (clone / owned).
+    /// Exact frame via decode (scrub store is WebP — no VideoFrame round-trip).
     pub async fn frame_at(&self, frame: FrameId) -> Result<OwnedVideoFrame, MediaError> {
         let count = self.state().frame_count;
         if frame >= count {
             return Err(MediaError::FrameOutOfRange(frame, count));
         }
-        if let Some(video) = self.clone_from_dense_cache(frame)? {
-            return Ok(video);
-        }
-        self.scrub_fill_frame(frame).await?;
-        self.clone_from_dense_cache(frame)?
-            .ok_or_else(|| MediaError::WebCodecs(format!("frame_at miss after gap fill ({frame})")))
+        let epoch = self.begin_op();
+        let track = self.shared.player.borrow().track_rc();
+        self.decode_frame(&track, frame, epoch).await
     }
 
     /// Sparse timestamps API — filmstrip follow-up (mediabunny `samplesAtTimestamps`).
@@ -1797,13 +1947,7 @@ impl WebPlayer {
         });
     }
 
-    async fn scrub_fill_frame(&self, frame: FrameId) -> Result<(), MediaError> {
-        let shared = Rc::clone(&self.shared);
-        let epoch = shared.scrub_epoch.get();
-        fill_one_gap(shared, frame, epoch).await.map(|_| ())
-    }
-
-    /// Decode a full GOP into the dense cache via the main decoder (PREV miss).
+    /// Decode a full GOP into the scrub WebP store via the main decoder (PREV miss).
     /// Prefer this over `decode_frame` so intermediate frames are kept for the
     /// next PREV — and over scrub-cache fill so we do not race the fill loop.
     ///
@@ -1818,7 +1962,7 @@ impl WebPlayer {
         {
             let index = self.shared.player.borrow().track().index().clone();
             let ids = index.gop_frame_ids(key).unwrap_or_default();
-            if self.shared.dense_cache.borrow().gop_complete(key, &ids) {
+            if !ids.is_empty() && self.shared.scrub_chunks.borrow().gop_complete(&ids) {
                 return Ok(());
             }
         }
@@ -1832,19 +1976,13 @@ impl WebPlayer {
         let shared = Rc::clone(&self.shared);
         let presented = std::cell::Cell::new(false);
         let mut on_frame = move |id: FrameId, video: OwnedVideoFrame| {
-            let Ok(mut cache) = shared.dense_cache.try_borrow_mut() else {
-                drop(video);
-                return;
-            };
-            cache.insert_frame(id, video);
-            drop(cache);
-            if present_when == Some(id)
-                && !presented.get()
-                && present_cached_frame(&shared, id)
-                && shared.player.borrow_mut().commit_frame(id).is_ok()
-            {
-                presented.set(true);
+            if present_when == Some(id) && !presented.get() {
+                let _ = draw_frame_with_context(&shared.canvas, &shared.ctx, video.as_web_sys());
+                if shared.player.borrow_mut().commit_frame(id).is_ok() {
+                    presented.set(true);
+                }
             }
+            ingest_scrub_frame_shared(&shared, id, video, false);
         };
         let decoded = decoder
             .decode_gop(&track, key, &cancelled, &mut on_frame)
@@ -1872,7 +2010,7 @@ impl Drop for WebPlayer {
     fn drop(&mut self) {
         self.clear_loop_prime();
         self.clear_presentation();
-        self.clear_dense_cache();
+        self.clear_scrub_store();
     }
 }
 
@@ -1904,7 +2042,8 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
                     return Ok(());
                 }
                 scrub_epoch = shared.scrub_epoch.get();
-                shared.scrub_pending.set(false);
+                // Do **not** clear `scrub_pending` — abort(rearm)/schedule may have
+                // latched another pass while we were cancelled mid-GOP.
             }
 
             apply_clip_budgets(&shared);
@@ -1989,28 +2128,63 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
 
 fn apply_clip_budgets(shared: &Shared) {
     let meta = shared.player.borrow().metadata().clone();
-    let max_frames = DenseFrameCache::budget_for_clip(&meta);
-    shared.dense_cache.borrow_mut().set_max_frames(max_frames);
+    let max_frames = meta.scrub_cache_frame_budget();
+    shared.scrub_chunks.borrow_mut().set_max_frames(max_frames);
 }
 
-/// Draw a dense-cache hit without cloning (insert already owns the frame).
-fn present_cached_frame(shared: &Shared, frame: FrameId) -> bool {
-    let Ok(cache) = shared.dense_cache.try_borrow() else {
+fn ingest_scrub_frame_shared(
+    shared: &Rc<Shared>,
+    frame: FrameId,
+    video: OwnedVideoFrame,
+    replace: bool,
+) -> bool {
+    // Match playback canvas (viewport × DPR); never larger than the frame display.
+    let target_w = shared.canvas.width().max(1);
+    let target_h = shared.canvas.height().max(1);
+    let encoded = shared
+        .encode_canvas
+        .with_encoder(|enc| enc.encode_webp_with_blit(video.as_web_sys(), target_w, target_h));
+    drop(video);
+    let Ok(encoded) = encoded else {
         return false;
     };
-    matches!(
-        cache.with_frame(frame, |video| {
-            draw_frame_with_context(&shared.canvas, &shared.ctx, video.as_web_sys())
-        }),
-        Some(Ok(()))
-    )
+    let crate::decode::scrub_encode::EncodedScrubFrame { chunk, bitmap } = encoded;
+    {
+        let Ok(mut store) = shared.scrub_chunks.try_borrow_mut() else {
+            bitmap.close();
+            return false;
+        };
+        if replace {
+            store.put_chunk(frame, chunk);
+        } else if !store.insert_chunk(frame, chunk) {
+            bitmap.close();
+            return false;
+        }
+    }
+    // Sync blit handle from transferToImageBitmap — densify leaves Next/Prev hot.
+    if let Ok(mut blit) = shared.scrub_blit.try_borrow_mut() {
+        blit.set_playhead(shared.scrub_chunks.borrow().playhead());
+        blit.put(frame, bitmap);
+    } else {
+        bitmap.close();
+    }
+    true
+}
+
+fn invalidate_scrub_chunk(shared: &Shared, frame: FrameId) {
+    if let Ok(mut blit) = shared.scrub_blit.try_borrow_mut() {
+        blit.invalidate(frame);
+    }
+    if let Ok(mut store) = shared.scrub_chunks.try_borrow_mut() {
+        let _ = store.remove(frame);
+    }
 }
 
 fn playhead_and_last(shared: &Shared) -> (FrameId, FrameId) {
     let state = shared.player.borrow().state();
     let last = state.frame_count.saturating_sub(1);
     let committed = state.frame.min(last);
-    let aimed = shared.dense_cache.borrow().playhead().min(last);
+    let aimed = shared.scrub_chunks.borrow().playhead().min(last);
     // During scrub, aim follows the pointer; otherwise the committed playhead.
     let playhead = if aimed != committed { aimed } else { committed };
     (playhead, last)
@@ -2028,7 +2202,7 @@ fn next_gap_target(shared: &Shared) -> Option<FrameId> {
         shared.fill_stalled_aim.set(None);
     }
     let dir = shared.scrub_dir.get();
-    let cache = shared.dense_cache.borrow();
+    let cache = shared.scrub_chunks.borrow();
     if cache.gaps_saturated(playhead, last, dir) || !cache.gap_fill_armed(playhead) {
         return None;
     }
@@ -2070,8 +2244,8 @@ async fn fill_one_gap(
         // `target` exists (holes elsewhere in the GOP must still densify).
         // If the gap `target` is still missing, the complete check is stale /
         // inconsistent — fall through and decode.
-        let cache = shared.dense_cache.borrow();
-        if !ids.is_empty() && cache.gop_complete(key, &ids) && cache.has_frame(target, key) {
+        let cache = shared.scrub_chunks.borrow();
+        if !ids.is_empty() && cache.gop_complete(&ids) && cache.has_frame(target) {
             // Gap already closed — count as progress so idle_passes does not trip.
             return Ok(true);
         }
@@ -2091,18 +2265,14 @@ async fn fill_one_gap(
         return Err(MediaError::Cancelled);
     }
 
-    // Stream into dense as each remapped frame emerges so the ready strip
-    // paints per-frame (not one tick-burst after the whole GOP).
+    // Stream into scrub WebP store as each remapped frame emerges so the ready
+    // strip paints per-frame (not one tick-burst after the whole GOP).
     // Progress ≠ frame_count growth: at capacity, evict+insert keeps len stable.
     let shared_for_cache = Rc::clone(&shared);
     let newly = std::rc::Rc::new(std::cell::Cell::new(0u32));
     let newly_cb = Rc::clone(&newly);
     let mut on_frame = move |id: FrameId, video: OwnedVideoFrame| {
-        let Ok(mut cache) = shared_for_cache.dense_cache.try_borrow_mut() else {
-            drop(video);
-            return;
-        };
-        if cache.insert_frame(id, video) {
+        if ingest_scrub_frame_shared(&shared_for_cache, id, video, false) {
             newly_cb.set(newly_cb.get().saturating_add(1));
         }
     };
@@ -2113,9 +2283,9 @@ async fn fill_one_gap(
         Ok(()) => {
             *shared.scrub_decoder.borrow_mut() = Some(decoder);
             let got_target = shared
-                .dense_cache
+                .scrub_chunks
                 .try_borrow()
-                .map(|c| c.has_frame(target, key))
+                .map(|c| c.has_frame(target))
                 .unwrap_or(false);
             Ok(newly.get() > 0 || got_target)
         }

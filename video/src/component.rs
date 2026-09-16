@@ -27,8 +27,10 @@ struct PlaySession {
     last_ui_ms: f64,
     /// `loop_to_start` in flight — skip presents until origins reset.
     restarting: bool,
-    /// `skip_behind` in flight — do not stack underrun catch-ups.
-    catching_up: bool,
+    /// Media clock frozen while presentation queue is empty (underrun hold).
+    holding_for_buffer: bool,
+    /// `start_media_clock` after hold in flight — do not stack resumes.
+    resuming_clock: bool,
 }
 
 /// Rolling window of canvas presents → measured display FPS.
@@ -185,7 +187,16 @@ pub fn Video(
                     return;
                 }
 
-                let restarting = session.borrow().as_ref().is_some_and(|s| s.restarting);
+                // Session is armed only after prime + clock start. Skip present while
+                // priming / if a stale `playing` flag has no session — otherwise
+                // `DuePresent::Ended` → `stop_playback` can bump async_id mid-PlayPrime.
+                let restarting = {
+                    let borrow = session.borrow();
+                    let Some(s) = borrow.as_ref() else {
+                        return;
+                    };
+                    s.restarting
+                };
                 if restarting {
                     return;
                 }
@@ -284,51 +295,89 @@ pub fn Video(
                                 sync_ui();
                             }
                         }
-                        // Empty present queue + clock ahead ≥0.5s → one skip_behind
-                        // (skills/media.md Behind-deadline skip). Without this the
-                        // clock ran for seconds (`skipped≈100`) then wedged decode
-                        // at `backpressure q=41, held=0`.
-                        let underrun_lag = match player.try_borrow() {
-                            Ok(borrow) => borrow.as_ref().and_then(|p| p.play_underrun_behind()),
-                            Err(_) => None,
+                        // True underrun only: next frame already due + empty queue.
+                        // Holding on every empty-between-presents thrashed audio and
+                        // broke short-clip play/pause smoke.
+                        let underrun = match player.try_borrow() {
+                            Ok(borrow) => borrow
+                                .as_ref()
+                                .is_some_and(|p| p.is_playing() && p.play_underrun_hold()),
+                            Err(_) => false,
                         };
-                        if let Some(behind) = underrun_lag {
-                            let start_catchup = {
+                        if underrun {
+                            let should_hold = {
                                 let mut borrow = session.borrow_mut();
                                 borrow.as_mut().is_some_and(|s| {
-                                    if s.catching_up || s.restarting {
+                                    if s.holding_for_buffer || s.resuming_clock || s.restarting {
                                         false
                                     } else {
-                                        s.catching_up = true;
+                                        s.holding_for_buffer = true;
                                         true
                                     }
                                 })
                             };
-                            if start_catchup {
+                            if should_hold {
+                                if let Ok(borrow) = player.try_borrow()
+                                    && let Some(p) = borrow.as_ref()
+                                {
+                                    let t = p.hold_media_clock_for_underrun();
+                                    if let Some(s) = session.borrow_mut().as_mut() {
+                                        s.media_origin = t;
+                                    }
+                                }
+                            }
+                        } else {
+                            let should_resume = {
+                                let has_frames = player
+                                    .try_borrow()
+                                    .ok()
+                                    .and_then(|b| b.as_ref().map(|p| p.presentation_len() > 0))
+                                    .unwrap_or(false);
+                                let mut borrow = session.borrow_mut();
+                                borrow.as_mut().is_some_and(|s| {
+                                    if s.holding_for_buffer
+                                        && !s.resuming_clock
+                                        && !s.restarting
+                                        && has_frames
+                                    {
+                                        s.holding_for_buffer = false;
+                                        s.resuming_clock = true;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                })
+                            };
+                            if should_resume {
                                 let player = Rc::clone(&player);
                                 let session = Rc::clone(&session);
                                 let stop_playback = Rc::clone(&stop_playback);
                                 spawn_local(async move {
                                     let Some(p) = player.borrow().as_ref().cloned() else {
                                         if let Some(s) = session.borrow_mut().as_mut() {
-                                            s.catching_up = false;
+                                            s.resuming_clock = false;
                                         }
                                         return;
                                     };
-                                    match p.skip_behind(behind).await {
-                                        Ok(_) => {
+                                    let t = session
+                                        .borrow()
+                                        .as_ref()
+                                        .map(|s| s.media_origin)
+                                        .unwrap_or(0.0);
+                                    match p.start_media_clock(t).await {
+                                        Ok(()) => {
                                             if let Some(s) = session.borrow_mut().as_mut() {
-                                                s.catching_up = false;
+                                                s.resuming_clock = false;
                                             }
                                         }
                                         Err(e) if e.is_cancelled() => {
                                             if let Some(s) = session.borrow_mut().as_mut() {
-                                                s.catching_up = false;
+                                                s.resuming_clock = false;
                                             }
                                         }
                                         Err(e) => {
                                             if let Some(s) = session.borrow_mut().as_mut() {
-                                                s.catching_up = false;
+                                                s.resuming_clock = false;
                                             }
                                             error.set(Some(e.to_string()));
                                             stop_playback();
@@ -866,6 +915,7 @@ fn enqueue_scrub(
             // Do not `note_scrub_frame` — that kicks densify and starved settle.
             p.prepare_scrub_settle(u64::from(frame));
         } else {
+            p.clear_densify_hold();
             p.cancel_ops();
             if leaving_play {
                 p.pause();
@@ -1076,15 +1126,20 @@ async fn run_play_prime(
     p.play();
     fps_meter.borrow_mut().reset();
     fps.set(None);
-    playing.set(true);
-
-    let still_mine = || queue.is_current(id) && playing.get_untracked();
+    // Defer UI `playing` until after prime + media clock. Setting it earlier lets
+    // rAF call `present_due` with a scrub-stale clock (often still at EOF after
+    // Ended→scrub); that returns `DuePresent::Ended` → `stop_playback` bumps
+    // async_id and silently aborts this PlayPrime.
+    let still_queued = || queue.is_current(id);
 
     // Unlock AudioContext during the Play click turn — before long prime awaits.
     if let Err(e) = p.resume_audio_context().await {
         web_sys::console::warn_1(&format!("webmedia: audio resume: {e}").into());
     }
-    if !still_mine() {
+    if !still_queued() {
+        if p.is_playing() {
+            p.pause();
+        }
         return;
     }
 
@@ -1093,7 +1148,7 @@ async fn run_play_prime(
         Ok(()) => true,
         Err(e) if e.is_cancelled() => false,
         Err(e) => {
-            if still_mine() {
+            if still_queued() {
                 error.set(Some(e.to_string()));
             }
             false
@@ -1101,7 +1156,10 @@ async fn run_play_prime(
     };
     web_sys::console::log_1(&format!("webmedia: play prime done ok={prime_ok}").into());
 
-    if !still_mine() {
+    if !still_queued() {
+        if p.is_playing() {
+            p.pause();
+        }
         return;
     }
     if !prime_ok {
@@ -1111,13 +1169,16 @@ async fn run_play_prime(
 
     let media_origin = p.state().timestamp.seconds;
     if let Err(e) = p.start_media_clock(media_origin).await {
-        if still_mine() {
+        if still_queued() {
             error.set(Some(e.to_string()));
             stop_playback();
         }
         return;
     }
-    if !still_mine() {
+    if !still_queued() {
+        if p.is_playing() {
+            p.pause();
+        }
         return;
     }
     let last_ui_ms = performance_now_ms().unwrap_or(0.0);
@@ -1127,8 +1188,10 @@ async fn run_play_prime(
         wall_origin: performance_now_ms().map(|t| t / 1000.0).unwrap_or(0.0),
         last_ui_ms,
         restarting: false,
-        catching_up: false,
+        holding_for_buffer: false,
+        resuming_clock: false,
     });
+    playing.set(true);
 
     {
         let player = Rc::clone(player);
@@ -1137,16 +1200,16 @@ async fn run_play_prime(
         let queue = queue.clone();
         spawn_local(async move {
             while playing.get_untracked() && queue.is_current(id) {
-                let catching_up = session
+                let pause_prefetch = session
                     .borrow()
                     .as_ref()
-                    .is_some_and(|s| s.catching_up || s.restarting);
+                    .is_some_and(|s| s.restarting || s.resuming_clock);
                 let need = {
                     let borrow = player.borrow();
                     borrow.as_ref().is_some_and(|p| {
                         p.is_playing()
                             && !p.is_restarting()
-                            && !catching_up
+                            && !pause_prefetch
                             && p.presentation_len() < webmedia::PRESENTATION_QUEUE_CAP
                     })
                 };
@@ -1198,7 +1261,7 @@ async fn run_play_prime(
         });
     }
 
-    if still_mine() {
+    if still_queued() && playing.get_untracked() {
         resume_raf();
     }
 }

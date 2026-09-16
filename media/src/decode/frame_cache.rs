@@ -1,6 +1,6 @@
-//! Playhead-centered `VideoFrame` cache: ordered `BTreeMap` of handles.
+//! Playhead-centered Exact scrub residency (WebP) + blit LRU + thumbs.
 //!
-//! - [`DenseFrameCache`] — residency, aim, budget / eviction.
+//! - [`ScrubChunkStore`] — Exact scrub store (WebP bytes in RAM); gap fill / Exact marks.
 //! - [`FrameRunIndex`] — contiguous-run geometry + nearest-gap search.
 //!   Eviction drops the frame farthest from the playhead. Thumbs stay separate.
 
@@ -10,14 +10,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 
-use crate::decode::owned_video_frame::OwnedVideoFrame;
-use crate::error::MediaError;
+use crate::decode::scrub_encode::ScrubChunk;
 use crate::types::{FrameId, SCRUB_CACHE_EDGE_MARGIN, nearer_gap_with_dir};
 use lru::LruCache;
+use web_sys::ImageBitmap;
 
 /// Scrub/filmstrip keyframe GOPs retained.
 pub const DEFAULT_MAX_THUMB_GOPS: usize = 8;
 pub const DEFAULT_MAX_THUMBS: usize = 64;
+/// Live blit handles for scrub present (`createImageBitmap` LRU).
+/// Keep large enough that a densified window (~GOP×few) draws without re-decode;
+/// 4 forced a WebP→bitmap round-trip on almost every Next/Prev (Wing It ~400ms p50).
+pub const SCRUB_BLIT_LRU: usize = 96;
 
 /// Contiguous-run geometry and nearest-gap search over a `FrameId` key set.
 ///
@@ -214,396 +218,6 @@ fn next_gap_outside_extent(
     nearer_gap_with_dir(playhead, behind, ahead, dir)
 }
 
-/// Exact-frame residency: `BTreeMap` owns handles; [`FrameRunIndex`] tracks gaps.
-pub struct DenseFrameCache {
-    frames: BTreeMap<FrameId, OwnedVideoFrame>,
-    runs: FrameRunIndex,
-    max_frames: usize,
-    playhead: FrameId,
-    playhead_key: FrameId,
-    /// `true` when the cached extent is a single contiguous run (no holes).
-    no_gaps: bool,
-}
-
-impl Drop for DenseFrameCache {
-    fn drop(&mut self) {
-        self.clear();
-    }
-}
-
-impl DenseFrameCache {
-    pub fn new(max_frames: usize) -> Self {
-        Self {
-            frames: BTreeMap::new(),
-            runs: FrameRunIndex::new(),
-            max_frames: max_frames.max(1),
-            playhead: 0,
-            playhead_key: 0,
-            no_gaps: false,
-        }
-    }
-
-    /// Gap / run index (tests and advanced callers).
-    #[allow(dead_code)]
-    pub fn runs(&self) -> &FrameRunIndex {
-        &self.runs
-    }
-
-    /// Public budget trim — drop frames farthest from the playhead.
-    #[allow(dead_code)]
-    pub fn enforce_budget(&mut self) {
-        self.enforce_frame_budget(None);
-    }
-
-    /// Drop farthest-from-`aim` residents until at most `max` frames remain.
-    ///
-    /// Available for pool-pressure recovery; do **not** call on every settle —
-    /// that wiped the scrub strip on pointer-up.
-    #[allow(dead_code)]
-    pub fn trim_to_near(&mut self, aim: FrameId, max: usize) {
-        let max = max.max(1);
-        self.playhead = aim;
-        while self.frame_count() > max {
-            if !self.evict_one(Some(aim)) {
-                break;
-            }
-        }
-        self.refresh_no_gaps();
-    }
-
-    pub fn set_max_frames(&mut self, max_frames: usize) {
-        let max_frames = max_frames.max(1);
-        if max_frames == self.max_frames {
-            return;
-        }
-        self.max_frames = max_frames;
-        self.enforce_frame_budget(None);
-    }
-
-    pub fn max_frames(&self) -> usize {
-        self.max_frames
-    }
-
-    pub fn clear(&mut self) {
-        self.frames.clear();
-        self.no_gaps = false;
-        self.runs.clear();
-    }
-
-    /// True when the cached extent has no holes (`len == end - start + 1`).
-    pub fn no_gaps(&self) -> bool {
-        self.no_gaps
-    }
-
-    /// Whether scrub gap-fill should run for `playhead`.
-    ///
-    /// - Holes → always armed.
-    /// - Contiguous **under budget** → armed (keep expanding into long empty
-    ///   regions; edge-idle only applies once the frame budget is full).
-    /// - Contiguous **at capacity** → armed only near extent edges / outside
-    ///   (within [`SCRUB_CACHE_EDGE_MARGIN`]).
-    pub fn gap_fill_armed(&self, playhead: FrameId) -> bool {
-        if !self.no_gaps() {
-            return true;
-        }
-        if self.frame_count() < self.max_frames {
-            return true;
-        }
-        scrub_gap_fill_armed(true, playhead, self.extent(), SCRUB_CACHE_EDGE_MARGIN)
-    }
-
-    /// Contiguous runs among cached ids (demo meter “chunks”).
-    pub fn chunk_count(&self) -> usize {
-        let mut runs = 0usize;
-        let mut prev: Option<FrameId> = None;
-        for &id in self.frames.keys() {
-            match prev {
-                Some(p) if id == p + 1 => {}
-                _ => runs += 1,
-            }
-            prev = Some(id);
-        }
-        runs
-    }
-
-    pub fn frame_count(&self) -> usize {
-        self.frames.len()
-    }
-
-    pub fn cached_frame_ids(&self) -> Vec<FrameId> {
-        self.frames.keys().copied().collect()
-    }
-
-    /// Inclusive min/max cached frame, if any.
-    pub fn extent(&self) -> Option<(FrameId, FrameId)> {
-        let lo = *self.frames.keys().next()?;
-        let hi = *self.frames.keys().next_back()?;
-        Some((lo, hi))
-    }
-
-    pub fn touch_playhead(&mut self, frame: FrameId, key: FrameId) {
-        if frame != self.playhead {
-            self.runs.on_aim_change(frame);
-        }
-        self.playhead = frame;
-        self.playhead_key = key;
-        // Evict farthest from the new aim when over budget — do **not** wipe
-        // other visited runs (scrub should keep frames it already touched).
-        self.enforce_frame_budget(Some(frame));
-    }
-
-    pub fn playhead(&self) -> FrameId {
-        self.playhead
-    }
-
-    /// Nearest cached presentation frame to `target` (by `|id − target|`).
-    /// On distance ties, prefer the lower id (floor over ceil).
-    pub fn nearest_frame(&self, target: FrameId) -> Option<FrameId> {
-        let floor = self.frames.range(..=target).next_back().map(|(id, _)| *id);
-        let ceil = self.frames.range(target..).next().map(|(id, _)| *id);
-        match (floor, ceil) {
-            (Some(a), Some(b)) if a != b => {
-                if a.abs_diff(target) <= b.abs_diff(target) {
-                    Some(a)
-                } else {
-                    Some(b)
-                }
-            }
-            (Some(a), _) | (_, Some(a)) => Some(a),
-            (None, None) => None,
-        }
-    }
-
-    pub fn has_frame(&self, frame: FrameId, _key: FrameId) -> bool {
-        self.frames.contains_key(&frame)
-    }
-
-    /// Borrow the cached handle for canvas draw (avoids `VideoFrame.clone`, which
-    /// often fails in browsers).
-    pub fn with_frame<R>(
-        &self,
-        frame: FrameId,
-        f: impl FnOnce(&OwnedVideoFrame) -> R,
-    ) -> Option<R> {
-        Some(f(self.frames.get(&frame)?))
-    }
-
-    /// Clone a cached frame for handoff (`frame_at`, etc.). Prefer [`Self::with_frame`]
-    /// for drawing. `Ok(None)` = not cached; `Err` = present but clone failed.
-    pub fn try_clone_frame(&self, frame: FrameId) -> Result<Option<OwnedVideoFrame>, MediaError> {
-        let Some(video) = self.frames.get(&frame) else {
-            return Ok(None);
-        };
-        Ok(Some(video.try_clone()?))
-    }
-
-    /// Insert one visited / gap-filled frame. Evicts farthest from playhead if needed.
-    ///
-    /// Returns `true` when `frame` is newly resident (not already present / not refused).
-    ///
-    /// At capacity, refuses to insert when every resident is closer than `frame`
-    /// (same rule as [`Self::gaps_saturated`]). Without this, playhead at 0
-    /// expands ahead by evicting `end` then inserting `end+1`, leaving a lone
-    /// keyframe outside a holed window.
-    ///
-    /// Does **not** replace an existing resident — densify/park keep the first
-    /// copy. Play/seek presents that must match canvas use [`Self::put_presented_frame`].
-    pub fn insert_frame(&mut self, frame: FrameId, video: OwnedVideoFrame) -> bool {
-        if self.frames.contains_key(&frame) {
-            return false;
-        }
-        if self.frame_count() >= self.max_frames
-            && self.would_evict_closer_than(frame, self.playhead)
-        {
-            return false;
-        }
-        while self.frame_count() >= self.max_frames {
-            if !self.evict_one(Some(frame)) {
-                break;
-            }
-        }
-        if self.frame_count() >= self.max_frames {
-            return false;
-        }
-        self.frames.insert(frame, video);
-        self.runs.note_insert(&self.frames, self.playhead, frame);
-        self.refresh_no_gaps();
-        true
-    }
-
-    /// Store a frame that was just drawn to canvas so Pause→Seek/Prev/Next can
-    /// re-present the same bitmap.
-    ///
-    /// Unlike [`Self::insert_frame`]: **replaces** an existing resident, and will
-    /// not refuse for budget (evicts farther frames, then stale playhead if needed).
-    pub fn put_presented_frame(&mut self, frame: FrameId, video: OwnedVideoFrame) {
-        if let Entry::Occupied(mut e) = self.frames.entry(frame) {
-            drop(e.insert(video));
-            return;
-        }
-        while self.frame_count() >= self.max_frames {
-            if self.evict_one(Some(frame)) {
-                continue;
-            }
-            // Presented frame must win: aim may still be the previous playhead.
-            if self.playhead != frame && self.remove_frame(self.playhead) {
-                continue;
-            }
-            let other = self.frames.keys().copied().find(|&f| f != frame);
-            if let Some(victim) = other {
-                self.remove_frame(victim);
-                continue;
-            }
-            break;
-        }
-        if self.frame_count() >= self.max_frames {
-            // Capacity 0 / single-slot pathological — drop rather than leak.
-            drop(video);
-            return;
-        }
-        self.frames.insert(frame, video);
-        self.runs.note_insert(&self.frames, self.playhead, frame);
-        self.refresh_no_gaps();
-    }
-
-    /// Batch insert (tests / non-streaming callers). Scrub fill streams via
-    /// [`Self::insert_frame`] per decoded output so the ready strip updates live.
-    #[allow(dead_code)]
-    pub fn insert_gop(&mut self, _key: FrameId, frames: HashMap<FrameId, OwnedVideoFrame>) {
-        if frames.is_empty() {
-            return;
-        }
-        let mut items: Vec<(FrameId, OwnedVideoFrame)> = frames.into_iter().collect();
-        items.sort_by_key(|(id, _)| *id);
-        let mut protect = None;
-        for (id, video) in items {
-            if self.frames.contains_key(&id) {
-                continue;
-            }
-            self.insert_frame(id, video);
-            if !self.frames.contains_key(&id) {
-                break;
-            }
-            protect = Some(id);
-        }
-        self.enforce_frame_budget(protect);
-    }
-
-    /// Nearest missing presentation frame to `playhead` within `[0, last]`.
-    ///
-    /// `dir`: scrub motion (`+1` ahead / `-1` behind / `0` neutral). See
-    /// [`crate::nearer_gap_with_dir`].
-    pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId, dir: i8) -> Option<FrameId> {
-        self.runs.search(
-            &self.frames,
-            self.playhead,
-            playhead,
-            last,
-            self.no_gaps,
-            self.extent(),
-            dir,
-        )
-    }
-
-    /// True when every frame in `[0, last]` is cached, or cache is at capacity
-    /// with no nearer gaps than the current extent allows under budget.
-    pub fn gaps_saturated(&self, playhead: FrameId, last: FrameId, dir: i8) -> bool {
-        let gap = self.next_gap_frame(playhead, last, dir);
-        gap.is_none()
-            || self.frame_count() >= self.max_frames
-                && gap.is_some_and(|g| self.would_evict_closer_than(g, playhead))
-    }
-
-    /// If inserting `gap` at capacity would immediately evict something closer
-    /// than `gap` (or the playhead), gap-fill should stop.
-    fn would_evict_closer_than(&self, gap: FrameId, playhead: FrameId) -> bool {
-        if self.frame_count() < self.max_frames {
-            return false;
-        }
-        let gap_dist = gap.abs_diff(playhead);
-        self.max_dist_from_playhead(playhead)
-            .is_some_and(|far| far <= gap_dist)
-    }
-
-    /// Frame budget for a clip — delegates to [`crate::VideoMetadata::scrub_cache_frame_budget`].
-    pub fn budget_for_clip(meta: &crate::types::VideoMetadata) -> usize {
-        meta.scrub_cache_frame_budget()
-    }
-
-    pub fn gop_complete(&self, key: FrameId, gop_ids: &[FrameId]) -> bool {
-        if gop_ids.is_empty() {
-            return self.has_frame(key, key);
-        }
-        gop_ids.iter().all(|id| self.has_frame(*id, key))
-    }
-
-    fn enforce_frame_budget(&mut self, protect: Option<FrameId>) {
-        while self.frame_count() > self.max_frames {
-            if !self.evict_one(protect) {
-                break;
-            }
-        }
-    }
-
-    /// Farthest *evictable* resident is an endpoint of the remaining key set
-    /// (full extent ends may be playhead / protect).
-    fn evict_one(&mut self, protect: Option<FrameId>) -> bool {
-        let Some(victim) = self.farthest_evictable(protect) else {
-            return false;
-        };
-        self.remove_frame(victim)
-    }
-
-    fn farthest_evictable(&self, protect: Option<FrameId>) -> Option<FrameId> {
-        let allowed = |f: FrameId| Some(f) != protect && f != self.playhead;
-        let lo = self.frames.keys().copied().find(|&f| allowed(f))?;
-        let hi = self.frames.keys().copied().rev().find(|&f| allowed(f))?;
-        [lo, hi]
-            .into_iter()
-            .max_by_key(|f| f.abs_diff(self.playhead))
-    }
-
-    fn max_dist_from_playhead(&self, playhead: FrameId) -> Option<u64> {
-        let lo = self.frames.keys().copied().find(|&f| f != playhead)?;
-        let hi = self.frames.keys().copied().rev().find(|&f| f != playhead)?;
-        Some(lo.abs_diff(playhead).max(hi.abs_diff(playhead)))
-    }
-
-    /// Move a resident frame out (play prime lifts dense → presentation queue).
-    ///
-    /// Prefer this over [`Self::try_clone_frame`] — browser `VideoFrame.clone` often
-    /// fails; play handoff should **move**, then pause parks back via insert.
-    pub fn take_frame(&mut self, frame: FrameId) -> Option<OwnedVideoFrame> {
-        let video = self.frames.remove(&frame)?;
-        self.runs.note_remove(self.playhead, frame);
-        self.refresh_no_gaps();
-        Some(video)
-    }
-
-    fn remove_frame(&mut self, frame: FrameId) -> bool {
-        self.take_frame(frame).is_some()
-    }
-
-    fn refresh_no_gaps(&mut self) {
-        self.no_gaps = match self.extent() {
-            Some((lo, hi)) => {
-                let solid = hi
-                    .checked_sub(lo)
-                    .and_then(|d| d.checked_add(1))
-                    .is_some_and(|n| n == self.frames.len() as u64);
-                if solid && self.frames.contains_key(&self.playhead) {
-                    self.runs.set_solid_run(lo, hi);
-                }
-                solid
-            }
-            None => {
-                self.runs.clear();
-                false
-            }
-        };
-    }
-}
-
 /// Gap-fill arming once the dense window is contiguous **and at capacity**.
 ///
 /// - Holes (`!no_gaps`) → always armed (caller).
@@ -623,6 +237,355 @@ pub(crate) fn scrub_gap_fill_armed(
         return true;
     };
     playhead < start.saturating_add(margin) || playhead > end.saturating_sub(margin)
+}
+
+/// Exact scrub residency: WebP chunks in system RAM (not Chromium `VideoFrame`s).
+pub struct ScrubChunkStore {
+    chunks: BTreeMap<FrameId, ScrubChunk>,
+    runs: FrameRunIndex,
+    max_frames: usize,
+    playhead: FrameId,
+    no_gaps: bool,
+}
+
+impl Drop for ScrubChunkStore {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+impl ScrubChunkStore {
+    pub fn new(max_frames: usize) -> Self {
+        Self {
+            chunks: BTreeMap::new(),
+            runs: FrameRunIndex::new(),
+            max_frames: max_frames.max(1),
+            playhead: 0,
+            no_gaps: false,
+        }
+    }
+
+    pub fn set_max_frames(&mut self, max_frames: usize) {
+        let max_frames = max_frames.max(1);
+        if max_frames == self.max_frames {
+            return;
+        }
+        self.max_frames = max_frames;
+        self.enforce_frame_budget(None);
+    }
+
+    pub fn max_frames(&self) -> usize {
+        self.max_frames
+    }
+
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.no_gaps = false;
+        self.runs.clear();
+    }
+
+    pub fn no_gaps(&self) -> bool {
+        self.no_gaps
+    }
+
+    pub fn gap_fill_armed(&self, playhead: FrameId) -> bool {
+        if !self.no_gaps() {
+            return true;
+        }
+        if self.frame_count() < self.max_frames {
+            return true;
+        }
+        scrub_gap_fill_armed(true, playhead, self.extent(), SCRUB_CACHE_EDGE_MARGIN)
+    }
+
+    pub fn chunk_count(&self) -> usize {
+        let mut runs = 0usize;
+        let mut prev: Option<FrameId> = None;
+        for &id in self.chunks.keys() {
+            match prev {
+                Some(p) if id == p + 1 => {}
+                _ => runs += 1,
+            }
+            prev = Some(id);
+        }
+        runs
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.chunks.len()
+    }
+
+    pub fn cached_frame_ids(&self) -> Vec<FrameId> {
+        self.chunks.keys().copied().collect()
+    }
+
+    pub fn extent(&self) -> Option<(FrameId, FrameId)> {
+        let lo = *self.chunks.keys().next()?;
+        let hi = *self.chunks.keys().next_back()?;
+        Some((lo, hi))
+    }
+
+    pub fn touch_playhead(&mut self, frame: FrameId) {
+        if frame != self.playhead {
+            self.runs.on_aim_change(frame);
+        }
+        self.playhead = frame;
+        self.enforce_frame_budget(Some(frame));
+    }
+
+    pub fn playhead(&self) -> FrameId {
+        self.playhead
+    }
+
+    pub fn nearest_frame(&self, target: FrameId) -> Option<FrameId> {
+        let floor = self.chunks.range(..=target).next_back().map(|(id, _)| *id);
+        let ceil = self.chunks.range(target..).next().map(|(id, _)| *id);
+        match (floor, ceil) {
+            (Some(a), Some(b)) if a != b => {
+                if a.abs_diff(target) <= b.abs_diff(target) {
+                    Some(a)
+                } else {
+                    Some(b)
+                }
+            }
+            (Some(a), _) | (_, Some(a)) => Some(a),
+            (None, None) => None,
+        }
+    }
+
+    pub fn has_frame(&self, frame: FrameId) -> bool {
+        self.chunks.contains_key(&frame)
+    }
+
+    pub fn get(&self, frame: FrameId) -> Option<&ScrubChunk> {
+        self.chunks.get(&frame)
+    }
+
+    /// Insert without replacing. Returns `true` when newly resident.
+    pub fn insert_chunk(&mut self, frame: FrameId, chunk: ScrubChunk) -> bool {
+        if self.chunks.contains_key(&frame) {
+            return false;
+        }
+        if self.frame_count() >= self.max_frames
+            && self.would_evict_closer_than(frame, self.playhead)
+        {
+            return false;
+        }
+        while self.frame_count() >= self.max_frames {
+            if !self.evict_one(Some(frame)) {
+                break;
+            }
+        }
+        if self.frame_count() >= self.max_frames {
+            return false;
+        }
+        self.chunks.insert(frame, chunk);
+        self.runs.note_insert(&self.chunks, self.playhead, frame);
+        self.refresh_no_gaps();
+        true
+    }
+
+    /// Replace-or-insert (presented frame must match canvas).
+    pub fn put_chunk(&mut self, frame: FrameId, chunk: ScrubChunk) {
+        if let Entry::Occupied(mut e) = self.chunks.entry(frame) {
+            e.insert(chunk);
+            return;
+        }
+        while self.frame_count() >= self.max_frames {
+            if self.evict_one(Some(frame)) {
+                continue;
+            }
+            if self.playhead != frame && self.remove_frame(self.playhead) {
+                continue;
+            }
+            let other = self.chunks.keys().copied().find(|&f| f != frame);
+            if let Some(victim) = other {
+                self.remove_frame(victim);
+                continue;
+            }
+            break;
+        }
+        if self.frame_count() >= self.max_frames {
+            return;
+        }
+        self.chunks.insert(frame, chunk);
+        self.runs.note_insert(&self.chunks, self.playhead, frame);
+        self.refresh_no_gaps();
+    }
+
+    /// Drop one resident (bad encode / blit failure).
+    pub fn remove(&mut self, frame: FrameId) -> bool {
+        self.remove_frame(frame)
+    }
+
+    pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId, dir: i8) -> Option<FrameId> {
+        self.runs.search(
+            &self.chunks,
+            self.playhead,
+            playhead,
+            last,
+            self.no_gaps,
+            self.extent(),
+            dir,
+        )
+    }
+
+    pub fn gaps_saturated(&self, playhead: FrameId, last: FrameId, dir: i8) -> bool {
+        let gap = self.next_gap_frame(playhead, last, dir);
+        gap.is_none()
+            || self.frame_count() >= self.max_frames
+                && gap.is_some_and(|g| self.would_evict_closer_than(g, playhead))
+    }
+
+    pub fn gop_complete(&self, gop_ids: &[FrameId]) -> bool {
+        if gop_ids.is_empty() {
+            return false;
+        }
+        gop_ids.iter().all(|id| self.has_frame(*id))
+    }
+
+    fn would_evict_closer_than(&self, gap: FrameId, playhead: FrameId) -> bool {
+        if self.frame_count() < self.max_frames {
+            return false;
+        }
+        let gap_dist = gap.abs_diff(playhead);
+        self.max_dist_from_playhead(playhead)
+            .is_some_and(|far| far <= gap_dist)
+    }
+
+    fn enforce_frame_budget(&mut self, protect: Option<FrameId>) {
+        while self.frame_count() > self.max_frames {
+            if !self.evict_one(protect) {
+                break;
+            }
+        }
+    }
+
+    fn evict_one(&mut self, protect: Option<FrameId>) -> bool {
+        let Some(victim) = self.farthest_evictable(protect) else {
+            return false;
+        };
+        self.remove_frame(victim)
+    }
+
+    fn farthest_evictable(&self, protect: Option<FrameId>) -> Option<FrameId> {
+        let allowed = |f: FrameId| Some(f) != protect && f != self.playhead;
+        let lo = self.chunks.keys().copied().find(|&f| allowed(f))?;
+        let hi = self.chunks.keys().copied().rev().find(|&f| allowed(f))?;
+        [lo, hi]
+            .into_iter()
+            .max_by_key(|f| f.abs_diff(self.playhead))
+    }
+
+    fn max_dist_from_playhead(&self, playhead: FrameId) -> Option<u64> {
+        let lo = self.chunks.keys().copied().find(|&f| f != playhead)?;
+        let hi = self.chunks.keys().copied().rev().find(|&f| f != playhead)?;
+        Some(lo.abs_diff(playhead).max(hi.abs_diff(playhead)))
+    }
+
+    fn remove_frame(&mut self, frame: FrameId) -> bool {
+        if self.chunks.remove(&frame).is_none() {
+            return false;
+        }
+        self.runs.note_remove(self.playhead, frame);
+        self.refresh_no_gaps();
+        true
+    }
+
+    fn refresh_no_gaps(&mut self) {
+        self.no_gaps = match self.extent() {
+            Some((lo, hi)) => {
+                let solid = hi
+                    .checked_sub(lo)
+                    .and_then(|d| d.checked_add(1))
+                    .is_some_and(|n| n == self.chunks.len() as u64);
+                if solid && self.chunks.contains_key(&self.playhead) {
+                    self.runs.set_solid_run(lo, hi);
+                }
+                solid
+            }
+            None => {
+                self.runs.clear();
+                false
+            }
+        };
+    }
+}
+
+/// Live scrub blit handles. Evict farthest from playhead (not classic LRU) so
+/// densify ahead cannot wipe just-presented frames (Prev stayed cold on Wing It).
+pub struct ScrubBlitLru {
+    bitmaps: BTreeMap<FrameId, ImageBitmap>,
+    max: usize,
+    playhead: FrameId,
+}
+
+impl ScrubBlitLru {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            bitmaps: BTreeMap::new(),
+            max: cap.max(1),
+            playhead: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        for (_, bmp) in std::mem::take(&mut self.bitmaps) {
+            bmp.close();
+        }
+    }
+
+    pub fn invalidate(&mut self, frame: FrameId) {
+        if let Some(bmp) = self.bitmaps.remove(&frame) {
+            bmp.close();
+        }
+    }
+
+    pub fn set_playhead(&mut self, playhead: FrameId) {
+        self.playhead = playhead;
+    }
+
+    pub fn get(&mut self, frame: FrameId) -> Option<&ImageBitmap> {
+        self.bitmaps.get(&frame)
+    }
+
+    pub fn put(&mut self, frame: FrameId, bitmap: ImageBitmap) {
+        if let Some(old) = self.bitmaps.insert(frame, bitmap) {
+            old.close();
+            return;
+        }
+        while self.bitmaps.len() > self.max {
+            let Some(victim) = self.farthest_from_playhead(frame) else {
+                break;
+            };
+            if let Some(bmp) = self.bitmaps.remove(&victim) {
+                bmp.close();
+            } else {
+                break;
+            }
+        }
+        if self.bitmaps.len() > self.max {
+            // Could not evict enough — drop the newcomer.
+            if let Some(bmp) = self.bitmaps.remove(&frame) {
+                bmp.close();
+            }
+        }
+    }
+
+    fn farthest_from_playhead(&self, protect: FrameId) -> Option<FrameId> {
+        let aim = self.playhead;
+        self.bitmaps
+            .keys()
+            .copied()
+            .filter(|&f| f != protect && f != aim)
+            .max_by_key(|f| f.abs_diff(aim))
+    }
+}
+
+impl Drop for ScrubBlitLru {
+    fn drop(&mut self) {
+        self.clear();
+    }
 }
 
 /// One GOP of scrub previews at **caller-requested** bitmap size (UI owns scale).
@@ -701,14 +664,13 @@ mod tests {
 
     #[test]
     fn next_gap_prefers_nearest_behind_on_tie() {
-        let mut c = DenseFrameCache::new(8);
+        let c = ScrubChunkStore::new(8);
         assert_eq!(c.next_gap_frame(5, 10, 0), Some(5));
-        let _ = &mut c;
     }
 
     #[test]
     fn next_gap_expands_both_directions() {
-        let c = DenseFrameCache::new(8);
+        let c = ScrubChunkStore::new(8);
         assert_eq!(c.next_gap_frame(3, 9, 0), Some(3));
     }
 

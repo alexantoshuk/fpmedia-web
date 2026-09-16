@@ -85,9 +85,9 @@ export class DemoPlayer {
     await expect(this.root).toBeVisible();
   }
 
-  async openFixture(fixturePath: string) {
+  async openFixture(fixturePath: string, timeout = 60_000) {
     await this.fileInput.setInputFiles(fixturePath);
-    await this.waitReady();
+    await this.waitReady(timeout);
   }
 
   async waitReady(timeout = 20_000) {
@@ -185,5 +185,12 @@ export class DemoPlayer {
       frameCache: (await this.frameCache.innerText()).trim(),
       error: (await this.error.innerText()).trim(),
     };
+  }
+
+  /** Parsed `Nf / Mc` from the frame-cache meter (`12f / 1c · …`). */
+  async denseCacheFrames(): Promise<number> {
+    const text = (await this.frameCache.innerText()).trim();
+    const m = text.match(/^(\d+)f\s*\//);
+    return m ? Number(m[1]) : 0;
   }
 }

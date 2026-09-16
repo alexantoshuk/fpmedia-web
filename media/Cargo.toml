@@ -24,6 +24,8 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
     "Window",
+    "Document",
+    "Screen",
     "Performance",
     "Element",
     "HtmlElement",
@@ -40,6 +42,11 @@ web-sys = { workspace = true, optional = true, features = [
     "VideoFrame",
     "HardwareAcceleration",
     "Blob",
+    "BlobPropertyBag",
+    "ImageBitmap",
+    "ImageEncodeOptions",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
     "console",
     "AudioContext",
     "AudioContextOptions",

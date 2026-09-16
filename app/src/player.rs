@@ -435,7 +435,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
             <div
                 class="wm-scrubber-ready"
                 aria-hidden="true"
-                title="Ready frames: green=exact, blue=ahead"
+                title="Ready frames: green=dense cache, blue=presentation ahead"
             >
                 {move || {
                     let marks = video

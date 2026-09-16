@@ -39,8 +39,8 @@ impl OwnedVideoFrame {
 
     /// Fallible browser `VideoFrame.clone`.
     ///
-    /// **Do not use this to populate a cache.** Move `self` into the cache after draw
-    /// (see `WebPlayer::present_and_cache` / `DenseFrameCache::insert_frame`). Clone is
+    /// **Do not use this to populate a cache.** Move `self` into scrub ingest after draw
+    /// (see `WebPlayer::present_and_cache` / WebP `put_chunk`). Clone is
     /// only for handing an owned copy to an API that requires `OwnedVideoFrame`
     /// (e.g. `frame_at`).
     ///

@@ -4,16 +4,21 @@
 
 ## In progress
 
-- (none)
+- Spot-check BBB Play across GOP boundaries after soft sequential key switch (encode size = viewport ≤ source×monitor).
 
 ---
 
 ## Next up
 
+### Play / scrub cache split (finish)
+
+1. Run / fix probes: `e2e/player.smoke.spec.ts`; `e2e/player.play.dryp.spec.ts`; `e2e/perf.scrub.cached.spec.ts`; scrub settle if Exact blit regresses.
+2. Byte-budget eviction for compressed chunks (frame-count budget still used).
+3. Filmstrip via `ThumbCache` (caller-sized; mediabunny `samplesAtTimestamps` later).
+
 ### Media engine
 
 - Re-save scrub baselines after deep-seek fix (`npm run e2e:baseline:save` then compare).
-- Filmstrip thumbs via `ThumbCache` (caller-sized bitmaps; mediabunny `samplesAtTimestamps` later).
 - Spot-check A/V sync on long clips (Wing It / real AAC) after seek+play — mute/flush + volume UI shipped; clock already audio-driven when a track exists.
 - Pure audio path later: `AudioPlayer` / `AudioRef` (no canvas) reusing demux + decode + clock.
 - HEVC bitstream key verify (AVC IDR + Recovery Point SEI done).

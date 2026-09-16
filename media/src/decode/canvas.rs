@@ -1,16 +1,14 @@
 //! Draw a [`web_sys::VideoFrame`] onto a 2D canvas.
 //!
-//! Buffer size is locked from layout × DPR (capped). Do **not** resize the
-//! canvas on every present — changing `width`/`height` attributes changes the
-//! intrinsic aspect and makes CSS height jitter ±1px each frame.
+//! Buffer size is locked from layout × DPR, capped by **source display** and
+//! **monitor pixels** (`screen` × DPR). Do **not** resize the canvas on every
+//! present — changing `width`/`height` attributes changes the intrinsic aspect
+//! and makes CSS height jitter ±1px each frame.
 
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlElement, VideoFrame};
 
 use crate::error::MediaError;
-
-/// Longest canvas edge we will allocate (device pixels).
-const PLAYBACK_MAX_EDGE: u32 = 1280;
 
 /// Pin CSS aspect-ratio and allocate the bitmap buffer once for this video.
 ///
@@ -75,6 +73,69 @@ pub fn canvas_2d(canvas: &HtmlCanvasElement) -> Result<CanvasRenderingContext2d,
         .map_err(|_| MediaError::WebCodecs("canvas 2d cast failed".into()))
 }
 
+/// Monitor size in device pixels (`screen` CSS × DPR). Fallback 4K if unavailable.
+pub fn monitor_pixel_size() -> (u32, u32) {
+    const FALLBACK: (u32, u32) = (3840, 2160);
+    let Some(window) = web_sys::window() else {
+        return FALLBACK;
+    };
+    let dpr = window.device_pixel_ratio().clamp(1.0, 3.0);
+    let Ok(screen) = window.screen() else {
+        return FALLBACK;
+    };
+    let w = screen.width().unwrap_or(0) as f64;
+    let h = screen.height().unwrap_or(0) as f64;
+    if w < 1.0 || h < 1.0 {
+        return FALLBACK;
+    }
+    (
+        (w * dpr).round().max(1.0) as u32,
+        (h * dpr).round().max(1.0) as u32,
+    )
+}
+
+/// Cap a buffer to source display and monitor (contain, keep aspect).
+pub fn clamp_buffer_to_source_and_monitor(
+    src_w: u32,
+    src_h: u32,
+    want_w: u32,
+    want_h: u32,
+) -> (u32, u32) {
+    clamp_buffer_to_caps(src_w, src_h, want_w, want_h, monitor_pixel_size())
+}
+
+/// Pure clamp used by scrub encode + unit tests (`mon` = monitor device pixels).
+pub fn clamp_buffer_to_caps(
+    src_w: u32,
+    src_h: u32,
+    want_w: u32,
+    want_h: u32,
+    (mon_w, mon_h): (u32, u32),
+) -> (u32, u32) {
+    let src_w = src_w.max(1);
+    let src_h = src_h.max(1);
+    let src_aspect = src_w as f64 / src_h as f64;
+    let max_w = (src_w.min(mon_w.max(1))).max(1) as f64;
+    let max_h = (src_h.min(mon_h.max(1))).max(1) as f64;
+
+    let mut w = (want_w.max(1) as f64).min(max_w);
+    let mut h = (want_h.max(1) as f64).min(max_h);
+    if w / h > src_aspect {
+        w = (h * src_aspect).round().max(1.0);
+    } else {
+        h = (w / src_aspect).round().max(1.0);
+    }
+    if w > max_w {
+        w = max_w;
+        h = (w / src_aspect).round().max(1.0);
+    }
+    if h > max_h {
+        h = max_h;
+        w = (h * src_aspect).round().max(1.0);
+    }
+    (w as u32, h as u32)
+}
+
 /// Parent media stage when present; otherwise the canvas itself.
 fn layout_box_css(canvas: &HtmlCanvasElement) -> (f64, f64) {
     if let Some(parent) = canvas.parent_element() {
@@ -109,19 +170,11 @@ fn buffer_size_for_layout(canvas: &HtmlCanvasElement, src_w: u32, src_h: u32) ->
     let dpr = web_sys::window()
         .map(|w| w.device_pixel_ratio())
         .unwrap_or(1.0)
-        .clamp(1.0, 2.0);
+        .clamp(1.0, 3.0);
 
     let (box_w, box_h) = layout_box_css(canvas);
     let (css_w, css_h) = contain_css_size(box_w, box_h, src_aspect);
-
-    let max_edge = src_w.max(src_h).min(PLAYBACK_MAX_EDGE) as f64;
-    let mut buf_w = (css_w * dpr).round().clamp(1.0, max_edge);
-    let mut buf_h = (css_h * dpr).round().clamp(1.0, max_edge);
-    // Keep buffer aspect aligned with source after clamping.
-    if buf_w / buf_h > src_aspect {
-        buf_w = (buf_h * src_aspect).round().max(1.0);
-    } else {
-        buf_h = (buf_w / src_aspect).round().max(1.0);
-    }
-    (buf_w as u32, buf_h as u32)
+    let want_w = (css_w * dpr).round().max(1.0) as u32;
+    let want_h = (css_h * dpr).round().max(1.0) as u32;
+    clamp_buffer_to_source_and_monitor(src_w, src_h, want_w, want_h)
 }
