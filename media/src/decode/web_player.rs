@@ -33,10 +33,15 @@ use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
 use crate::types::{AudioMetadata, FrameId, GopProfile, VideoMetadata};
 
-/// Decoded frames held ready for canvas present (mediabunny-style prefetch).
+/// Live VF ahead of the playhead (play prefetch + Next hits).
 /// Keep small — each slot pins a `VideoFrame`; 16 + in-flight decode starved
 /// Chromium's pool on DRYP play (`flush/idle` mid-GOP with `decodeQ≈12`).
-pub const PRESENTATION_QUEUE_CAP: usize = 6;
+/// Pair with [`STEP_BEHIND_CAP`] (ring ≈ 1 displayed + 8 behind + 4 ahead).
+pub const PRESENTATION_QUEUE_CAP: usize = 4;
+/// Live VF older than the playhead for Prev without key→N (step/play ring).
+/// mediabunny reverse always restarts from key unless samples are retained —
+/// this is the SampleCursor-lite behind window (`media-sink.ts` flush on rewind).
+pub const STEP_BEHIND_CAP: usize = 8;
 /// Frames to decode before starting the media clock (rest filled by prefetch).
 const PLAY_PRIME_FRAMES: usize = 2;
 /// Start-of-clip frames prepared into `loop_prime` before EOF (one decoder).
@@ -77,7 +82,12 @@ enum CacheFillMode {
 
 struct Shared {
     player: RefCell<Player>,
+    /// Ahead of playhead (presentation order). Cap [`PRESENTATION_QUEUE_CAP`].
     presentation: RefCell<VecDeque<QueuedFrame>>,
+    /// VF currently matching canvas / committed playhead (not yet in behind).
+    displayed: RefCell<Option<QueuedFrame>>,
+    /// Older than displayed, oldest at front. Cap [`STEP_BEHIND_CAP`].
+    step_behind: RefCell<VecDeque<QueuedFrame>>,
     /// Exact scrub store (WebP chunks) — densify / seek / step residency.
     scrub_chunks: RefCell<ScrubChunkStore>,
     /// Live blit LRU for scrub present (`createImageBitmap`).
@@ -142,6 +152,8 @@ pub enum ReadyFrameKind {
     Exact,
     /// In the play presentation / ahead queue (live `VideoFrame`).
     Ahead,
+    /// In the step behind ring (live `VideoFrame` for Prev).
+    Behind,
 }
 
 /// One ready frame for UI timeline marks.
@@ -307,6 +319,8 @@ impl WebPlayer {
         let shared = Rc::new(Shared {
             player: RefCell::new(player),
             presentation: RefCell::new(VecDeque::new()),
+            displayed: RefCell::new(None),
+            step_behind: RefCell::new(VecDeque::new()),
             scrub_chunks: RefCell::new(ScrubChunkStore::new(max_frames)),
             scrub_blit: RefCell::new(ScrubBlitLru::new(SCRUB_BLIT_LRU)),
             encode_canvas: EncodeCanvasSlot::default(),
@@ -567,7 +581,9 @@ impl WebPlayer {
     /// the HW session until the finger frame is on canvas.
     fn aim_scrub_cache(&self, focus: FrameId) {
         self.shared.fill_mode.set(CacheFillMode::Scrub);
-        self.park_presentation_into_cache();
+        // Keep the step VF ring (displayed / behind / ahead) across Pause and
+        // step — park used to drop ahead VFs and force key→N on Next/Prev hold.
+        // Seek / scrub settle call [`Self::clear_step_ring`] explicitly.
         self.touch_playhead(focus);
         // Fresh aim — allow fill even after a prior stall.
         self.shared.fill_stalled_aim.set(None);
@@ -663,6 +679,8 @@ impl WebPlayer {
         // Drop in-flight main-decoder cascade from the preceding drag sample so
         // settle does not inherit a wedged `decodeQueueSize`.
         self.invalidate_decoder();
+        self.clear_step_ring();
+        self.clear_presentation();
         self.aim_scrub_cache(frame);
         // Do **not** trim dense here — wiping the strip on pointer-up felt like
         // the cache vanishing even when releasing on a warm region.
@@ -728,6 +746,13 @@ impl WebPlayer {
                 presentation.iter().map(|q| q.frame).collect::<Vec<_>>(),
             )
         };
+        let behind: Vec<FrameId> = self
+            .shared
+            .step_behind
+            .borrow()
+            .iter()
+            .map(|q| q.frame)
+            .collect();
         let (cache_chunks, cache_frames, cache_cap, cache_no_gaps, ready_frames, win_from, win_to) = {
             let cache = self.shared.scrub_chunks.borrow();
             let extent = cache.extent();
@@ -737,6 +762,14 @@ impl WebPlayer {
                     frame: id,
                     kind: ReadyFrameKind::Exact,
                 });
+            }
+            for frame in behind {
+                if !ready.iter().any(|m| m.frame == frame) {
+                    ready.push(ReadyFrameMark {
+                        frame,
+                        kind: ReadyFrameKind::Behind,
+                    });
+                }
             }
             for frame in ahead {
                 if !ready.iter().any(|m| m.frame == frame) {
@@ -814,6 +847,8 @@ impl WebPlayer {
         let result = async {
             self.shared.player.borrow_mut().pause();
             self.clear_loop_prime();
+            self.clear_step_ring();
+            self.clear_presentation();
             self.aim_scrub_cache(frame);
             // Keep last canvas until exact decode paints (same as scrub settle).
             self.goto_frame_with_interim(frame, epoch).await
@@ -879,6 +914,9 @@ impl WebPlayer {
                 // Keep the last drag frame on canvas until exact decode VF paints.
                 // Do **not** blit key/preview from store — key is often far from
                 // target and flashes a wrong frame; store is low-q drag trail only.
+                // Reinforce ring clear when host skipped [`Self::prepare_scrub_settle`].
+                self.clear_step_ring();
+                self.clear_presentation();
                 self.goto_frame_with_interim(frame, epoch).await
             } else {
                 if self.present_from_cache(frame).await? {
@@ -933,6 +971,12 @@ impl WebPlayer {
         self.enter_scrub_cache_pipeline(focus);
     }
 
+    /// After sequential Next/Prev: densify without killing the warm main decoder
+    /// / step VF ring (`mediabunny: samples()` keep iterator; no flush per step).
+    fn arm_scrub_densify_after_step(&self, focus: FrameId) {
+        self.enter_scrub_cache_pipeline(focus);
+    }
+
     /// Best interim canvas frame while exact `target` is missing from dense cache.
     ///
     /// Prefer a cached neighbor when `|cached − target| ≤ |key − target|` (tie →
@@ -963,20 +1007,19 @@ impl WebPlayer {
     pub async fn next_frame(&self) -> Result<(), MediaError> {
         self.shared.player.borrow_mut().pause();
         let next = self.state().frame.saturating_add(1);
-        // Reuse prefetch when present — live VideoFrame, not WebP store.
-        {
-            let mut presentation = self.shared.presentation.borrow_mut();
-            if presentation.front().is_some_and(|f| f.frame == next) {
-                let queued = presentation.pop_front().expect("front checked");
-                drop(presentation);
-                self.present_and_cache(queued.frame, queued.video)?;
-                self.shared.player.borrow_mut().commit_frame(queued.frame)?;
-                self.enter_scrub_cache_pipeline(queued.frame);
-                self.snap_media_clock_to_playhead();
-                return Ok(());
-            }
+        if next >= self.state().frame_count {
+            return Err(MediaError::FrameOutOfRange(next, self.state().frame_count));
         }
-        // Always exact VF (mediabunny CanvasSink path). WebP blit is scrub-drag only.
+        // Live ahead VF (play prefetch / prior Next).
+        if let Some(video) = self.take_presentation_front(next) {
+            self.install_displayed(next, video)?;
+            self.shared.player.borrow_mut().commit_frame(next)?;
+            self.touch_playhead(next);
+            self.snap_media_clock_to_playhead();
+            self.arm_scrub_densify_after_step(next);
+            return Ok(());
+        }
+        // Warm sequential decode — do **not** invalidate after (kept ring + held).
         let epoch = self.begin_op();
         self.abort_scrub_fill(true);
         self.shared.hold_densify_for_exact.set(true);
@@ -988,7 +1031,7 @@ impl WebPlayer {
         }
         result?;
         self.snap_media_clock_to_playhead();
-        self.arm_scrub_densify_after_exact(self.state().frame);
+        self.arm_scrub_densify_after_step(self.state().frame);
         Ok(())
     }
 
@@ -999,20 +1042,31 @@ impl WebPlayer {
             return Err(MediaError::FrameOutOfRange(0, self.state().frame_count));
         }
         let prev = cur - 1;
-        // Always exact VF — do not present WebP store (scrub-drag only).
+        // Live behind VF — no key→N.
+        if let Some(video) = self.take_step_behind(prev) {
+            if let Some(displayed) = self.shared.displayed.borrow_mut().take() {
+                self.push_presentation_front(displayed);
+            }
+            self.install_displayed_no_retire(prev, video)?;
+            self.shared.player.borrow_mut().commit_frame(prev)?;
+            self.touch_playhead(prev);
+            self.snap_media_clock_to_playhead();
+            self.arm_scrub_densify_after_step(prev);
+            return Ok(());
+        }
+        // Miss: one key→prev cascade; interim parks near-target VF into behind ring.
         let epoch = self.begin_op();
         self.abort_scrub_fill(true);
         self.shared.hold_densify_for_exact.set(true);
         self.aim_scrub_cache(prev);
-        self.invalidate_decoder();
-        let result = self.goto_frame(prev, epoch).await;
+        let result = self.goto_frame_fill_behind(prev, epoch).await;
         self.shared.hold_densify_for_exact.set(false);
         if !self.is_current(epoch) {
             return Err(MediaError::Cancelled);
         }
         result?;
         self.snap_media_clock_to_playhead();
-        self.arm_scrub_densify_after_exact(self.state().frame);
+        self.arm_scrub_densify_after_step(self.state().frame);
         Ok(())
     }
 
@@ -1073,6 +1127,8 @@ impl WebPlayer {
         // DRYP's stutter loop (play a few → clear strip → flush/idle mid-GOP).
         // Do **not** `clear_scrub_store` here — scrub residency is unrelated to
         // underrun and wiping it was the visible "cache vanishes" symptom.
+        // Behind ring is stale past the catch-up target — drop it.
+        self.clear_step_ring();
         let hard_seek = !self.is_all_intra() && {
             let player = self.shared.player.borrow();
             let index = player.track().index();
@@ -1093,9 +1149,11 @@ impl WebPlayer {
         if !self.is_looping() {
             self.shared.player.borrow_mut().pause();
             self.clear_presentation();
+            self.clear_step_ring();
             return Ok(false);
         }
         self.clear_presentation();
+        self.clear_step_ring();
         self.invalidate_decoder();
         let epoch = self.shared.op_epoch.get();
         self.goto_frame(0, epoch).await?;
@@ -1220,6 +1278,7 @@ impl WebPlayer {
             } else {
                 self.shared.player.borrow_mut().pause();
                 self.clear_presentation();
+                self.clear_step_ring();
                 return Ok(DuePresent::Ended);
             }
         }
@@ -1323,6 +1382,7 @@ impl WebPlayer {
         };
 
         self.clear_presentation();
+        self.clear_step_ring();
         self.clear_scrub_store();
         self.present_and_cache(first.frame, first.video)?;
         self.touch_playhead(first.frame);
@@ -1380,6 +1440,7 @@ impl WebPlayer {
         let result = async {
             self.clear_loop_prime();
             self.clear_presentation();
+            self.clear_step_ring();
             self.clear_scrub_store();
             self.invalidate_decoder();
             self.goto_frame(0, epoch).await?;
@@ -1517,6 +1578,7 @@ impl WebPlayer {
                 } else {
                     drop(presentation);
                     self.clear_presentation();
+                    self.clear_step_ring();
                 }
             }
         }
@@ -1561,23 +1623,145 @@ impl WebPlayer {
         }
     }
 
-    /// Park presentation VFs on pause/scrub: encode **current** only, drop the rest.
-    ///
-    /// Sync WebP of the whole queue (up to `PRESENTATION_QUEUE_CAP` full frames)
-    /// made Pause feel stuck. Densify refills Exact; one encode keeps Pause→Seek.
-    fn park_presentation_into_cache(&self) {
-        let items: Vec<(FrameId, OwnedVideoFrame)> = {
-            let mut presentation = self.shared.presentation.borrow_mut();
-            presentation.drain(..).map(|q| (q.frame, q.video)).collect()
-        };
-        let current = self.state().frame;
-        for (frame, video) in items {
-            if frame == current {
-                self.ingest_scrub_frame(frame, video, true);
-            } else {
-                drop(video);
+    /// Drop live step VF ring (displayed + behind). Seek / scrub settle / teardown.
+    fn clear_step_ring(&self) {
+        let displayed = self.shared.displayed.borrow_mut().take();
+        if let Some(q) = displayed {
+            self.ingest_scrub_frame(q.frame, q.video, true);
+        }
+        loop {
+            let next = self.shared.step_behind.borrow_mut().pop_front();
+            let Some(q) = next else {
+                break;
+            };
+            self.ingest_scrub_frame(q.frame, q.video, true);
+        }
+    }
+
+    fn take_presentation_front(&self, frame: FrameId) -> Option<OwnedVideoFrame> {
+        let mut presentation = self.shared.presentation.borrow_mut();
+        if presentation.front().is_some_and(|f| f.frame == frame) {
+            presentation.pop_front().map(|q| q.video)
+        } else {
+            None
+        }
+    }
+
+    fn push_presentation_front(&self, q: QueuedFrame) {
+        let mut presentation = self.shared.presentation.borrow_mut();
+        presentation.retain(|x| x.frame != q.frame);
+        presentation.push_front(q);
+        while presentation.len() > PRESENTATION_QUEUE_CAP {
+            if let Some(drop_q) = presentation.pop_back() {
+                drop(drop_q.video);
             }
         }
+    }
+
+    fn take_step_behind(&self, frame: FrameId) -> Option<OwnedVideoFrame> {
+        let mut behind = self.shared.step_behind.borrow_mut();
+        if behind.back().is_some_and(|q| q.frame == frame) {
+            return behind.pop_back().map(|q| q.video);
+        }
+        if let Some(i) = behind.iter().position(|q| q.frame == frame) {
+            return behind.remove(i).map(|q| q.video);
+        }
+        None
+    }
+
+    fn push_step_behind(&self, q: QueuedFrame) {
+        {
+            let mut behind = self.shared.step_behind.borrow_mut();
+            behind.retain(|x| x.frame != q.frame);
+            // Keep presentation order (oldest at front).
+            match behind.iter().position(|x| x.frame > q.frame) {
+                Some(i) => behind.insert(i, q),
+                None => behind.push_back(q),
+            }
+        }
+        self.trim_step_behind();
+    }
+
+    fn trim_step_behind(&self) {
+        loop {
+            let overflow = self.shared.step_behind.borrow().len() > STEP_BEHIND_CAP;
+            if !overflow {
+                break;
+            }
+            let old = self.shared.step_behind.borrow_mut().pop_front();
+            let Some(old) = old else {
+                break;
+            };
+            // Exact trail when the VF ages out of the live ring.
+            if PLAY_EXACT_INGEST
+                && self.is_playing()
+                && self.shared.fill_mode.get() == CacheFillMode::Play
+            {
+                self.ingest_play_exact_frame(old.frame, old.video);
+            } else {
+                self.ingest_scrub_frame(old.frame, old.video, true);
+            }
+        }
+    }
+
+    /// Draw `video`, keep it as displayed; retire prior displayed into behind.
+    fn install_displayed(
+        &self,
+        frame: FrameId,
+        video: OwnedVideoFrame,
+    ) -> Result<(), MediaError> {
+        let prev = self.shared.displayed.borrow_mut().take();
+        if let Some(old) = prev {
+            self.push_step_behind(old);
+        }
+        self.install_displayed_no_retire(frame, video)
+    }
+
+    fn install_displayed_no_retire(
+        &self,
+        frame: FrameId,
+        video: OwnedVideoFrame,
+    ) -> Result<(), MediaError> {
+        let result =
+            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
+        *self.shared.displayed.borrow_mut() = Some(QueuedFrame { frame, video });
+        result
+    }
+
+    /// Best-effort Exact WebP for the live displayed VF (borrow / worker; keep VF).
+    fn exact_ingest_displayed_borrow(&self) {
+        let Ok(disp) = self.shared.displayed.try_borrow() else {
+            return;
+        };
+        let Some(q) = disp.as_ref() else {
+            return;
+        };
+        let target_w = self.shared.canvas.width().max(1);
+        let target_h = self.shared.canvas.height().max(1);
+        let _ = try_ingest_scrub_via_worker(
+            &self.shared,
+            q.frame,
+            &q.video,
+            target_w,
+            target_h,
+            true,
+        );
+    }
+
+    /// Draw and remember a visited frame in the step VF ring + Exact WebP store.
+    ///
+    /// Keeps a live `VideoFrame` in `displayed` for Prev; Exact via worker borrow
+    /// when possible (sync encode waits until ring eviction).
+    fn present_and_cache(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
+        self.install_displayed(frame, video)?;
+        self.exact_ingest_displayed_borrow();
+        Ok(())
+    }
+
+    /// Play present: draw + keep VF in ring; Exact ingest when frames age out of behind.
+    fn present_play_frame(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
+        self.install_displayed(frame, video)?;
+        Ok(())
     }
 
     /// Drop Exact scrub store + blit + thumbs (open teardown / loop restart).
@@ -1910,35 +2094,43 @@ impl WebPlayer {
         Ok(())
     }
 
-    /// Draw and remember a visited frame in the scrub WebP store.
+    /// Prev miss: key→target cascade; park near-target pruned VF into the behind ring.
     ///
-    /// Encodes after draw then drops the `VideoFrame` — Exact residency is compressed
-    /// RAM, not Chromium's pool. Replace-on-hit so Pause→Seek/Prev/Next match canvas.
-    fn present_and_cache(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
-        let result =
-            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
-        self.ingest_scrub_frame(frame, video, true);
-        result
-    }
-
-    /// Play present: draw + optional Exact ingest (WebP), then drop the live
-    /// `VideoFrame` (tiny presentation pool).
-    ///
-    /// Presented-only trail — not densify. Do **not** call
-    /// [`Self::schedule_scrub_cache_fill`] / scrub decoder here. Eviction remains
-    /// budget / farthest-from-aim only (no Play trim wipe).
-    ///
-    /// [`PLAY_EXACT_INGEST`] gates the trail (A/B: set `false` to prove fullscreen
-    /// jank is sync WebP encode).
-    fn present_play_frame(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
-        let result =
-            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
-        if PLAY_EXACT_INGEST {
-            self.ingest_play_exact_frame(frame, video);
-        } else {
-            drop(video);
+    /// `mediabunny: mediaSamplesAtTimestamps` restarts from key on rewind — we keep
+    /// a capped behind window so the next few Prev hits avoid another cascade.
+    async fn goto_frame_fill_behind(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
+        let track = self.shared.player.borrow().track_rc();
+        let shared = Rc::clone(&self.shared);
+        let target = frame;
+        let on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)> =
+            Box::new(move |id: FrameId, video: OwnedVideoFrame| {
+                let floor = target.saturating_sub(STEP_BEHIND_CAP as FrameId);
+                if id >= floor && id < target {
+                    let mut behind = shared.step_behind.borrow_mut();
+                    behind.retain(|x| x.frame != id);
+                    match behind.iter().position(|x| x.frame > id) {
+                        Some(i) => behind.insert(i, QueuedFrame { frame: id, video }),
+                        None => behind.push_back(QueuedFrame { frame: id, video }),
+                    }
+                    while behind.len() > STEP_BEHIND_CAP {
+                        if let Some(old) = behind.pop_front() {
+                            drop(old.video);
+                        }
+                    }
+                } else {
+                    ingest_scrub_frame_shared(&shared, id, video, false);
+                }
+            });
+        let video_frame = self
+            .decode_frame_with_interim_cb(&track, frame, epoch, on_interim)
+            .await?;
+        if !self.is_current(epoch) {
+            drop(video_frame);
+            return Err(MediaError::Cancelled);
         }
-        result
+        self.present_and_cache(frame, video_frame)?;
+        self.shared.player.borrow_mut().commit_frame(frame)?;
+        Ok(())
     }
 
     /// Play mode → draw + Exact ingest (no densify); scrub/seek → `present_and_cache`.
@@ -2023,6 +2215,7 @@ impl Drop for WebPlayer {
     fn drop(&mut self) {
         self.clear_loop_prime();
         self.clear_presentation();
+        self.clear_step_ring();
         self.clear_scrub_store();
         terminate_play_webp_worker(&self.shared);
     }

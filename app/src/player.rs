@@ -572,6 +572,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                             let class = match m.kind {
                                 ReadyFrameKind::Exact => "wm-ready-tick is-exact",
                                 ReadyFrameKind::Ahead => "wm-ready-tick is-ahead",
+                                ReadyFrameKind::Behind => "wm-ready-tick is-behind",
                             };
                             view! {
                                 <span

@@ -6,7 +6,7 @@
 
 - Spot-check fullscreen scrub drag + Play with WebP Worker (densify async encode).
 - Spot-check BBB Play across GOP boundaries after soft sequential key switch (encode size = viewport ≤ source×monitor).
-- Next/Prev hold still slow after always-VF (`goto_frame` key→N each step) — warm sequential decode / better pacing.
+- Spot-check Next/Prev hold with step VF ring (behind=8, ahead=4; no per-step invalidate).
 
 ---
 
