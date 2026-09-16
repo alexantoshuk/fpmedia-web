@@ -126,9 +126,11 @@ impl EncodeCanvas {
                 height as f64,
             )
             .map_err(MediaError::from)?;
+        // Chromium treats quality 1.0 as lossless WebP — sync densify stalls on
+        // full viewport×DPR. 0.9 stays lossy and much faster (product scrub store).
         let data_url = self
             .canvas
-            .to_data_url_with_type_and_encoder_options("image/webp", &1.0.into())
+            .to_data_url_with_type_and_encoder_options("image/webp", &0.9.into())
             .map_err(MediaError::from)?;
         let (mime, bytes) = decode_data_url(&data_url)?;
         Ok(EncodedScrubFrame {

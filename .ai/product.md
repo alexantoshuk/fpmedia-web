@@ -38,7 +38,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - Audio decode/output lives in the **`webmedia` engine**, not inside `VideoRef`. UI hosts stay thin
   (volume/mute/transport). A future pure-**`<Audio>` / `AudioRef`** reuses the same demux + decode + clock
   without a video track or canvas.
-- **Play vs scrub residency (agreed):** Play stays mediabunny-light (tiny `VideoFrame` / canvas pool, densify off). Exact scrub/seek/step use a **separate** scrub store — not a long `VideoFrame` trail shared with play. Scrub store = compressed WebP chunks in system RAM at **current viewport buffer size** (contain × DPR), capped by **source display** and **monitor pixels** (`screen` × DPR) — + small live LRU for blit; not “second array of `VideoFrame`” (same Chrome pool pressure). Canvas `toDataURL('image/webp', 1.0)` is high-quality lossy in practice (not bitexact lossless). Resize invalidates the scrub trail.
+- **Play vs scrub residency (agreed):** Play stays mediabunny-light (tiny `VideoFrame` / canvas pool, densify off). Exact scrub/seek/step use a **separate** scrub store — not a long `VideoFrame` trail shared with play. Scrub store = compressed WebP chunks in system RAM at **current viewport buffer size** (contain × DPR), capped by **source display** and **monitor pixels** (`screen` × DPR) — + small live LRU for blit; not “second array of `VideoFrame`” (same Chrome pool pressure). Canvas `toDataURL('image/webp', 0.9)` — Chromium `1.0` is lossless and stalls densify; keep lossy. Resize invalidates the scrub trail.
 
 ---
 
