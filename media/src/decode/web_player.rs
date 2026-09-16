@@ -1070,7 +1070,7 @@ impl WebPlayer {
             if presentation.front().is_some_and(|f| f.frame == target) {
                 let queued = presentation.pop_front().expect("front checked");
                 drop(presentation);
-                // Play path: playhead-only dense (same as present_due).
+                // Play path: present + Exact ingest (same as present_due).
                 self.present_play_frame(queued.frame, queued.video)?;
                 self.touch_playhead(queued.frame);
                 self.shared.player.borrow_mut().commit_frame(queued.frame)?;
@@ -1274,7 +1274,7 @@ impl WebPlayer {
             if lag_ms > 1.0 {
                 self.shared.last_behind_ms.set(Some(lag_ms));
             }
-            // Play: keep densify ahead of playhead; drop only behind (pool pressure).
+            // Play: Exact ingest of presented frame; densify stays off.
             self.present_play_frame(queued.frame, queued.video)?;
             self.touch_playhead(queued.frame);
             self.shared.player.borrow_mut().commit_frame(queued.frame)?;
@@ -1855,22 +1855,25 @@ impl WebPlayer {
         result
     }
 
-    /// Play present: draw + drop the live `VideoFrame` (tiny presentation pool).
+    /// Play present: draw + ingest presented frame into Exact store (WebP), then
+    /// drop the live `VideoFrame` (tiny presentation pool).
     ///
-    /// Densify stays off during Play. Do **not** touch scrub-store residency —
-    /// Exact chunks survive until budget / farthest-from-aim eviction only.
+    /// Presented-only trail — not densify. Do **not** call
+    /// [`Self::schedule_scrub_cache_fill`] / scrub decoder here. Eviction remains
+    /// budget / farthest-from-aim only (no Play trim wipe).
     fn present_play_frame(
         &self,
-        _frame: FrameId,
+        frame: FrameId,
         video: OwnedVideoFrame,
     ) -> Result<(), MediaError> {
         let result =
             draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
-        drop(video);
+        // Same encode path as scrub present; VF closes inside ingest.
+        self.ingest_scrub_frame(frame, video, true);
         result
     }
 
-    /// Play mode → draw+drop VF (no scrub ingest); scrub/seek → `present_and_cache`.
+    /// Play mode → draw + Exact ingest (no densify); scrub/seek → `present_and_cache`.
     fn present_for_mode(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
         if self.is_playing() && self.shared.fill_mode.get() == CacheFillMode::Play {
             self.present_play_frame(frame, video)

@@ -212,4 +212,32 @@ test.describe("demo player smoke", () => {
     ).toBeGreaterThanOrEqual(Math.min(warmed - 2, 6));
     expect(await player.error.innerText()).toBe("");
   });
+
+  test("Play grows Exact trail along playhead (presented ingest)", async ({
+    page,
+  }) => {
+    const player = new DemoPlayer(page);
+    await player.goto();
+    await player.openFixture(FIXTURES.withBFrames);
+
+    // Cold start — no Pause densify; Exact should grow from presented frames only.
+    await player.seekToFrame(0);
+    await player.play.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(true);
+    await expect
+      .poll(async () => (await player.readStatus()).playhead ?? 0, {
+        timeout: 15_000,
+      })
+      .toBeGreaterThanOrEqual(12);
+
+    await expect
+      .poll(async () => player.denseCacheFrames(), {
+        timeout: 15_000,
+        message: "Exact trail did not grow from Play presented ingest",
+      })
+      .toBeGreaterThanOrEqual(8);
+    expect(await player.error.innerText()).toBe("");
+  });
 });

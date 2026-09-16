@@ -5,31 +5,22 @@
 ## In progress
 
 - Spot-check BBB Play across GOP boundaries after soft sequential key switch (encode size = viewport ≤ source×monitor).
-- Play Exact trail: sequential ingest of presented frames (not gap densify) — plan below.
+- Spot-check Play Exact trail + DRYP after presented-only ingest (sync WebP q=0.9); gate every-Nth if jank.
 
 ---
 
 ## Next up
-
-### Play Exact trail (presented-only ingest)
-
-**Goal:** while playing, record frames already shown into `ScrubChunkStore` (WebP), same frame/byte budget + farthest-from-playhead eviction. Not a mirror of scrub densify.
-
-**Non-goals:** gap-fill / scrub-decoder densify during Play (stays off); every-frame main-thread stall; ThumbCache/filmstrip (separate).
-
-**Plan:**
-
-1. **`present_play_frame`** — after canvas draw, ingest VF → WebP (`put_chunk` / replace) then drop VF; keep aim/playhead eviction. Do **not** call `schedule_scrub_cache_fill` / scrub decoder.
-2. **Cost control (v1)** — sync encode at WebP **q=0.9** (already shipped); if Play janks, gate ingest (every Nth frame and/or spare-time before next deadline). Close VF immediately after encode (no long-lived play VF trail).
-3. **v2 (optional)** — post-present copy/transfer → Worker WebP → store; abort backlog on underrun. Only if v1 profiling shows main-thread encode starving rAF.
-4. **Probes** — smoke: Play grows Exact marks along playhead; Play still smooth (`player.play.dryp`); Pause densify unchanged; no densify task while `CacheFillMode::Play`.
-5. **Docs** — `product.md` play-vs-scrub bullet; `skills/media.md` triage/gotcha (`present_play_frame` ingest ≠ densify). `mediabunny:` no Exact WebP trail — local invention.
 
 ### Play / scrub cache split (finish)
 
 1. Run / fix probes: `e2e/player.smoke.spec.ts`; `e2e/player.play.dryp.spec.ts`; `e2e/perf.scrub.cached.spec.ts`; scrub settle if Exact blit regresses.
 2. Byte-budget eviction for compressed chunks (frame-count budget still used).
 3. Filmstrip via `ThumbCache` (caller-sized; mediabunny `samplesAtTimestamps` later).
+
+### Play Exact trail (follow-ups)
+
+- Cost control if Play janks: gate ingest (every Nth frame and/or spare-time before next deadline).
+- v2 (optional): post-present Worker WebP → store; abort backlog on underrun — only if v1 profiling shows main-thread encode starving rAF.
 
 ### Media engine
 
