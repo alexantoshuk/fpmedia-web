@@ -29,10 +29,17 @@ use crate::error::MediaError;
 /// Keep well below 1.0 — Chromium treats 1.0 as lossless and stalls encode.
 pub const SCRUB_WEBP_QUALITY: f64 = 0.5;
 
+/// Placeholder chunk while Worker WebP is in flight (gap closed; not presentable).
+pub const PENDING_WEBP_MIME: &str = "application/x-webmedia-pending";
+
 /// **A/B (done):** Play ingest with transfer-only (no `toDataURL`) was smooth on
-/// fullscreen — jank is `toDataURL`, not blit/transfer. Keep `false` (real WebP);
-/// Worker v2 should move encode off main. Set `true` only to re-run the probe.
+/// fullscreen — jank is `toDataURL`, not blit/transfer. Keep `false` (real WebP).
+/// Play path prefers JS Worker `convertToBlob`; set `true` only to re-run the probe.
 pub const SCRUB_SKIP_PLAY_WEBP_DATA_URL: bool = false;
+
+pub fn is_pending_webp_chunk(chunk: &ScrubChunk) -> bool {
+    chunk.mime == PENDING_WEBP_MIME
+}
 
 /// One compressed Exact frame in system RAM.
 #[derive(Clone, Debug)]
@@ -92,6 +99,47 @@ impl EncodeCanvas {
             canvas,
             ctx,
         })
+    }
+
+    /// VF → two `ImageBitmap`s (blit + worker transfer). Double-draw is cheap vs WebP.
+    pub fn frame_to_bitmap_pair(
+        &self,
+        frame: &VideoFrame,
+        target_w: u32,
+        target_h: u32,
+    ) -> Result<(ImageBitmap, ImageBitmap, u32, u32), MediaError> {
+        let (blit, width, height) = self.frame_to_bitmap(frame, target_w, target_h)?;
+        let (worker, w2, h2) = self.frame_to_bitmap(frame, target_w, target_h)?;
+        debug_assert_eq!((width, height), (w2, h2));
+        Ok((blit, worker, width, height))
+    }
+
+    /// VF → sized OffscreenCanvas → sync `ImageBitmap` (no WebP). For Worker transfer.
+    pub fn frame_to_bitmap(
+        &self,
+        frame: &VideoFrame,
+        target_w: u32,
+        target_h: u32,
+    ) -> Result<(ImageBitmap, u32, u32), MediaError> {
+        let src_w = frame.display_width().max(1);
+        let src_h = frame.display_height().max(1);
+        let (width, height) = crate::decode::canvas::clamp_buffer_to_source_and_monitor(
+            src_w, src_h, target_w, target_h,
+        );
+        if self.offscreen.width() != width {
+            self.offscreen.set_width(width);
+        }
+        if self.offscreen.height() != height {
+            self.offscreen.set_height(height);
+        }
+        self.off_ctx
+            .draw_image_with_video_frame_and_dw_and_dh(frame, 0.0, 0.0, width as f64, height as f64)
+            .map_err(MediaError::from)?;
+        let bitmap = self
+            .offscreen
+            .transfer_to_image_bitmap()
+            .map_err(MediaError::from)?;
+        Ok((bitmap, width, height))
     }
 
     /// Draw `frame` at viewport size (≤ source × monitor) → sync `ImageBitmap` + WebP.
@@ -157,10 +205,7 @@ impl EncodeCanvas {
         // Store is scrub-preview quality; settle paints decode VF on canvas.
         let data_url = self
             .canvas
-            .to_data_url_with_type_and_encoder_options(
-                "image/webp",
-                &SCRUB_WEBP_QUALITY.into(),
-            )
+            .to_data_url_with_type_and_encoder_options("image/webp", &SCRUB_WEBP_QUALITY.into())
             .map_err(MediaError::from)?;
         let (mime, bytes) = decode_data_url(&data_url)?;
         Ok(EncodedScrubFrame {

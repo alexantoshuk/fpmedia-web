@@ -5,6 +5,7 @@ mod canvas;
 mod frame_cache;
 mod owned_audio_data;
 mod owned_video_frame;
+mod play_encode_worker;
 mod scrub_encode;
 mod web_player;
 mod webcodecs;

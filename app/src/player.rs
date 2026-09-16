@@ -117,9 +117,9 @@ pub fn DemoPlayer() -> impl IntoView {
                 return;
             }
         }
-        let can_step = video.ready.get_untracked()
-            && !video.busy.get_untracked()
-            && !video.playing.get_untracked();
+        // Enqueue even while busy — OpQueue coalesces to latest Step so hold/repeat
+        // does not drop, then burst when busy clears (see skills/leptos.md).
+        let can_step = video.ready.get_untracked() && !video.playing.get_untracked();
         if !can_step {
             return;
         }

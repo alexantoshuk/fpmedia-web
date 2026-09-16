@@ -6,7 +6,10 @@ use std::rc::Rc;
 use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use leptos_use::utils::Pausable;
-use leptos_use::{UseRafFnOptions, use_raf_fn_with_options, use_resize_observer};
+use leptos_use::{
+    ThrottleOptions, UseRafFnOptions, use_raf_fn_with_options, use_resize_observer,
+    use_throttle_fn_with_arg_and_options,
+};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -316,14 +319,13 @@ pub fn Video(
                                     }
                                 })
                             };
-                            if should_hold {
-                                if let Ok(borrow) = player.try_borrow()
-                                    && let Some(p) = borrow.as_ref()
-                                {
-                                    let t = p.hold_media_clock_for_underrun();
-                                    if let Some(s) = session.borrow_mut().as_mut() {
-                                        s.media_origin = t;
-                                    }
+                            if should_hold
+                                && let Ok(borrow) = player.try_borrow()
+                                && let Some(p) = borrow.as_ref()
+                            {
+                                let t = p.hold_media_clock_for_underrun();
+                                if let Some(s) = session.borrow_mut().as_mut() {
+                                    s.media_origin = t;
                                 }
                             }
                         } else {
@@ -465,6 +467,7 @@ pub fn Video(
                                 &session,
                                 error,
                                 playing,
+                                playhead,
                                 SeekOrStep::Seek(target),
                             )
                             .await;
@@ -478,6 +481,7 @@ pub fn Video(
                                 &session,
                                 error,
                                 playing,
+                                playhead,
                                 SeekOrStep::SeekKeyframe(target),
                             )
                             .await;
@@ -495,6 +499,7 @@ pub fn Video(
                                 &session,
                                 error,
                                 playing,
+                                playhead,
                                 SeekOrStep::Scrub { target, settle },
                             )
                             .await;
@@ -509,9 +514,14 @@ pub fn Video(
                                 &session,
                                 error,
                                 playing,
+                                playhead,
                                 SeekOrStep::Step(forward),
                             )
                             .await;
+                            // Cached steps can finish in one microtask; without a
+                            // paint yield the drain chains several frames before
+                            // the browser composites → lag then a burst.
+                            wait_animation_frame().await;
                         }
                         HostOp::PlayPrime => {
                             run_play_prime(
@@ -698,21 +708,53 @@ pub fn Video(
         }) as Rc<dyn Fn(u32)>
     };
 
+    // Rate-limit scrub drag only — pointermove is denser than key-repeat.
+    // Next/Prev: OpQueue coalesce + hold-safe playhead aim (no throttle).
+    // Settle (pointer up) stays immediate — exact must not wait for a throttle window.
+    const SCRUB_DRAG_THROTTLE_MS: f64 = 50.0;
+
+    let scrub_drag_throttled = {
+        let player = Rc::clone(&player);
+        let session = Rc::clone(&session);
+        let queue = queue.clone();
+        let kick_drain = Rc::clone(&kick_drain);
+        use_throttle_fn_with_arg_and_options(
+            move |target: u32| {
+                enqueue_scrub(
+                    &queue,
+                    &kick_drain,
+                    &player,
+                    &session,
+                    playing,
+                    target,
+                    false,
+                );
+            },
+            SCRUB_DRAG_THROTTLE_MS,
+            ThrottleOptions::default().leading(true).trailing(true),
+        )
+    };
+
     let scrub_fn = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
         let queue = queue.clone();
         let kick_drain = Rc::clone(&kick_drain);
+        let scrub_drag_throttled = scrub_drag_throttled.clone();
         Rc::new(move |target: u32, settle: bool| {
-            enqueue_scrub(
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                target,
-                settle,
-            );
+            if settle {
+                enqueue_scrub(
+                    &queue,
+                    &kick_drain,
+                    &player,
+                    &session,
+                    playing,
+                    target,
+                    true,
+                );
+            } else {
+                scrub_drag_throttled(target);
+            }
         }) as Rc<dyn Fn(u32, bool)>
     };
 
@@ -1021,6 +1063,7 @@ async fn run_seek_or_step(
     session: &Rc<RefCell<Option<PlaySession>>>,
     error: RwSignal<Option<String>>,
     playing: RwSignal<bool>,
+    playhead: RwSignal<u32>,
     op: SeekOrStep,
 ) {
     if !queue.is_current(id) {
@@ -1046,6 +1089,7 @@ async fn run_seek_or_step(
         SeekOrStep::Step(false) => "prev".into(),
     };
     web_sys::console::log_1(&format!("webmedia: {label} start").into());
+    let is_step = matches!(op, SeekOrStep::Step(_));
     let result = match op {
         SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
         SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
@@ -1076,6 +1120,15 @@ async fn run_seek_or_step(
         error.set(Some(e.to_string()));
     }
     sync_ui();
+    // Step can no-op (pending WebP); snap playhead to committed engine so hold
+    // repeat does not keep aiming one ahead of a stuck frame.
+    if is_step
+        && let Ok(borrow) = player.try_borrow()
+        && let Some(p) = borrow.as_ref()
+    {
+        let engine = p.state().frame.min(u32::MAX as u64) as u32;
+        playhead.set(engine);
+    }
     playing.set(false);
 }
 

@@ -224,48 +224,68 @@ impl VideoRef {
         }
     }
 
+    /// Advance one presentation frame from the engine, or seek to a divergent
+    /// scrub `playhead`. Key-repeat must **not** keep bumping `playhead` ahead of
+    /// `frame` — that promoted Step→Seek and jumped several frames on hold.
     pub fn next_frame(&self) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
-        let ph = self.playhead.get_untracked().saturating_add(1).min(max);
-        self.ended.set(false);
-        self.playhead.set(ph);
         let engine = self.frame.get_untracked();
-        if engine < max && engine + 1 == ph {
-            if let Some(next) = self
+        let ph = self.playhead.get_untracked();
+        self.ended.set(false);
+
+        // Scrub/seek target still ahead/behind engine — promote via seek.
+        let adjacent_aim = engine.saturating_add(1).min(max);
+        if ph != engine && ph != adjacent_aim {
+            if let Some(seek) = self
                 .ops
-                .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.next_frame)))
+                .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
                 .flatten()
             {
-                next();
+                seek(ph);
             }
-        } else if let Some(seek) = self
+            return;
+        }
+        if engine >= max {
+            return;
+        }
+        self.playhead.set(adjacent_aim);
+        if let Some(next) = self
             .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.next_frame)))
             .flatten()
         {
-            seek(ph);
+            next();
         }
     }
 
+    /// Step one frame backward from the engine (same hold-safe rules as
+    /// [`Self::next_frame`]).
     pub fn previous_frame(&self) {
-        let ph = self.playhead.get_untracked().saturating_sub(1);
-        self.ended.set(false);
-        self.playhead.set(ph);
         let engine = self.frame.get_untracked();
-        if engine > 0 && engine - 1 == ph {
-            if let Some(prev) = self
+        let ph = self.playhead.get_untracked();
+        self.ended.set(false);
+
+        let adjacent_aim = engine.saturating_sub(1);
+        if ph != engine && ph != adjacent_aim {
+            if let Some(seek) = self
                 .ops
-                .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.previous_frame)))
+                .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
                 .flatten()
             {
-                prev();
+                seek(ph);
             }
-        } else if let Some(seek) = self
+            return;
+        }
+        if engine == 0 {
+            return;
+        }
+        self.playhead.set(adjacent_aim);
+        if let Some(prev) = self
             .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.previous_frame)))
             .flatten()
         {
-            seek(ph);
+            prev();
         }
     }
 

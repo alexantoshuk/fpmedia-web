@@ -26,7 +26,9 @@ Semantic format:
 
 ### Pre-commit / pre-push gates
 
-Do **not** commit or open/update a PR until these pass locally. `cargo check` alone is not enough — Clippy (`-D warnings`) is required.
+Do **not** commit or open/update a PR until these pass locally. `cargo check` alone is not enough for a commit — Clippy (`-D warnings`) is required **at commit / PR time**.
+
+While iterating on a change, prefer `cargo check` (and targeted crate checks). Do **not** run the full Clippy gate on every edit — reserve it for immediately before commit or PR.
 
 ```sh
 cargo fmt --all -- --check

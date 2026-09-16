@@ -129,7 +129,9 @@ Follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for commit message format, size 
 
 ## Dev commands
 
-Cheat sheet (mandatory gates + flags → [`CONTRIBUTING.md`](CONTRIBUTING.md)):
+Cheat sheet (mandatory **commit** gates + flags → [`CONTRIBUTING.md`](CONTRIBUTING.md)).
+
+While coding: use `cargo check` / targeted crate checks. Run `cargo clippy … -- -D warnings` only immediately before commit or PR — not on every edit.
 
 ```sh
 cargo fmt                                               # rustfmt
@@ -138,6 +140,7 @@ cargo leptos build                                      # build → target/site/
 cargo check -p server                                   # server (ssr) type check
 cargo check --target wasm32-unknown-unknown -p frontend # CSR WASM client + UI
 cargo check --target wasm32-unknown-unknown -p video    # Video element crate
+# Pre-commit only (see CONTRIBUTING.md):
 cargo clippy -p webmedia --all-targets --all-features -- -D warnings
 cargo clippy --target wasm32-unknown-unknown -p frontend -- -D warnings
 cargo clippy --target wasm32-unknown-unknown -p video -- -D warnings

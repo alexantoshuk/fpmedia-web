@@ -4,7 +4,9 @@
 
 ## In progress
 
+- Spot-check fullscreen scrub drag + Play with WebP Worker (densify async encode).
 - Spot-check BBB Play across GOP boundaries after soft sequential key switch (encode size = viewport ≤ source×monitor).
+- Next/Prev hold still slow after always-VF (`goto_frame` key→N each step) — warm sequential decode / better pacing.
 
 ---
 
@@ -18,8 +20,8 @@
 
 ### Play Exact trail (follow-ups)
 
-- Fullscreen jank = sync `toDataURL` (A/B: transfer-only OK). Next: Worker WebP encode off main, or disable Play ingest / size-gate; densify stays sync.
-- v2: post-present Worker WebP → store; abort backlog on underrun.
+- Optional: rewrite Worker encode core in Rust later (keep JS bootstrap).
+- Optional: densify off main if Pause encode still janks on huge viewports.
 
 ### Media engine
 

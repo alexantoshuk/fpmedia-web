@@ -7,7 +7,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use wasm_bindgen::closure::Closure;
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, MessageEvent, Worker};
 
 use crate::MediaClock;
 use crate::decode::audio_output::AudioOutput;
@@ -19,8 +20,13 @@ use crate::decode::frame_cache::{
     ThumbCache,
 };
 use crate::decode::owned_video_frame::OwnedVideoFrame;
+use crate::decode::play_encode_worker::{
+    PlayWebpJob, parse_play_webp_reply, post_play_webp_job, revoke_worker_url,
+    spawn_play_webp_worker,
+};
 use crate::decode::scrub_encode::{
-    EncodeCanvasSlot, SCRUB_SKIP_PLAY_WEBP_DATA_URL, draw_image_bitmap, image_bitmap_from_chunk,
+    EncodeCanvasSlot, PENDING_WEBP_MIME, SCRUB_SKIP_PLAY_WEBP_DATA_URL, ScrubChunk,
+    draw_image_bitmap, image_bitmap_from_chunk,
 };
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
@@ -41,6 +47,19 @@ const BIG_LAG_SECONDS: f64 = 0.5;
 const PREFETCH_DEADLINE_SLACK_MS: f64 = 3.0;
 /// Play Exact WebP trail after present (gated). Set `false` only for A/B jank checks.
 const PLAY_EXACT_INGEST: bool = true;
+/// Densify WebP jobs waiting while Worker is busy (blit already synced).
+const WEBP_PENDING_CAP: usize = 4;
+
+type PlayWebpOnMessage = Closure<dyn FnMut(MessageEvent)>;
+
+struct PendingWebpJob {
+    frame: FrameId,
+    epoch: u64,
+    width: u32,
+    height: u32,
+    replace: bool,
+    bitmap: web_sys::ImageBitmap,
+}
 
 struct QueuedFrame {
     frame: FrameId,
@@ -83,6 +102,15 @@ struct Shared {
     last_behind_ms: Cell<Option<f64>>,
     /// Play Exact ingest counter (every-Nth from DPR). Reset on [`WebPlayer::play`].
     play_exact_presented: Cell<u64>,
+    /// JS Worker for Play Exact WebP (`convertToBlob`); densify stays sync.
+    play_webp_worker: RefCell<Option<Worker>>,
+    play_webp_worker_url: RefCell<Option<String>>,
+    play_webp_onmessage: RefCell<Option<PlayWebpOnMessage>>,
+    play_webp_busy: Cell<bool>,
+    play_webp_epoch: Cell<u64>,
+    play_webp_failed: Cell<bool>,
+    play_webp_next_id: Cell<u64>,
+    play_webp_pending: RefCell<VecDeque<PendingWebpJob>>,
     /// Prefetch must idle while seek/loop prepare owns the decoder.
     restarting: Cell<bool>,
     /// Settle / sync seek: pause densify so exact `goto_frame` owns HW.
@@ -294,6 +322,14 @@ impl WebPlayer {
             frames_skipped: Cell::new(0),
             last_behind_ms: Cell::new(None),
             play_exact_presented: Cell::new(0),
+            play_webp_worker: RefCell::new(None),
+            play_webp_worker_url: RefCell::new(None),
+            play_webp_onmessage: RefCell::new(None),
+            play_webp_busy: Cell::new(false),
+            play_webp_epoch: Cell::new(0),
+            play_webp_failed: Cell::new(false),
+            play_webp_next_id: Cell::new(1),
+            play_webp_pending: RefCell::new(VecDeque::new()),
             restarting: Cell::new(false),
             hold_densify_for_exact: Cell::new(false),
             preparing_loop: Cell::new(false),
@@ -473,6 +509,7 @@ impl WebPlayer {
         self.shared.frames_skipped.set(0);
         self.shared.last_behind_ms.set(None);
         self.shared.play_exact_presented.set(0);
+        bump_play_webp_epoch(&self.shared);
     }
 
     pub fn pause(&self) {
@@ -482,6 +519,7 @@ impl WebPlayer {
         if was_playing {
             self.cancel_ops_and_scrub_fill();
             let _ = self.stop_media_clock();
+            bump_play_webp_epoch(&self.shared);
         }
         self.shared.player.borrow_mut().pause();
         self.clear_loop_prime();
@@ -621,6 +659,7 @@ impl WebPlayer {
         self.shared.hold_densify_for_exact.set(true);
         self.clear_scrub_direction();
         self.cancel_ops();
+        bump_play_webp_epoch(&self.shared);
         // Drop in-flight main-decoder cascade from the preceding drag sample so
         // settle does not inherit a wedged `decodeQueueSize`.
         self.invalidate_decoder();
@@ -766,25 +805,17 @@ impl WebPlayer {
 
     pub async fn seek_frame(&self, frame: FrameId) -> Result<(), MediaError> {
         let epoch = self.begin_op();
-        // Exact first — abort densify and hold so scrub HW cannot starve the cascade.
+        // Exact VF — abort densify and hold so scrub HW cannot starve the cascade.
+        // WebP store is scrub-drag only; never blit it for seek/step.
         self.abort_scrub_fill(true);
         self.shared.hold_densify_for_exact.set(true);
         self.shared.restarting.set(true);
+        bump_play_webp_epoch(&self.shared);
         let result = async {
             self.shared.player.borrow_mut().pause();
             self.clear_loop_prime();
             self.aim_scrub_cache(frame);
-            if self.present_from_cache(frame).await? {
-                self.shared.player.borrow_mut().commit_frame(frame)?;
-                return Ok(());
-            }
-            // Long-GOP exact: keep best cached/key on canvas while cascading;
-            // salvage pruned frames into dense (no blit) so densify is cheap after.
-            if let Some(preview) = self.scrub_preview_frame(frame)
-                && preview != frame
-            {
-                let _ = self.present_from_cache(preview).await;
-            }
+            // Keep last canvas until exact decode paints (same as scrub settle).
             self.goto_frame_with_interim(frame, epoch).await
         }
         .await;
@@ -931,11 +962,8 @@ impl WebPlayer {
 
     pub async fn next_frame(&self) -> Result<(), MediaError> {
         self.shared.player.borrow_mut().pause();
-        // Stop background densify encode — sync WebP on the main thread stalls steps.
-        self.abort_scrub_fill(false);
         let next = self.state().frame.saturating_add(1);
-        // Reuse prefetch when present — clearing the queue would close the only
-        // copy of frames the warm decoder already emitted.
+        // Reuse prefetch when present — live VideoFrame, not WebP store.
         {
             let mut presentation = self.shared.presentation.borrow_mut();
             if presentation.front().is_some_and(|f| f.frame == next) {
@@ -948,66 +976,43 @@ impl WebPlayer {
                 return Ok(());
             }
         }
-        // Instant next from scrub blit / chunk store (e.g. after stepping back).
-        if self.present_from_cache(next).await? {
-            self.shared.player.borrow_mut().commit_frame(next)?;
-            // Aim only — do not re-kick densify (sync WebP encode was stalling steps).
-            self.touch_playhead(next);
-            self.snap_media_clock_to_playhead();
-            return Ok(());
-        }
+        // Always exact VF (mediabunny CanvasSink path). WebP blit is scrub-drag only.
         let epoch = self.begin_op();
-        self.enter_scrub_cache_pipeline(next);
-        self.goto_frame(next, epoch).await?;
-        self.enter_scrub_cache_pipeline(self.state().frame);
+        self.abort_scrub_fill(true);
+        self.shared.hold_densify_for_exact.set(true);
+        self.aim_scrub_cache(next);
+        let result = self.goto_frame(next, epoch).await;
+        self.shared.hold_densify_for_exact.set(false);
+        if !self.is_current(epoch) {
+            return Err(MediaError::Cancelled);
+        }
+        result?;
         self.snap_media_clock_to_playhead();
+        self.arm_scrub_densify_after_exact(self.state().frame);
         Ok(())
     }
 
     pub async fn previous_frame(&self) -> Result<(), MediaError> {
         self.shared.player.borrow_mut().pause();
-        self.abort_scrub_fill(false);
         let cur = self.state().frame;
         if cur == 0 {
             return Err(MediaError::FrameOutOfRange(0, self.state().frame_count));
         }
         let prev = cur - 1;
-        // Prefer scrub blit / chunk — key→N cascade is multi-second on long GOPs.
-        if self.present_from_cache(prev).await? {
-            self.shared.player.borrow_mut().commit_frame(prev)?;
-            self.touch_playhead(prev);
-            self.snap_media_clock_to_playhead();
-            return Ok(());
-        }
+        // Always exact VF — do not present WebP store (scrub-drag only).
         let epoch = self.begin_op();
-        self.enter_scrub_cache_pipeline(prev);
-        // Cache miss: densify the GOP (keep intermediates for the next PREV).
-        // Present `prev` as soon as it emerges mid-GOP — do not wait for the tail.
-        if let Some(key) = self.key_for(prev) {
-            match self.fill_gop_into_cache(key, epoch, Some(prev)).await {
-                Ok(()) => {
-                    if !self.is_current(epoch) {
-                        return Err(MediaError::Cancelled);
-                    }
-                    if self.state().frame == prev || self.present_from_cache(prev).await? {
-                        if self.state().frame != prev {
-                            self.shared.player.borrow_mut().commit_frame(prev)?;
-                        }
-                        self.enter_scrub_cache_pipeline(prev);
-                        self.snap_media_clock_to_playhead();
-                        return Ok(());
-                    }
-                }
-                Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
-                Err(_) => {
-                    // Fall through to single-frame cascade.
-                }
-            }
-        }
+        self.abort_scrub_fill(true);
+        self.shared.hold_densify_for_exact.set(true);
+        self.aim_scrub_cache(prev);
         self.invalidate_decoder();
-        self.goto_frame(prev, epoch).await?;
-        self.enter_scrub_cache_pipeline(self.state().frame);
+        let result = self.goto_frame(prev, epoch).await;
+        self.shared.hold_densify_for_exact.set(false);
+        if !self.is_current(epoch) {
+            return Err(MediaError::Cancelled);
+        }
+        result?;
         self.snap_media_clock_to_playhead();
+        self.arm_scrub_densify_after_exact(self.state().frame);
         Ok(())
     }
 
@@ -1620,10 +1625,8 @@ impl WebPlayer {
 
     /// Play Exact trail ingest with cost gates (densify / scrub path unchanged).
     ///
-    /// Sync WebP on every present at full device pixels starves rAF on large
-    /// viewport/DPR. Gates: every-Nth from DPR, skip when this present is behind
-    /// or no spare time before next PTS, encode at CSS size (`canvas / DPR`).
-    /// VF always dropped. (Do not use sticky `last_behind_ms` — that is UI "last".)
+    /// Prefers JS Worker `convertToBlob` (off main). Gates: every-Nth from DPR,
+    /// skip when behind / no spare time, encode at CSS size. VF always dropped.
     fn ingest_play_exact_frame(&self, frame: FrameId, video: OwnedVideoFrame) {
         let n = self.shared.play_exact_presented.get();
         self.shared.play_exact_presented.set(n.saturating_add(1));
@@ -1651,25 +1654,29 @@ impl WebPlayer {
             }
         }
 
-        let target_w = ((self.shared.canvas.width() as f64) / dpr)
-            .round()
-            .max(1.0) as u32;
+        let target_w = ((self.shared.canvas.width() as f64) / dpr).round().max(1.0) as u32;
         let target_h = ((self.shared.canvas.height() as f64) / dpr)
             .round()
             .max(1.0) as u32;
-        let _ = ingest_scrub_frame_at(
-            &self.shared,
-            frame,
-            video,
-            true,
-            target_w,
-            target_h,
-            SCRUB_SKIP_PLAY_WEBP_DATA_URL,
-        );
+
+        if SCRUB_SKIP_PLAY_WEBP_DATA_URL {
+            let _ =
+                ingest_scrub_frame_at(&self.shared, frame, video, true, target_w, target_h, true);
+            return;
+        }
+
+        if try_ingest_play_exact_via_worker(&self.shared, frame, &video, target_w, target_h) {
+            drop(video);
+            return;
+        }
+
+        let _ = ingest_scrub_frame_at(&self.shared, frame, video, true, target_w, target_h, false);
     }
 
     /// Draw a scrub-store hit via ImageBitmap LRU (`createImageBitmap` on miss).
     ///
+    /// Pending Worker placeholders wait briefly for real bytes — do **not** treat
+    /// them as hard misses (that forced key→N on densified Next/Prev).
     /// Decode failures return `Ok(false)` so callers fall through to key→N decode
     /// (corrupt chunks must not kill scrub).
     async fn present_from_cache(&self, frame: FrameId) -> Result<bool, MediaError> {
@@ -1682,15 +1689,41 @@ impl WebPlayer {
                 return Ok(true);
             }
         }
-        let chunk = {
+
+        let mut chunk = {
             let Ok(store) = self.shared.scrub_chunks.try_borrow() else {
                 return Ok(false);
             };
             store.get(frame).cloned()
         };
-        let Some(chunk) = chunk else {
+        let Some(first) = chunk.take() else {
             return Ok(false);
         };
+        let mut chunk = first;
+
+        if crate::decode::scrub_encode::is_pending_webp_chunk(&chunk) {
+            for _ in 0..90 {
+                yield_event_loop().await;
+                let again = {
+                    let Ok(store) = self.shared.scrub_chunks.try_borrow() else {
+                        return Ok(false);
+                    };
+                    store.get(frame).cloned()
+                };
+                let Some(again) = again else {
+                    return Ok(false);
+                };
+                if !crate::decode::scrub_encode::is_pending_webp_chunk(&again) {
+                    chunk = again;
+                    break;
+                }
+            }
+            if crate::decode::scrub_encode::is_pending_webp_chunk(&chunk) {
+                // Still encoding — resident for gaps, not a decode miss.
+                return Ok(false);
+            }
+        }
+
         let bitmap = match image_bitmap_from_chunk(&chunk).await {
             Ok(b) => b,
             Err(e) => {
@@ -1897,11 +1930,7 @@ impl WebPlayer {
     ///
     /// [`PLAY_EXACT_INGEST`] gates the trail (A/B: set `false` to prove fullscreen
     /// jank is sync WebP encode).
-    fn present_play_frame(
-        &self,
-        frame: FrameId,
-        video: OwnedVideoFrame,
-    ) -> Result<(), MediaError> {
+    fn present_play_frame(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
         let result =
             draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
         if PLAY_EXACT_INGEST {
@@ -1988,64 +2017,6 @@ impl WebPlayer {
             let _ = scrub_cache_fill_task(shared).await;
         });
     }
-
-    /// Decode a full GOP into the scrub WebP store via the main decoder (PREV miss).
-    /// Prefer this over `decode_frame` so intermediate frames are kept for the
-    /// next PREV — and over scrub-cache fill so we do not race the fill loop.
-    ///
-    /// When `present_when` is set, paint + commit that frame as soon as it
-    /// emerges (still finish the GOP for the cache).
-    async fn fill_gop_into_cache(
-        &self,
-        key: FrameId,
-        epoch: u64,
-        present_when: Option<FrameId>,
-    ) -> Result<(), MediaError> {
-        {
-            let index = self.shared.player.borrow().track().index().clone();
-            let ids = index.gop_frame_ids(key).unwrap_or_default();
-            if !ids.is_empty() && self.shared.scrub_chunks.borrow().gop_complete(&ids) {
-                return Ok(());
-            }
-        }
-        let track = self.shared.player.borrow().track_rc();
-        let mut decoder = self.take_decoder(epoch).await?;
-        if self.shared.decoder_reset.get() {
-            decoder.reset()?;
-            self.shared.decoder_reset.set(false);
-        }
-        let cancelled = || !self.is_current(epoch);
-        let shared = Rc::clone(&self.shared);
-        let presented = std::cell::Cell::new(false);
-        let mut on_frame = move |id: FrameId, video: OwnedVideoFrame| {
-            if present_when == Some(id) && !presented.get() {
-                let _ = draw_frame_with_context(&shared.canvas, &shared.ctx, video.as_web_sys());
-                if shared.player.borrow_mut().commit_frame(id).is_ok() {
-                    presented.set(true);
-                }
-            }
-            ingest_scrub_frame_shared(&shared, id, video, false);
-        };
-        let decoded = decoder
-            .decode_gop(&track, key, &cancelled, &mut on_frame)
-            .await;
-        match decoded {
-            Ok(()) => {
-                *self.decoder.borrow_mut() = Some(decoder);
-                Ok(())
-            }
-            Err(MediaError::Cancelled) => {
-                let _ = decoder.reset();
-                *self.decoder.borrow_mut() = Some(decoder);
-                Err(MediaError::Cancelled)
-            }
-            Err(e) => {
-                let _ = decoder.reset();
-                *self.decoder.borrow_mut() = Some(decoder);
-                Err(e)
-            }
-        }
-    }
 }
 
 impl Drop for WebPlayer {
@@ -2053,6 +2024,7 @@ impl Drop for WebPlayer {
         self.clear_loop_prime();
         self.clear_presentation();
         self.clear_scrub_store();
+        terminate_play_webp_worker(&self.shared);
     }
 }
 
@@ -2174,15 +2146,354 @@ fn apply_clip_budgets(shared: &Shared) {
     shared.scrub_chunks.borrow_mut().set_max_frames(max_frames);
 }
 
+fn bump_play_webp_epoch(shared: &Shared) {
+    shared
+        .play_webp_epoch
+        .set(shared.play_webp_epoch.get().wrapping_add(1));
+    shared.play_webp_busy.set(false);
+    clear_webp_pending(shared);
+}
+
+fn clear_webp_pending(shared: &Shared) {
+    let Ok(mut q) = shared.play_webp_pending.try_borrow_mut() else {
+        return;
+    };
+    while let Some(job) = q.pop_front() {
+        job.bitmap.close();
+    }
+}
+
+fn terminate_play_webp_worker(shared: &Shared) {
+    bump_play_webp_epoch(shared);
+    if let Ok(mut w) = shared.play_webp_worker.try_borrow_mut()
+        && let Some(worker) = w.take()
+    {
+        worker.terminate();
+    }
+    if let Ok(mut url) = shared.play_webp_worker_url.try_borrow_mut()
+        && let Some(u) = url.take()
+    {
+        revoke_worker_url(&u);
+    }
+    let _ = shared.play_webp_onmessage.try_borrow_mut().map(|mut c| {
+        c.take();
+    });
+}
+
+/// Post or queue a WebP job after blit bitmap is already in the LRU.
+/// `allow_queue`: densify may wait; Play skips when busy.
+/// Returns `true` if Worker path handled encode (or queued / skipped busy).
+fn post_or_queue_webp(
+    shared: &Rc<Shared>,
+    frame: FrameId,
+    width: u32,
+    height: u32,
+    replace: bool,
+    worker_bitmap: web_sys::ImageBitmap,
+    allow_queue: bool,
+) -> bool {
+    if shared.play_webp_failed.get() {
+        worker_bitmap.close();
+        return false;
+    }
+    if !ensure_play_webp_worker(shared) {
+        worker_bitmap.close();
+        return false;
+    }
+
+    let epoch = shared.play_webp_epoch.get();
+    if shared.play_webp_busy.get() {
+        if !allow_queue {
+            worker_bitmap.close();
+            return true;
+        }
+        let Ok(mut q) = shared.play_webp_pending.try_borrow_mut() else {
+            worker_bitmap.close();
+            return true;
+        };
+        if q.len() >= WEBP_PENDING_CAP {
+            worker_bitmap.close();
+            return false;
+        }
+        q.push_back(PendingWebpJob {
+            frame,
+            epoch,
+            width,
+            height,
+            replace,
+            bitmap: worker_bitmap,
+        });
+        return true;
+    }
+
+    let id = shared.play_webp_next_id.get();
+    shared.play_webp_next_id.set(id.wrapping_add(1));
+    shared.play_webp_busy.set(true);
+    let posted = {
+        let Ok(borrow) = shared.play_webp_worker.try_borrow() else {
+            shared.play_webp_busy.set(false);
+            worker_bitmap.close();
+            return false;
+        };
+        let Some(worker) = borrow.as_ref() else {
+            shared.play_webp_busy.set(false);
+            worker_bitmap.close();
+            return false;
+        };
+        post_play_webp_job(PlayWebpJob {
+            worker,
+            id,
+            frame,
+            epoch,
+            width,
+            height,
+            replace,
+            bitmap: worker_bitmap,
+        })
+    };
+    match posted {
+        Ok(()) => true,
+        Err(e) => {
+            shared.play_webp_busy.set(false);
+            web_sys::console::warn_1(
+                &format!("webmedia: WebP worker post failed ({e}); sync encode").into(),
+            );
+            shared.play_webp_failed.set(true);
+            false
+        }
+    }
+}
+
+fn pump_webp_pending(shared: &Rc<Shared>) {
+    if shared.play_webp_busy.get() || shared.play_webp_failed.get() {
+        return;
+    }
+    let job = {
+        let Ok(mut q) = shared.play_webp_pending.try_borrow_mut() else {
+            return;
+        };
+        loop {
+            let Some(job) = q.pop_front() else {
+                return;
+            };
+            if job.epoch != shared.play_webp_epoch.get() {
+                job.bitmap.close();
+                continue;
+            }
+            break job;
+        }
+    };
+    let id = shared.play_webp_next_id.get();
+    shared.play_webp_next_id.set(id.wrapping_add(1));
+    shared.play_webp_busy.set(true);
+    let posted = {
+        let Ok(borrow) = shared.play_webp_worker.try_borrow() else {
+            shared.play_webp_busy.set(false);
+            job.bitmap.close();
+            return;
+        };
+        let Some(worker) = borrow.as_ref() else {
+            shared.play_webp_busy.set(false);
+            job.bitmap.close();
+            return;
+        };
+        post_play_webp_job(PlayWebpJob {
+            worker,
+            id,
+            frame: job.frame,
+            epoch: job.epoch,
+            width: job.width,
+            height: job.height,
+            replace: job.replace,
+            bitmap: job.bitmap,
+        })
+    };
+    if let Err(e) = posted {
+        shared.play_webp_busy.set(false);
+        web_sys::console::warn_1(
+            &format!("webmedia: WebP worker pending post failed ({e})").into(),
+        );
+        shared.play_webp_failed.set(true);
+        clear_webp_pending(shared);
+    }
+}
+
+/// `true` = handled (posted, queued, or skipped while busy). `false` = sync fallback.
+fn try_ingest_play_exact_via_worker(
+    shared: &Rc<Shared>,
+    frame: FrameId,
+    video: &OwnedVideoFrame,
+    target_w: u32,
+    target_h: u32,
+) -> bool {
+    if shared.play_webp_failed.get() {
+        return false;
+    }
+    let pair = match shared
+        .encode_canvas
+        .with_encoder(|enc| enc.frame_to_bitmap_pair(video.as_web_sys(), target_w, target_h))
+    {
+        Ok(p) => p,
+        Err(e) => {
+            web_sys::console::warn_1(
+                &format!("webmedia: Play WebP transfer failed ({e}); sync encode").into(),
+            );
+            return false;
+        }
+    };
+    let (blit_bmp, worker_bmp, width, height) = pair;
+    if let Ok(mut blit) = shared.scrub_blit.try_borrow_mut() {
+        blit.set_playhead(shared.scrub_chunks.borrow().playhead());
+        blit.put(frame, blit_bmp);
+    } else {
+        blit_bmp.close();
+    }
+    post_or_queue_webp(shared, frame, width, height, true, worker_bmp, false)
+}
+
+/// Densify / scrub ingest via Worker: full-res blit + CSS-sized WebP job.
+/// `true` if handled (gap closed on main; bytes may arrive later).
+fn try_ingest_scrub_via_worker(
+    shared: &Rc<Shared>,
+    frame: FrameId,
+    video: &OwnedVideoFrame,
+    target_w: u32,
+    target_h: u32,
+    replace: bool,
+) -> bool {
+    if shared.play_webp_failed.get() {
+        return false;
+    }
+    let dpr = device_pixel_ratio();
+    let css_w = ((target_w as f64) / dpr).round().max(1.0) as u32;
+    let css_h = ((target_h as f64) / dpr).round().max(1.0) as u32;
+
+    let blit_bmp = match shared
+        .encode_canvas
+        .with_encoder(|enc| enc.frame_to_bitmap(video.as_web_sys(), target_w, target_h))
+    {
+        Ok((b, _, _)) => b,
+        Err(_) => return false,
+    };
+    let (worker_bmp, width, height) = match shared
+        .encode_canvas
+        .with_encoder(|enc| enc.frame_to_bitmap(video.as_web_sys(), css_w, css_h))
+    {
+        Ok(p) => p,
+        Err(_) => {
+            blit_bmp.close();
+            return false;
+        }
+    };
+
+    // Close the gap immediately so densify does not re-decode the same frames.
+    let placeholder = ScrubChunk {
+        bytes: vec![0],
+        width,
+        height,
+        mime: PENDING_WEBP_MIME.into(),
+    };
+    {
+        let Ok(mut store) = shared.scrub_chunks.try_borrow_mut() else {
+            blit_bmp.close();
+            worker_bmp.close();
+            return false;
+        };
+        if replace {
+            store.put_chunk(frame, placeholder);
+        } else if !store.insert_chunk(frame, placeholder) {
+            blit_bmp.close();
+            worker_bmp.close();
+            return false;
+        }
+    }
+
+    if let Ok(mut blit) = shared.scrub_blit.try_borrow_mut() {
+        blit.set_playhead(shared.scrub_chunks.borrow().playhead());
+        blit.put(frame, blit_bmp);
+    } else {
+        blit_bmp.close();
+        worker_bmp.close();
+        let _ = shared
+            .scrub_chunks
+            .try_borrow_mut()
+            .map(|mut s| s.remove(frame));
+        return false;
+    }
+    // Always replace when bytes arrive (placeholder → real).
+    if !post_or_queue_webp(shared, frame, width, height, true, worker_bmp, true) {
+        let _ = shared
+            .scrub_chunks
+            .try_borrow_mut()
+            .map(|mut s| s.remove(frame));
+        return false;
+    }
+    true
+}
+
+fn ensure_play_webp_worker(shared: &Rc<Shared>) -> bool {
+    if shared.play_webp_worker.borrow().is_some() {
+        return true;
+    }
+    let shared_cb = Rc::clone(shared);
+    let onmessage = Closure::wrap(Box::new(move |ev: MessageEvent| {
+        on_play_webp_message(&shared_cb, &ev);
+    }) as Box<dyn FnMut(MessageEvent)>);
+
+    match spawn_play_webp_worker(&onmessage) {
+        Ok((worker, url)) => {
+            *shared.play_webp_worker.borrow_mut() = Some(worker);
+            *shared.play_webp_worker_url.borrow_mut() = Some(url);
+            *shared.play_webp_onmessage.borrow_mut() = Some(onmessage);
+            true
+        }
+        Err(e) => {
+            web_sys::console::warn_1(
+                &format!("webmedia: WebP worker spawn failed ({e}); sync encode").into(),
+            );
+            shared.play_webp_failed.set(true);
+            false
+        }
+    }
+}
+
+fn on_play_webp_message(shared: &Rc<Shared>, ev: &MessageEvent) {
+    shared.play_webp_busy.set(false);
+    match parse_play_webp_reply(ev) {
+        Ok(Some(reply)) => {
+            if reply.epoch == shared.play_webp_epoch.get()
+                && let Ok(mut store) = shared.scrub_chunks.try_borrow_mut()
+            {
+                if reply.replace {
+                    store.put_chunk(reply.frame, reply.chunk);
+                } else {
+                    let _ = store.insert_chunk(reply.frame, reply.chunk);
+                }
+            }
+            pump_webp_pending(shared);
+        }
+        Ok(None) => {
+            pump_webp_pending(shared);
+        }
+        Err(e) => {
+            web_sys::console::warn_1(&format!("webmedia: WebP worker error ({e})").into());
+            pump_webp_pending(shared);
+        }
+    }
+}
+
 fn ingest_scrub_frame_shared(
     shared: &Rc<Shared>,
     frame: FrameId,
     video: OwnedVideoFrame,
     replace: bool,
 ) -> bool {
-    // Match playback canvas (viewport × DPR); never larger than the frame display.
     let target_w = shared.canvas.width().max(1);
     let target_h = shared.canvas.height().max(1);
+    if try_ingest_scrub_via_worker(shared, frame, &video, target_w, target_h, replace) {
+        drop(video);
+        return true;
+    }
     ingest_scrub_frame_at(shared, frame, video, replace, target_w, target_h, false)
 }
 
@@ -2220,7 +2531,6 @@ fn ingest_scrub_frame_at(
             return false;
         }
     }
-    // Sync blit handle from transferToImageBitmap — densify leaves Next/Prev hot.
     if let Ok(mut blit) = shared.scrub_blit.try_borrow_mut() {
         blit.set_playhead(shared.scrub_chunks.borrow().playhead());
         blit.put(frame, bitmap);
