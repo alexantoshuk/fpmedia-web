@@ -1,13 +1,13 @@
 //! Demo controls over [`video::Video`] — not production chrome.
 
 use leptos::ev;
-use leptos::html::Input;
+use leptos::html::{Div, Input};
 use leptos::prelude::*;
-use leptos_use::use_event_listener;
+use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
 use video::{ReadyFrameKind, Video, VideoMetadata, VideoRef};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Blob, Element, HtmlInputElement, window};
+use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 
 /// Coalesce scrub engine work after the Leptos/tachys event callback releases its
 /// `RefCell`. Duplicate targets (left-edge clamp spams `frame=0`) collapse to one
@@ -46,6 +46,65 @@ fn defer_scrub(video: VideoRef, frame: u32, settle: bool) {
 pub fn DemoPlayer() -> impl IntoView {
     let video = VideoRef::new();
     let url_input = NodeRef::<Input>::new();
+    let player_root = NodeRef::<Div>::new();
+    let fullscreen = RwSignal::new(false);
+    let chrome_visible = RwSignal::new(true);
+    let over_chrome = RwSignal::new(false);
+
+    const CHROME_IDLE_MS: f64 = 2200.0;
+    let UseTimeoutFnReturn {
+        start: start_chrome_hide,
+        stop: stop_chrome_hide,
+        ..
+    } = use_timeout_fn(
+        move |_| {
+            if fullscreen.get_untracked() && !over_chrome.get_untracked() {
+                chrome_visible.set(false);
+            }
+        },
+        CHROME_IDLE_MS,
+    );
+
+    let bump_chrome = {
+        let start_chrome_hide = start_chrome_hide.clone();
+        let stop_chrome_hide = stop_chrome_hide.clone();
+        move || {
+            chrome_visible.set(true);
+            stop_chrome_hide();
+            if fullscreen.get_untracked() {
+                start_chrome_hide(());
+            }
+        }
+    };
+
+    // Keep signal in sync with Esc / browser UI exit.
+    let _fs_change = use_event_listener(window(), ev::fullscreenchange, {
+        let bump_chrome = bump_chrome.clone();
+        let stop_chrome_hide = stop_chrome_hide.clone();
+        move |_| {
+            let active = window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.fullscreen_element())
+                .is_some();
+            fullscreen.set(active);
+            if active {
+                bump_chrome();
+            } else {
+                stop_chrome_hide();
+                chrome_visible.set(true);
+                over_chrome.set(false);
+            }
+        }
+    });
+
+    let _fs_mousemove = use_event_listener(player_root, ev::mousemove, {
+        let bump_chrome = bump_chrome.clone();
+        move |_| {
+            if fullscreen.get_untracked() {
+                bump_chrome();
+            }
+        }
+    });
 
     // ← / → match Prev / Next buttons (skip when typing in an input).
     let _arrow_keys = use_event_listener(window(), ev::keydown, move |ev| {
@@ -78,280 +137,342 @@ pub fn DemoPlayer() -> impl IntoView {
     });
 
     view! {
-        <div class="wm-player" data-testid="player">
+        <div
+            class=move || {
+                if fullscreen.get() && !chrome_visible.get() {
+                    "wm-player is-chrome-hidden"
+                } else {
+                    "wm-player"
+                }
+            }
+            data-testid="player"
+            node_ref=player_root
+        >
             <div class="wm-media">
                 <Video video=video/>
+            </div>
+            <div
+                class="wm-chrome"
+                data-testid="chrome"
+                on:mouseenter=move |_| {
+                    over_chrome.set(true);
+                    chrome_visible.set(true);
+                    stop_chrome_hide();
+                }
+                on:mouseleave=move |_| {
+                    over_chrome.set(false);
+                    if fullscreen.get_untracked() {
+                        bump_chrome();
+                    }
+                }
+            >
                 <Scrubber video=video/>
-            </div>
-            <BufferMeters video=video/>
-            <p class="wm-meta" data-testid="meta">
-                {move || {
-                    let mut s = video
-                        .metadata
-                        .get()
-                        .as_ref()
-                        .map(format_metadata)
-                        .unwrap_or_default();
-                    if video.has_audio.get() {
-                        if !s.is_empty() {
-                            s.push_str(" · ");
+                <BufferMeters video=video/>
+                <p class="wm-meta" data-testid="meta">
+                    {move || {
+                        let mut s = video
+                            .metadata
+                            .get()
+                            .as_ref()
+                            .map(format_metadata)
+                            .unwrap_or_default();
+                        if video.has_audio.get() {
+                            if !s.is_empty() {
+                                s.push_str(" · ");
+                            }
+                            s.push_str("audio");
                         }
-                        s.push_str("audio");
-                    }
-                    s
-                }}
-            </p>
-            <div class="wm-controls" data-testid="controls">
-                <button
-                    type="button"
-                    class="wm-btn wm-btn-primary"
-                    data-testid="btn-play"
-                    prop:disabled=move || {
-                        video.busy.get() || !video.ready.get() || video.playing.get()
-                    }
-                    on:click=move |_| video.play()
-                >
-                    "Play"
-                </button>
-                <button
-                    type="button"
-                    class="wm-btn"
-                    data-testid="btn-pause"
-                    prop:disabled=move || !video.ready.get() || !video.playing.get()
-                    on:click=move |_| video.pause()
-                >
-                    "Pause"
-                </button>
-                <button
-                    type="button"
-                    class=move || {
-                        if video.looping.get() {
-                            "wm-btn wm-btn-toggle is-on"
-                        } else {
-                            "wm-btn wm-btn-toggle"
+                        s
+                    }}
+                </p>
+                <div class="wm-controls" data-testid="controls">
+                    <button
+                        type="button"
+                        class="wm-btn wm-btn-primary"
+                        data-testid="btn-play"
+                        prop:disabled=move || {
+                            video.busy.get() || !video.ready.get() || video.playing.get()
                         }
-                    }
-                    data-testid="btn-loop"
-                    prop:disabled=move || !video.ready.get()
-                    prop:aria-pressed=move || video.looping.get()
-                    on:click=move |_| video.set_loop(!video.looping.get_untracked())
-                >
-                    "Loop"
-                </button>
-                <button
-                    type="button"
-                    class="wm-btn"
-                    data-testid="btn-prev"
-                    prop:disabled=move || {
-                        video.busy.get() || !video.ready.get() || video.playing.get()
-                    }
-                    on:click=move |_| video.previous_frame()
-                >
-                    "Prev"
-                </button>
-                <button
-                    type="button"
-                    class="wm-btn"
-                    data-testid="btn-next"
-                    prop:disabled=move || {
-                        video.busy.get() || !video.ready.get() || video.playing.get()
-                    }
-                    on:click=move |_| video.next_frame()
-                >
-                    "Next"
-                </button>
-                <input
-                    type="number"
-                    class="wm-frame-input"
-                    data-testid="frame-input"
-                    min="0"
-                    prop:value=move || video.playhead.get().to_string()
-                    prop:disabled=move || {
-                        video.busy.get() || !video.ready.get() || video.playing.get()
-                    }
-                    on:change=move |ev| {
-                        let input: HtmlInputElement = event_target(&ev);
-                        if let Ok(v) = input.value().parse::<u32>() {
-                            video.seek_frame(v);
+                        on:click=move |_| video.play()
+                    >
+                        "Play"
+                    </button>
+                    <button
+                        type="button"
+                        class="wm-btn"
+                        data-testid="btn-pause"
+                        prop:disabled=move || !video.ready.get() || !video.playing.get()
+                        on:click=move |_| video.pause()
+                    >
+                        "Pause"
+                    </button>
+                    <button
+                        type="button"
+                        class=move || {
+                            if fullscreen.get() {
+                                "wm-btn wm-btn-toggle is-on"
+                            } else {
+                                "wm-btn"
+                            }
                         }
-                    }
-                />
-                <button
-                    type="button"
-                    class="wm-btn"
-                    data-testid="btn-seek"
-                    prop:disabled=move || {
-                        video.busy.get() || !video.ready.get() || video.playing.get()
-                    }
-                    on:click=move |_| video.seek_frame(video.playhead.get())
-                >
-                    "Seek"
-                </button>
-            </div>
-            <div class="wm-controls wm-audio" data-testid="audio-controls">
-                <button
-                    type="button"
-                    class=move || {
-                        if video.muted.get() {
-                            "wm-btn wm-btn-toggle is-on"
-                        } else {
-                            "wm-btn wm-btn-toggle"
+                        data-testid="btn-fullscreen"
+                        prop:aria-pressed=move || fullscreen.get()
+                        on:click=move |_| {
+                            let Some(root) = player_root.get_untracked() else {
+                                return;
+                            };
+                            let Ok(el) = root.dyn_into::<HtmlElement>() else {
+                                return;
+                            };
+                            let Some(doc) = window().and_then(|w| w.document()) else {
+                                return;
+                            };
+                            if fullscreen.get_untracked() {
+                                let _ = doc.exit_fullscreen();
+                            } else {
+                                let _ = el.request_fullscreen();
+                            }
                         }
-                    }
-                    data-testid="btn-mute"
-                    prop:disabled=move || !video.ready.get() || !video.has_audio.get()
-                    prop:aria-pressed=move || video.muted.get()
-                    on:click=move |_| video.set_muted(!video.muted.get_untracked())
-                >
-                    {move || if video.muted.get() { "Unmute" } else { "Mute" }}
-                </button>
-                <label
-                    class="wm-volume"
-                    data-testid="volume"
-                    title="Volume"
-                >
-                    <span class="wm-volume-label">"Vol"</span>
+                    >
+                        {move || {
+                            if fullscreen.get() {
+                                "Exit full"
+                            } else {
+                                "Full"
+                            }
+                        }}
+                    </button>
+                    <button
+                        type="button"
+                        class=move || {
+                            if video.looping.get() {
+                                "wm-btn wm-btn-toggle is-on"
+                            } else {
+                                "wm-btn wm-btn-toggle"
+                            }
+                        }
+                        data-testid="btn-loop"
+                        prop:disabled=move || !video.ready.get()
+                        prop:aria-pressed=move || video.looping.get()
+                        on:click=move |_| video.set_loop(!video.looping.get_untracked())
+                    >
+                        "Loop"
+                    </button>
+                    <button
+                        type="button"
+                        class="wm-btn"
+                        data-testid="btn-prev"
+                        prop:disabled=move || {
+                            video.busy.get() || !video.ready.get() || video.playing.get()
+                        }
+                        on:click=move |_| video.previous_frame()
+                    >
+                        "Prev"
+                    </button>
+                    <button
+                        type="button"
+                        class="wm-btn"
+                        data-testid="btn-next"
+                        prop:disabled=move || {
+                            video.busy.get() || !video.ready.get() || video.playing.get()
+                        }
+                        on:click=move |_| video.next_frame()
+                    >
+                        "Next"
+                    </button>
                     <input
-                        type="range"
-                        class="wm-volume-input"
-                        data-testid="volume-input"
+                        type="number"
+                        class="wm-frame-input"
+                        data-testid="frame-input"
                         min="0"
-                        max="1"
-                        step="0.01"
-                        prop:value=move || video.volume.get().to_string()
-                        prop:disabled=move || !video.ready.get() || !video.has_audio.get()
-                        on:input=move |ev| {
-                            let input: HtmlInputElement = event_target(&ev);
-                            if let Ok(v) = input.value().parse::<f64>() {
-                                video.set_volume(v);
-                            }
+                        prop:value=move || video.playhead.get().to_string()
+                        prop:disabled=move || {
+                            video.busy.get() || !video.ready.get() || video.playing.get()
                         }
-                    />
-                </label>
-            </div>
-            <div class="wm-controls wm-source" data-testid="source">
-                <label class="wm-file">
-                    "Browse"
-                    <input
-                        type="file"
-                        accept="video/mp4,video/*"
-                        data-testid="file-input"
-                        on:change=move |ev: leptos::ev::Event| {
+                        on:change=move |ev| {
                             let input: HtmlInputElement = event_target(&ev);
-                            let Some(files) = input.files() else { return };
-                            let Some(file) = files.get(0) else { return };
-                            let name = file.name();
-                            video.status.set(format!("Selected {name}…"));
-                            // File is a Blob — progressive open, no whole-file array_buffer.
-                            let blob: Blob = file.unchecked_into();
-                            video.open_blob(blob);
-                        }
-                    />
-                </label>
-                <div class="wm-url-row">
-                    <input
-                        type="url"
-                        class="wm-url-input"
-                        node_ref=url_input
-                        placeholder="https://… or blob:…"
-                        data-testid="url-input"
-                        prop:disabled=move || video.busy.get()
-                        on:keydown=move |ev: leptos::ev::KeyboardEvent| {
-                            if ev.key() != "Enter" {
-                                return;
+                            if let Ok(v) = input.value().parse::<u32>() {
+                                video.seek_frame(v);
                             }
-                            ev.prevent_default();
-                            let Some(input) = url_input.get() else { return };
-                            let url = input.value();
-                            if url.trim().is_empty() {
-                                return;
-                            }
-                            video.open_url(url);
                         }
                     />
                     <button
                         type="button"
                         class="wm-btn"
-                        data-testid="btn-open-url"
-                        prop:disabled=move || video.busy.get()
-                        on:click=move |_| {
-                            let Some(input) = url_input.get() else { return };
-                            let url = input.value();
-                            if url.trim().is_empty() {
-                                return;
-                            }
-                            video.open_url(url);
+                        data-testid="btn-seek"
+                        prop:disabled=move || {
+                            video.busy.get() || !video.ready.get() || video.playing.get()
                         }
+                        on:click=move |_| video.seek_frame(video.playhead.get())
                     >
-                        "Open URL"
+                        "Seek"
                     </button>
                 </div>
-            </div>
-            <p class="wm-status" data-testid="status">
-                {move || {
-                    if video.busy.get() || !video.ready.get() {
-                        video.status.get()
-                    } else {
-                        let fps_part = match video.fps.get() {
-                            Some(v) => format!(" · {v:.1} fps"),
+                <div class="wm-controls wm-audio" data-testid="audio-controls">
+                    <button
+                        type="button"
+                        class=move || {
+                            if video.muted.get() {
+                                "wm-btn wm-btn-toggle is-on"
+                            } else {
+                                "wm-btn wm-btn-toggle"
+                            }
+                        }
+                        data-testid="btn-mute"
+                        prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+                        prop:aria-pressed=move || video.muted.get()
+                        on:click=move |_| video.set_muted(!video.muted.get_untracked())
+                    >
+                        {move || if video.muted.get() { "Unmute" } else { "Mute" }}
+                    </button>
+                    <label
+                        class="wm-volume"
+                        data-testid="volume"
+                        title="Volume"
+                    >
+                        <span class="wm-volume-label">"Vol"</span>
+                        <input
+                            type="range"
+                            class="wm-volume-input"
+                            data-testid="volume-input"
+                            min="0"
+                            max="1"
+                            step="0.01"
+                            prop:value=move || video.volume.get().to_string()
+                            prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+                            on:input=move |ev| {
+                                let input: HtmlInputElement = event_target(&ev);
+                                if let Ok(v) = input.value().parse::<f64>() {
+                                    video.set_volume(v);
+                                }
+                            }
+                        />
+                    </label>
+                </div>
+                <div class="wm-controls wm-source" data-testid="source">
+                    <label class="wm-file">
+                        "Browse"
+                        <input
+                            type="file"
+                            accept="video/mp4,video/*"
+                            data-testid="file-input"
+                            on:change=move |ev: leptos::ev::Event| {
+                                let input: HtmlInputElement = event_target(&ev);
+                                let Some(files) = input.files() else { return };
+                                let Some(file) = files.get(0) else { return };
+                                let name = file.name();
+                                video.status.set(format!("Selected {name}…"));
+                                // File is a Blob — progressive open, no whole-file array_buffer.
+                                let blob: Blob = file.unchecked_into();
+                                video.open_blob(blob);
+                            }
+                        />
+                    </label>
+                    <div class="wm-url-row">
+                        <input
+                            type="url"
+                            class="wm-url-input"
+                            node_ref=url_input
+                            placeholder="https://… or blob:…"
+                            data-testid="url-input"
+                            prop:disabled=move || video.busy.get()
+                            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                                if ev.key() != "Enter" {
+                                    return;
+                                }
+                                ev.prevent_default();
+                                let Some(input) = url_input.get() else { return };
+                                let url = input.value();
+                                if url.trim().is_empty() {
+                                    return;
+                                }
+                                video.open_url(url);
+                            }
+                        />
+                        <button
+                            type="button"
+                            class="wm-btn"
+                            data-testid="btn-open-url"
+                            prop:disabled=move || video.busy.get()
+                            on:click=move |_| {
+                                let Some(input) = url_input.get() else { return };
+                                let url = input.value();
+                                if url.trim().is_empty() {
+                                    return;
+                                }
+                                video.open_url(url);
+                            }
+                        >
+                            "Open URL"
+                        </button>
+                    </div>
+                </div>
+                <p class="wm-status" data-testid="status">
+                    {move || {
+                        if video.busy.get() || !video.ready.get() {
+                            video.status.get()
+                        } else {
+                            let fps_part = match video.fps.get() {
+                                Some(v) => format!(" · {v:.1} fps"),
+                                None => String::new(),
+                            };
+                            let ph = video.playhead.get();
+                            let eng = video.frame.get();
+                            let frame_part = if ph == eng {
+                                format!("frame {ph}")
+                            } else {
+                                format!("frame {ph} (eng {eng})")
+                            };
+                            format!(
+                                "{frame_part} / {} · {} · {:.3}s{}{}{}",
+                                video.frame_count.get().saturating_sub(1),
+                                video
+                                    .metadata
+                                    .get()
+                                    .map(|m| m.gop_profile.label())
+                                    .unwrap_or_else(|| "—".into()),
+                                video.timestamp.get(),
+                                fps_part,
+                                if video.playing.get() { " · playing" } else { "" },
+                                if video.looping.get() { " · loop" } else { "" }
+                            )
+                        }
+                    }}
+                </p>
+                <p class="wm-pipeline" data-testid="pipeline">
+                    {move || {
+                        let Some(s) = video.pipeline.get() else {
+                            return String::new();
+                        };
+                        let range = match (s.presentation_from, s.presentation_to) {
+                            (Some(a), Some(b)) if a == b => format!(" [{a}]"),
+                            (Some(a), Some(b)) => format!(" [{a}–{b}]"),
+                            _ => String::new(),
+                        };
+                        let lag = match s.last_behind_ms {
+                            Some(ms) => format!(" · lag {ms:.0}ms"),
                             None => String::new(),
                         };
-                        let ph = video.playhead.get();
-                        let eng = video.frame.get();
-                        let frame_part = if ph == eng {
-                            format!("frame {ph}")
-                        } else {
-                            format!("frame {ph} (eng {eng})")
-                        };
                         format!(
-                            "{frame_part} / {} · {} · {:.3}s{}{}{}",
-                            video.frame_count.get().saturating_sub(1),
-                            video
-                                .metadata
-                                .get()
-                                .map(|m| m.gop_profile.label())
-                                .unwrap_or_else(|| "—".into()),
-                            video.timestamp.get(),
-                            fps_part,
-                            if video.playing.get() { " · playing" } else { "" },
-                            if video.looping.get() { " · loop" } else { "" }
+                            "held {} · decodeQ {} · skipped {}{}{}",
+                            if s.held_len == usize::MAX {
+                                "busy".into()
+                            } else {
+                                s.held_len.to_string()
+                            },
+                            if s.decode_queue_size == u32::MAX {
+                                "busy".into()
+                            } else {
+                                s.decode_queue_size.to_string()
+                            },
+                            s.frames_skipped,
+                            range,
+                            lag,
                         )
-                    }
-                }}
-            </p>
-            <p class="wm-pipeline" data-testid="pipeline">
-                {move || {
-                    let Some(s) = video.pipeline.get() else {
-                        return String::new();
-                    };
-                    let range = match (s.presentation_from, s.presentation_to) {
-                        (Some(a), Some(b)) if a == b => format!(" [{a}]"),
-                        (Some(a), Some(b)) => format!(" [{a}–{b}]"),
-                        _ => String::new(),
-                    };
-                    let lag = match s.last_behind_ms {
-                        Some(ms) => format!(" · lag {ms:.0}ms"),
-                        None => String::new(),
-                    };
-                    format!(
-                        "held {} · decodeQ {} · skipped {}{}{}",
-                        if s.held_len == usize::MAX {
-                            "busy".into()
-                        } else {
-                            s.held_len.to_string()
-                        },
-                        if s.decode_queue_size == u32::MAX {
-                            "busy".into()
-                        } else {
-                            s.decode_queue_size.to_string()
-                        },
-                        s.frames_skipped,
-                        range,
-                        lag,
-                    )
-                }}
-            </p>
-            <p class="wm-error" data-testid="error">{move || video.error.get().unwrap_or_default()}</p>
+                    }}
+                </p>
+                <p class="wm-error" data-testid="error">{move || video.error.get().unwrap_or_default()}</p>
+            </div>
         </div>
     }
 }

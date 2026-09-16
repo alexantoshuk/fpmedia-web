@@ -22,7 +22,9 @@ js-sys = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
     "HtmlInputElement",
     "HtmlElement",
+    "HtmlDivElement",
     "Element",
+    "Document",
     "DomRect",
     "File",
     "FileList",

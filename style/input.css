@@ -49,6 +49,83 @@ body {
   padding: 1.25rem;
 }
 
+/* Demo fullscreen: video fills the screen; chrome overlays and auto-hides. */
+.wm-player:fullscreen {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: #0a0a0a;
+  overflow: hidden;
+}
+
+.wm-player:fullscreen .wm-media {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.wm-player:fullscreen .wm-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.wm-player:fullscreen .wm-viewport {
+  flex: 1 1 auto;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+}
+
+.wm-player:fullscreen .wm-chrome {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  padding: 2.5rem 0.85rem 0.85rem;
+  background: linear-gradient(
+    to top,
+    rgba(0, 0, 0, 0.82) 0%,
+    rgba(0, 0, 0, 0.55) 55%,
+    transparent 100%
+  );
+  transition: opacity 0.22s ease, visibility 0.22s ease;
+}
+
+.wm-player:fullscreen .wm-meta,
+.wm-player:fullscreen .wm-status,
+.wm-player:fullscreen .wm-pipeline,
+.wm-player:fullscreen .wm-error,
+.wm-player:fullscreen .wm-buffer-meters,
+.wm-player:fullscreen .wm-volume {
+  color: #d4d4d4;
+}
+
+.wm-player:fullscreen.is-chrome-hidden {
+  cursor: none;
+}
+
+.wm-player:fullscreen.is-chrome-hidden .wm-chrome {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.wm-chrome {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
 .wm-media {
   display: flex;
   flex-direction: column;
