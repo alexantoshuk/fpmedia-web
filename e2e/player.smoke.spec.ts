@@ -221,6 +221,7 @@ test.describe("demo player smoke", () => {
     await player.openFixture(FIXTURES.withBFrames);
 
     // Cold start — no Pause densify; Exact should grow from presented frames only.
+    // Cost gates (DPR stride / spare-time / CSS encode) may sparse the trail.
     await player.seekToFrame(0);
     await player.play.click();
     await expect
@@ -230,14 +231,14 @@ test.describe("demo player smoke", () => {
       .poll(async () => (await player.readStatus()).playhead ?? 0, {
         timeout: 15_000,
       })
-      .toBeGreaterThanOrEqual(12);
+      .toBeGreaterThanOrEqual(16);
 
     await expect
       .poll(async () => player.denseCacheFrames(), {
         timeout: 15_000,
         message: "Exact trail did not grow from Play presented ingest",
       })
-      .toBeGreaterThanOrEqual(8);
+      .toBeGreaterThanOrEqual(4);
     expect(await player.error.innerText()).toBe("");
   });
 });

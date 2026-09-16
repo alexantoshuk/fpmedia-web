@@ -11,7 +11,9 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::MediaClock;
 use crate::decode::audio_output::AudioOutput;
-use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, draw_frame_with_context};
+use crate::decode::canvas::{
+    canvas_2d, configure_canvas_for_video, device_pixel_ratio, draw_frame_with_context,
+};
 use crate::decode::frame_cache::{
     DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, SCRUB_BLIT_LRU, ScrubBlitLru, ScrubChunkStore,
     ThumbCache,
@@ -35,6 +37,8 @@ const LOOP_PRIME_FRAMES: usize = 8;
 const BIG_LAG_SECONDS: f64 = 0.5;
 /// Stop prefetching this many ms before the present deadline.
 const PREFETCH_DEADLINE_SLACK_MS: f64 = 3.0;
+/// Play Exact WebP trail after present (gated). Set `false` only for A/B jank checks.
+const PLAY_EXACT_INGEST: bool = true;
 
 struct QueuedFrame {
     frame: FrameId,
@@ -75,6 +79,8 @@ struct Shared {
     ctx: CanvasRenderingContext2d,
     frames_skipped: Cell<u64>,
     last_behind_ms: Cell<Option<f64>>,
+    /// Play Exact ingest counter (every-Nth from DPR). Reset on [`WebPlayer::play`].
+    play_exact_presented: Cell<u64>,
     /// Prefetch must idle while seek/loop prepare owns the decoder.
     restarting: Cell<bool>,
     /// Settle / sync seek: pause densify so exact `goto_frame` owns HW.
@@ -285,6 +291,7 @@ impl WebPlayer {
             ctx,
             frames_skipped: Cell::new(0),
             last_behind_ms: Cell::new(None),
+            play_exact_presented: Cell::new(0),
             restarting: Cell::new(false),
             hold_densify_for_exact: Cell::new(false),
             preparing_loop: Cell::new(false),
@@ -463,6 +470,7 @@ impl WebPlayer {
         self.shared.player.borrow_mut().play();
         self.shared.frames_skipped.set(0);
         self.shared.last_behind_ms.set(None);
+        self.shared.play_exact_presented.set(0);
     }
 
     pub fn pause(&self) {
@@ -811,9 +819,9 @@ impl WebPlayer {
     ///   preview + best-effort exact may race the scrub decoder. Gap pick follows
     ///   scrub direction (predictive densify).
     /// - **Settle** (`settle=true`, pointer up): abort densify, then one key→exact
-    ///   cascade with cache-only salvage (`goto_frame_with_interim`) — canvas stays
-    ///   on best cached/key until exact; pruned frames fill dense without blit
-    ///   (avoids a second full-GOP densify; strip may grow toward the target).
+    ///   cascade (`goto_frame_with_interim`) so canvas gets decode `VideoFrame`
+    ///   (not store WebP — store is low-q for drag). Interim preview may blit
+    ///   cache; pruned frames fill dense without blit.
     pub async fn scrub_to(&self, frame: FrameId, settle: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         if settle {
@@ -834,21 +842,21 @@ impl WebPlayer {
             self.shared.player.borrow_mut().pause();
             self.clear_loop_prime();
 
-            if self.present_from_cache(frame).await? {
-                self.shared.player.borrow_mut().commit_frame(frame)?;
-                return Ok(());
-            }
+            if settle {
+                // Keep the last drag frame on canvas until exact decode VF paints.
+                // Do **not** blit key/preview from store — key is often far from
+                // target and flashes a wrong frame; store is low-q drag trail only.
+                self.goto_frame_with_interim(frame, epoch).await
+            } else {
+                if self.present_from_cache(frame).await? {
+                    self.shared.player.borrow_mut().commit_frame(frame)?;
+                    return Ok(());
+                }
 
-            // Canvas preview without committing playhead.
-            // Settle: cache-only — decoding the key here then continuing to exact
-            // wedges Chromium (`backpressure timed out (q=41, held=0)` on Wing It).
-            // Drag: may decode key/neighbor for interim paint.
-            if let Some(preview) = self.scrub_preview_frame(frame)
-                && preview != frame
-            {
-                if settle {
-                    let _ = self.present_from_cache(preview).await;
-                } else {
+                // Drag: may decode key/neighbor for interim paint.
+                if let Some(preview) = self.scrub_preview_frame(frame)
+                    && preview != frame
+                {
                     self.draw_frame_unccommitted(preview, epoch).await?;
                     if !self.is_current(epoch) {
                         return Err(MediaError::Cancelled);
@@ -858,33 +866,6 @@ impl WebPlayer {
                         return Ok(());
                     }
                 }
-            }
-
-            // Settle: one key→N cascade (same as sync `seek_frame`).
-            // Do **not** decode key in a prior `goto_frame` / uncommitted preview then
-            // warm-continue — taking the key out of `held` and feeding deltas wedges
-            // at `decodeQ≈41, held=0` on Wing It long GOPs. Cache-hit key still
-            // commits early so eng leaves 0; decode stays a single session.
-            // Do **not** `fill_gop` restart after key (re-feed wedged at decodeQ≈11).
-            if settle {
-                if let Some(key) = self.key_for(frame)
-                    && key != frame
-                {
-                    if self.present_from_cache(key).await? {
-                        self.shared.player.borrow_mut().commit_frame(key)?;
-                        if self.present_from_cache(frame).await? {
-                            self.shared.player.borrow_mut().commit_frame(frame)?;
-                            return Ok(());
-                        }
-                    }
-                    if let Some(preview) = self.scrub_preview_frame(frame)
-                        && preview != frame
-                    {
-                        let _ = self.present_from_cache(preview).await;
-                    }
-                }
-                self.goto_frame_with_interim(frame, epoch).await
-            } else {
                 self.goto_frame(frame, epoch).await
             }
         }
@@ -1635,6 +1616,48 @@ impl WebPlayer {
         ingest_scrub_frame_shared(&self.shared, frame, video, replace);
     }
 
+    /// Play Exact trail ingest with cost gates (densify / scrub path unchanged).
+    ///
+    /// Sync WebP on every present at full device pixels starves rAF on large
+    /// viewport/DPR. Gates: every-Nth from DPR, skip when this present is behind
+    /// or no spare time before next PTS, encode at CSS size (`canvas / DPR`).
+    /// VF always dropped. (Do not use sticky `last_behind_ms` — that is UI "last".)
+    fn ingest_play_exact_frame(&self, frame: FrameId, video: OwnedVideoFrame) {
+        let n = self.shared.play_exact_presented.get();
+        self.shared.play_exact_presented.set(n.saturating_add(1));
+
+        let dpr = device_pixel_ratio();
+        let stride = dpr.round().max(1.0) as u64;
+        if !n.is_multiple_of(stride) {
+            drop(video);
+            return;
+        }
+
+        let media_time = self.media_time();
+        if let Ok(start) = self.frame_timestamp_seconds(frame) {
+            let lag_ms = ((media_time - start) * 1000.0).max(0.0);
+            if lag_ms > 1.0 {
+                drop(video);
+                return;
+            }
+        }
+        if let Ok(next_start) = self.frame_timestamp_seconds(frame.saturating_add(1)) {
+            let ms_until = (next_start - media_time) * 1000.0;
+            if ms_until < PREFETCH_DEADLINE_SLACK_MS {
+                drop(video);
+                return;
+            }
+        }
+
+        let target_w = ((self.shared.canvas.width() as f64) / dpr)
+            .round()
+            .max(1.0) as u32;
+        let target_h = ((self.shared.canvas.height() as f64) / dpr)
+            .round()
+            .max(1.0) as u32;
+        let _ = ingest_scrub_frame_at(&self.shared, frame, video, true, target_w, target_h);
+    }
+
     /// Draw a scrub-store hit via ImageBitmap LRU (`createImageBitmap` on miss).
     ///
     /// Decode failures return `Ok(false)` so callers fall through to key→N decode
@@ -1855,12 +1878,15 @@ impl WebPlayer {
         result
     }
 
-    /// Play present: draw + ingest presented frame into Exact store (WebP), then
-    /// drop the live `VideoFrame` (tiny presentation pool).
+    /// Play present: draw + optional Exact ingest (WebP), then drop the live
+    /// `VideoFrame` (tiny presentation pool).
     ///
     /// Presented-only trail — not densify. Do **not** call
     /// [`Self::schedule_scrub_cache_fill`] / scrub decoder here. Eviction remains
     /// budget / farthest-from-aim only (no Play trim wipe).
+    ///
+    /// [`PLAY_EXACT_INGEST`] gates the trail (A/B: set `false` to prove fullscreen
+    /// jank is sync WebP encode).
     fn present_play_frame(
         &self,
         frame: FrameId,
@@ -1868,8 +1894,11 @@ impl WebPlayer {
     ) -> Result<(), MediaError> {
         let result =
             draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
-        // Same encode path as scrub present; VF closes inside ingest.
-        self.ingest_scrub_frame(frame, video, true);
+        if PLAY_EXACT_INGEST {
+            self.ingest_play_exact_frame(frame, video);
+        } else {
+            drop(video);
+        }
         result
     }
 
@@ -2144,9 +2173,20 @@ fn ingest_scrub_frame_shared(
     // Match playback canvas (viewport × DPR); never larger than the frame display.
     let target_w = shared.canvas.width().max(1);
     let target_h = shared.canvas.height().max(1);
-    let encoded = shared
-        .encode_canvas
-        .with_encoder(|enc| enc.encode_webp_with_blit(video.as_web_sys(), target_w, target_h));
+    ingest_scrub_frame_at(shared, frame, video, replace, target_w, target_h)
+}
+
+fn ingest_scrub_frame_at(
+    shared: &Rc<Shared>,
+    frame: FrameId,
+    video: OwnedVideoFrame,
+    replace: bool,
+    target_w: u32,
+    target_h: u32,
+) -> bool {
+    let encoded = shared.encode_canvas.with_encoder(|enc| {
+        enc.encode_webp_with_blit(video.as_web_sys(), target_w.max(1), target_h.max(1))
+    });
     drop(video);
     let Ok(encoded) = encoded else {
         return false;

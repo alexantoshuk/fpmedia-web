@@ -405,11 +405,11 @@ impl DecoderCore {
                 None
             }
         };
-        if let Some(pts) = chunk_pts {
-            if let Some(i) = self.input_timestamps.iter().position(|&t| t == pts) {
-                self.input_timestamps.remove(i);
-                return Some(pts);
-            }
+        if let Some(pts) = chunk_pts
+            && let Some(i) = self.input_timestamps.iter().position(|&t| t == pts)
+        {
+            self.input_timestamps.remove(i);
+            return Some(pts);
         }
         let pts = self.input_timestamps.first().copied()?;
         self.input_timestamps.remove(0);
@@ -863,30 +863,30 @@ impl WebCodecsDecoder {
             if let Some(err) = pump_error {
                 return Err(err);
             }
-            {
+            let ready = {
                 let mut c = core.borrow_mut();
                 c.check_error()?;
                 c.collect_and_prune_held(target_us)?;
-                if let Some(ready) = c.take_held(target_us) {
-                    // Stop feeding more packets, but drain already-decoded outputs
-                    // into `held` so the next play/prefetch frame is warm. Returning
-                    // immediately left decodeQ stranded → mid-GOP flush/idle (DRYP).
-                    signals.stop.set(true);
-                    drop(c);
-                    for _ in 0..12 {
-                        await_outputs_if_pending(&core).await?;
-                        let idle = {
-                            let mut c = core.borrow_mut();
-                            c.collect_and_prune_held(target_us)?;
-                            c.decode_queue_size() == 0 && !c.raw_outputs_pending()
-                        };
-                        if idle {
-                            break;
-                        }
-                        wait_for_frame_progress(&core).await;
+                c.take_held(target_us)
+            };
+            if let Some(ready) = ready {
+                // Stop feeding more packets, but drain already-decoded outputs
+                // into `held` so the next play/prefetch frame is warm. Returning
+                // immediately left decodeQ stranded → mid-GOP flush/idle (DRYP).
+                signals.stop.set(true);
+                for _ in 0..12 {
+                    await_outputs_if_pending(&core).await?;
+                    let idle = {
+                        let mut c = core.borrow_mut();
+                        c.collect_and_prune_held(target_us)?;
+                        c.decode_queue_size() == 0 && !c.raw_outputs_pending()
+                    };
+                    if idle {
+                        break;
                     }
-                    return Ok(ready);
+                    wait_for_frame_progress(&core).await;
                 }
+                return Ok(ready);
             }
             if signals.done.get() {
                 // No more packets are coming — drain, then flush once.

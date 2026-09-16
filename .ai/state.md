@@ -4,8 +4,8 @@
 
 ## In progress
 
+- Play Exact: confirmed fullscreen jank = sync WebP ingest; choose off-on-Play / size-gate / Worker v2.
 - Spot-check BBB Play across GOP boundaries after soft sequential key switch (encode size = viewport ≤ source×monitor).
-- Spot-check Play Exact trail + DRYP after presented-only ingest (sync WebP q=0.9); gate every-Nth if jank.
 
 ---
 
@@ -19,8 +19,7 @@
 
 ### Play Exact trail (follow-ups)
 
-- Cost control if Play janks: gate ingest (every Nth frame and/or spare-time before next deadline).
-- v2 (optional): post-present Worker WebP → store; abort backlog on underrun — only if v1 profiling shows main-thread encode starving rAF.
+- v2 (optional): post-present Worker WebP → store; abort backlog on underrun — only if v1 gates still leave main-thread encode starving rAF.
 
 ### Media engine
 

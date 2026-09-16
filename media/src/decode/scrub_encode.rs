@@ -8,6 +8,9 @@
 //! Encode size = playback canvas buffer (viewport × DPR), capped by source display
 //! **and** monitor pixels (`screen` × DPR). Fixed edge-640 was softer than Pause.
 //!
+//! Quality is intentionally low (`SCRUB_WEBP_QUALITY`): store is for scrub drag /
+//! strip; settle paints decode `VideoFrame` on canvas. Chromium `1.0` = lossless.
+//!
 //! **Binary decode:** never `String::into_bytes()` after `atob` — use `JsString::char_code_at`.
 
 use std::cell::RefCell;
@@ -21,6 +24,10 @@ use web_sys::{
 };
 
 use crate::error::MediaError;
+
+/// Lossy WebP quality for Exact scrub-store chunks (drag / densify / Play trail).
+/// Keep well below 1.0 — Chromium treats 1.0 as lossless and stalls encode.
+pub const SCRUB_WEBP_QUALITY: f64 = 0.5;
 
 /// One compressed Exact frame in system RAM.
 #[derive(Clone, Debug)]
@@ -126,11 +133,14 @@ impl EncodeCanvas {
                 height as f64,
             )
             .map_err(MediaError::from)?;
-        // Chromium treats quality 1.0 as lossless WebP — sync densify stalls on
-        // full viewport×DPR. 0.9 stays lossy and much faster (product scrub store).
+        // Chromium treats quality 1.0 as lossless WebP — sync densify stalls.
+        // Store is scrub-preview quality; settle paints decode VF on canvas.
         let data_url = self
             .canvas
-            .to_data_url_with_type_and_encoder_options("image/webp", &0.9.into())
+            .to_data_url_with_type_and_encoder_options(
+                "image/webp",
+                &SCRUB_WEBP_QUALITY.into(),
+            )
             .map_err(MediaError::from)?;
         let (mime, bytes) = decode_data_url(&data_url)?;
         Ok(EncodedScrubFrame {

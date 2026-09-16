@@ -73,13 +73,21 @@ pub fn canvas_2d(canvas: &HtmlCanvasElement) -> Result<CanvasRenderingContext2d,
         .map_err(|_| MediaError::WebCodecs("canvas 2d cast failed".into()))
 }
 
+/// `window.devicePixelRatio`, clamped to `[1, 3]` (same as buffer layout).
+pub fn device_pixel_ratio() -> f64 {
+    web_sys::window()
+        .map(|w| w.device_pixel_ratio())
+        .unwrap_or(1.0)
+        .clamp(1.0, 3.0)
+}
+
 /// Monitor size in device pixels (`screen` CSS × DPR). Fallback 4K if unavailable.
 pub fn monitor_pixel_size() -> (u32, u32) {
     const FALLBACK: (u32, u32) = (3840, 2160);
     let Some(window) = web_sys::window() else {
         return FALLBACK;
     };
-    let dpr = window.device_pixel_ratio().clamp(1.0, 3.0);
+    let dpr = device_pixel_ratio();
     let Ok(screen) = window.screen() else {
         return FALLBACK;
     };
@@ -167,10 +175,7 @@ fn contain_css_size(box_w: f64, box_h: f64, src_aspect: f64) -> (f64, f64) {
 
 fn buffer_size_for_layout(canvas: &HtmlCanvasElement, src_w: u32, src_h: u32) -> (u32, u32) {
     let src_aspect = src_w as f64 / src_h as f64;
-    let dpr = web_sys::window()
-        .map(|w| w.device_pixel_ratio())
-        .unwrap_or(1.0)
-        .clamp(1.0, 3.0);
+    let dpr = device_pixel_ratio();
 
     let (box_w, box_h) = layout_box_css(canvas);
     let (css_w, css_h) = contain_css_size(box_w, box_h, src_aspect);
