@@ -1048,6 +1048,27 @@ impl WebPlayer {
         self.shared.presentation.borrow().len()
     }
 
+    /// Media-clock seconds ahead of the next needed frame while the presentation
+    /// queue is empty (play underrun). `None` if not underrunning or lag below
+    /// [`BIG_LAG_SECONDS`]. Host should call [`Self::skip_behind`] once — not
+    /// drip-decode every missed present (that wedges `q≈41, held=0`).
+    pub fn play_underrun_behind(&self) -> Option<f64> {
+        if !self.is_playing() || self.shared.restarting.get() {
+            return None;
+        }
+        if self.presentation_len() > 0 {
+            return None;
+        }
+        let state = self.state();
+        let next = state.frame.saturating_add(1);
+        if next >= state.frame_count {
+            return None;
+        }
+        let start = self.frame_timestamp_seconds(next).ok()?;
+        let behind = self.media_time() - start;
+        (behind >= BIG_LAG_SECONDS).then_some(behind)
+    }
+
     /// True when the presentation queue already holds through the last frame.
     fn presentation_reaches_eof(&self) -> bool {
         let count = self.state().frame_count;
@@ -1594,7 +1615,8 @@ impl WebPlayer {
             Err(MediaError::WebCodecs(msg))
                 if msg.contains("flush/idle without pts=")
                     || msg.contains("decode pump stalled")
-                    || msg.contains("exhausted GOP before pts=") =>
+                    || msg.contains("exhausted GOP before pts=")
+                    || msg.contains("decodeQueueSize backpressure timed out") =>
             {
                 if cancelled() {
                     Err(MediaError::Cancelled)

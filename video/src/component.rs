@@ -27,6 +27,8 @@ struct PlaySession {
     last_ui_ms: f64,
     /// `loop_to_start` in flight — skip presents until origins reset.
     restarting: bool,
+    /// `skip_behind` in flight — do not stack underrun catch-ups.
+    catching_up: bool,
 }
 
 /// Rolling window of canvas presents → measured display FPS.
@@ -280,6 +282,59 @@ pub fn Video(
                                 s.last_ui_ms = now;
                                 drop(borrow);
                                 sync_ui();
+                            }
+                        }
+                        // Empty present queue + clock ahead ≥0.5s → one skip_behind
+                        // (skills/media.md Behind-deadline skip). Without this the
+                        // clock ran for seconds (`skipped≈100`) then wedged decode
+                        // at `backpressure q=41, held=0`.
+                        let underrun_lag = match player.try_borrow() {
+                            Ok(borrow) => borrow.as_ref().and_then(|p| p.play_underrun_behind()),
+                            Err(_) => None,
+                        };
+                        if let Some(behind) = underrun_lag {
+                            let start_catchup = {
+                                let mut borrow = session.borrow_mut();
+                                borrow.as_mut().is_some_and(|s| {
+                                    if s.catching_up || s.restarting {
+                                        false
+                                    } else {
+                                        s.catching_up = true;
+                                        true
+                                    }
+                                })
+                            };
+                            if start_catchup {
+                                let player = Rc::clone(&player);
+                                let session = Rc::clone(&session);
+                                let stop_playback = Rc::clone(&stop_playback);
+                                spawn_local(async move {
+                                    let Some(p) = player.borrow().as_ref().cloned() else {
+                                        if let Some(s) = session.borrow_mut().as_mut() {
+                                            s.catching_up = false;
+                                        }
+                                        return;
+                                    };
+                                    match p.skip_behind(behind).await {
+                                        Ok(_) => {
+                                            if let Some(s) = session.borrow_mut().as_mut() {
+                                                s.catching_up = false;
+                                            }
+                                        }
+                                        Err(e) if e.is_cancelled() => {
+                                            if let Some(s) = session.borrow_mut().as_mut() {
+                                                s.catching_up = false;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            if let Some(s) = session.borrow_mut().as_mut() {
+                                                s.catching_up = false;
+                                            }
+                                            error.set(Some(e.to_string()));
+                                            stop_playback();
+                                        }
+                                    }
+                                });
                             }
                         }
                     }
@@ -1072,19 +1127,26 @@ async fn run_play_prime(
         wall_origin: performance_now_ms().map(|t| t / 1000.0).unwrap_or(0.0),
         last_ui_ms,
         restarting: false,
+        catching_up: false,
     });
 
     {
         let player = Rc::clone(player);
+        let session = Rc::clone(session);
         let stop_playback = Rc::clone(stop_playback);
         let queue = queue.clone();
         spawn_local(async move {
             while playing.get_untracked() && queue.is_current(id) {
+                let catching_up = session
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|s| s.catching_up || s.restarting);
                 let need = {
                     let borrow = player.borrow();
                     borrow.as_ref().is_some_and(|p| {
                         p.is_playing()
                             && !p.is_restarting()
+                            && !catching_up
                             && p.presentation_len() < webmedia::PRESENTATION_QUEUE_CAP
                     })
                 };
