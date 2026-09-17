@@ -5,7 +5,6 @@ mod canvas;
 mod frame_cache;
 mod owned_audio_data;
 mod owned_video_frame;
-mod play_encode_worker;
 mod scrub_encode;
 mod web_player;
 mod webcodecs;
@@ -17,7 +16,7 @@ pub use canvas::{
 pub use owned_audio_data::OwnedAudioData;
 pub use owned_video_frame::{AsVideoFrame, OwnedVideoFrame};
 pub use web_player::{
-    DuePresent, PRESENTATION_QUEUE_CAP, STEP_BEHIND_CAP, PipelineStats, ReadyFrameKind,
-    ReadyFrameMark, WebPlayer,
+    DuePresent, PRESENTATION_QUEUE_CAP, PipelineStats, ReadyFrameKind, ReadyFrameMark,
+    STEP_BEHIND_CAP, WebPlayer,
 };
 pub use webcodecs::WebCodecsDecoder;

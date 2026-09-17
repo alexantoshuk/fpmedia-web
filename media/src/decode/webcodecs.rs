@@ -835,13 +835,18 @@ impl WebCodecsDecoder {
         // pump feeds decode-order packets in its own task while this task pulls
         // the target from `held`. Backpressure can now unblock on a consumer
         // take, which is what lets the pump wait at `decodeQueueSize == 0`.
+        //
+        // Bump epoch first so a prior background warm-fill / stray pump stops
+        // before this range starts (only one feeder on the decoder).
+        self.pump_epoch.set(self.pump_epoch.get().wrapping_add(1));
+        let pump_epoch_now = self.pump_epoch.get();
         let signals = Rc::new(PumpSignals::default());
-        let _stop_on_return = PumpStopGuard(Rc::clone(&signals));
+        let stop_on_return = PumpStopGuard(Rc::clone(&signals));
         spawn_local(
             FramePump {
                 core: Rc::clone(&core),
                 pump_epoch: Rc::clone(&self.pump_epoch),
-                epoch: self.pump_epoch.get(),
+                epoch: pump_epoch_now,
                 track: Rc::clone(track),
                 key_do,
                 target_do,
@@ -870,22 +875,62 @@ impl WebCodecsDecoder {
                 c.take_held(target_us)
             };
             if let Some(ready) = ready {
-                // Stop feeding more packets, but drain already-decoded outputs
-                // into `held` so the next play/prefetch frame is warm. Returning
-                // immediately left decodeQ stranded → mid-GOP flush/idle (DRYP).
-                signals.stop.set(true);
-                for _ in 0..12 {
-                    await_outputs_if_pending(&core).await?;
-                    let idle = {
-                        let mut c = core.borrow_mut();
-                        c.collect_and_prune_held(target_us)?;
-                        c.decode_queue_size() == 0 && !c.raw_outputs_pending()
-                    };
-                    if idle {
-                        break;
+                // Return the frame immediately so presentation can present /
+                // clear underrun. Keep the range pump alive in the background
+                // until warm-ahead is parked — immediate `stop` on take raced
+                // backpressure and forced a cold pump every 1–2 frames
+                // (DRYP ~0.75×). mediabunny keeps decoding while the consumer
+                // pulls (`src/media-sink.ts` mediaSamplesInRange).
+                let core_bg = Rc::clone(&core);
+                let signals_bg = Rc::clone(&signals);
+                let pump_epoch_bg = Rc::clone(&self.pump_epoch);
+                spawn_local(async move {
+                    const WANT_AHEAD: usize = 4;
+                    for _ in 0..80 {
+                        if pump_epoch_bg.get() != pump_epoch_now || signals_bg.stop.get() {
+                            return;
+                        }
+                        let can_stop = {
+                            let mut c = core_bg.borrow_mut();
+                            if c.collect_and_prune_held(target_us).is_err() {
+                                signals_bg.stop.set(true);
+                                return;
+                            }
+                            let ahead = c.held.iter().filter(|h| h.pts_us > target_us).count();
+                            let idle = c.decode_queue_size() == 0
+                                && !c.raw_outputs_pending()
+                                && c.input_timestamps.is_empty();
+                            ahead >= WANT_AHEAD || (signals_bg.done.get() && idle)
+                        };
+                        if can_stop {
+                            break;
+                        }
+                        wait_for_frame_progress(&core_bg).await;
                     }
-                    wait_for_frame_progress(&core).await;
-                }
+                    if pump_epoch_bg.get() != pump_epoch_now {
+                        return;
+                    }
+                    signals_bg.stop.set(true);
+                    for _ in 0..12 {
+                        if pump_epoch_bg.get() != pump_epoch_now {
+                            return;
+                        }
+                        if await_outputs_if_pending(&core_bg).await.is_err() {
+                            return;
+                        }
+                        let idle = {
+                            let mut c = core_bg.borrow_mut();
+                            let _ = c.collect_and_prune_held(target_us);
+                            c.decode_queue_size() == 0 && !c.raw_outputs_pending()
+                        };
+                        if idle {
+                            break;
+                        }
+                        wait_for_frame_progress(&core_bg).await;
+                    }
+                });
+                // Background owns stop — do not kill the pump on return.
+                std::mem::forget(stop_on_return);
                 return Ok(ready);
             }
             if signals.done.get() {

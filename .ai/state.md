@@ -4,24 +4,18 @@
 
 ## In progress
 
-- Spot-check fullscreen scrub drag + Play with WebP Worker (densify async encode).
-- Spot-check BBB Play across GOP boundaries after soft sequential key switch (encode size = viewport ≤ source×monitor).
-- Spot-check Next/Prev hold with step VF ring (behind=8, ahead=4; no per-step invalidate).
+- Spot-check scrub/Next feel vs ShotGrid after bitmap densify + Play warm-ahead fix.
 
 ---
 
 ## Next up
 
-### Play / scrub cache split (finish)
+### Play / scrub (short path)
 
-1. Run / fix probes: `e2e/player.smoke.spec.ts`; `e2e/player.play.dryp.spec.ts`; `e2e/perf.scrub.cached.spec.ts`; scrub settle if Exact blit regresses.
-2. Byte-budget eviction for compressed chunks (frame-count budget still used).
-3. Filmstrip via `ThumbCache` (caller-sized; mediabunny `samplesAtTimestamps` later).
-
-### Play Exact trail (follow-ups)
-
-- Optional: rewrite Worker encode core in Rust later (keep JS bootstrap).
-- Optional: densify off main if Pause encode still janks on huge viewports.
+1. If blit window (96) still feels cold mid-timeline — consider CSS-sized densify bitmaps or aim-centered blit budget (not full-clip 1080p RGBA).
+2. Optional: trim residual Play underrun (~0.96→1.0) at GOP boundaries if it shows up on longer clips.
+3. Probes: `e2e/perf.scrub.cached.spec.ts`; smoke; DRYP play.
+4. Optional: contiguous densify coverage as timeline buffer bar.
 
 ### Media engine
 
@@ -41,4 +35,3 @@
 - Publish `webmedia` / `video` crates for reuse by host apps.
 - Production player chrome (demo controls in `app` stay for now).
 - Drop `re_mp4` git pin when upstream #35 is released on crates.io.
-- Web Worker encode/decode tier — play Exact ingest v2 and/or densify off main; only if profiling shows main-thread pump/encode starving rAF after GOP profile + byte budgets.

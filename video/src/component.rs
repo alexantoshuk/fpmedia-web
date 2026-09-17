@@ -1120,7 +1120,7 @@ async fn run_seek_or_step(
         error.set(Some(e.to_string()));
     }
     sync_ui();
-    // Step can no-op (pending WebP); snap playhead to committed engine so hold
+    // Step can no-op (warm blit miss); snap playhead to committed engine so hold
     // repeat does not keep aiming one ahead of a stuck frame.
     if is_step
         && let Ok(borrow) = player.try_borrow()

@@ -228,7 +228,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 return;
                             };
                             if fullscreen.get_untracked() {
-                                let _ = doc.exit_fullscreen();
+                                doc.exit_fullscreen();
                             } else {
                                 let _ = el.request_fullscreen();
                             }

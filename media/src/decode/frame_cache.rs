@@ -1,6 +1,7 @@
-//! Playhead-centered Exact scrub residency (WebP) + blit LRU + thumbs.
+//! Playhead-centered Exact scrub residency (markers + blit LRU) + thumbs.
 //!
-//! - [`ScrubChunkStore`] — Exact scrub store (WebP bytes in RAM); gap fill / Exact marks.
+//! - [`ScrubChunkStore`] — densify resident markers (gap geometry / Exact strip).
+//! - [`ScrubBlitLru`] — live `ImageBitmap` for scrub/step present.
 //! - [`FrameRunIndex`] — contiguous-run geometry + nearest-gap search.
 //!   Eviction drops the frame farthest from the playhead. Thumbs stay separate.
 
@@ -18,9 +19,8 @@ use web_sys::ImageBitmap;
 /// Scrub/filmstrip keyframe GOPs retained.
 pub const DEFAULT_MAX_THUMB_GOPS: usize = 8;
 pub const DEFAULT_MAX_THUMBS: usize = 64;
-/// Live blit handles for scrub present (`createImageBitmap` LRU).
-/// Keep large enough that a densified window (~GOP×few) draws without re-decode;
-/// 4 forced a WebP→bitmap round-trip on almost every Next/Prev (Wing It ~400ms p50).
+/// Default live blit handles before clip budget is known.
+/// Cap stays here — do **not** size to full scrub budget (GPU OOM / Play stall).
 pub const SCRUB_BLIT_LRU: usize = 96;
 
 /// Contiguous-run geometry and nearest-gap search over a `FrameId` key set.
@@ -239,7 +239,7 @@ pub(crate) fn scrub_gap_fill_armed(
     playhead < start.saturating_add(margin) || playhead > end.saturating_sub(margin)
 }
 
-/// Exact scrub residency: WebP chunks in system RAM (not Chromium `VideoFrame`s).
+/// Exact scrub residency: densify markers in RAM + paired blit LRU (not live VFs).
 pub struct ScrubChunkStore {
     chunks: BTreeMap<FrameId, ScrubChunk>,
     runs: FrameRunIndex,
@@ -357,6 +357,7 @@ impl ScrubChunkStore {
         self.chunks.contains_key(&frame)
     }
 
+    #[allow(dead_code)] // chunk inspect / future strip decode
     pub fn get(&self, frame: FrameId) -> Option<&ScrubChunk> {
         self.chunks.get(&frame)
     }
@@ -535,6 +536,7 @@ impl ScrubBlitLru {
         }
     }
 
+    #[allow(dead_code)]
     pub fn invalidate(&mut self, frame: FrameId) {
         if let Some(bmp) = self.bitmaps.remove(&frame) {
             bmp.close();
@@ -555,7 +557,7 @@ impl ScrubBlitLru {
             return;
         }
         while self.bitmaps.len() > self.max {
-            let Some(victim) = self.farthest_from_playhead(frame) else {
+            let Some(victim) = self.farthest_from_playhead_excluding(Some(frame)) else {
                 break;
             };
             if let Some(bmp) = self.bitmaps.remove(&victim) {
@@ -572,12 +574,12 @@ impl ScrubBlitLru {
         }
     }
 
-    fn farthest_from_playhead(&self, protect: FrameId) -> Option<FrameId> {
+    fn farthest_from_playhead_excluding(&self, protect: Option<FrameId>) -> Option<FrameId> {
         let aim = self.playhead;
         self.bitmaps
             .keys()
             .copied()
-            .filter(|&f| f != protect && f != aim)
+            .filter(|&f| Some(f) != protect && f != aim)
             .max_by_key(|f| f.abs_diff(aim))
     }
 }
