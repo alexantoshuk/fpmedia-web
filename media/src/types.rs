@@ -18,7 +18,7 @@ pub const MIN_SCRUB_CACHE_FRAMES: usize = 8;
 /// Ceiling so tiny coded sizes cannot explode residency (decoder pool / WASM).
 pub const MAX_SCRUB_CACHE_FRAMES: usize = 512;
 /// Extra frames beyond extent edge when gap-fill re-arms ([`crate::decode::frame_cache::ScrubChunkStore`] no_gaps).
-pub const SCRUB_CACHE_EDGE_MARGIN: u64 = 24;
+pub const SCRUB_CACHE_EDGE_MARGIN: u64 = 10;
 
 /// Interim scrub canvas frame while `target` is not yet exact-cached.
 ///

@@ -556,7 +556,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
             <div
                 class="wm-scrubber-ready"
                 aria-hidden="true"
-                title="Ready frames: green=dense cache, blue=presentation ahead"
+                title="Ready: dim green=markers, bright green=blit (step-ready), blue=ahead, violet=behind"
             >
                 {move || {
                     let marks = video
@@ -570,6 +570,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                         .map(|m| {
                             let pct = (m.frame as f64 / max) * 100.0;
                             let class = match m.kind {
+                                ReadyFrameKind::Covered => "wm-ready-tick is-covered",
                                 ReadyFrameKind::Exact => "wm-ready-tick is-exact",
                                 ReadyFrameKind::Ahead => "wm-ready-tick is-ahead",
                                 ReadyFrameKind::Behind => "wm-ready-tick is-behind",

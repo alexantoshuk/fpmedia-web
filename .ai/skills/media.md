@@ -23,6 +23,9 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Dense wiped on Play | `present_play_frame` / prime | do **not** trim densify markers on Play — budget/aim eviction only |
 | Cached scrub / Next-Prev lag on large viewport | Scrub blit size | densify = VF→ImageBitmap; blit LRU present |
 | Next/Prev hold slow / key→N every step | Step VF ring + warm blit | ring first; else densify ImageBitmap |
+| Next/Prev hold: smooth then ~3s freeze (green strip) | Step soft goto + Exact=blit | miss must not abort densify; green = live blit only |
+| Pause densify dead after Play (green empty) | blit gaps in `next_gap_target` | Play clears blit, keeps markers — refill ImageBitmap |
+| Blit window slides only at hard edge | `ScrubBlitLru::next_gap_frame` + edge margin | same `SCRUB_CACHE_EDGE_MARGIN` (10) as markers |
 | Settle quality pop after drag | present path | canvas = blit or decode VF only — never a soft still |
 | Play jank / fullscreen scrub drag lag | densify path | blit LRU present; densify off on Play |
 | Dense stuck empty after Pause | `pause` densify kick + hold latch | clear `hold_densify_for_exact`; deferred kick if `scrub_busy` race |
@@ -134,8 +137,8 @@ Decoded Exact residency is **`ImageBitmap` blit + resident markers**. Dual `Vide
 | ----- | ---- | --------- |
 | **Presentation queue** | Play-ahead + Next hits | `WebPlayer` deque; `PRESENTATION_QUEUE_CAP` (4) |
 | **Step behind ring** | Prev hits (live VF) | `displayed` + `step_behind`; `STEP_BEHIND_CAP` (8); **Play uses cap 0** |
-| **`ScrubChunkStore`** | Gap geometry + green strip | **markers only**; densify inserts resident |
-| **`ScrubBlitLru`** | Scrub/step canvas present | densify `ImageBitmap`; cap `SCRUB_BLIT_LRU` (96) |
+| **`ScrubChunkStore`** | Gap geometry | **markers only**; densify inserts resident |
+| **`ScrubBlitLru`** | Scrub/step canvas present + Exact strip | densify `ImageBitmap`; cap `SCRUB_BLIT_LRU` (96) |
 | **`ThumbCache`** | Filmstrip bitmaps (shell; not wired) | Separate from Exact markers |
 
 Densify `on_frame`: VF → `transferToImageBitmap` + marker. `mediabunny:` CanvasSink canvas pool — same idea.
@@ -147,7 +150,7 @@ Densify `on_frame`: VF → `transferToImageBitmap` + marker. `mediabunny:` Canva
 | `PRESENTATION_QUEUE_CAP` | 4 | Play/Next ahead depth (with `STEP_BEHIND_CAP` ≈ 1+8+4 live VF) |
 | `STEP_BEHIND_CAP` | 8 | Live VF behind playhead for Prev without key→N |
 | `SCRUB_BLIT_LRU` | 96 | Live ImageBitmap cap; do **not** size to full scrub budget (GPU OOM / Play stall) |
-| `SCRUB_CACHE_EDGE_MARGIN` | 24 | After `no_gaps`, re-arm fill only within N of either cache edge |
+| `SCRUB_CACHE_EDGE_MARGIN` | 10 | After `no_gaps`, re-arm fill only within N of either cache edge |
 
 **Byte → frames:** `scrub_cache_frame_budget(count, w, h, mib)` ≈ `mib×1024² / (w×h×1.5)` (YUV 4:2:0), then clamp to `[MIN, MAX]` and `frame_count`. Same budget for every `GopProfile`; short clips that fit stay fully resident. Wire via `VideoMetadata::scrub_cache_frame_budget`. (Compressed byte-budget eviction is a follow-up.)
 
@@ -192,7 +195,7 @@ Local invention (mediabunny has no equivalent) — fill policy + budget sizing; 
 
 **Contiguous arming:** `ScrubChunkStore::no_gaps` when the extent is a single run. While `no_gaps` **and under frame budget**, keep expanding. Edge-idle (`SCRUB_CACHE_EDGE_MARGIN`) applies only when **at capacity**. Visited scrub frames stay until budget eviction (farthest from aim).
 
-Demo strip: Exact densify marks (green) + presentation ahead (blue). While paused, `video` keeps rAF ticking so marks update during fill (skipped while Play). Gap-fill streams each decoded frame into blit + marker immediately (drop VF).
+Demo strip: dim Covered = store markers (coverage); bright Exact = live blit (step-ready); blue = presentation ahead; violet = behind. While paused, `video` keeps rAF ticking so marks update during fill (skipped while Play). Gap-fill streams each decoded frame into blit + marker immediately (drop VF).
 
 ## Gotchas
 
@@ -267,7 +270,9 @@ Model: [Frame and decode caches](#frame-and-decode-caches).
 - Fill task must **return** on hold (clear `scrub_busy`) and **must not respawn** while hold is set. Sync seek also `abort_scrub_fill` + salvage. Do **not** compact/wipe other runs on aim change — eviction is farthest-from-aim only.
 - `decode_gop` cancel hard-resets (`abort_gop_partial`); already-streamed frames stay in scrub store. Late empty-`input_timestamps` outputs are dropped (not hard-error). At capacity, insert refuses farther-than-resident candidates.
 - **Fill progress ≠ `frame_count` growth** — at capacity, evict+insert keeps len stable; count newly resident ids (or gap closed). After `idle_passes≥3`, set `fill_stalled_aim` so the task does not respawn until aim moves / `enter_scrub_cache_pipeline`. Hold optimistic scrub preview until `video.frame` matches.
-- PREV miss = one key→prev cascade with interim → step behind ring (capped); present target via `goto_frame_fill_behind`. Hit = take from `step_behind` (no key→N). Next hit = presentation ahead or warm `decode_frame`. **After densify warm:** Next/Prev also hit budget-sized `ScrubBlitLru` `ImageBitmap` before key→N. **Do not** `invalidate_decoder` / `arm_scrub_densify_after_exact` after sequential step — use `arm_scrub_densify_after_step` (densify only). Seek/settle still invalidate. `pause()` must not bump `scrub_epoch` when already paused. `mediabunny: samples()` forward; reverse restarts from key unless samples retained (`mediaSamplesAtTimestamps` flush on rewind). CanvasSink-style pool present — `mediabunny:` canvas sink keeps drawn frames without re-decode.
+- PREV miss = one key→prev cascade with interim → step behind ring (capped); present target via `goto_frame_fill_behind`. Hit = take from `step_behind` (no key→N). Next hit = presentation ahead or warm blit / `decode_frame`. **Do not** `invalidate_decoder` / `arm_scrub_densify_after_exact` after sequential step — use `arm_scrub_densify_after_step` (densify only). Seek/settle still invalidate. `pause()` must not bump `scrub_epoch` when already paused. `mediabunny: samples()` forward; reverse restarts from key unless samples retained (`mediaSamplesAtTimestamps` flush on rewind). CanvasSink-style pool present.
+- **Blit miss on hold:** `step_soft_goto` — warm `goto_frame` / `goto_frame_fill_behind` **without** `abort_scrub_fill` / `hold_densify_for_exact` so densify keeps refilling blit ahead of aim (`note_scrub_direction` on every step). Was: abort+hold → densify starved → periodic ~3s key→N on DRYP 4K hold through “green” markers.
+- **Pause densify after Play:** `play()` keeps markers and clears blit; marker `no_gaps` used to disarm fill. `next_gap_target` prefers `ScrubBlitLru::next_gap_frame`; `fill_one_gap` skips only when GOP has markers **and** blit; ingest refreshes bitmap when marker already present. Blit solid-at-cap uses the same `SCRUB_CACHE_EDGE_MARGIN` arming as markers so the window slides before the cursor hits the last warm frame.
 - **Step VF ring** — `displayed` + `step_behind` (8) + presentation ahead (4). Survive Pause; clear on seek / scrub settle / loop / teardown. **While playing:** drop aged VF — do **not** `ingest_scrub_frame`. `play()` clears `ScrubBlitLru` (GPU); markers stay. Cap total live VF — do not keep whole Long GOP.
 - **All-Intra:** soft key switch when idle (`begin_key_cascade`); **skip** gap-fill densify (1-packet seek).
 

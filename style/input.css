@@ -207,8 +207,16 @@ body {
   opacity: 0.95;
 }
 
+.wm-ready-tick.is-covered {
+  background: #34d399;
+  opacity: 0.35;
+  z-index: 0;
+}
+
 .wm-ready-tick.is-exact {
   background: #34d399;
+  opacity: 0.95;
+  z-index: 1;
 }
 
 .wm-ready-tick.is-ahead {

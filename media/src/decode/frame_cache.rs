@@ -315,6 +315,7 @@ impl ScrubChunkStore {
         self.chunks.len()
     }
 
+    /// Marker ids (gap geometry). Demo strip dim `Covered` ticks use these.
     pub fn cached_frame_ids(&self) -> Vec<FrameId> {
         self.chunks.keys().copied().collect()
     }
@@ -547,6 +548,68 @@ impl ScrubBlitLru {
         self.playhead = playhead;
     }
 
+    /// Frames with a live `ImageBitmap` (demo Exact strip / step-ready).
+    pub fn cached_frame_ids(&self) -> Vec<FrameId> {
+        self.bitmaps.keys().copied().collect()
+    }
+
+    pub fn contains(&self, frame: FrameId) -> bool {
+        self.bitmaps.contains_key(&frame)
+    }
+
+    /// Next frame missing a live bitmap near `playhead` (biased by `dir`).
+    ///
+    /// Used after Play wipes blit while scrub markers stay — densify must see
+    /// ImageBitmap holes, not only marker gaps. At capacity with a solid run,
+    /// re-arm outside the extent when `playhead` is within
+    /// [`SCRUB_CACHE_EDGE_MARGIN`] of either edge (same as marker store) so the
+    /// window slides before the cursor hits the last warm frame.
+    pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId, dir: i8) -> Option<FrameId> {
+        let playhead = playhead.min(last);
+        if self.bitmaps.is_empty() {
+            return Some(playhead);
+        }
+        if !self.bitmaps.contains_key(&playhead) {
+            return Some(playhead);
+        }
+        let (run_lo, run_hi) = walk_run_bounds(&self.bitmaps, playhead);
+        let solid_len = run_hi.saturating_sub(run_lo).saturating_add(1);
+        let solid_at_cap = self.bitmaps.len() >= self.max
+            && (solid_len as usize >= self.max || solid_len == self.bitmaps.len() as u64);
+        if solid_at_cap {
+            let extent = Some((run_lo, run_hi));
+            if scrub_gap_fill_armed(true, playhead, extent, SCRUB_CACHE_EDGE_MARGIN) {
+                return next_gap_outside_extent(playhead, last, extent, dir);
+            }
+            return None;
+        }
+        let no_gaps = match (
+            self.bitmaps.keys().next().copied(),
+            self.bitmaps.keys().next_back().copied(),
+        ) {
+            (Some(lo), Some(hi)) => hi
+                .saturating_sub(lo)
+                .saturating_add(1)
+                .eq(&(self.bitmaps.len() as u64)),
+            _ => false,
+        };
+        let extent = self
+            .bitmaps
+            .keys()
+            .next()
+            .copied()
+            .zip(self.bitmaps.keys().next_back().copied());
+        FrameRunIndex::new().search(
+            &self.bitmaps,
+            playhead,
+            playhead,
+            last,
+            no_gaps,
+            extent,
+            dir,
+        )
+    }
+
     pub fn get(&mut self, frame: FrameId) -> Option<&ImageBitmap> {
         self.bitmaps.get(&frame)
     }
@@ -690,6 +753,23 @@ mod tests {
         assert!(scrub_gap_fill_armed(true, 190, extent, m));
         assert!(scrub_gap_fill_armed(true, 50, extent, m));
         assert!(scrub_gap_fill_armed(true, 250, extent, m));
+    }
+
+    #[test]
+    fn blit_next_gap_when_empty_returns_playhead() {
+        let blit = ScrubBlitLru::new(8);
+        assert_eq!(blit.next_gap_frame(12, 100, 0), Some(12));
+    }
+
+    #[test]
+    fn blit_edge_margin_slides_before_hard_edge() {
+        // Solid [0,7] at cap 8 — playhead near hi edge should request frame 8.
+        // Cannot put real ImageBitmaps in native tests; exercise armed helper.
+        let extent = Some((0u64, 7u64));
+        let m = SCRUB_CACHE_EDGE_MARGIN.min(3);
+        assert!(scrub_gap_fill_armed(true, 6, extent, m));
+        assert!(!scrub_gap_fill_armed(true, 3, extent, m));
+        assert_eq!(next_gap_outside_extent(6, 100, extent, 1), Some(8));
     }
 
     #[test]

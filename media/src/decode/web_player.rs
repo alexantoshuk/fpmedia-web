@@ -117,12 +117,24 @@ struct Shared {
 /// Why a frame is marked ready on the demo timeline strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadyFrameKind {
-    /// Exact frame in densify residency (blit + store marker).
+    /// Scrub store marker (coverage / gap geometry). May lack live blit.
+    Covered,
+    /// Live densify `ImageBitmap` (step-ready).
     Exact,
     /// In the play presentation / ahead queue (live `VideoFrame`).
     Ahead,
     /// In the step behind ring (live `VideoFrame` for Prev).
     Behind,
+}
+
+/// Paint order for overlapping ticks (Covered under Exact).
+fn ready_kind_paint_order(kind: ReadyFrameKind) -> u8 {
+    match kind {
+        ReadyFrameKind::Covered => 0,
+        ReadyFrameKind::Exact => 1,
+        ReadyFrameKind::Behind => 2,
+        ReadyFrameKind::Ahead => 3,
+    }
 }
 
 /// One ready frame for UI timeline marks.
@@ -716,14 +728,22 @@ impl WebPlayer {
             .collect();
         let (cache_chunks, cache_frames, cache_cap, cache_no_gaps, ready_frames, win_from, win_to) = {
             let cache = self.shared.scrub_chunks.borrow();
+            let blit = self.shared.scrub_blit.borrow();
             let extent = cache.extent();
             let mut ready = Vec::new();
-            // While playing, skip Exact densify marks — hundreds of Leptos ticks
-            // rebuilt every sync_ui (~100ms) starved present. Ahead/behind only.
+            // While playing, skip densify marks — hundreds of Leptos ticks rebuilt
+            // every sync_ui (~100ms) starved present. Ahead/behind only.
+            // Diagnostic strip: dim Covered = markers; bright Exact = live blit.
             let scrub_marks = self.shared.fill_mode.get() == CacheFillMode::Scrub
                 && !self.shared.player.borrow().state().playing;
             if scrub_marks {
                 for id in cache.cached_frame_ids() {
+                    ready.push(ReadyFrameMark {
+                        frame: id,
+                        kind: ReadyFrameKind::Covered,
+                    });
+                }
+                for id in blit.cached_frame_ids() {
                     ready.push(ReadyFrameMark {
                         frame: id,
                         kind: ReadyFrameKind::Exact,
@@ -746,7 +766,11 @@ impl WebPlayer {
                     });
                 }
             }
-            ready.sort_by_key(|m| m.frame);
+            ready.sort_by(|a, b| {
+                a.frame.cmp(&b.frame).then_with(|| {
+                    ready_kind_paint_order(a.kind).cmp(&ready_kind_paint_order(b.kind))
+                })
+            });
             (
                 cache.chunk_count(),
                 cache.frame_count(),
@@ -976,6 +1000,8 @@ impl WebPlayer {
         if next >= self.state().frame_count {
             return Err(MediaError::FrameOutOfRange(next, self.state().frame_count));
         }
+        // Bias densify along key-repeat / hold (predictive gap pick).
+        self.note_scrub_direction(next);
         // Live ahead VF (play prefetch / prior Next).
         if let Some(video) = self.take_presentation_front(next) {
             self.install_displayed(next, video)?;
@@ -998,20 +1024,10 @@ impl WebPlayer {
             self.arm_scrub_densify_after_step(next);
             return Ok(());
         }
-        // Warm sequential decode — do **not** invalidate after (kept ring + held).
-        let epoch = self.begin_op();
-        self.abort_scrub_fill(true);
-        self.shared.hold_densify_for_exact.set(true);
-        self.aim_scrub_cache(next);
-        let result = self.goto_frame(next, epoch).await;
-        self.shared.hold_densify_for_exact.set(false);
-        if !self.is_current(epoch) {
-            return Err(MediaError::Cancelled);
-        }
-        result?;
-        self.snap_media_clock_to_playhead();
-        self.arm_scrub_densify_after_step(self.state().frame);
-        Ok(())
+        // Blit miss: warm sequential `decode_frame` + ingest — do **not** abort
+        // densify / latch exact-hold (that starved blit refill on ←/→ hold).
+        // mediabunny: samples() / mediaSamplesInRange keep the range pump.
+        self.step_soft_goto(next, false).await
     }
 
     pub async fn previous_frame(&self) -> Result<(), MediaError> {
@@ -1021,6 +1037,7 @@ impl WebPlayer {
             return Err(MediaError::FrameOutOfRange(0, self.state().frame_count));
         }
         let prev = cur - 1;
+        self.note_scrub_direction(prev);
         // Live behind VF — no key→N.
         if let Some(video) = self.take_step_behind(prev) {
             if let Some(displayed) = self.shared.displayed.borrow_mut().take() {
@@ -1044,13 +1061,23 @@ impl WebPlayer {
             self.arm_scrub_densify_after_step(prev);
             return Ok(());
         }
-        // Miss: one key→prev cascade; interim parks near-target VF into behind ring.
+        // Miss: soft decode; `goto_frame_fill_behind` parks near-target VF for Prev.
+        // mediabunny: mediaSamplesAtTimestamps restarts from key on rewind.
+        self.step_soft_goto(prev, true).await
+    }
+
+    /// Next/Prev blit miss without settle-style densify abort.
+    ///
+    /// Keeps the scrub decoder filling blit ahead of aim while the main decoder
+    /// warms the stepped frame (`present_and_cache` re-ingest).
+    async fn step_soft_goto(&self, frame: FrameId, fill_behind: bool) -> Result<(), MediaError> {
+        self.aim_scrub_cache(frame);
         let epoch = self.begin_op();
-        self.abort_scrub_fill(true);
-        self.shared.hold_densify_for_exact.set(true);
-        self.aim_scrub_cache(prev);
-        let result = self.goto_frame_fill_behind(prev, epoch).await;
-        self.shared.hold_densify_for_exact.set(false);
+        let result = if fill_behind {
+            self.goto_frame_fill_behind(frame, epoch).await
+        } else {
+            self.goto_frame(frame, epoch).await
+        };
         if !self.is_current(epoch) {
             return Err(MediaError::Cancelled);
         }
@@ -2268,6 +2295,7 @@ fn ingest_scrub_bitmap_only(
     };
 
     let marker = ScrubChunk;
+    let mut inserted_new = false;
     {
         let Ok(mut store) = shared.scrub_chunks.try_borrow_mut() else {
             bitmap.close();
@@ -2275,7 +2303,12 @@ fn ingest_scrub_bitmap_only(
         };
         if replace {
             store.put_chunk(frame, marker);
-        } else if !store.insert_chunk(frame, marker) {
+        } else if store.has_frame(frame) {
+            // Marker already resident (common after Play wiped blit) — still
+            // refresh the ImageBitmap below.
+        } else if store.insert_chunk(frame, marker) {
+            inserted_new = true;
+        } else {
             bitmap.close();
             return false;
         }
@@ -2284,15 +2317,17 @@ fn ingest_scrub_bitmap_only(
     if let Ok(mut blit) = shared.scrub_blit.try_borrow_mut() {
         blit.set_playhead(shared.scrub_chunks.borrow().playhead());
         blit.put(frame, bitmap);
+        true
     } else {
         bitmap.close();
-        let _ = shared
-            .scrub_chunks
-            .try_borrow_mut()
-            .map(|mut s| s.remove(frame));
-        return false;
+        if inserted_new {
+            let _ = shared
+                .scrub_chunks
+                .try_borrow_mut()
+                .map(|mut s| s.remove(frame));
+        }
+        false
     }
-    true
 }
 
 fn ingest_scrub_frame_shared(
@@ -2337,6 +2372,15 @@ fn next_gap_target(shared: &Shared) -> Option<FrameId> {
         shared.fill_stalled_aim.set(None);
     }
     let dir = shared.scrub_dir.get();
+    // Play keeps markers and clears blit — ImageBitmap holes must win over
+    // marker `no_gaps`, or pause densify never re-warms the Exact strip.
+    if let Some(blit_gap) = shared
+        .scrub_blit
+        .borrow()
+        .next_gap_frame(playhead, last, dir)
+    {
+        return Some(blit_gap);
+    }
     let cache = shared.scrub_chunks.borrow();
     if cache.gaps_saturated(playhead, last, dir) || !cache.gap_fill_armed(playhead) {
         return None;
@@ -2375,13 +2419,12 @@ async fn fill_one_gap(
     {
         let index = shared.player.borrow().track().index().clone();
         let ids = index.gop_frame_ids(key).unwrap_or_default();
-        // Only skip when this GOP is fully resident — do not bail just because
-        // `target` exists (holes elsewhere in the GOP must still densify).
-        // If the gap `target` is still missing, the complete check is stale /
-        // inconsistent — fall through and decode.
+        // Skip only when markers **and** live blit cover the GOP. Markers alone
+        // after Play's blit wipe must not count as done.
         let cache = shared.scrub_chunks.borrow();
-        if !ids.is_empty() && cache.gop_complete(&ids) && cache.has_frame(target) {
-            // Gap already closed — count as progress so idle_passes does not trip.
+        let blit = shared.scrub_blit.borrow();
+        let blit_complete = !ids.is_empty() && ids.iter().all(|id| blit.contains(*id));
+        if !ids.is_empty() && cache.gop_complete(&ids) && cache.has_frame(target) && blit_complete {
             return Ok(true);
         }
     }
