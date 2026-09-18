@@ -1483,9 +1483,10 @@ impl WebPlayer {
 
         self.clear_presentation();
         self.clear_step_ring();
-        self.clear_scrub_store();
+        // Keep Covered + Exact across the loop seam — same clip, caches stay valid.
         self.present_and_cache(first.frame, first.video)?;
         self.touch_playhead(first.frame);
+        self.trim_exact_for_play();
         self.shared.player.borrow_mut().commit_frame(first.frame)?;
         *self.shared.presentation.borrow_mut() = buf;
         // Decoder is already warm past the primed start frames.
@@ -1541,10 +1542,12 @@ impl WebPlayer {
             self.clear_loop_prime();
             self.clear_presentation();
             self.clear_step_ring();
-            self.clear_scrub_store();
+            // Same clip — do not wipe Covered/Exact (was: strip vanished every loop).
             self.invalidate_decoder();
             self.goto_frame(0, epoch).await?;
+            self.touch_playhead(0);
             if self.is_playing() && self.is_current(epoch) {
+                self.trim_exact_for_play();
                 self.prime_presentation(LOOP_PRIME_FRAMES.saturating_sub(1), epoch)
                     .await?;
             }
@@ -1878,7 +1881,7 @@ impl WebPlayer {
         Ok(())
     }
 
-    /// Drop Exact scrub store + blit + thumbs (open teardown / loop restart).
+    /// Drop Covered + Exact + thumbs (open / close teardown only — **not** loop).
     fn clear_scrub_store(&self) {
         // Abort in-flight gap fill first so the fill task drops the decoder slot.
         let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
