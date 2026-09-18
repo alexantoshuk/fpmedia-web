@@ -38,7 +38,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - Audio decode/output lives in the **`webmedia` engine**, not inside `VideoRef`. UI hosts stay thin
   (volume/mute/transport). A future pure-**`<Audio>` / `AudioRef`** reuses the same demux + decode + clock
   without a video track or canvas.
-- **Play vs scrub residency (agreed):** Play stays mediabunny-light (tiny `VideoFrame` pool, densify off). Scrub densify critical path = **decode → `ImageBitmap` → canvas** (`mediabunny:` CanvasSink-style). `ScrubChunkStore` holds **resident markers** only (gap geometry). Demo strip: dim green = markers, bright green = live blit (`SCRUB_BLIT_LRU`). **Seek / settle** paint decode `VideoFrame`. **Next / Prev** prefer VF ring, else warm blit, else soft warm decode (densify keeps running). Resize/fullscreen keeps scrub trail; canvas buffer wipe → repaint from `displayed` (else warm blit).
+- **Play vs scrub residency (agreed):** Play stays mediabunny-light (tiny `VideoFrame` pool, densify off). Scrub densify critical path = **decode → `ImageBitmap` → canvas** (`mediabunny:` CanvasSink-style). `ScrubChunkStore` holds **resident markers** only (gap geometry). Demo strip: dim green = marker coverage, bright green = blit window (two CSS gradient overlays; kept on Play for markers). **Seek / settle** paint decode `VideoFrame`. **Next / Prev** prefer VF ring, else warm blit, else soft warm decode (densify keeps running). Resize/fullscreen keeps scrub trail; canvas buffer wipe → repaint from `displayed` (else warm blit).
 
 ---
 

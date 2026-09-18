@@ -197,34 +197,25 @@ body {
   flex: 1 1 auto;
 }
 
-.wm-ready-tick {
+.wm-ready-strip {
   position: absolute;
+  left: 0;
+  right: 0;
   top: 2px;
   bottom: 2px;
-  width: 2px;
-  margin-left: -1px;
-  border-radius: 1px;
-  opacity: 0.95;
+  pointer-events: none;
+  /* background-image set inline from coalesced cache runs */
+  background-repeat: no-repeat;
 }
 
-.wm-ready-tick.is-covered {
-  background: #34d399;
+.wm-ready-strip.is-covered {
   opacity: 0.35;
   z-index: 0;
 }
 
-.wm-ready-tick.is-exact {
-  background: #34d399;
+.wm-ready-strip.is-exact {
   opacity: 0.95;
   z-index: 1;
-}
-
-.wm-ready-tick.is-ahead {
-  background: #60a5fa;
-}
-
-.wm-ready-tick.is-behind {
-  background: #a78bfa;
 }
 
 .wm-buffer-meters {

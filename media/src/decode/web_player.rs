@@ -20,7 +20,9 @@ use crate::decode::scrub_encode::{EncodeCanvasSlot, ScrubChunk, draw_image_bitma
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
-use crate::types::{AudioMetadata, FrameId, GopProfile, ScrubPolicy, VideoMetadata};
+use crate::types::{
+    AudioMetadata, FrameId, GopProfile, ScrubPolicy, VideoMetadata, coalesce_frame_runs,
+};
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
 /// Keep small — each slot pins a `VideoFrame`; 16 + in-flight decode starved
@@ -120,27 +122,34 @@ pub enum ReadyFrameKind {
     Covered,
     /// Live densify `ImageBitmap` (step-ready).
     Exact,
-    /// In the play presentation / ahead queue (live `VideoFrame`).
-    Ahead,
-    /// In the step behind ring (live `VideoFrame` for Prev).
-    Behind,
 }
 
-/// Paint order for overlapping ticks (Covered under Exact).
+/// Paint order for overlapping strips (Covered under Exact).
 fn ready_kind_paint_order(kind: ReadyFrameKind) -> u8 {
     match kind {
         ReadyFrameKind::Covered => 0,
         ReadyFrameKind::Exact => 1,
-        ReadyFrameKind::Behind => 2,
-        ReadyFrameKind::Ahead => 3,
     }
 }
 
-/// One ready frame for UI timeline marks.
+/// One ready span for UI timeline marks (`frame`..=`end`, inclusive).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadyFrameMark {
+    /// Inclusive start (presentation frame).
     pub frame: FrameId,
+    /// Inclusive end (`end >= frame`). Single tick when equal to `frame`.
+    pub end: FrameId,
     pub kind: ReadyFrameKind,
+}
+
+impl ReadyFrameMark {
+    pub fn run(lo: FrameId, hi: FrameId, kind: ReadyFrameKind) -> Self {
+        Self {
+            frame: lo,
+            end: hi.max(lo),
+            kind,
+        }
+    }
 }
 
 /// Live decode / prefetch counters for the demo UI (and host apps).
@@ -734,61 +743,26 @@ impl WebPlayer {
     pub fn pipeline_stats(&self) -> PipelineStats {
         // Do not hold `presentation` across the dense-cache borrow — park/fill
         // may re-enter on VideoFrame drop and need the queue RefCell.
-        let (presentation_len, presentation_from, presentation_to, ahead) = {
+        let (presentation_len, presentation_from, presentation_to) = {
             let presentation = self.shared.presentation.borrow();
             (
                 presentation.len(),
                 presentation.front().map(|q| q.frame),
                 presentation.back().map(|q| q.frame),
-                presentation.iter().map(|q| q.frame).collect::<Vec<_>>(),
             )
         };
-        let behind: Vec<FrameId> = self
-            .shared
-            .step_behind
-            .borrow()
-            .iter()
-            .map(|q| q.frame)
-            .collect();
         let (cache_chunks, cache_frames, cache_cap, cache_no_gaps, ready_frames, win_from, win_to) = {
             let cache = self.shared.scrub_chunks.borrow();
             let blit = self.shared.scrub_blit.borrow();
             let extent = cache.extent();
             let mut ready = Vec::new();
-            // While playing, skip densify marks — hundreds of Leptos ticks rebuilt
-            // every sync_ui (~100ms) starved present. Ahead/behind only.
-            // Diagnostic strip: dim Covered = markers; bright Exact = live blit.
-            let scrub_marks = self.shared.fill_mode.get() == CacheFillMode::Scrub
-                && !self.shared.player.borrow().state().playing;
-            if scrub_marks {
-                for id in cache.cached_frame_ids() {
-                    ready.push(ReadyFrameMark {
-                        frame: id,
-                        kind: ReadyFrameKind::Covered,
-                    });
-                }
-                for id in blit.cached_frame_ids() {
-                    ready.push(ReadyFrameMark {
-                        frame: id,
-                        kind: ReadyFrameKind::Exact,
-                    });
-                }
+            // Solid strip runs only (markers + blit). Prefetch VF rings are meters,
+            // not painted on the scrubber (no ahead/behind ticks).
+            for (lo, hi) in coalesce_frame_runs(cache.cached_frame_ids()) {
+                ready.push(ReadyFrameMark::run(lo, hi, ReadyFrameKind::Covered));
             }
-            for frame in behind {
-                if !ready.iter().any(|m| m.frame == frame) {
-                    ready.push(ReadyFrameMark {
-                        frame,
-                        kind: ReadyFrameKind::Behind,
-                    });
-                }
-            }
-            for frame in ahead {
-                if !ready.iter().any(|m| m.frame == frame) {
-                    ready.push(ReadyFrameMark {
-                        frame,
-                        kind: ReadyFrameKind::Ahead,
-                    });
-                }
+            for (lo, hi) in coalesce_frame_runs(blit.cached_frame_ids()) {
+                ready.push(ReadyFrameMark::run(lo, hi, ReadyFrameKind::Exact));
             }
             ready.sort_by(|a, b| {
                 a.frame.cmp(&b.frame).then_with(|| {

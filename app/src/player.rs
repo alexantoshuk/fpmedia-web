@@ -481,6 +481,34 @@ pub fn DemoPlayer() -> impl IntoView {
 ///
 /// Scrub updates playhead immediately and decodes async without latching `busy`.
 /// Prev/Next/Seek/Play/Pause also drive `playhead` and commit via sync ops.
+///
+/// Build a hard-stop `linear-gradient` for coalesced cache runs (O(1) DOM).
+fn cache_strip_gradient(
+    marks: &[video::ReadyFrameMark],
+    kind: ReadyFrameKind,
+    max: f64,
+    color: &str,
+) -> String {
+    let max = max.max(1.0);
+    let mut stops = String::from("linear-gradient(90deg, transparent 0%");
+    let mut any = false;
+    for m in marks.iter().filter(|m| m.kind == kind) {
+        any = true;
+        let start = (m.frame as f64 / max) * 100.0;
+        let end = ((m.end.max(m.frame) as f64 + 1.0) / max) * 100.0;
+        let start = start.clamp(0.0, 100.0);
+        let end = end.clamp(0.0, 100.0).max(start);
+        stops.push_str(&format!(
+            ", transparent {start:.3}%, {color} {start:.3}%, {color} {end:.3}%, transparent {end:.3}%"
+        ));
+    }
+    if !any {
+        return "none".into();
+    }
+    stops.push_str(", transparent 100%)");
+    stops
+}
+
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
@@ -556,7 +584,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
             <div
                 class="wm-scrubber-ready"
                 aria-hidden="true"
-                title="Ready: dim green=markers, bright green=blit (step-ready), blue=ahead, violet=behind"
+                title="Cache strips: dim=markers (kept on Play), bright=blit ImageBitmap"
             >
                 {move || {
                     let marks = video
@@ -565,25 +593,18 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                         .map(|s| s.ready_frames)
                         .unwrap_or_default();
                     let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
-                    marks
-                        .into_iter()
-                        .map(|m| {
-                            let pct = (m.frame as f64 / max) * 100.0;
-                            let class = match m.kind {
-                                ReadyFrameKind::Covered => "wm-ready-tick is-covered",
-                                ReadyFrameKind::Exact => "wm-ready-tick is-exact",
-                                ReadyFrameKind::Ahead => "wm-ready-tick is-ahead",
-                                ReadyFrameKind::Behind => "wm-ready-tick is-behind",
-                            };
-                            view! {
-                                <span
-                                    class=class
-                                    style:left=format!("{pct:.3}%")
-                                    title=format!("frame {}", m.frame)
-                                />
-                            }
-                        })
-                        .collect_view()
+                    let covered = cache_strip_gradient(&marks, ReadyFrameKind::Covered, max, "#34d399");
+                    let exact = cache_strip_gradient(&marks, ReadyFrameKind::Exact, max, "#34d399");
+                    view! {
+                        <div
+                            class="wm-ready-strip is-covered"
+                            style:background-image=covered
+                        />
+                        <div
+                            class="wm-ready-strip is-exact"
+                            style:background-image=exact
+                        />
+                    }
                 }}
             </div>
         </div>

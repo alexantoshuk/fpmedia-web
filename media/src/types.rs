@@ -25,6 +25,30 @@ pub const MAX_SCRUB_CACHE_FRAMES: usize = 512;
 /// Extra frames beyond extent edge when gap-fill re-arms ([`crate::decode::frame_cache::ScrubChunkStore`] no_gaps).
 pub const SCRUB_CACHE_EDGE_MARGIN: u64 = 10;
 
+/// Merge sorted unique frame ids into inclusive `[lo, hi]` runs.
+///
+/// Used by the demo ready strip so Play can show densify coverage without
+/// one DOM node per frame (was: skip marks while playing → strip vanished).
+pub fn coalesce_frame_runs(ids: impl IntoIterator<Item = FrameId>) -> Vec<(FrameId, FrameId)> {
+    let mut out = Vec::new();
+    let mut iter = ids.into_iter();
+    let Some(mut lo) = iter.next() else {
+        return out;
+    };
+    let mut hi = lo;
+    for id in iter {
+        if id == hi.saturating_add(1) {
+            hi = id;
+        } else {
+            out.push((lo, hi));
+            lo = id;
+            hi = id;
+        }
+    }
+    out.push((lo, hi));
+    out
+}
+
 /// Interim scrub canvas frame while `target` is not yet exact-cached.
 ///
 /// Prefer `cached` when it is at least as close as `key` (tie → cache, already
@@ -327,6 +351,16 @@ mod tests {
         assert_eq!(
             meta.scrub_cache_frame_budget(),
             scrub_cache_frame_budget(10_000, 1920, 1080, DEFAULT_SCRUB_CACHE_MIB)
+        );
+    }
+
+    #[test]
+    fn coalesce_frame_runs_merges_contiguous() {
+        assert!(coalesce_frame_runs([] as [FrameId; 0]).is_empty());
+        assert_eq!(coalesce_frame_runs([3u64]), vec![(3, 3)]);
+        assert_eq!(
+            coalesce_frame_runs([0u64, 1, 2, 5, 6, 10]),
+            vec![(0, 2), (5, 6), (10, 10)]
         );
     }
 
