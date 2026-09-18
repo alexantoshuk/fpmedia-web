@@ -22,6 +22,7 @@ use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
 use crate::types::{
     AudioMetadata, FrameId, GopProfile, ScrubPolicy, VideoMetadata, coalesce_frame_runs,
+    scrub_blit_frame_budget,
 };
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
@@ -280,7 +281,6 @@ impl WebPlayer {
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
         let ctx = canvas_2d(&canvas)?;
-        let policy = meta.scrub_policy();
         let max_frames = meta.scrub_cache_frame_budget();
         let audio = match audio_track {
             Some(t) => match AudioOutput::create(t).await {
@@ -312,7 +312,7 @@ impl WebPlayer {
             displayed: RefCell::new(None),
             step_behind: RefCell::new(VecDeque::new()),
             scrub_chunks: RefCell::new(ScrubChunkStore::new(max_frames)),
-            scrub_blit: RefCell::new(ScrubBlitLru::new(policy.blit_lru)),
+            scrub_blit: RefCell::new(ScrubBlitLru::new(1)),
             encode_canvas: EncodeCanvasSlot::default(),
             thumb_cache: RefCell::new(ThumbCache::new(DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS)),
             scrub_decoder: RefCell::new(None),
@@ -337,6 +337,7 @@ impl WebPlayer {
             clock: RefCell::new(MediaClock::new()),
             wall_origin: Cell::new(None),
         });
+        apply_clip_budgets(&shared);
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
         Ok(Self {
@@ -472,6 +473,8 @@ impl WebPlayer {
         let meta = self.metadata();
         let before = (self.shared.canvas.width(), self.shared.canvas.height());
         configure_canvas_for_video(&self.shared.canvas, meta.width, meta.height)?;
+        // Recompute blit frame cap from new CSS×DPR buffer (same MiB wallet).
+        apply_clip_budgets(&self.shared);
         let after = (self.shared.canvas.width(), self.shared.canvas.height());
         if before != after {
             self.repaint_after_buffer_resize()?;
@@ -2273,9 +2276,12 @@ fn apply_clip_budgets(shared: &Shared) {
     let policy = meta.scrub_policy();
     let max_frames = meta.scrub_cache_frame_budget();
     shared.scrub_chunks.borrow_mut().set_max_frames(max_frames);
-    // Blit cap from profile policy — do not size to full marker budget
-    // (hundreds of 1080p ImageBitmaps OOM GPU / stall Play).
-    shared.scrub_blit.borrow_mut().set_max(policy.blit_lru);
+    // Aim-centered blit: MiB wallet → frame count from canvas buffer (RGBA).
+    // `mediabunny:` CanvasSink width/height/fit + poolSize (sized, bounded VRAM).
+    let buf_w = shared.canvas.width().max(1);
+    let buf_h = shared.canvas.height().max(1);
+    let blit_cap = scrub_blit_frame_budget(buf_w, buf_h, policy.blit_mib);
+    shared.scrub_blit.borrow_mut().set_max(blit_cap);
 }
 
 /// Densify / scrub ingest: VF → sync `ImageBitmap` + resident marker.

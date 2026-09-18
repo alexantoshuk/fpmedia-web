@@ -4,7 +4,7 @@
 
 ## In progress
 
-- Scrub policy by profile shipped: ShortFixed = max GOP ≤ 30 (scene-cut spread OK); `ScrubPolicy` soft-drag + exact-settle for Short/AllIntra; Exact-drag for Long; knobs on policy not globals. Re-probe ShotGrid with `WEBMEDIA_PERF_CLIP=…SHOTGRID.mp4` + `e2e/perf.scrub.cached.spec.ts` (expect status `GOP 30`, drag blit tracking).
+- (idle)
 
 ---
 
@@ -12,16 +12,15 @@
 
 ### Play / scrub (short path)
 
-1. Attribute ShotGrid Next/Prev warm-window lag (~160–200 ms) after soft-drag policy — blit vs step path.
-2. If blit window (96) still feels cold mid-timeline on Long — CSS-sized densify bitmaps or aim-centered blit budget (not full-clip 1080p RGBA); decide per profile after re-probe.
-3. Optional: trim residual Play underrun (~0.96→1.0) at GOP boundaries if it shows up on longer clips.
-4. Probes: `e2e/perf.scrub.cached.spec.ts` (+ ShotGrid via `WEBMEDIA_PERF_CLIP`); smoke; DRYP play.
-5. Optional: contiguous densify coverage as timeline buffer bar.
+1. Optional: residual Play underrun (~0.96→1.0) at GOP boundaries on longer clips.
+2. Optional: contiguous densify coverage as a dedicated timeline buffer bar (strip already Covered+Exact gradients).
+3. Smoke + DRYP play spot-check after further scrub changes.
+4. Spot-check Wing It mid-timeline Next/Prev after blit MiB (expect wider Exact window windowed; narrower fullscreen).
 
 ### Media engine
 
 - Re-save scrub baselines after deep-seek fix (`npm run e2e:baseline:save` then compare).
-- Spot-check A/V sync on long clips (Wing It / real AAC) after seek+play — mute/flush + volume UI shipped; clock already audio-driven when a track exists.
+- Spot-check A/V sync on long clips (Wing It / real AAC) after seek+play.
 - Pure audio path later: `AudioPlayer` / `AudioRef` (no canvas) reusing demux + decode + clock.
 - HEVC bitstream key verify (AVC IDR + Recovery Point SEI done).
 - Progressive-open follow-ups: coalesce adjacent sample ranges; optional background / lazy AVC sync-verify for huge files if open latency matters.

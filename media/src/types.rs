@@ -12,9 +12,19 @@ pub const SHORT_GOP_MAX_LEN: u32 = 30;
 /// Frame count = budget / (w×h×1.5), clamped by [`MAX_SCRUB_CACHE_FRAMES`].
 /// Prefer overriding via [`ScrubPolicy::scrub_cache_mib`], not this global alone.
 pub const DEFAULT_SCRUB_CACHE_MIB: usize = 1280;
-/// Default live scrub `ImageBitmap` cap ([`ScrubPolicy::blit_lru`]).
-/// Do **not** size to full scrub budget (GPU OOM / Play stall).
+/// Reference live blit count at 1280×720 for Short ([`DEFAULT_SCRUB_BLIT_MIB_SHORT`]).
+/// Prefer [`scrub_blit_frame_budget`] from policy MiB × canvas buffer — do not raise this alone.
 pub const SCRUB_BLIT_LRU: usize = 96;
+/// Short / All-Intra GPU MiB for live densify `ImageBitmap`s (~96 frames at 1280×720 RGBA).
+pub const DEFAULT_SCRUB_BLIT_MIB_SHORT: usize = 338;
+/// Long-GOP GPU MiB for live densify bitmaps (wider mid-timeline window than Short).
+pub const DEFAULT_SCRUB_BLIT_MIB_LONG: usize = 512;
+/// Assumed bytes per pixel for a live densify `ImageBitmap` (RGBA GPU texture).
+pub const BLIT_BYTES_PER_PIXEL: u64 = 4;
+/// Floor so tiny viewports / tiny budgets still keep a usable blit ring.
+pub const MIN_SCRUB_BLIT_FRAMES: usize = 24;
+/// Ceiling so tiny CSS buffers cannot explode GPU residency.
+pub const MAX_SCRUB_BLIT_FRAMES: usize = 192;
 /// Assumed bytes per pixel for a decoded frame (YUV 4:2:0 / NV12 planes).
 pub const DECODED_BYTES_PER_PIXEL_NUM: u64 = 3;
 pub const DECODED_BYTES_PER_PIXEL_DEN: u64 = 2;
@@ -135,6 +145,23 @@ pub fn scrub_cache_frame_budget(
         .max(1)
 }
 
+/// Live densify `ImageBitmap` cap from a GPU MiB budget and canvas buffer size.
+///
+/// Aim-centered residency: smaller CSS×DPR buffers → more frames in the same
+/// MiB; fullscreen → fewer. Tune [`ScrubPolicy::blit_mib`] per profile — do not
+/// raise [`SCRUB_BLIT_LRU`] alone. `mediabunny:` CanvasSink `width`/`height`/`fit`
+/// + `poolSize` (sized canvases, bounded VRAM).
+pub fn scrub_blit_frame_budget(width: u32, height: u32, max_mib: usize) -> usize {
+    let w = width.max(1) as u64;
+    let h = height.max(1) as u64;
+    let per = (w * h * BLIT_BYTES_PER_PIXEL).max(1);
+    let budget_bytes = (max_mib as u64).saturating_mul(1024 * 1024);
+    let by_bytes = (budget_bytes / per) as usize;
+    by_bytes
+        .clamp(MIN_SCRUB_BLIT_FRAMES, MAX_SCRUB_BLIT_FRAMES)
+        .max(1)
+}
+
 /// Keyframe spacing class used to pick scrub fill policy (not the byte budget).
 ///
 /// Derived from sync-sample spacing after open (and after AVC sync verify).
@@ -184,8 +211,8 @@ pub struct ScrubPolicy {
     pub drag: ScrubDragMode,
     /// Gap-fill densify (VF → ImageBitmap). Off for All-Intra.
     pub densify: bool,
-    /// Live `ImageBitmap` window cap.
-    pub blit_lru: usize,
+    /// GPU MiB budget for live densify `ImageBitmap`s (→ [`scrub_blit_frame_budget`]).
+    pub blit_mib: usize,
     /// Dense marker store MiB budget (decoded-frame estimate).
     pub scrub_cache_mib: usize,
 }
@@ -196,19 +223,19 @@ impl ScrubPolicy {
             GopProfile::AllIntra => Self {
                 drag: ScrubDragMode::Soft,
                 densify: false,
-                blit_lru: SCRUB_BLIT_LRU,
+                blit_mib: DEFAULT_SCRUB_BLIT_MIB_SHORT,
                 scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
             },
             GopProfile::ShortFixed { .. } => Self {
                 drag: ScrubDragMode::Soft,
                 densify: true,
-                blit_lru: SCRUB_BLIT_LRU,
+                blit_mib: DEFAULT_SCRUB_BLIT_MIB_SHORT,
                 scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
             },
             GopProfile::Long { .. } => Self {
                 drag: ScrubDragMode::Exact,
                 densify: true,
-                blit_lru: SCRUB_BLIT_LRU,
+                blit_mib: DEFAULT_SCRUB_BLIT_MIB_LONG,
                 scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
             },
         }
@@ -411,7 +438,7 @@ mod tests {
         let short = ScrubPolicy::from_gop_profile(GopProfile::ShortFixed { len: 30 });
         assert!(short.soft_drag());
         assert!(short.densify);
-        assert_eq!(short.blit_lru, SCRUB_BLIT_LRU);
+        assert_eq!(short.blit_mib, DEFAULT_SCRUB_BLIT_MIB_SHORT);
 
         let long = ScrubPolicy::from_gop_profile(GopProfile::Long {
             median: 120,
@@ -419,10 +446,32 @@ mod tests {
         });
         assert_eq!(long.drag, ScrubDragMode::Exact);
         assert!(long.densify);
+        assert_eq!(long.blit_mib, DEFAULT_SCRUB_BLIT_MIB_LONG);
 
         let intra = ScrubPolicy::from_gop_profile(GopProfile::AllIntra);
         assert!(intra.soft_drag());
         assert!(!intra.densify);
+        assert_eq!(intra.blit_mib, DEFAULT_SCRUB_BLIT_MIB_SHORT);
+    }
+
+    #[test]
+    fn scrub_blit_budget_scales_with_buffer() {
+        // Short MiB ≈ SCRUB_BLIT_LRU frames at 1280×720 RGBA.
+        assert_eq!(
+            scrub_blit_frame_budget(1280, 720, DEFAULT_SCRUB_BLIT_MIB_SHORT),
+            SCRUB_BLIT_LRU
+        );
+        // Larger buffer → fewer frames (same MiB).
+        let at_1080 = scrub_blit_frame_budget(1920, 1080, DEFAULT_SCRUB_BLIT_MIB_SHORT);
+        assert!(at_1080 < SCRUB_BLIT_LRU);
+        assert!(at_1080 >= MIN_SCRUB_BLIT_FRAMES);
+        // Long wallet > Short at same size.
+        assert!(scrub_blit_frame_budget(1920, 1080, DEFAULT_SCRUB_BLIT_MIB_LONG) > at_1080);
+        // Tiny CSS buffer clamps to MAX.
+        assert_eq!(
+            scrub_blit_frame_budget(160, 90, DEFAULT_SCRUB_BLIT_MIB_LONG),
+            MAX_SCRUB_BLIT_FRAMES
+        );
     }
 }
 
