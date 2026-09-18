@@ -32,8 +32,49 @@ pub const DECODED_BYTES_PER_PIXEL_DEN: u64 = 2;
 pub const MIN_SCRUB_CACHE_FRAMES: usize = 8;
 /// Ceiling so tiny coded sizes cannot explode residency (decoder pool / WASM).
 pub const MAX_SCRUB_CACHE_FRAMES: usize = 512;
-/// Extra frames beyond extent edge when gap-fill re-arms ([`crate::decode::frame_cache::ScrubChunkStore`] no_gaps).
-pub const SCRUB_CACHE_EDGE_MARGIN: u64 = 10;
+/// Floor for [`ScrubPolicy::margin_left`] (timeline earlier / lower FrameId).
+pub const EDGE_MARGIN_LEFT_MIN: u64 = 8;
+/// Ceiling for [`ScrubPolicy::margin_left`] — keep below ~¼ typical blit window.
+pub const EDGE_MARGIN_LEFT_MAX: u64 = 24;
+/// Floor for [`ScrubPolicy::margin_right`] (timeline later / higher FrameId).
+pub const EDGE_MARGIN_RIGHT_MIN: u64 = 4;
+
+/// Asymmetric edge margins from a GOP length hint (Short `len` / Long `median`).
+///
+/// Left > right: densify fills a GOP from its keyframe forward, so expanding
+/// **behind** needs more lead time (near-edge frames of the prev GOP arrive
+/// last). Local invention (mediabunny: no equivalent).
+pub fn scrub_edge_margins(gop_hint: u32) -> (u64, u64) {
+    let left = u64::from(gop_hint).clamp(EDGE_MARGIN_LEFT_MIN, EDGE_MARGIN_LEFT_MAX);
+    let right = (left / 2).max(EDGE_MARGIN_RIGHT_MIN);
+    (left, right)
+}
+
+/// Gap-fill arming once the dense window is contiguous **and at capacity**.
+///
+/// - Holes (`!no_gaps`) → always armed (caller).
+/// - Under budget → always armed (caller).
+/// - Contiguous at capacity → armed when `playhead` is within `margin_left` of
+///   extent start (timeline left / earlier), within `margin_right` of extent end
+///   (right / later), or outside `[start, end]` entirely.
+///
+/// Left margin is typically larger: GOP densify fills key→forward, so expanding
+/// behind needs more lead time. Local invention (mediabunny: no equivalent).
+pub fn scrub_gap_fill_armed(
+    no_gaps: bool,
+    playhead: FrameId,
+    extent: Option<(FrameId, FrameId)>,
+    margin_left: u64,
+    margin_right: u64,
+) -> bool {
+    if !no_gaps {
+        return true;
+    }
+    let Some((start, end)) = extent else {
+        return true;
+    };
+    playhead < start.saturating_add(margin_left) || playhead > end.saturating_sub(margin_right)
+}
 
 /// Merge sorted unique frame ids into inclusive `[lo, hi]` runs.
 ///
@@ -215,28 +256,43 @@ pub struct ScrubPolicy {
     pub blit_mib: usize,
     /// Dense marker store MiB budget (decoded-frame estimate).
     pub scrub_cache_mib: usize,
+    /// Re-arm densify within this many frames of extent **start** (earlier / left).
+    pub margin_left: u64,
+    /// Re-arm densify within this many frames of extent **end** (later / right).
+    pub margin_right: u64,
 }
 
 impl ScrubPolicy {
     pub fn from_gop_profile(profile: GopProfile) -> Self {
+        let (margin_left, margin_right) = match profile {
+            GopProfile::AllIntra => scrub_edge_margins(1),
+            GopProfile::ShortFixed { len } => scrub_edge_margins(len),
+            GopProfile::Long { median, .. } => scrub_edge_margins(median),
+        };
         match profile {
             GopProfile::AllIntra => Self {
                 drag: ScrubDragMode::Soft,
                 densify: false,
                 blit_mib: DEFAULT_SCRUB_BLIT_MIB_SHORT,
                 scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
+                margin_left,
+                margin_right,
             },
             GopProfile::ShortFixed { .. } => Self {
                 drag: ScrubDragMode::Soft,
                 densify: true,
                 blit_mib: DEFAULT_SCRUB_BLIT_MIB_SHORT,
                 scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
+                margin_left,
+                margin_right,
             },
             GopProfile::Long { .. } => Self {
                 drag: ScrubDragMode::Exact,
                 densify: true,
                 blit_mib: DEFAULT_SCRUB_BLIT_MIB_LONG,
                 scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
+                margin_left,
+                margin_right,
             },
         }
     }
@@ -439,6 +495,12 @@ mod tests {
         assert!(short.soft_drag());
         assert!(short.densify);
         assert_eq!(short.blit_mib, DEFAULT_SCRUB_BLIT_MIB_SHORT);
+        assert_eq!(short.margin_left, EDGE_MARGIN_LEFT_MAX);
+        assert_eq!(short.margin_right, EDGE_MARGIN_LEFT_MAX / 2);
+
+        let short12 = ScrubPolicy::from_gop_profile(GopProfile::ShortFixed { len: 12 });
+        assert_eq!(short12.margin_left, 12);
+        assert_eq!(short12.margin_right, 6);
 
         let long = ScrubPolicy::from_gop_profile(GopProfile::Long {
             median: 120,
@@ -447,11 +509,69 @@ mod tests {
         assert_eq!(long.drag, ScrubDragMode::Exact);
         assert!(long.densify);
         assert_eq!(long.blit_mib, DEFAULT_SCRUB_BLIT_MIB_LONG);
+        assert_eq!(long.margin_left, EDGE_MARGIN_LEFT_MAX);
+        assert!(long.margin_left > long.margin_right);
 
         let intra = ScrubPolicy::from_gop_profile(GopProfile::AllIntra);
         assert!(intra.soft_drag());
         assert!(!intra.densify);
         assert_eq!(intra.blit_mib, DEFAULT_SCRUB_BLIT_MIB_SHORT);
+        assert_eq!(intra.margin_left, EDGE_MARGIN_LEFT_MIN);
+        assert_eq!(intra.margin_right, EDGE_MARGIN_RIGHT_MIN);
+    }
+
+    #[test]
+    fn scrub_edge_margins_asymmetric_and_clamped() {
+        assert_eq!(
+            scrub_edge_margins(1),
+            (EDGE_MARGIN_LEFT_MIN, EDGE_MARGIN_RIGHT_MIN)
+        );
+        assert_eq!(scrub_edge_margins(12), (12, 6));
+        assert_eq!(
+            scrub_edge_margins(250),
+            (EDGE_MARGIN_LEFT_MAX, EDGE_MARGIN_LEFT_MAX / 2)
+        );
+        let (l, r) = scrub_edge_margins(30);
+        assert!(l > r);
+        assert!(l <= EDGE_MARGIN_LEFT_MAX);
+        assert!(r >= EDGE_MARGIN_RIGHT_MIN);
+    }
+
+    #[test]
+    fn scrub_gap_fill_armed_while_holes() {
+        assert!(scrub_gap_fill_armed(false, 50, Some((40, 60)), 16, 8));
+    }
+
+    #[test]
+    fn scrub_gap_fill_armed_near_edges_when_contiguous() {
+        let extent = Some((100, 200));
+        assert!(!scrub_gap_fill_armed(true, 150, extent, 16, 16));
+        assert!(scrub_gap_fill_armed(true, 110, extent, 16, 16));
+        assert!(scrub_gap_fill_armed(true, 190, extent, 16, 16));
+        assert!(scrub_gap_fill_armed(true, 50, extent, 16, 16));
+        assert!(scrub_gap_fill_armed(true, 250, extent, 16, 16));
+    }
+
+    #[test]
+    fn scrub_gap_fill_armed_asymmetric_left_wider() {
+        let extent = Some((100, 200));
+        let left = 20;
+        let right = 8;
+        assert!(!scrub_gap_fill_armed(true, 150, extent, left, right));
+        assert!(scrub_gap_fill_armed(true, 115, extent, left, right));
+        assert!(!scrub_gap_fill_armed(true, 185, extent, left, right));
+        assert!(scrub_gap_fill_armed(true, 195, extent, left, right));
+    }
+
+    #[test]
+    fn scrub_gap_fill_armed_right_edge_slides_before_hard_edge() {
+        let extent = Some((0u64, 40u64));
+        // Near right edge within margin_right=3 → armed.
+        assert!(scrub_gap_fill_armed(true, 38, extent, 8, 3));
+        // Mid-window beyond both margins → idle.
+        assert!(!scrub_gap_fill_armed(true, 20, extent, 8, 3));
+        // Near left within margin_left=8 → armed.
+        assert!(scrub_gap_fill_armed(true, 5, extent, 8, 3));
     }
 
     #[test]

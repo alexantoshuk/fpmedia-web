@@ -2438,17 +2438,22 @@ fn next_gap_target(shared: &Shared) -> Option<FrameId> {
         shared.fill_stalled_aim.set(None);
     }
     let dir = shared.scrub_dir.get();
+    let policy = shared.player.borrow().metadata().scrub_policy();
+    let (margin_left, margin_right) = (policy.margin_left, policy.margin_right);
     // Play keeps markers and clears blit — ImageBitmap holes must win over
     // marker `no_gaps`, or pause densify never re-warms the Exact strip.
-    if let Some(blit_gap) = shared
-        .scrub_blit
-        .borrow()
-        .next_gap_frame(playhead, last, dir)
+    if let Some(blit_gap) =
+        shared
+            .scrub_blit
+            .borrow()
+            .next_gap_frame(playhead, last, dir, margin_left, margin_right)
     {
         return Some(blit_gap);
     }
     let cache = shared.scrub_chunks.borrow();
-    if cache.gaps_saturated(playhead, last, dir) || !cache.gap_fill_armed(playhead) {
+    if cache.gaps_saturated(playhead, last, dir)
+        || !cache.gap_fill_armed(playhead, margin_left, margin_right)
+    {
         return None;
     }
     cache.next_gap_frame(playhead, last, dir)

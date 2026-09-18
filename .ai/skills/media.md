@@ -27,7 +27,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Next/Prev hold slow / key→N every step | Step VF ring + warm blit | ring first; else densify ImageBitmap |
 | Next/Prev hold: smooth then ~3s freeze (green strip) | Step soft goto + Exact=blit | miss must not abort densify; green = live blit only |
 | Pause densify dead after Play (green empty) | blit gaps in `next_gap_target` | Play clears blit, keeps markers — refill ImageBitmap |
-| Blit window slides only at hard edge | `ScrubBlitLru::next_gap_frame` + edge margin | same `SCRUB_CACHE_EDGE_MARGIN` (10) as markers |
+| Blit window slides only at hard edge | `ScrubBlitLru::next_gap_frame` + edge margins | `ScrubPolicy::margin_left`/`margin_right` (same pair as Covered) |
 | Settle quality pop after drag | present path | canvas = blit or decode VF only — never a soft still |
 | Play jank / fullscreen scrub drag lag | densify path | blit LRU present; densify off on Play |
 | Dense stuck empty after Pause | `pause` densify kick + hold latch | clear `hold_densify_for_exact`; deferred kick if `scrub_busy` race |
@@ -154,7 +154,8 @@ Densify `on_frame`: VF → `transferToImageBitmap` + marker. `mediabunny:` Canva
 | `SCRUB_BLIT_LRU` | 96 | Reference blit count at 1280×720 for Short; real cap = [`scrub_blit_frame_budget`] from `blit_mib` × CSS×DPR buffer — tune MiB per profile, not this alone |
 | `DEFAULT_SCRUB_BLIT_MIB_SHORT` / `_LONG` | 338 / 512 | GPU MiB wallets on [`ScrubPolicy::blit_mib`] |
 | `MIN_SCRUB_BLIT_FRAMES` / `MAX_SCRUB_BLIT_FRAMES` | 24 / 192 | Floor / ceiling after MiB→frames |
-| `SCRUB_CACHE_EDGE_MARGIN` | 10 | After `no_gaps`, re-arm fill only within N of either cache edge |
+| `EDGE_MARGIN_LEFT_MIN` / `_MAX` / `RIGHT_MIN` | 8 / 24 / 4 | Clamp for [`scrub_edge_margins`] → `ScrubPolicy::margin_left`/`right` |
+| `ScrubPolicy::margin_left` / `margin_right` | from GOP hint | After `no_gaps` at capacity: re-arm near extent start (left, earlier) / end (right, later); left > right |
 
 **Byte → frames:** `scrub_cache_frame_budget(count, w, h, mib)` ≈ `mib×1024² / (w×h×1.5)` (YUV 4:2:0), then clamp to `[MIN, MAX]` and `frame_count`. MiB from `ScrubPolicy::scrub_cache_mib` (via `VideoMetadata::scrub_cache_frame_budget`). Short clips that fit stay fully resident. Live blit: `scrub_blit_frame_budget(buf_w, buf_h, blit_mib)` ≈ `mib×1024² / (w×h×4)` (RGBA), clamp `[MIN_SCRUB_BLIT, MAX_SCRUB_BLIT]`; recompute on open / fill / `relayout`.
 
@@ -186,7 +187,7 @@ Finish in-flight GOP on aim move, settle hold, salvage, eviction — unchanged. 
 | `ShortFixed { len }` | max GOP ≤ 30 (scene-cut spread OK) | on | **soft** |
 | `Long { median, max }` | max GOP > 30 | on | exact |
 
-**`ScrubPolicy`** (`VideoMetadata::scrub_policy` ← `GopProfile`): `drag` / `densify` / `blit_mib` / `scrub_cache_mib`. Soft-drag = blit/preview only during drag; exact VF on settle. Exact-drag (Long) may `goto_frame` while moving. Live blit frame cap = `scrub_blit_frame_budget(canvas_w, canvas_h, blit_mib)` (RGBA) — smaller viewport → more frames, fullscreen → fewer; Long MiB > Short. Local invention (mediabunny: CanvasSink sized canvases + `poolSize`; no GOP-profile knobs).
+**`ScrubPolicy`** (`VideoMetadata::scrub_policy` ← `GopProfile`): `drag` / `densify` / `blit_mib` / `scrub_cache_mib` / `margin_left` / `margin_right`. Soft-drag = blit/preview only during drag; exact VF on settle. Exact-drag (Long) may `goto_frame` while moving. Live blit frame cap = `scrub_blit_frame_budget(canvas_w, canvas_h, blit_mib)` (RGBA) — smaller viewport → more frames, fullscreen → fewer; Long MiB > Short. Edge margins from `scrub_edge_margins(gop_hint)`: left = clamp(hint, 8, 24), right = max(4, left/2) — densify fills key→forward so expanding **left** needs more lead time. Same pair for Covered + Exact. Local invention (mediabunny: CanvasSink sized canvases + `poolSize`; no GOP-profile knobs).
 
 **All-Intra gotcha:** every frame is a sync, so a naïve `key_order` change must **not** hard-`recreate` the `VideoDecoder` (was: scrub felt uncached + inexact). Soft-clear when idle via `begin_key_cascade`. Do **not** run gap-fill densify — single-frame decode is enough; densify only wastes CPU. Filename may say “H265/4K” while demux picks an AVC 1080p track — trust `metadata`, not the name.
 
@@ -197,7 +198,7 @@ Finish in-flight GOP on aim move, settle hold, salvage, eviction — unchanged. 
 
 **One entry:** `WebPlayer::enter_scrub_cache_pipeline(focus)` for pause, scrub drag/hold/release, and post-seek/step: scrub mode → park presentation into densify markers + blit → aim at `focus` → `scrub_cache_fill_task` densifies the **GOP** of the next gap until budget-saturated. `play()` switches to Play mode and cancels scrub fill. **In-flight GOP densify is not cancelled when aim moves**. Abort densify only on settle hold / play / scrub-epoch. **Scrub hybrid:** drag keeps densify on; pointer-up settle calls `prepare_scrub_settle` **before** the async op. Exact: **one** key→N cascade (`goto_frame_with_interim`). Salvage pruned PTS `< target` into scrub store **without blit**. Never blit interim. Fill task **exits** on hold. PREV uses mid-GOP `fill_gop_into_cache` present.
 
-**Contiguous arming:** `ScrubChunkStore::no_gaps` when the extent is a single run. While `no_gaps` **and under frame budget**, keep expanding. Edge-idle (`SCRUB_CACHE_EDGE_MARGIN`) applies only when **at capacity**. Visited scrub frames stay until budget eviction (farthest from aim).
+**Contiguous arming:** `ScrubChunkStore::no_gaps` when the extent is a single run. While `no_gaps` **and under frame budget**, keep expanding. Edge-idle (`ScrubPolicy::margin_left` / `margin_right`) applies only when **at capacity**. Visited scrub frames stay until budget eviction (farthest from aim).
 
 Demo strip: dim Covered = store markers (coverage); bright Exact = live blit (step-ready). Two CSS `linear-gradient` overlays (O(1) DOM) from coalesced runs — no per-frame ticks; ahead/behind VF rings are buffer meters only. Marks stay visible during Play. `play()` clears blit (Exact empty) but keeps markers. While paused, `video` keeps rAF ticking so marks update during fill.
 
@@ -277,7 +278,7 @@ Model: [Frame and decode caches](#frame-and-decode-caches).
 - **Fill progress ≠ `frame_count` growth** — at capacity, evict+insert keeps len stable; count newly resident ids (or gap closed). After `idle_passes≥3`, set `fill_stalled_aim` so the task does not respawn until aim moves / `enter_scrub_cache_pipeline`. Hold optimistic scrub preview until `video.frame` matches.
 - PREV miss = one key→prev cascade with interim → step behind ring (capped); present target via `goto_frame_fill_behind`. Hit = take from `step_behind` (no key→N). Next hit = presentation ahead or warm blit / `decode_frame`. **Do not** `invalidate_decoder` / `arm_scrub_densify_after_exact` after sequential step — use `arm_scrub_densify_after_step` (densify only). Seek/settle still invalidate. `pause()` must not bump `scrub_epoch` when already paused. `mediabunny: samples()` forward; reverse restarts from key unless samples retained (`mediaSamplesAtTimestamps` flush on rewind). CanvasSink-style pool present.
 - **Blit miss on hold:** `step_soft_goto` — warm `goto_frame` / `goto_frame_fill_behind` **without** `abort_scrub_fill` / `hold_densify_for_exact` so densify keeps refilling blit ahead of aim (`note_scrub_direction` on every step). Was: abort+hold → densify starved → periodic ~3s key→N on DRYP 4K hold through “green” markers.
-- **Pause densify after Play:** `play()` keeps markers and clears blit; marker `no_gaps` used to disarm fill. `next_gap_target` prefers `ScrubBlitLru::next_gap_frame`; `fill_one_gap` skips only when GOP has markers **and** blit; ingest refreshes bitmap when marker already present. Blit solid-at-cap uses the same `SCRUB_CACHE_EDGE_MARGIN` arming as markers so the window slides before the cursor hits the last warm frame.
+- **Pause densify after Play:** `play()` keeps markers and clears blit; marker `no_gaps` used to disarm fill. `next_gap_target` prefers `ScrubBlitLru::next_gap_frame`; `fill_one_gap` skips only when GOP has markers **and** blit; ingest refreshes bitmap when marker already present. Blit solid-at-cap uses the same `margin_left`/`margin_right` arming as markers (from `ScrubPolicy`) so the window slides before the cursor hits the last warm frame — left wider than right (GOP densify key→forward).
 - **Step VF ring** — `displayed` + `step_behind` (8) + presentation ahead (4). Survive Pause; clear on seek / scrub settle / loop / teardown. **While playing:** drop aged VF — do **not** `ingest_scrub_frame`. `play()` clears `ScrubBlitLru` (GPU); markers stay. Cap total live VF — do not keep whole Long GOP.
 - **All-Intra:** soft key switch when idle (`begin_key_cascade`); **skip** gap-fill densify (1-packet seek).
 

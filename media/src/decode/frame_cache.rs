@@ -12,7 +12,7 @@ use std::num::NonZeroUsize;
 use std::ops::Bound;
 
 use crate::decode::scrub_encode::ScrubChunk;
-use crate::types::{FrameId, SCRUB_CACHE_EDGE_MARGIN, nearer_gap_with_dir};
+use crate::types::{FrameId, nearer_gap_with_dir, scrub_gap_fill_armed};
 use lru::LruCache;
 use web_sys::ImageBitmap;
 
@@ -215,27 +215,6 @@ fn next_gap_outside_extent(
     nearer_gap_with_dir(playhead, behind, ahead, dir)
 }
 
-/// Gap-fill arming once the dense window is contiguous **and at capacity**.
-///
-/// - Holes (`!no_gaps`) → always armed (caller).
-/// - Under budget → always armed (caller).
-/// - Contiguous at capacity → armed only when `playhead` is within `margin` of
-///   either extent edge, or outside `[start, end]` entirely.
-pub(crate) fn scrub_gap_fill_armed(
-    no_gaps: bool,
-    playhead: FrameId,
-    extent: Option<(FrameId, FrameId)>,
-    margin: u64,
-) -> bool {
-    if !no_gaps {
-        return true;
-    }
-    let Some((start, end)) = extent else {
-        return true;
-    };
-    playhead < start.saturating_add(margin) || playhead > end.saturating_sub(margin)
-}
-
 /// Exact scrub residency: densify markers in RAM + paired blit LRU (not live VFs).
 pub struct ScrubChunkStore {
     chunks: BTreeMap<FrameId, ScrubChunk>,
@@ -285,14 +264,14 @@ impl ScrubChunkStore {
         self.no_gaps
     }
 
-    pub fn gap_fill_armed(&self, playhead: FrameId) -> bool {
+    pub fn gap_fill_armed(&self, playhead: FrameId, margin_left: u64, margin_right: u64) -> bool {
         if !self.no_gaps() {
             return true;
         }
         if self.frame_count() < self.max_frames {
             return true;
         }
-        scrub_gap_fill_armed(true, playhead, self.extent(), SCRUB_CACHE_EDGE_MARGIN)
+        scrub_gap_fill_armed(true, playhead, self.extent(), margin_left, margin_right)
     }
 
     pub fn chunk_count(&self) -> usize {
@@ -574,9 +553,16 @@ impl ScrubBlitLru {
     /// Used after Play wipes blit while scrub markers stay — densify must see
     /// ImageBitmap holes, not only marker gaps. At capacity with a solid run,
     /// re-arm outside the extent when `playhead` is within
-    /// [`SCRUB_CACHE_EDGE_MARGIN`] of either edge (same as marker store) so the
-    /// window slides before the cursor hits the last warm frame.
-    pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId, dir: i8) -> Option<FrameId> {
+    /// `margin_left`/`margin_right` of either edge (same pair as marker store) so
+    /// the window slides before the cursor hits the last warm frame.
+    pub fn next_gap_frame(
+        &self,
+        playhead: FrameId,
+        last: FrameId,
+        dir: i8,
+        margin_left: u64,
+        margin_right: u64,
+    ) -> Option<FrameId> {
         let playhead = playhead.min(last);
         if self.bitmaps.is_empty() {
             return Some(playhead);
@@ -590,7 +576,7 @@ impl ScrubBlitLru {
             && (solid_len as usize >= self.max || solid_len == self.bitmaps.len() as u64);
         if solid_at_cap {
             let extent = Some((run_lo, run_hi));
-            if scrub_gap_fill_armed(true, playhead, extent, SCRUB_CACHE_EDGE_MARGIN) {
+            if scrub_gap_fill_armed(true, playhead, extent, margin_left, margin_right) {
                 return next_gap_outside_extent(playhead, last, extent, dir);
             }
             return None;
@@ -752,36 +738,9 @@ mod tests {
     }
 
     #[test]
-    fn scrub_gap_fill_armed_while_holes() {
-        assert!(scrub_gap_fill_armed(false, 50, Some((40, 60)), 16));
-    }
-
-    #[test]
-    fn scrub_gap_fill_armed_near_edges_when_contiguous() {
-        let extent = Some((100, 200));
-        let m = 16;
-        assert!(!scrub_gap_fill_armed(true, 150, extent, m));
-        assert!(scrub_gap_fill_armed(true, 110, extent, m));
-        assert!(scrub_gap_fill_armed(true, 190, extent, m));
-        assert!(scrub_gap_fill_armed(true, 50, extent, m));
-        assert!(scrub_gap_fill_armed(true, 250, extent, m));
-    }
-
-    #[test]
     fn blit_next_gap_when_empty_returns_playhead() {
         let blit = ScrubBlitLru::new(8);
-        assert_eq!(blit.next_gap_frame(12, 100, 0), Some(12));
-    }
-
-    #[test]
-    fn blit_edge_margin_slides_before_hard_edge() {
-        // Solid [0,7] at cap 8 — playhead near hi edge should request frame 8.
-        // Cannot put real ImageBitmaps in native tests; exercise armed helper.
-        let extent = Some((0u64, 7u64));
-        let m = SCRUB_CACHE_EDGE_MARGIN.min(3);
-        assert!(scrub_gap_fill_armed(true, 6, extent, m));
-        assert!(!scrub_gap_fill_armed(true, 3, extent, m));
-        assert_eq!(next_gap_outside_extent(6, 100, extent, 1), Some(8));
+        assert_eq!(blit.next_gap_frame(12, 100, 0, 10, 5), Some(12));
     }
 
     #[test]
