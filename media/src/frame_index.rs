@@ -5,7 +5,7 @@
 //! Local invention — mediabunny has no `FrameIndex` equivalent; packet cursors
 //! use their own key probes.
 
-use crate::types::{FrameId, GopProfile, SHORT_GOP_MAX_LEN, SHORT_GOP_MAX_SPREAD, Timestamp};
+use crate::types::{FrameId, GopProfile, SHORT_GOP_MAX_LEN, Timestamp};
 
 /// One frame in presentation order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -264,14 +264,14 @@ pub(crate) fn classify_gop_profile(lengths: &[u32], frame_count: usize) -> GopPr
     if frame_count == 0 || lengths.is_empty() {
         return GopProfile::Long { median: 0, max: 0 };
     }
-    let min = *lengths.iter().min().unwrap_or(&1);
     let max = *lengths.iter().max().unwrap_or(&1);
     // All-Intra: every GOP is length 1 (every sample sync), or one sync per frame.
     if max == 1 {
         return GopProfile::AllIntra;
     }
-    let spread = max.saturating_sub(min);
-    if max <= SHORT_GOP_MAX_LEN && spread <= SHORT_GOP_MAX_SPREAD {
+    // Short-IP: max ≤ cap. Scene cuts shrink some GOPs (large spread) — still Short.
+    // Was: spread ≤ 2 → false Long on ShotGrid-like GOP≈30 with cuts.
+    if max <= SHORT_GOP_MAX_LEN {
         return GopProfile::ShortFixed { len: max };
     }
     let median = median_u32(lengths);
@@ -432,6 +432,19 @@ mod tests {
         assert_eq!(
             classify_gop_profile(&[11, 12, 12, 13], 48),
             GopProfile::ShortFixed { len: 13 }
+        );
+    }
+
+    #[test]
+    fn gop_profile_short_with_scene_cut_spread() {
+        // ShotGrid-like: ~GOP30 with short GOPs at cuts — must not become Long.
+        assert_eq!(
+            classify_gop_profile(&[3, 30, 28, 30, 5], 96),
+            GopProfile::ShortFixed { len: 30 }
+        );
+        assert_eq!(
+            classify_gop_profile(&[1, 27, 30, 12, 30], 100),
+            GopProfile::ShortFixed { len: 30 }
         );
     }
 

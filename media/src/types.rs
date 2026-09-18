@@ -3,13 +3,18 @@
 /// Zero-based presentation frame index.
 pub type FrameId = u64;
 
-/// Max GOP length (frames) still treated as short/fixed for scrub policy.
+/// Max GOP length (frames) still treated as short for scrub policy.
+///
+/// Scene cuts shorten some GOPs (large max−min spread) but `max ≤` this still
+/// counts as short-IP — do **not** gate on spread (was false-`Long` on ShotGrid).
 pub const SHORT_GOP_MAX_LEN: u32 = 30;
-/// Max (max−min) GOP length spread allowed inside [`GopProfile::ShortFixed`].
-pub const SHORT_GOP_MAX_SPREAD: u32 = 2;
 /// Default dense-cache RAM budget (decoded `VideoFrame` estimate).
 /// Frame count = budget / (w×h×1.5), clamped by [`MAX_SCRUB_CACHE_FRAMES`].
+/// Prefer overriding via [`ScrubPolicy::scrub_cache_mib`], not this global alone.
 pub const DEFAULT_SCRUB_CACHE_MIB: usize = 1280;
+/// Default live scrub `ImageBitmap` cap ([`ScrubPolicy::blit_lru`]).
+/// Do **not** size to full scrub budget (GPU OOM / Play stall).
+pub const SCRUB_BLIT_LRU: usize = 96;
 /// Assumed bytes per pixel for a decoded frame (YUV 4:2:0 / NV12 planes).
 pub const DECODED_BYTES_PER_PIXEL_NUM: u64 = 3;
 pub const DECODED_BYTES_PER_PIXEL_DEN: u64 = 2;
@@ -85,8 +90,8 @@ pub fn estimated_decoded_frame_bytes(width: u32, height: u32) -> u64 {
 
 /// Dense scrub-cache frame cap from a MiB budget and coded resolution.
 ///
-/// Profile no longer shrinks the budget — only fill policy (All-Intra skips gap-fill).
 /// Whole short clips stay fully resident when they fit under the byte cap.
+/// Prefer [`VideoMetadata::scrub_cache_frame_budget`] (reads [`ScrubPolicy`]).
 pub fn scrub_cache_frame_budget(
     frame_count: u64,
     width: u32,
@@ -109,17 +114,17 @@ pub fn scrub_cache_frame_budget(
 /// Keyframe spacing class used to pick scrub fill policy (not the byte budget).
 ///
 /// Derived from sync-sample spacing after open (and after AVC sync verify).
-/// Not a mediabunny concept — local policy for densify on/off.
+/// Not a mediabunny concept — local policy for densify on/off + drag mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GopProfile {
     /// Every sample is a sync (All-Intra / GOP = 1).
     AllIntra,
-    /// Fixed or near-fixed short GOPs (`max ≤ 30`, spread ≤ 2).
+    /// Short GOPs (`max ≤ `[`SHORT_GOP_MAX_LEN`]) — includes scene-cut spread.
     ShortFixed {
         /// Characteristic GOP length (observed max within the short band).
         len: u32,
     },
-    /// Long, variable, or sparse keyframes.
+    /// Long, variable, or sparse keyframes (`max > `[`SHORT_GOP_MAX_LEN`]).
     Long { median: u32, max: u32 },
 }
 
@@ -132,6 +137,61 @@ impl GopProfile {
             Self::Long { median, max } if *median == *max => format!("GOP ~{max}"),
             Self::Long { median, max } => format!("GOP ~{median} (max {max})"),
         }
+    }
+}
+
+/// Drag paint strategy during timeline scrub (`scrub_to(settle=false)`).
+///
+/// Local invention (mediabunny has no equivalent). Settle is always exact VF.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrubDragMode {
+    /// Blit / neighbor preview only — no key→N during drag (short-IP / All-Intra).
+    Soft,
+    /// May decode exact during drag (Long GOP exact-primary).
+    Exact,
+}
+
+/// Per-clip scrub knobs derived from [`GopProfile`] (not global constants).
+///
+/// Local invention (mediabunny: no equivalent). Tune fields per profile; do not
+/// raise globals like [`SCRUB_BLIT_LRU`] from a single ShotGrid probe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrubPolicy {
+    pub drag: ScrubDragMode,
+    /// Gap-fill densify (VF → ImageBitmap). Off for All-Intra.
+    pub densify: bool,
+    /// Live `ImageBitmap` window cap.
+    pub blit_lru: usize,
+    /// Dense marker store MiB budget (decoded-frame estimate).
+    pub scrub_cache_mib: usize,
+}
+
+impl ScrubPolicy {
+    pub fn from_gop_profile(profile: GopProfile) -> Self {
+        match profile {
+            GopProfile::AllIntra => Self {
+                drag: ScrubDragMode::Soft,
+                densify: false,
+                blit_lru: SCRUB_BLIT_LRU,
+                scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
+            },
+            GopProfile::ShortFixed { .. } => Self {
+                drag: ScrubDragMode::Soft,
+                densify: true,
+                blit_lru: SCRUB_BLIT_LRU,
+                scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
+            },
+            GopProfile::Long { .. } => Self {
+                drag: ScrubDragMode::Exact,
+                densify: true,
+                blit_lru: SCRUB_BLIT_LRU,
+                scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
+            },
+        }
+    }
+
+    pub fn soft_drag(self) -> bool {
+        matches!(self.drag, ScrubDragMode::Soft)
     }
 }
 
@@ -185,7 +245,7 @@ pub struct VideoMetadata {
     /// Average fps from duration/frame_count when available.
     pub fps: Option<f64>,
     pub codec: CodecConfig,
-    /// Keyframe spacing class — drives scrub fill policy (All-Intra skips densify).
+    /// Keyframe spacing class — drives [`ScrubPolicy`] (densify / drag mode).
     pub gop_profile: GopProfile,
 }
 
@@ -194,14 +254,15 @@ impl VideoMetadata {
         Timestamp::from_ticks(self.duration_ticks as i64, self.timescale)
     }
 
-    /// Dense scrub-cache frame cap from [`DEFAULT_SCRUB_CACHE_MIB`] and coded size.
+    /// Scrub knobs for this clip (`GopProfile` → soft-drag / densify / budgets).
+    pub fn scrub_policy(&self) -> ScrubPolicy {
+        ScrubPolicy::from_gop_profile(self.gop_profile)
+    }
+
+    /// Dense scrub-cache frame cap from policy MiB budget and coded size.
     pub fn scrub_cache_frame_budget(&self) -> usize {
-        scrub_cache_frame_budget(
-            self.frame_count,
-            self.width,
-            self.height,
-            DEFAULT_SCRUB_CACHE_MIB,
-        )
+        let mib = self.scrub_policy().scrub_cache_mib;
+        scrub_cache_frame_budget(self.frame_count, self.width, self.height, mib)
     }
 }
 
@@ -309,6 +370,25 @@ mod tests {
             .label(),
             "GOP ~200 (max 250)"
         );
+    }
+
+    #[test]
+    fn scrub_policy_from_profile() {
+        let short = ScrubPolicy::from_gop_profile(GopProfile::ShortFixed { len: 30 });
+        assert!(short.soft_drag());
+        assert!(short.densify);
+        assert_eq!(short.blit_lru, SCRUB_BLIT_LRU);
+
+        let long = ScrubPolicy::from_gop_profile(GopProfile::Long {
+            median: 120,
+            max: 250,
+        });
+        assert_eq!(long.drag, ScrubDragMode::Exact);
+        assert!(long.densify);
+
+        let intra = ScrubPolicy::from_gop_profile(GopProfile::AllIntra);
+        assert!(intra.soft_drag());
+        assert!(!intra.densify);
     }
 }
 

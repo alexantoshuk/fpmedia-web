@@ -13,15 +13,14 @@ use crate::MediaClock;
 use crate::decode::audio_output::AudioOutput;
 use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, draw_frame_with_context};
 use crate::decode::frame_cache::{
-    DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, SCRUB_BLIT_LRU, ScrubBlitLru, ScrubChunkStore,
-    ThumbCache,
+    DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, ScrubBlitLru, ScrubChunkStore, ThumbCache,
 };
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::scrub_encode::{EncodeCanvasSlot, ScrubChunk, draw_image_bitmap};
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
-use crate::types::{AudioMetadata, FrameId, GopProfile, VideoMetadata};
+use crate::types::{AudioMetadata, FrameId, GopProfile, ScrubPolicy, VideoMetadata};
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
 /// Keep small — each slot pins a `VideoFrame`; 16 + in-flight decode starved
@@ -272,6 +271,7 @@ impl WebPlayer {
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
         let ctx = canvas_2d(&canvas)?;
+        let policy = meta.scrub_policy();
         let max_frames = meta.scrub_cache_frame_budget();
         let audio = match audio_track {
             Some(t) => match AudioOutput::create(t).await {
@@ -303,7 +303,7 @@ impl WebPlayer {
             displayed: RefCell::new(None),
             step_behind: RefCell::new(VecDeque::new()),
             scrub_chunks: RefCell::new(ScrubChunkStore::new(max_frames)),
-            scrub_blit: RefCell::new(ScrubBlitLru::new(SCRUB_BLIT_LRU)),
+            scrub_blit: RefCell::new(ScrubBlitLru::new(policy.blit_lru)),
             encode_canvas: EncodeCanvasSlot::default(),
             thumb_cache: RefCell::new(ThumbCache::new(DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS)),
             scrub_decoder: RefCell::new(None),
@@ -551,10 +551,7 @@ impl WebPlayer {
                 if shared.hold_densify_for_exact.get()
                     || shared.fill_mode.get() == CacheFillMode::Play
                     || shared.player.borrow().state().playing
-                    || matches!(
-                        shared.player.borrow().metadata().gop_profile,
-                        GopProfile::AllIntra
-                    )
+                    || !shared.player.borrow().metadata().scrub_policy().densify
                 {
                     return;
                 }
@@ -593,16 +590,20 @@ impl WebPlayer {
     /// 2. Park play presentation queue into the dense cache
     /// 3. Aim eviction / gap-fill at `focus`
     /// 4. Kick bidirectional GOP densify until budget-saturated
-    ///    (skipped for [`GopProfile::AllIntra`] — single-frame seek is cheap;
+    ///    (skipped when [`ScrubPolicy::densify`] is false — All-Intra;
     ///    visited frames still land in dense via `present_and_cache`)
     ///
     /// While [`Shared::hold_densify_for_exact`] (scrub settle / sync seek), densify
-    /// is deferred so exact `goto_frame` owns HW; drag scrub keeps densify on.
+    /// is deferred so exact `goto_frame` owns HW; soft-drag scrub keeps densify on.
     pub fn enter_scrub_cache_pipeline(&self, focus: FrameId) {
         self.aim_scrub_cache(focus);
-        if !self.is_all_intra() {
+        if self.scrub_policy().densify {
             self.schedule_scrub_cache_fill();
         }
+    }
+
+    fn scrub_policy(&self) -> ScrubPolicy {
+        self.shared.player.borrow().metadata().scrub_policy()
     }
 
     fn is_all_intra(&self) -> bool {
@@ -894,17 +895,18 @@ impl WebPlayer {
         self.enter_scrub_cache_pipeline(frame);
     }
 
-    /// Async timeline scrub (mediabunny `seekToKey` then `seekTo` under one epoch).
+    /// Async timeline scrub (local scrub policy; settle always exact VF).
     ///
-    /// - **Drag** (`settle=false`): densify while moving (warm cache under the finger);
-    ///   preview + best-effort exact may race the scrub decoder. Gap pick follows
-    ///   scrub direction (predictive densify).
+    /// - **Drag** (`settle=false`): densify while moving. [`ScrubDragMode::Soft`]
+    ///   (short-IP / All-Intra) paints blit/preview only — no key→N. Exact drag
+    ///   (Long) may `goto_frame`. Gap pick follows scrub direction (predictive densify).
     /// - **Settle** (`settle=true`, pointer up): abort densify, then one key→exact
     ///   cascade (`goto_frame_with_interim`) so canvas gets decode `VideoFrame`
     ///   (not a soft still). Interim preview may blit cache; pruned frames fill
     ///   densify markers without blit.
     pub async fn scrub_to(&self, frame: FrameId, settle: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
+        let soft_drag = self.scrub_policy().soft_drag();
         if settle {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
             self.abort_scrub_fill(true);
@@ -937,7 +939,7 @@ impl WebPlayer {
                     return Ok(());
                 }
 
-                // Drag: may decode key/neighbor for interim paint.
+                // Drag: may paint key/neighbor for interim soft preview.
                 if let Some(preview) = self.scrub_preview_frame(frame)
                     && preview != frame
                 {
@@ -949,6 +951,11 @@ impl WebPlayer {
                         self.shared.player.borrow_mut().commit_frame(frame)?;
                         return Ok(());
                     }
+                }
+                if soft_drag {
+                    // Soft-drag: leave exact for settle; densify keeps warming.
+                    // Canvas stays on blit/preview; eng commits only on blit hit.
+                    return Ok(());
                 }
                 self.goto_frame(frame, epoch).await
             }
@@ -2130,11 +2137,11 @@ impl WebPlayer {
     }
 
     fn schedule_scrub_cache_fill(&self) {
-        // Gate on play mode / All-Intra (single-packet seek — no densify).
+        // Gate on play mode / densify-off policy (All-Intra).
         // Settle/seek: latch pending while exact owns HW (`hold_densify_for_exact`).
         if self.shared.fill_mode.get() == CacheFillMode::Play
             || self.is_playing()
-            || self.is_all_intra()
+            || !self.scrub_policy().densify
         {
             return;
         }
@@ -2148,7 +2155,7 @@ impl WebPlayer {
     fn kick_scrub_cache_fill(&self) {
         if self.shared.fill_mode.get() == CacheFillMode::Play
             || self.is_playing()
-            || self.is_all_intra()
+            || !self.scrub_policy().densify
             || self.shared.hold_densify_for_exact.get()
         {
             if self.shared.hold_densify_for_exact.get() {
@@ -2185,10 +2192,7 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
         loop {
             if shared.fill_mode.get() == CacheFillMode::Play
                 || shared.player.borrow().state().playing
-                || matches!(
-                    shared.player.borrow().metadata().gop_profile,
-                    GopProfile::AllIntra
-                )
+                || !shared.player.borrow().metadata().scrub_policy().densify
             {
                 return Ok(());
             }
@@ -2292,10 +2296,12 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
 
 fn apply_clip_budgets(shared: &Shared) {
     let meta = shared.player.borrow().metadata().clone();
+    let policy = meta.scrub_policy();
     let max_frames = meta.scrub_cache_frame_budget();
     shared.scrub_chunks.borrow_mut().set_max_frames(max_frames);
-    // Blit stays at SCRUB_BLIT_LRU — matching chunk budget (hundreds of 1080p
-    // ImageBitmaps) OOMs GPU and stalls Play/scrub. Warm step hits the window.
+    // Blit cap from profile policy — do not size to full marker budget
+    // (hundreds of 1080p ImageBitmaps OOM GPU / stall Play).
+    shared.scrub_blit.borrow_mut().set_max(policy.blit_lru);
 }
 
 /// Densify / scrub ingest: VF → sync `ImageBitmap` + resident marker.

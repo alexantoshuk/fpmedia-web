@@ -19,9 +19,6 @@ use web_sys::ImageBitmap;
 /// Scrub/filmstrip keyframe GOPs retained.
 pub const DEFAULT_MAX_THUMB_GOPS: usize = 8;
 pub const DEFAULT_MAX_THUMBS: usize = 64;
-/// Default live blit handles before clip budget is known.
-/// Cap stays here — do **not** size to full scrub budget (GPU OOM / Play stall).
-pub const SCRUB_BLIT_LRU: usize = 96;
 
 /// Contiguous-run geometry and nearest-gap search over a `FrameId` key set.
 ///
@@ -528,6 +525,21 @@ impl ScrubBlitLru {
             bitmaps: BTreeMap::new(),
             max: cap.max(1),
             playhead: 0,
+        }
+    }
+
+    /// Resize live blit window (profile policy). Evicts farthest from playhead.
+    pub fn set_max(&mut self, cap: usize) {
+        self.max = cap.max(1);
+        while self.bitmaps.len() > self.max {
+            let Some(victim) = self.farthest_from_playhead_excluding(None) else {
+                break;
+            };
+            if let Some(bmp) = self.bitmaps.remove(&victim) {
+                bmp.close();
+            } else {
+                break;
+            }
         }
     }
 

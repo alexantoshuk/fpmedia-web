@@ -45,9 +45,10 @@ pub use source::{CachedSource, DEFAULT_CACHE_SIZE, MediaSource, MemorySource, Re
 pub use types::{
     AudioCodec, AudioCodecConfig, AudioMetadata, CodecConfig, DEFAULT_SCRUB_CACHE_MIB,
     EncodedAudioSample, EncodedSample, FrameId, GopProfile, MAX_SCRUB_CACHE_FRAMES,
-    MIN_SCRUB_CACHE_FRAMES, SCRUB_CACHE_EDGE_MARGIN, SHORT_GOP_MAX_LEN, SHORT_GOP_MAX_SPREAD,
-    Timestamp, VideoCodec, VideoMetadata, build_aac_asc, estimated_decoded_frame_bytes,
-    nearer_gap_with_dir, scrub_cache_frame_budget, scrub_preview_choice,
+    MIN_SCRUB_CACHE_FRAMES, SCRUB_BLIT_LRU, SCRUB_CACHE_EDGE_MARGIN, SHORT_GOP_MAX_LEN,
+    ScrubDragMode, ScrubPolicy, Timestamp, VideoCodec, VideoMetadata, build_aac_asc,
+    estimated_decoded_frame_bytes, nearer_gap_with_dir, scrub_cache_frame_budget,
+    scrub_preview_choice,
 };
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
