@@ -22,6 +22,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Play ~0.75× realtime / underrun hold (DRYP) | warm held + pump stop | after take, bg warm-ahead then stop (`media-sink.ts` range); Play behind cap 0 |
 | Dense wiped on Play | `present_play_frame` / prime | do **not** trim densify markers on Play — budget/aim eviction only |
 | Cached scrub / Next-Prev lag on large viewport | Scrub blit size | densify = VF→ImageBitmap; blit LRU present |
+| Fullscreen ↔ windowed black until Play/scrub | `WebPlayer::relayout` | keep markers+blit; redraw `displayed` (or warm blit); do **not** wipe store (old WebP still path) |
 | Next/Prev hold slow / key→N every step | Step VF ring + warm blit | ring first; else densify ImageBitmap |
 | Next/Prev hold: smooth then ~3s freeze (green strip) | Step soft goto + Exact=blit | miss must not abort densify; green = live blit only |
 | Pause densify dead after Play (green empty) | blit gaps in `next_gap_target` | Play clears blit, keeps markers — refill ImageBitmap |
@@ -154,7 +155,7 @@ Densify `on_frame`: VF → `transferToImageBitmap` + marker. `mediabunny:` Canva
 
 **Byte → frames:** `scrub_cache_frame_budget(count, w, h, mib)` ≈ `mib×1024² / (w×h×1.5)` (YUV 4:2:0), then clamp to `[MIN, MAX]` and `frame_count`. Same budget for every `GopProfile`; short clips that fit stay fully resident. Wire via `VideoMetadata::scrub_cache_frame_budget`. (Compressed byte-budget eviction is a follow-up.)
 
-Eviction (scrub store + blit): drop farthest from **aim**; protect the aim frame. Gap geometry in **`FrameRunIndex`**. Densify `on_frame`: VF → sync `ImageBitmap` + resident marker. `relayout` clears store + blit. `mediabunny:` CanvasSink canvas pool — no still-encode store.
+Eviction (scrub store + blit): drop farthest from **aim**; protect the aim frame. Gap geometry in **`FrameRunIndex`**. Densify `on_frame`: VF → sync `ImageBitmap` + resident marker. `relayout` keeps store + blit (ImageBitmap scales on present); only repaints after buffer wipe. `mediabunny:` CanvasSink canvas pool — no still-encode store.
 
 ### Predictive densify (scrub direction)
 
@@ -292,6 +293,6 @@ Engine-side pacing notes; UI queue / signals: `skills/leptos.md`.
 - **Timestamps in web-sys** — `EncodedVideoChunkInit` uses `i32` µs / `u32` duration; clamp long timelines.
 - **Workspace isolation** — do not import `video` / `app` / Leptos into `media/`.
 - **Mobile / LAN HTTP** — WebCodecs needs a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). `http://localhost` OK; LAN IP HTTP is not.
-- **Playback canvas size** — blit at CSS contain size × DPR, capped by **source display** and **monitor** (`screen` × DPR; removed fixed edge-1280). Measured from the **parent viewport** box (object-fit: contain). **Lock** buffer size + CSS `aspect-ratio` on open / `WebPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. `video`: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`.
+- **Playback canvas size** — blit at CSS contain size × DPR, capped by **source display** and **monitor** (`screen` × DPR; removed fixed edge-1280). Measured from the **parent viewport** box (object-fit: contain). **Lock** buffer size + CSS `aspect-ratio` on open / `WebPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. `video`: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`. **Fullscreen:** size change clears canvas pixels — `repaint_after_buffer_resize` from `displayed` (else warm blit); do **not** clear scrub markers/blit (legacy WebP wipe). Soft upscale until densify refreshes at the new size is OK.
 - **Throttle play UI** — do not `sync_ui` / update fps signals every frame; ~10 Hz is enough. Reactive status updates every present compete with decode/draw on the main thread.
 - **Prefetch at EOF** — if `prefetch_one` returns `false` (end of track / full), the background pump **must** `await` rAF (or sleep). `continue` without yield spins the main thread and freezes the tab.

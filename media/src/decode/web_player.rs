@@ -455,28 +455,51 @@ impl WebPlayer {
 
     /// Recompute canvas buffer from current CSS layout × DPR (call on container resize).
     ///
-    /// Scrub blit bitmaps match the playback buffer size — wipe densify trail +
-    /// blit LRU when the buffer changes so Pause→seek is not soft from an old size.
+    /// Changing `canvas.width`/`height` clears the bitmap (fullscreen ↔ windowed).
+    /// Keep scrub **markers** + **ImageBitmap** LRU — they scale via `drawImage` dw/dh
+    /// (old WebP still-store needed a wipe; blit does not). `mediabunny:` no densify
+    /// wipe on resize; CanvasSink-style present redraw.
     pub fn relayout(&self) -> Result<(), MediaError> {
         let meta = self.metadata();
         let before = (self.shared.canvas.width(), self.shared.canvas.height());
         configure_canvas_for_video(&self.shared.canvas, meta.width, meta.height)?;
         let after = (self.shared.canvas.width(), self.shared.canvas.height());
         if before != after {
-            self.invalidate_scrub_store_for_resize();
+            self.repaint_after_buffer_resize()?;
         }
         Ok(())
     }
 
-    /// Drop viewport-sized scrub residency after layout change (densify rebuilds).
-    fn invalidate_scrub_store_for_resize(&self) {
-        self.abort_scrub_fill(true);
-        if let Ok(mut cache) = self.shared.scrub_chunks.try_borrow_mut() {
-            cache.clear();
+    /// Restore pixels after the browser wiped the canvas buffer on size change.
+    fn repaint_after_buffer_resize(&self) -> Result<(), MediaError> {
+        let frame = self.shared.player.borrow().state().frame;
+        // Prefer live VF when it still matches the playhead (sharp at any size).
+        {
+            let disp = self.shared.displayed.borrow();
+            if let Some(q) = disp.as_ref()
+                && q.frame == frame
+            {
+                return draw_frame_with_context(
+                    &self.shared.canvas,
+                    &self.shared.ctx,
+                    q.video.as_web_sys(),
+                );
+            }
         }
-        if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
-            blit.clear();
+        // Blit-only Next/scrub may have cleared `displayed` — scale warm ImageBitmap.
+        if self.try_present_warm_blit(frame)? {
+            return Ok(());
         }
+        // Last resort: whatever VF we still hold (better than black).
+        let disp = self.shared.displayed.borrow();
+        if let Some(q) = disp.as_ref() {
+            return draw_frame_with_context(
+                &self.shared.canvas,
+                &self.shared.ctx,
+                q.video.as_web_sys(),
+            );
+        }
+        Ok(())
     }
 
     pub fn is_playing(&self) -> bool {
