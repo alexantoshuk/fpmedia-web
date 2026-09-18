@@ -12,10 +12,9 @@
 
 ### Play / scrub (short path)
 
-1. Optional: residual Play underrun (~0.96→1.0) at GOP boundaries on longer clips.
-2. Optional: contiguous densify coverage as a dedicated timeline buffer bar (strip already Covered+Exact gradients).
-3. Smoke + DRYP play spot-check after further scrub changes.
-4. Spot-check Wing It mid-timeline Next/Prev after blit MiB (expect wider Exact window windowed; narrower fullscreen).
+1. Optional: contiguous densify coverage as a dedicated timeline buffer bar (strip already Covered+Exact gradients).
+2. Smoke + DRYP play spot-check after Play pump change (quick regression).
+3. Spot-check Wing It mid-timeline Next/Prev after blit MiB (windowed vs fullscreen Exact width).
 
 ### Media engine
 

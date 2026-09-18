@@ -453,8 +453,16 @@ pub fn DemoPlayer() -> impl IntoView {
                             Some(ms) => format!(" · lag {ms:.0}ms"),
                             None => String::new(),
                         };
+                        let holds = if s.underrun_holds > 0 || s.underrun_hold_ms > 0.0 {
+                            format!(
+                                " · holds {}/{:.0}ms",
+                                s.underrun_holds, s.underrun_hold_ms
+                            )
+                        } else {
+                            String::new()
+                        };
                         format!(
-                            "held {} · decodeQ {} · skipped {}{}{}",
+                            "held {} · decodeQ {} · skipped {}{}{}{}",
                             if s.held_len == usize::MAX {
                                 "busy".into()
                             } else {
@@ -468,6 +476,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             s.frames_skipped,
                             range,
                             lag,
+                            holds,
                         )
                     }}
                 </p>

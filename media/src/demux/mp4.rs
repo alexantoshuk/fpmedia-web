@@ -158,6 +158,34 @@ impl Mp4VideoTrack {
         }
         Ok(out)
     }
+
+    /// Next `limit` samples after `after_do` in **track** decode order (crosses GOPs).
+    ///
+    /// Play warm-ahead uses this so the packet pump does not stop at GOP end
+    /// (`samples_after_in_gop`) and force a per-GOP underrun hold.
+    /// `mediabunny: src/media-sink.ts` mediaSamplesInRange is continuous across keys.
+    pub async fn samples_after_decode(
+        &self,
+        after_do: usize,
+        limit: usize,
+    ) -> Result<Vec<EncodedSample>, MediaError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut entries: Vec<_> = self
+            .index
+            .frames()
+            .iter()
+            .filter(|e| e.decode_order > after_do)
+            .collect();
+        entries.sort_by_key(|e| e.decode_order);
+        entries.truncate(limit);
+        let mut out = Vec::with_capacity(entries.len());
+        for e in entries {
+            out.push(self.encoded_sample(e.frame).await?);
+        }
+        Ok(out)
+    }
 }
 
 /// Demuxed video + optional audio from one MP4 parse.

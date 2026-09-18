@@ -41,6 +41,10 @@ const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
 /// when the consumer returns (PumpStopGuard). Seek still feeds to GOP end when
 /// the target is not yet held (`holds_target` gate on early stop).
 const REORDER_FEED_SLACK: usize = 8;
+/// Presentation-order frames to keep ahead of the current target in `held`
+/// while the Play/prefetch pump runs (cross-GOP). Too small → underrun hold
+/// every GOP on BBB (~0.93×); matches presentation queue depth.
+const DECODE_WARM_AHEAD: usize = 4;
 /// Only salvage pruned frames within this PTS gap of the seek target. Farther
 /// frames are closed immediately — keeping every key→N VideoFrame alive exhausts
 /// Chromium's pool and wedges at `decodeQ≈41, held=0` (Wing It seek/settle).
@@ -320,11 +324,13 @@ impl DecoderCore {
 
     /// Start a new key→… cascade.
     ///
-    /// - Busy / `force_hard` → full [`Self::recreate`].
-    /// - Non-adjacent Long-GOP jump (scrub seek) → recreate — soft-clear alone
-    ///   left Chromium warm from the previous GOP; key→N then `flush/idle`.
+    /// - `force_hard` / non-adjacent Long-GOP jump → full [`Self::recreate`].
     /// - **Sequential** next sync (Play across GOP) or All-Intra → soft switch
     ///   when idle (mediabunny range pump feeds the next IDR without recreate).
+    /// - Do **not** hard-recreate solely because `busy` when soft is OK — Play
+    ///   warm-ahead often still has decodeQ when the next GOP key is needed;
+    ///   recreate every GOP was ~1 underrun hold/GOP (~0.93× on BBB).
+    ///   Caller awaits idle first (`run_key_cascade`).
     fn begin_key_cascade(
         &mut self,
         key_do: usize,
@@ -342,7 +348,8 @@ impl DecoderCore {
         let busy = self.decode_queue_size() > 0 || pending_remap;
         let key_changed = matches!(self.key_order, Some(prev) if prev != key_do);
         let soft_ok = self.all_intra || sequential_next_key || !key_changed;
-        if force_hard || busy || (key_changed && !soft_ok) {
+        // Soft paths must not recreate on busy alone (Play GOP seam + warm-ahead).
+        if force_hard || (key_changed && !soft_ok) || (busy && !soft_ok) {
             self.recreate()?;
         } else {
             self.input_timestamps.clear();
@@ -742,6 +749,13 @@ impl WebCodecsDecoder {
             let mut c = core.borrow_mut();
             c.collect_and_prune_held(target_us)?;
             if let Some(ready) = c.take_held(target_us) {
+                let ahead = c.held.iter().filter(|h| h.pts_us > target_us).count();
+                drop(c);
+                // Hit in held — still keep a cross-GOP pump warm so Play does not
+                // drain the buffer dry between takes (was: return with no feeder).
+                if ahead < DECODE_WARM_AHEAD {
+                    self.spawn_warm_pump(Rc::clone(track), key_do, target_do, target_us);
+                }
                 return Ok(ready);
             }
         }
@@ -852,6 +866,7 @@ impl WebCodecsDecoder {
                 target_do,
                 target_us,
                 signals: Rc::clone(&signals),
+                warm_only: false,
             }
             .run(),
         );
@@ -885,7 +900,7 @@ impl WebCodecsDecoder {
                 let signals_bg = Rc::clone(&signals);
                 let pump_epoch_bg = Rc::clone(&self.pump_epoch);
                 spawn_local(async move {
-                    const WANT_AHEAD: usize = 4;
+                    const WANT_AHEAD: usize = DECODE_WARM_AHEAD;
                     for _ in 0..80 {
                         if pump_epoch_bg.get() != pump_epoch_now || signals_bg.stop.get() {
                             return;
@@ -989,10 +1004,49 @@ impl WebCodecsDecoder {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<(), MediaError> {
         let core = Rc::clone(&self.core);
+        // Soft Play seam: wait out warm-ahead decodeQ before soft switch so we
+        // never hard-recreate on busy (`begin_key_cascade`). Also covers the
+        // case where `finish_gop` cleared `key_order` (sequential flag false but
+        // soft via !key_changed). mediabunny: `src/media-sink.ts`
+        // mediaSamplesInRange keeps the same decoder across adjacent IDRs.
+        if !force_hard {
+            let soft_wait = {
+                let c = core.borrow();
+                let key_changed = matches!(c.key_order, Some(prev) if prev != key_do);
+                c.all_intra || sequential_next_key || !key_changed
+            };
+            if soft_wait {
+                for _ in 0..64 {
+                    if is_cancelled() {
+                        return Err(MediaError::Cancelled);
+                    }
+                    {
+                        let mut c = core.borrow_mut();
+                        c.check_error()?;
+                        let _ = c.collect_and_prune_held(target_us);
+                        // Already have the next-GOP target from a prior pump — done.
+                        if c.held.iter().any(|h| h.pts_us == target_us) {
+                            c.key_order = Some(key_do);
+                            return Ok(());
+                        }
+                        let idle = c.decode_queue_size() == 0
+                            && !c.raw_outputs_pending()
+                            && c.input_timestamps.is_empty();
+                        if idle {
+                            break;
+                        }
+                    }
+                    await_outputs_if_pending(&core).await?;
+                    wait_for_frame_progress(&core).await;
+                }
+            }
+        }
         // Soft key switch when idle — All-Intra / sequential Play GOP boundary.
-        // Hard recreate only if busy, force_hard, or non-adjacent Long-GOP jump.
+        // Hard recreate only if force_hard or non-adjacent Long-GOP jump.
         core.borrow_mut()
             .begin_key_cascade(key_do, force_hard, sequential_next_key)?;
+        // Soft clear wiped held — if we already fed this key in a prior range,
+        // still must re-feed after soft wipe (fed_through cleared).
         let key_sample = track.encoded_sample(key_id).await?;
         if is_cancelled() {
             return Err(MediaError::Cancelled);
@@ -1046,6 +1100,36 @@ impl WebCodecsDecoder {
             c.input_timestamps.clear();
         }
         Ok(())
+    }
+
+    /// Background packet pump to refill `held` after a warm take (cross-GOP).
+    ///
+    /// Early `take_held` used to return with no feeder — Play then drained held
+    /// and underran at the next GOP. Bumps `pump_epoch` so only one feeder runs.
+    fn spawn_warm_pump(
+        &self,
+        track: Rc<Mp4VideoTrack>,
+        key_do: usize,
+        target_do: usize,
+        target_us: i64,
+    ) {
+        self.pump_epoch.set(self.pump_epoch.get().wrapping_add(1));
+        let pump_epoch_now = self.pump_epoch.get();
+        let signals = Rc::new(PumpSignals::default());
+        spawn_local(
+            FramePump {
+                core: Rc::clone(&self.core),
+                pump_epoch: Rc::clone(&self.pump_epoch),
+                epoch: pump_epoch_now,
+                track,
+                key_do,
+                target_do,
+                target_us,
+                signals,
+                warm_only: true,
+            }
+            .run(),
+        );
     }
 
     /// Decode every presentation frame in the GOP starting at sync `key_frame`.
@@ -1252,6 +1336,9 @@ struct FramePump {
     target_do: usize,
     target_us: i64,
     signals: Rc<PumpSignals>,
+    /// Consumer already took `target_us` — only refill ahead (do not wait for
+    /// target in `held`, or we feed to EOF and pin thousands of frames).
+    warm_only: bool,
 }
 
 impl FramePump {
@@ -1259,24 +1346,44 @@ impl FramePump {
         let stopped = || self.signals.stop.get() || self.pump_epoch.get() != self.epoch;
         // Feeding a little past the target (B/P reorder) is intentional; do not
         // drain the entire GOP — that amplified PTS desync on rapid PREV.
+        // Cross-GOP warm: keep going until DECODE_WARM_AHEAD presentation frames
+        // sit ahead of the target (Play seam). mediabunny mediaSamplesInRange
+        // does not stop at the next IDR.
         let max_feeds = (self.track.frame_count() as usize)
             .saturating_add(32)
             .max(64);
+        let mut saw_target = self.warm_only;
         for _ in 0..max_feeds {
             if stopped() {
                 break;
             }
-            let fed = self.core.borrow().fed_through_order.unwrap_or(self.key_do);
-            // Stop early only once the target is already remapped — otherwise keep
-            // feeding to GOP end. Fixed slack alone still missed deep Wing It
-            // seeks (`flush/idle` with decodeQ≈18): target never entered `held`.
-            if fed >= self.target_do
-                && fed - self.target_do >= REORDER_FEED_SLACK
-                && holds_target(&self.core, self.target_us)
+            let (fed, ahead, has_target) = {
+                let c = self.core.borrow();
+                let fed = c.fed_through_order.unwrap_or(self.key_do);
+                let ahead = c.held.iter().filter(|h| h.pts_us > self.target_us).count();
+                let has_target = c.held.iter().any(|h| h.pts_us == self.target_us);
+                (fed, ahead, has_target)
+            };
+            if has_target {
+                saw_target = true;
+            }
+            // After the target has appeared in `held` (or was taken), park
+            // DECODE_WARM_AHEAD frames past it — may cross the next GOP.
+            // Requiring `has_target` forever made the pump run to EOF once the
+            // consumer took the frame (BBB held≈3200). Stopping before
+            // `saw_target` would break seek (B-frames with pts>target first).
+            if saw_target && ahead >= DECODE_WARM_AHEAD {
+                break;
+            }
+            if saw_target
+                && fed
+                    >= self
+                        .target_do
+                        .saturating_add(REORDER_FEED_SLACK + DECODE_WARM_AHEAD)
             {
                 break;
             }
-            let next = match self.track.samples_after_in_gop(self.key_do, fed, 1).await {
+            let next = match self.track.samples_after_decode(fed, 1).await {
                 Ok(next) => next,
                 Err(e) => {
                     *self.signals.error.borrow_mut() = Some(e);
@@ -1284,7 +1391,7 @@ impl FramePump {
                 }
             };
             let Some(sample) = next.into_iter().next() else {
-                break; // End of GOP — consumer flushes.
+                break; // End of track — consumer flushes.
             };
             if stopped() {
                 break;
@@ -1310,10 +1417,15 @@ impl FramePump {
             if stopped() {
                 break;
             }
+            let is_key = sample.is_keyframe;
+            let sample_do = sample.decode_order;
             let fed = self.core.borrow_mut().decode_encoded_sample(&sample, false);
             if let Err(e) = fed {
                 *self.signals.error.borrow_mut() = Some(e);
                 break;
+            }
+            if is_key {
+                self.core.borrow_mut().key_order = Some(sample_do);
             }
             self.signals
                 .beats

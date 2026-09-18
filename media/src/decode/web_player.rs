@@ -92,6 +92,12 @@ struct Shared {
     ctx: CanvasRenderingContext2d,
     frames_skipped: Cell<u64>,
     last_behind_ms: Cell<Option<f64>>,
+    /// Play underrun holds (clock freeze edges) — diagnose ~0.9× realtime.
+    underrun_holds: Cell<u64>,
+    /// Accumulated wall ms spent with media clock frozen for underrun.
+    underrun_hold_ms: Cell<f64>,
+    /// `performance.now` when the current underrun hold started (`None` = not holding).
+    underrun_hold_since_ms: Cell<Option<f64>>,
     /// Prefetch must idle while seek/loop prepare owns the decoder.
     restarting: Cell<bool>,
     /// Settle / sync seek: pause densify so exact `goto_frame` owns HW.
@@ -164,6 +170,10 @@ pub struct PipelineStats {
     pub decode_queue_size: u32,
     pub frames_skipped: u64,
     pub last_behind_ms: Option<f64>,
+    /// Underrun clock-freeze edges since last [`WebPlayer::play`].
+    pub underrun_holds: u64,
+    /// Wall ms spent frozen for underrun since last play (includes in-progress hold).
+    pub underrun_hold_ms: f64,
     pub cache_chunks: usize,
     pub cache_frames: usize,
     pub cache_cap: usize,
@@ -190,6 +200,8 @@ impl Default for PipelineStats {
             decode_queue_size: 0,
             frames_skipped: 0,
             last_behind_ms: None,
+            underrun_holds: 0,
+            underrun_hold_ms: 0.0,
             cache_chunks: 0,
             cache_frames: 0,
             cache_cap: 0,
@@ -325,6 +337,9 @@ impl WebPlayer {
             ctx,
             frames_skipped: Cell::new(0),
             last_behind_ms: Cell::new(None),
+            underrun_holds: Cell::new(0),
+            underrun_hold_ms: Cell::new(0.0),
+            underrun_hold_since_ms: Cell::new(None),
             restarting: Cell::new(false),
             hold_densify_for_exact: Cell::new(false),
             preparing_loop: Cell::new(false),
@@ -422,6 +437,7 @@ impl WebPlayer {
     /// With an audio track this starts the decode/schedule pump (mediabunny
     /// `play` + `runAudioIterator`). Without audio, uses wall `performance`.
     pub async fn start_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
+        self.finish_underrun_hold_timer();
         self.shared.clock.borrow_mut().start(media_time_secs);
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
         if let Some(a) = audio {
@@ -452,7 +468,42 @@ impl WebPlayer {
     /// Keeps `playing` true; host resumes via [`Self::start_media_clock`] once
     /// prefetch has frames again.
     pub fn hold_media_clock_for_underrun(&self) -> f64 {
+        self.note_underrun_hold_start();
         self.stop_media_clock()
+    }
+
+    fn note_underrun_hold_start(&self) {
+        if self.shared.underrun_hold_since_ms.get().is_some() {
+            return;
+        }
+        self.shared
+            .underrun_holds
+            .set(self.shared.underrun_holds.get().saturating_add(1));
+        self.shared.underrun_hold_since_ms.set(performance_now_ms());
+    }
+
+    fn finish_underrun_hold_timer(&self) {
+        let Some(since) = self.shared.underrun_hold_since_ms.take() else {
+            return;
+        };
+        if let Some(now) = performance_now_ms() {
+            let dt = (now - since).max(0.0);
+            self.shared
+                .underrun_hold_ms
+                .set(self.shared.underrun_hold_ms.get() + dt);
+        }
+    }
+
+    /// Hold stats including an in-progress freeze (for live pipeline UI).
+    fn underrun_hold_ms_now(&self) -> f64 {
+        let mut total = self.shared.underrun_hold_ms.get();
+        if let (Some(since), Some(now)) = (
+            self.shared.underrun_hold_since_ms.get(),
+            performance_now_ms(),
+        ) {
+            total += (now - since).max(0.0);
+        }
+        total
     }
 
     pub fn state(&self) -> PlayerState {
@@ -534,6 +585,9 @@ impl WebPlayer {
         self.shared.player.borrow_mut().play();
         self.shared.frames_skipped.set(0);
         self.shared.last_behind_ms.set(None);
+        self.shared.underrun_holds.set(0);
+        self.shared.underrun_hold_ms.set(0.0);
+        self.shared.underrun_hold_since_ms.set(None);
     }
 
     pub fn pause(&self) {
@@ -543,6 +597,7 @@ impl WebPlayer {
         if was_playing {
             self.cancel_ops_and_scrub_fill();
             let _ = self.stop_media_clock();
+            self.finish_underrun_hold_timer();
         }
         self.shared.player.borrow_mut().pause();
         self.clear_loop_prime();
@@ -796,6 +851,8 @@ impl WebPlayer {
             decode_queue_size,
             frames_skipped: self.shared.frames_skipped.get(),
             last_behind_ms: self.shared.last_behind_ms.get(),
+            underrun_holds: self.shared.underrun_holds.get(),
+            underrun_hold_ms: self.underrun_hold_ms_now(),
             cache_chunks,
             cache_frames,
             cache_cap,
