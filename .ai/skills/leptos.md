@@ -9,6 +9,7 @@
 
 | Symptom | Look first |
 | ------- | ---------- |
+| Browse / file picker does nothing on Android Chrome | `.wm-file input` must not be `display:none` — opacity overlay (see gotcha) |
 | Open never finishes / console stops at `open_blob start` | File-input `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
 | Play / Next / Prev disabled or silent no-op | UI-owned `playing`; recover when session is `None` |
 | Play after scrub does nothing (esp. after EOF) | Defer UI `playing` until after prime+clock; snap clock on scrub/seek; rAF needs session |
@@ -79,6 +80,7 @@ Only classes that appear **literally** in `.rs` / `.css` are emitted. Do not bui
 12. **Cancel / epochs** — treat `MediaError::Cancelled` as soft (no error banner). One host `async_id` (`OpQueue::bump`) invalidates open / play-prime / prefetch (mediabunny player `asyncId`). Open and pause bump; seek/play enqueue without bumping so they can follow an in-flight open. `WebPlayer::cancel_ops` still aborts decode. Prefetch rAF: use a `Closure` (no bare Promise `resolve`).
 13. **Op queue policy** — Open: bump + clear pending + enqueue. Seek/step: pause transport, coalesce pending seek/step/play (keep open), enqueue. Play-prime: replace pending PlayPrime only. Drain is a single `wasm_bindgen_futures::spawn_local` loop (file-input is outside a Leptos owner).
 14. **Open from file input** must use `wasm_bindgen_futures::spawn_local`, not `leptos::task::spawn_local` — the picker runs outside a Leptos reactive owner; leptos spawn can leave the future unscheduled (UI stuck after `open_blob start`).
+14b. **Android Chrome Browse** — do not `display:none` the demo `.wm-file input[type=file]`; Android ignores label activation on that. Keep the input in layout with `opacity: 0` covering the label (`style/input.css`).
 15. **Transport `playing` is UI-owned** — never `playing.set(engine.playing)` in `sync_ui`. After Pause, that clobber left `playing=true` with no session → Play/Next/Prev all `disabled` / silent no-op. Recover stale `playing` when session is `None`.
 16. **Quick Pause→Play** — cancelled prefetch may still hold the decoder slot; engine `decode_frame` must wait/yield (not fail `decoder busy`). Stale play tasks must not stop the new session unless `async_id` still matches.
 16b. **Play right after scrub** — `VideoRef::play` must **not** call `seek_frame` when `frame != playhead`. Settle is already cascading to playhead; a Play-time seek cancels it and restarts the GOP (seconds on Wing It). Queue PlayPrime behind settle; `run_play_prime` seeks only if still mismatched. After settle, arm densify only when `!has_pending_play()` (`arm_scrub_densify_after_exact`) so Play keeps a warm main decoder. `prime_playback` lifts contiguous dense frames into the presentation queue (move, not clone). **Do not set UI `playing` until prime + `start_media_clock` + session exist** — earlier rAF + scrub-stale `media_time` (still at EOF after Ended) → `DuePresent::Ended` → `stop_playback` bumps `async_id` and kills PlayPrime (silent no-op). Engine snaps `MediaClock` on successful scrub/seek/step. rAF present path requires a session.

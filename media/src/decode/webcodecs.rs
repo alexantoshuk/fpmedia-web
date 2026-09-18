@@ -30,6 +30,30 @@ use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::types::{EncodedSample, FrameId, GopProfile, VideoMetadata};
 
+/// WebCodecs is `SecureContext`-only. LAN `http://192.168.x.x` (phone → desktop
+/// `cargo leptos watch`) leaves `VideoDecoder` undefined; calling
+/// `isConfigSupported` then panics the open task and freezes status on
+/// "creating decoder…".
+fn ensure_webcodecs_available() -> Result<(), MediaError> {
+    let Some(window) = web_sys::window() else {
+        return Err(MediaError::WebCodecs(
+            "no window (WebCodecs needs a browser)".into(),
+        ));
+    };
+    if !window.is_secure_context() {
+        return Err(MediaError::WebCodecsInsecureContext);
+    }
+    let global = js_sys::global();
+    let decoder = js_sys::Reflect::get(&global, &JsValue::from_str("VideoDecoder"))
+        .unwrap_or(JsValue::UNDEFINED);
+    if decoder.is_undefined() || decoder.is_null() {
+        return Err(MediaError::WebCodecs(
+            "VideoDecoder API not available in this browser".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Max in-flight encoded chunks when decoded frames are already buffered
 /// (mediabunny `computeMaxQueueSize` when `decodedSampleQueueSize > 0`).
 const MAX_DECODE_QUEUE_WITH_HELD: u32 = 8;
@@ -612,12 +636,20 @@ pub struct WebCodecsDecoder {
 
 impl WebCodecsDecoder {
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
+        ensure_webcodecs_available()?;
         let config = DecoderConfig::from_meta(meta)?;
         // Prefer throughput configure — `optimizeForLatency: true` wedges Chromium
         // on sustained play/deep key→N (`backpressure q≈41` / `flush/idle`).
         // mediabunny leaves this optional; we set false for VOD scrub+play.
         let optimize_for_latency = false;
         let web_config = config.to_web_config(optimize_for_latency);
+        web_sys::console::log_1(
+            &format!(
+                "webmedia: VideoDecoder isConfigSupported ({}, {}x{})…",
+                config.codec, config.width, config.height
+            )
+            .into(),
+        );
         let support = JsFuture::from(VideoDecoder::is_config_supported(&web_config))
             .await
             .map_err(MediaError::from)?;
@@ -636,6 +668,7 @@ impl WebCodecsDecoder {
             Rc::clone(&pump_epoch),
             all_intra,
         )?;
+        web_sys::console::log_1(&"webmedia: VideoDecoder configured".into());
         Ok(Self {
             core: Rc::new(RefCell::new(core)),
             pump_epoch,

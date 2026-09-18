@@ -633,7 +633,7 @@ pub fn Video(
                         busy.set(false);
                         ready.set(false);
                         error.set(Some(e.clone()));
-                        status.set(format!("Fetch failed: {e}"));
+                        status.set("Fetch failed.".into());
                         #[cfg(target_arch = "wasm32")]
                         web_sys::console::error_1(&e.into());
                     }
@@ -1040,7 +1040,7 @@ async fn run_open(
                 Err(e) => {
                     ready.set(false);
                     error.set(Some(e.to_string()));
-                    status.set(format!("Seek 0 failed: {e}"));
+                    status.set("Seek 0 failed.".into());
                 }
             }
         }
@@ -1048,7 +1048,7 @@ async fn run_open(
             ready.set(false);
             metadata.set(None);
             error.set(Some(e.clone()));
-            status.set(format!("Open failed: {e}"));
+            status.set("Open failed.".into());
             web_sys::console::error_1(&e.clone().into());
         }
     }

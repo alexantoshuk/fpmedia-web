@@ -39,6 +39,13 @@ pub enum MediaError {
     #[error("codec not supported by this browser: {0}")]
     CodecUnsupported(String),
 
+    /// WebCodecs needs a secure context (HTTPS or localhost). LAN `http://IP`
+    /// (typical Android phone → desktop `cargo leptos watch`) has no `VideoDecoder`.
+    #[error(
+        "WebCodecs unavailable: open via https:// or http://localhost (not http://LAN-IP). On Android: adb reverse tcp:3000 tcp:3000 then http://127.0.0.1:3000"
+    )]
+    WebCodecsInsecureContext,
+
     /// In-flight decode/seek superseded by pause, a newer seek, or teardown
     /// (mediabunny iterator `return` / `Input.dispose`).
     #[error("operation cancelled")]

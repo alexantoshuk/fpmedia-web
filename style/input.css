@@ -287,6 +287,12 @@ body {
   cursor: pointer;
 }
 
+.wm-file {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+}
+
 .wm-btn:hover:not(:disabled),
 .wm-file:hover {
   border-color: var(--wm-accent);
@@ -309,8 +315,18 @@ body {
   color: #fff;
 }
 
+/* Must stay in layout (not display:none) — Android Chrome ignores
+   label activation / .click() on display:none file inputs. */
 .wm-file input[type="file"] {
-  display: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 0;
 }
 
 .wm-url-row {
