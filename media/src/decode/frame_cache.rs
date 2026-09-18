@@ -264,14 +264,27 @@ impl ScrubChunkStore {
         self.no_gaps
     }
 
-    pub fn gap_fill_armed(&self, playhead: FrameId, margin_left: u64, margin_right: u64) -> bool {
+    pub fn gap_fill_armed(
+        &self,
+        playhead: FrameId,
+        last: FrameId,
+        margin_left: u64,
+        margin_right: u64,
+    ) -> bool {
         if !self.no_gaps() {
             return true;
         }
         if self.frame_count() < self.max_frames {
             return true;
         }
-        scrub_gap_fill_armed(true, playhead, self.extent(), margin_left, margin_right)
+        scrub_gap_fill_armed(
+            true,
+            playhead,
+            self.extent(),
+            last,
+            margin_left,
+            margin_right,
+        )
     }
 
     pub fn chunk_count(&self) -> usize {
@@ -553,8 +566,10 @@ impl ScrubBlitLru {
     /// Used after Play wipes blit while scrub markers stay — densify must see
     /// ImageBitmap holes, not only marker gaps. At capacity with a solid run,
     /// re-arm outside the extent when `playhead` is within
-    /// `margin_left`/`margin_right` of either edge (same pair as marker store) so
-    /// the window slides before the cursor hits the last warm frame.
+    /// `margin_left`/`margin_right` of an **expandable** edge (same pair as
+    /// markers). Outside gaps that would only thrash (evict closer residents)
+    /// return `None` — Exact `put` used to always accept and shred the far end
+    /// (100% CPU flicker at timeline origin/EOF).
     pub fn next_gap_frame(
         &self,
         playhead: FrameId,
@@ -570,16 +585,21 @@ impl ScrubBlitLru {
         if !self.bitmaps.contains_key(&playhead) {
             return Some(playhead);
         }
+        let at_cap = self.bitmaps.len() >= self.max;
         let (run_lo, run_hi) = walk_run_bounds(&self.bitmaps, playhead);
         let solid_len = run_hi.saturating_sub(run_lo).saturating_add(1);
-        let solid_at_cap = self.bitmaps.len() >= self.max
-            && (solid_len as usize >= self.max || solid_len == self.bitmaps.len() as u64);
+        let solid_at_cap =
+            at_cap && (solid_len as usize >= self.max || solid_len == self.bitmaps.len() as u64);
         if solid_at_cap {
             let extent = Some((run_lo, run_hi));
-            if scrub_gap_fill_armed(true, playhead, extent, margin_left, margin_right) {
-                return next_gap_outside_extent(playhead, last, extent, dir);
+            if !scrub_gap_fill_armed(true, playhead, extent, last, margin_left, margin_right) {
+                return None;
             }
-            return None;
+            let gap = next_gap_outside_extent(playhead, last, extent, dir)?;
+            if self.would_evict_closer_than(gap, playhead) {
+                return None;
+            }
+            return Some(gap);
         }
         let no_gaps = match (
             self.bitmaps.keys().next().copied(),
@@ -597,7 +617,18 @@ impl ScrubBlitLru {
             .next()
             .copied()
             .zip(self.bitmaps.keys().next_back().copied());
-        FrameRunIndex::new().search(
+        // At capacity a solid map must not expand without arming (same as above).
+        if at_cap && no_gaps {
+            if !scrub_gap_fill_armed(true, playhead, extent, last, margin_left, margin_right) {
+                return None;
+            }
+            let gap = next_gap_outside_extent(playhead, last, extent, dir)?;
+            if self.would_evict_closer_than(gap, playhead) {
+                return None;
+            }
+            return Some(gap);
+        }
+        let gap = FrameRunIndex::new().search(
             &self.bitmaps,
             playhead,
             playhead,
@@ -605,17 +636,38 @@ impl ScrubBlitLru {
             no_gaps,
             extent,
             dir,
-        )
+        )?;
+        if at_cap && self.would_evict_closer_than(gap, playhead) {
+            return None;
+        }
+        Some(gap)
     }
 
     pub fn get(&mut self, frame: FrameId) -> Option<&ImageBitmap> {
         self.bitmaps.get(&frame)
     }
 
-    pub fn put(&mut self, frame: FrameId, bitmap: ImageBitmap) {
-        if let Some(old) = self.bitmaps.insert(frame, bitmap) {
-            old.close();
-            return;
+    /// Insert or replace a live bitmap. Returns `false` when refused at capacity
+    /// (would only evict a closer resident — caller must close unused planes).
+    pub fn put(&mut self, frame: FrameId, bitmap: ImageBitmap) -> bool {
+        use std::collections::btree_map::Entry;
+        let replacing = self.bitmaps.contains_key(&frame);
+        if !replacing
+            && self.bitmaps.len() >= self.max
+            && self.would_evict_closer_than(frame, self.playhead)
+        {
+            bitmap.close();
+            return false;
+        }
+        match self.bitmaps.entry(frame) {
+            Entry::Occupied(mut e) => {
+                let old = e.insert(bitmap);
+                old.close();
+                return true;
+            }
+            Entry::Vacant(v) => {
+                v.insert(bitmap);
+            }
         }
         while self.bitmaps.len() > self.max {
             let Some(victim) = self.farthest_from_playhead_excluding(Some(frame)) else {
@@ -628,11 +680,32 @@ impl ScrubBlitLru {
             }
         }
         if self.bitmaps.len() > self.max {
-            // Could not evict enough — drop the newcomer.
             if let Some(bmp) = self.bitmaps.remove(&frame) {
                 bmp.close();
             }
+            return false;
         }
+        true
+    }
+
+    fn would_evict_closer_than(&self, gap: FrameId, playhead: FrameId) -> bool {
+        if self.bitmaps.len() < self.max {
+            return false;
+        }
+        let gap_dist = gap.abs_diff(playhead);
+        self.max_dist_from_playhead(playhead)
+            .is_some_and(|far| far <= gap_dist)
+    }
+
+    fn max_dist_from_playhead(&self, playhead: FrameId) -> Option<u64> {
+        let lo = self.bitmaps.keys().copied().find(|&f| f != playhead)?;
+        let hi = self
+            .bitmaps
+            .keys()
+            .copied()
+            .rev()
+            .find(|&f| f != playhead)?;
+        Some(lo.abs_diff(playhead).max(hi.abs_diff(playhead)))
     }
 
     fn farthest_from_playhead_excluding(&self, protect: Option<FrameId>) -> Option<FrameId> {
@@ -747,6 +820,15 @@ mod tests {
     fn refuse_farther_insert_when_playhead_at_origin() {
         assert!(would_evict_closer_than_dist(8, 0, 7));
         assert!(!would_evict_closer_than_dist(12, 5, 5));
+    }
+
+    #[test]
+    fn blit_would_evict_blocks_far_gap_at_origin() {
+        // Cap window [0,7], playhead 0 — outside gap 8 is farther than farthest
+        // resident (7) → saturated (no expand thrash).
+        assert!(would_evict_closer_than_dist(8, 0, 7));
+        // Near-edge slide mid-window: gap just outside is closer than far end.
+        assert!(!would_evict_closer_than_dist(96, 90, 90));
     }
 
     fn would_evict_closer_than_dist(gap: FrameId, playhead: FrameId, far_dist: u64) -> bool {

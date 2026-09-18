@@ -54,16 +54,19 @@ pub fn scrub_edge_margins(gop_hint: u32) -> (u64, u64) {
 ///
 /// - Holes (`!no_gaps`) → always armed (caller).
 /// - Under budget → always armed (caller).
-/// - Contiguous at capacity → armed when `playhead` is within `margin_left` of
-///   extent start (timeline left / earlier), within `margin_right` of extent end
-///   (right / later), or outside `[start, end]` entirely.
+/// - Contiguous at capacity → armed when `playhead` is outside `[start, end]`,
+///   within `margin_left` of start **and** `start > 0` (can expand behind), or
+///   within `margin_right` of end **and** `end < last` (can expand ahead).
 ///
-/// Left margin is typically larger: GOP densify fills key→forward, so expanding
-/// behind needs more lead time. Local invention (mediabunny: no equivalent).
+/// Do **not** arm from a pinned timeline edge (`start == 0` / `end == last`):
+/// that kept densify expanding the other side → farthest eviction → thrash.
+/// Left margin is typically larger: GOP densify fills key→forward. Local
+/// invention (mediabunny: no equivalent).
 pub fn scrub_gap_fill_armed(
     no_gaps: bool,
     playhead: FrameId,
     extent: Option<(FrameId, FrameId)>,
+    last: FrameId,
     margin_left: u64,
     margin_right: u64,
 ) -> bool {
@@ -73,7 +76,12 @@ pub fn scrub_gap_fill_armed(
     let Some((start, end)) = extent else {
         return true;
     };
-    playhead < start.saturating_add(margin_left) || playhead > end.saturating_sub(margin_right)
+    if playhead < start || playhead > end {
+        return true;
+    }
+    let near_left = start > 0 && playhead < start.saturating_add(margin_left);
+    let near_right = end < last && playhead > end.saturating_sub(margin_right);
+    near_left || near_right
 }
 
 /// Merge sorted unique frame ids into inclusive `[lo, hi]` runs.
@@ -539,39 +547,59 @@ mod tests {
 
     #[test]
     fn scrub_gap_fill_armed_while_holes() {
-        assert!(scrub_gap_fill_armed(false, 50, Some((40, 60)), 16, 8));
+        assert!(scrub_gap_fill_armed(false, 50, Some((40, 60)), 1000, 16, 8));
     }
 
     #[test]
     fn scrub_gap_fill_armed_near_edges_when_contiguous() {
         let extent = Some((100, 200));
-        assert!(!scrub_gap_fill_armed(true, 150, extent, 16, 16));
-        assert!(scrub_gap_fill_armed(true, 110, extent, 16, 16));
-        assert!(scrub_gap_fill_armed(true, 190, extent, 16, 16));
-        assert!(scrub_gap_fill_armed(true, 50, extent, 16, 16));
-        assert!(scrub_gap_fill_armed(true, 250, extent, 16, 16));
+        let last = 1000;
+        assert!(!scrub_gap_fill_armed(true, 150, extent, last, 16, 16));
+        assert!(scrub_gap_fill_armed(true, 110, extent, last, 16, 16));
+        assert!(scrub_gap_fill_armed(true, 190, extent, last, 16, 16));
+        assert!(scrub_gap_fill_armed(true, 50, extent, last, 16, 16));
+        assert!(scrub_gap_fill_armed(true, 250, extent, last, 16, 16));
     }
 
     #[test]
     fn scrub_gap_fill_armed_asymmetric_left_wider() {
         let extent = Some((100, 200));
+        let last = 1000;
         let left = 20;
         let right = 8;
-        assert!(!scrub_gap_fill_armed(true, 150, extent, left, right));
-        assert!(scrub_gap_fill_armed(true, 115, extent, left, right));
-        assert!(!scrub_gap_fill_armed(true, 185, extent, left, right));
-        assert!(scrub_gap_fill_armed(true, 195, extent, left, right));
+        assert!(!scrub_gap_fill_armed(true, 150, extent, last, left, right));
+        assert!(scrub_gap_fill_armed(true, 115, extent, last, left, right));
+        assert!(!scrub_gap_fill_armed(true, 185, extent, last, left, right));
+        assert!(scrub_gap_fill_armed(true, 195, extent, last, left, right));
     }
 
     #[test]
     fn scrub_gap_fill_armed_right_edge_slides_before_hard_edge() {
+        // start==0: left margin must not arm (nowhere to expand behind).
         let extent = Some((0u64, 40u64));
-        // Near right edge within margin_right=3 → armed.
-        assert!(scrub_gap_fill_armed(true, 38, extent, 8, 3));
-        // Mid-window beyond both margins → idle.
-        assert!(!scrub_gap_fill_armed(true, 20, extent, 8, 3));
-        // Near left within margin_left=8 → armed.
-        assert!(scrub_gap_fill_armed(true, 5, extent, 8, 3));
+        let last = 1000;
+        assert!(scrub_gap_fill_armed(true, 38, extent, last, 8, 3));
+        assert!(!scrub_gap_fill_armed(true, 20, extent, last, 8, 3));
+        assert!(!scrub_gap_fill_armed(true, 5, extent, last, 8, 3));
+    }
+
+    #[test]
+    fn scrub_gap_fill_armed_idle_at_pinned_timeline_edges() {
+        // Playhead at origin with window pinned to 0 — was thrash (expand ahead,
+        // evict far end, repeat).
+        let at_start = Some((0u64, 50u64));
+        assert!(!scrub_gap_fill_armed(true, 0, at_start, 200, 16, 8));
+        assert!(!scrub_gap_fill_armed(true, 10, at_start, 200, 16, 8));
+        // Still arm near the expandable right edge.
+        assert!(scrub_gap_fill_armed(true, 45, at_start, 200, 16, 8));
+
+        // Playhead at EOF with window pinned to last.
+        let last = 200u64;
+        let at_end = Some((150u64, last));
+        assert!(!scrub_gap_fill_armed(true, last, at_end, last, 16, 8));
+        assert!(!scrub_gap_fill_armed(true, 195, at_end, last, 16, 8));
+        // Still arm near the expandable left edge.
+        assert!(scrub_gap_fill_armed(true, 155, at_end, last, 16, 8));
     }
 
     #[test]

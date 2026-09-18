@@ -2382,8 +2382,17 @@ fn ingest_scrub_bitmap_only(
 
     if let Ok(mut blit) = shared.scrub_blit.try_borrow_mut() {
         blit.set_playhead(shared.scrub_chunks.borrow().playhead());
-        blit.put(frame, bitmap);
-        true
+        if blit.put(frame, bitmap) {
+            return true;
+        }
+        // `put` already closed the bitmap on refuse.
+        if inserted_new {
+            let _ = shared
+                .scrub_chunks
+                .try_borrow_mut()
+                .map(|mut s| s.remove(frame));
+        }
+        false
     } else {
         bitmap.close();
         if inserted_new {
@@ -2452,7 +2461,7 @@ fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     }
     let cache = shared.scrub_chunks.borrow();
     if cache.gaps_saturated(playhead, last, dir)
-        || !cache.gap_fill_armed(playhead, margin_left, margin_right)
+        || !cache.gap_fill_armed(playhead, last, margin_left, margin_right)
     {
         return None;
     }
