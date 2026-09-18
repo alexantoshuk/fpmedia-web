@@ -41,6 +41,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | A/V desync / silent play with audio track | [Audio + media clock](#audio--media-clock) | video must use `WebPlayer::media_time()` (AudioContext), not host wall-clock |
 | `RefCell already borrowed` (decode / scrub / open / Drop) | [RefCell / WASM re-entry](#refcell--wasm-re-entry) | `if let`/`while let` + `borrow_mut`; JS re-entry |
 | QT / large `.mov` open freeze | Demux `re_mp4` sample ranges | size-0 `skip_box`; no `CachedSource` during verify |
+| `mfhd not found` / fMP4 open fail | Demux `load_ftyp_moov` | load full `moof` bodies; probe `progressive_fmp4_from_url --ignored` |
 | UI stuck / controls dead (not decode) | `skills/leptos.md` triage | OpQueue, `playing`, `spawn_local` |
 
 **Probes:** `e2e/player.smoke.spec.ts`; **Chrome DRYP play** `e2e/player.play.dryp.spec.ts`; scrub settle `e2e/perf.scrub.settle.spec.ts`; drag→settle `e2e/perf.scrub.drag-settle.spec.ts`; general scrub `e2e/perf.scrub.probe.spec.ts`. **Decode-sink gate:** `e2e/perf.scrub.baseline.spec.ts` / `npm run e2e:baseline:save|compare` (BBB + Wing It; `e2e/baselines/`).
@@ -56,7 +57,7 @@ media/src/                 ← package name: webmedia
 ├── source/                ← MediaSource + MemorySource + CachedSource (+ wasm BlobSource)
 ├── frame_index.rs         ← presentation order; sync_by_decode O(log k) + by_decode GOP map
 ├── demux/
-│   ├── boxes.rs           ← top-level ISOBMFF scan + ftyp/moov stub
+│   ├── boxes.rs           ← top-level ISOBMFF scan + ftyp/moov/moof stub
 │   └── mp4.rs             ← re_mp4 → Mp4VideoTrack + Mp4AudioTrack; OpenedMp4
 ├── player.rs              ← play/pause/seek_frame/step → DecodeWindow
 └── decode/                ← cfg(wasm32 + webcodecs)
@@ -209,7 +210,7 @@ Demo strip: dim Covered = store markers (coverage); bright Exact = live blit (st
 
 ### Demux and bitstream
 
-- **`re_mp4` sample ranges** are **file-absolute**. Progressive open loads full `ftyp`+`moov` plus **headers** of all other top-level boxes (`mdat`/`free`/`wide`/…): `re_mp4` reads those headers before `skip_box` seeks. Zero-filled gaps look like `size=0` and abort **or** — with QT padding — `skip_box(0)` **infinite-loops** (seek back to the size-0 header) and freezes the tab on large files (BBB `.mov`). Mitigations: scan headers past `moov`; trim size-0 padding at the end of `moov` children; `SparseBoxReader` refuses size-0 `skip_box` rewinds. **Do not** wrap the source in `CachedSource` during demux or during full-file AVC sync verify — an 8 MiB prefetch per scattered keyframe pulls multi‑GB into WASM (BBB ≈600 syncs); attach cache only after parse+verify for sample I/O. Header-sized reads (≤16 B) never prefetch. Demo uses `open_blob` with **async** AVC sync verify after moov.
+- **`re_mp4` sample ranges** are **file-absolute**. Progressive open loads full `ftyp`+`moov` (+ every `moof` for single-file fMP4) plus **headers** of all other top-level boxes (`mdat`/`free`/`wide`/`mfra`/…): `re_mp4` reads those headers before `skip_box` seeks, and **parses** full `moof` bodies (`mfhd`/`traf`/`trun`). Zero-filled gaps look like `size=0` and abort **or** — with QT padding — `skip_box(0)` **infinite-loops** (seek back to the size-0 header) and freezes the tab on large files (BBB `.mov`). Header-only `moof` → `mfhd not found`. mediabunny: `isobmff-demuxer.ts` `readFragment` `requestSlice(…, moof.totalSize)`. Mitigations: scan headers past `moov`; load full `moof`; trim size-0 padding at the end of `moov` children; `SparseBoxReader` refuses size-0 `skip_box` rewinds. **Do not** wrap the source in `CachedSource` during demux or during full-file AVC sync verify — an 8 MiB prefetch per scattered keyframe pulls multi‑GB into WASM (BBB ≈600 syncs); attach cache only after parse+verify for sample I/O. Header-sized reads (≤16 B) never prefetch. Demo uses `open_blob` with **async** AVC sync verify after moov. Live/growing fMP4 and DASH playlists remain out of scope.
 - **QT / `.mov` AAC (`mp4a` version 2)** — crates.io `0.5.1` fails open (`mp4a box contains a box with a larger size than it`). Workspace pins [alexantoshuk/re_mp4@cd63eca](https://github.com/alexantoshuk/re_mp4/commit/cd63ecac0269668e09435cc5b9d5f3b06692c09e) (PR [rerun-io/re_mp4#35](https://github.com/rerun-io/re_mp4/pull/35)) until upstream merges.
 - **AVCC vs Annex-B** — MP4 `avc1` samples are length-prefixed; WebCodecs wants that plus `avcC` in `VideoDecoderConfig.description`. Length size = `(avcC[4] & 0b11) + 1`.
 - **Lying sync samples** — on AVC open, demote `is_sync` when the AU is neither IDR (NAL type 5) nor exact Recovery Point SEI (`sei_nal_is_exact_recovery_point`; mediabunny `determineVideoPacketType` / w3c/webcodecs#650). Chromium &lt;145: SEI keys demoted (`accept_avc_recovery_point_sei`); ≥145 / non-Chromium: kept. Does not yet handle HEVC IRAP.

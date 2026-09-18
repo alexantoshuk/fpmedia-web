@@ -2,7 +2,11 @@
 //!
 //! `re_mp4` reads every top-level **header** before `skip_box` seeks past `mdat`.
 //! Gaps filled with zeros look like `size=0` and abort the parse — so we materialize
-//! headers for skipped boxes and full `ftyp`+`moov` at **file-absolute** offsets.
+//! headers for skipped boxes and full `ftyp`+`moov` (+ `moof` for fMP4) at
+//! **file-absolute** offsets.
+//!
+//! mediabunny: `src/isobmff/isobmff-demuxer.ts` `readFragment` loads the entire
+//! `moof` via `requestSlice(startPos, moofBoxInfo.totalSize)`.
 
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -13,6 +17,8 @@ const HEADER_SIZE: usize = 8;
 const EXTENDED_HEADER_SIZE: usize = 16;
 /// Reject absurdly large `moov` (corruption / wrong container).
 const MAX_MOOV_BYTES: u64 = 64 * 1024 * 1024;
+/// Reject absurdly large `moof` (corruption). Bodies are small metadata tables.
+const MAX_MOOF_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TopLevelBox {
@@ -38,8 +44,17 @@ impl TopLevelBox {
         &self.typ == b"moov"
     }
 
+    pub fn is_moof(&self) -> bool {
+        &self.typ == b"moof"
+    }
+
     pub fn is_mdat(&self) -> bool {
         &self.typ == b"mdat"
+    }
+
+    /// Full body required for progressive `re_mp4` parse (not header-only skip).
+    pub fn needs_full_body(&self) -> bool {
+        self.is_ftyp() || self.is_moov() || self.is_moof()
     }
 }
 
@@ -97,6 +112,11 @@ pub async fn scan_top_level(source: &dyn MediaSource) -> Result<Vec<TopLevelBox>
                     "moov too large ({box_size} bytes)"
                 )));
             }
+        }
+        if entry.is_moof() && box_size > MAX_MOOF_BYTES {
+            return Err(MediaError::Mp4(format!(
+                "moof too large ({box_size} bytes)"
+            )));
         }
         boxes.push(entry);
 
@@ -228,8 +248,8 @@ async fn read_box_header_at(
 }
 
 /// Load bytes needed for progressive `re_mp4` parse:
-/// - full `ftyp` + `moov`
-/// - headers only for everything else (`mdat`/`free`/…) so `BoxHeader::read` works
+/// - full `ftyp` + `moov` (+ every `moof` for fragmented files)
+/// - headers only for everything else (`mdat`/`free`/`mfra`/…) so `BoxHeader::read` works
 pub async fn load_ftyp_moov(source: &dyn MediaSource) -> Result<Vec<LoadedBox>, MediaError> {
     load_ftyp_moov_with_progress(source, &mut |_| {}).await
 }
@@ -240,10 +260,16 @@ async fn load_ftyp_moov_with_progress(
 ) -> Result<Vec<LoadedBox>, MediaError> {
     progress("Scanning top-level boxes…");
     let boxes = scan_top_level(source).await?;
+    let moof_count = boxes.iter().filter(|b| b.is_moof()).count();
+    if moof_count > 0 {
+        progress(&format!(
+            "Fragmented MP4: loading {moof_count} moof box(es)…"
+        ));
+    }
     let mut loaded = Vec::new();
 
     for mut info in boxes {
-        let need = if info.is_ftyp() || info.is_moov() {
+        let need = if info.needs_full_body() {
             info.size as usize
         } else {
             usize::from(info.header_len)
@@ -257,6 +283,8 @@ async fn load_ftyp_moov_with_progress(
             crate::util::yield_now().await;
         } else if info.is_ftyp() {
             progress("Reading ftyp…");
+        } else if info.is_moof() {
+            crate::util::yield_now().await;
         }
         let mut bytes = source.read(info.offset, need).await?;
         if bytes.len() != need {
@@ -442,6 +470,7 @@ pub async fn parse_mp4_progressive_with_progress(
         .map(|b| b.info.size)
         .unwrap_or(0);
     let loaded_bytes: usize = loaded.iter().map(|b| b.bytes.len()).sum();
+    let moof_count = loaded.iter().filter(|b| b.info.is_moof()).count();
     let ftyp_note = loaded
         .iter()
         .find(|b| b.info.is_ftyp())
@@ -450,13 +479,13 @@ pub async fn parse_mp4_progressive_with_progress(
     #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
     web_sys::console::log_1(
         &format!(
-            "webmedia: boxes loaded ({ftyp_note}, moov@{moov_offset} size={moov_size}, {loaded_bytes}B) — parsing"
+            "webmedia: boxes loaded ({ftyp_note}, moov@{moov_offset} size={moov_size}, moofs={moof_count}, {loaded_bytes}B) — parsing"
         )
         .into(),
     );
 
     progress(&format!(
-        "Parsing moov tables ({:.1} KB, may take a moment)…",
+        "Parsing moov/moof tables ({:.1} KB, may take a moment)…",
         moov_size as f64 / 1024.0
     ));
     crate::util::yield_now().await;
@@ -465,7 +494,7 @@ pub async fn parse_mp4_progressive_with_progress(
     let mut reader = SparseBoxReader::new(file_size, loaded);
     re_mp4::Mp4::read(&mut reader, file_size).map_err(|e| {
         MediaError::Mp4(format!(
-            "{e} (progressive: file_size={file_size}, {ftyp_note}, moov@{moov_offset} size={moov_size}, loaded={loaded_bytes}B)"
+            "{e} (progressive: file_size={file_size}, {ftyp_note}, moov@{moov_offset} size={moov_size}, moofs={moof_count}, loaded={loaded_bytes}B)"
         ))
     })
 }
@@ -552,6 +581,45 @@ mod tests {
         assert_eq!(full_track.samples.len(), prog_track.samples.len());
         for (a, b) in full_track.samples.iter().zip(prog_track.samples.iter()) {
             assert_eq!(a.offset, b.offset, "sample offsets must stay file-absolute");
+            assert_eq!(a.size, b.size);
+            assert_eq!(a.is_sync, b.is_sync);
+        }
+    }
+
+    #[test]
+    fn progressive_parse_loads_moof_for_fragmented_mp4() {
+        let path = fixture("fragmented_tiny.mp4");
+        if !path.exists() {
+            eprintln!("skip: missing fixture");
+            return;
+        }
+        let bytes = std::fs::read(&path).expect("read fixture");
+        let source = MemorySource::from_vec(bytes.clone());
+
+        let full = re_mp4::Mp4::read_bytes(&bytes).expect("full parse");
+        assert!(
+            !full.moofs.is_empty(),
+            "fixture must be fragmented (moof present)"
+        );
+
+        let progressive = block_on_read(parse_mp4_progressive(&source)).expect("progressive fMP4");
+        assert_eq!(full.moofs.len(), progressive.moofs.len());
+
+        let full_track = full
+            .tracks()
+            .values()
+            .find(|t| t.kind == Some(re_mp4::TrackKind::Video))
+            .expect("video");
+        let prog_track = progressive
+            .tracks()
+            .values()
+            .find(|t| t.kind == Some(re_mp4::TrackKind::Video))
+            .expect("video");
+
+        assert!(!full_track.samples.is_empty());
+        assert_eq!(full_track.samples.len(), prog_track.samples.len());
+        for (a, b) in full_track.samples.iter().zip(prog_track.samples.iter()) {
+            assert_eq!(a.offset, b.offset);
             assert_eq!(a.size, b.size);
             assert_eq!(a.is_sync, b.is_sync);
         }

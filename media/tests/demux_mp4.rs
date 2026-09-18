@@ -172,6 +172,88 @@ fn progressive_source_open_matches_bytes_offsets() {
 }
 
 #[test]
+fn progressive_fragmented_mp4_open_matches_bytes() {
+    let path = fixture("fragmented_tiny.mp4");
+    if !path.exists() {
+        eprintln!(
+            "skip: missing fixture {} (generate locally or run progressive_fmp4_from_url --ignored)",
+            path.display()
+        );
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read");
+    assert_progressive_fmp4_matches_full(bytes);
+}
+
+/// Pexels vertical fMP4 probe (not committed). Override with `WEBMEDIA_FMP4_URL`.
+const DEFAULT_FMP4_URL: &str =
+    "https://videos.pexels.com/video-files/39355913/16751924_1080_1920_30fps.mp4";
+
+fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let output = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "180", url])
+        .output()
+        .map_err(|e| format!("curl spawn: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "curl failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    if output.stdout.len() < 64 {
+        return Err(format!(
+            "short download ({} bytes) from {url}",
+            output.stdout.len()
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn assert_progressive_fmp4_matches_full(bytes: Vec<u8>) {
+    let full = webmedia::open_mp4_bytes(bytes.clone()).expect("full open");
+    let source: Arc<dyn webmedia::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
+    let progressive = block_on(open_mp4_source(
+        source,
+        OpenMp4Options {
+            verify_avc_sync: true,
+        },
+    ))
+    .expect("progressive fMP4 open");
+
+    assert_eq!(full.frame_count(), progressive.frame_count());
+    assert!(full.frame_count() > 0);
+    for (a, b) in full
+        .index()
+        .frames()
+        .iter()
+        .zip(progressive.index().frames())
+    {
+        assert_eq!(a.offset, b.offset);
+        assert_eq!(a.size, b.size);
+        assert_eq!(a.is_sync, b.is_sync);
+    }
+
+    let sample_full = block_on(full.encoded_sample(0)).expect("full sample");
+    let sample_prog = block_on(progressive.encoded_sample(0)).expect("prog sample");
+    assert_eq!(sample_full.data, sample_prog.data);
+    assert!(sample_full.is_keyframe);
+}
+
+/// Network fMP4 open — not run in default CI.
+///
+/// ```sh
+/// cargo test -p webmedia --test demux_mp4 progressive_fmp4_from_url -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "network: downloads fMP4 from Pexels (or WEBMEDIA_FMP4_URL)"]
+fn progressive_fmp4_from_url() {
+    let url = std::env::var("WEBMEDIA_FMP4_URL").unwrap_or_else(|_| DEFAULT_FMP4_URL.to_string());
+    let bytes = fetch_url_bytes(&url).unwrap_or_else(|e| panic!("fetch {url}: {e}"));
+    assert_progressive_fmp4_matches_full(bytes);
+}
+
+#[test]
 fn demux_with_audio_track() {
     use webmedia::{AudioCodec, open_mp4_media_bytes};
 

@@ -231,7 +231,7 @@ pub fn open_mp4_media_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
     .require_av()
 }
 
-/// Progressive open: ranged `ftyp`+`moov` → sparse `re_mp4` parse → index (file offsets).
+/// Progressive open: ranged `ftyp`+`moov`(+`moof`) → sparse `re_mp4` parse → index.
 pub async fn open_mp4_source(
     source: Arc<dyn MediaSource>,
     options: OpenMp4Options,
