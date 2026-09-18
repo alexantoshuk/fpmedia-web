@@ -19,14 +19,14 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Periodic ~0.5s Play freeze every N frames (BBB) | GOP boundary cascade / `finish_gop` | soft sequential next-key (no recreate); short pre-flush drain |
 | Chrome `flush/idle` at GOP end (`fed=N,q>0`) | `finish_gop_for_target` | wall-clock drain before flush; DRYP frame 49 |
 | Play underrun / huge `skipped`+`lag` then `q=41` | Underrun clock hold | empty present → freeze media clock; resume when buffered (not skip spiral) |
-| Play jank after densify warm (even windowed) | demo strip + `pipeline_stats` | two gradient overlays from coalesced runs (not per-frame DOM); blit cleared on `play()` |
+| Play jank after densify warm (even windowed) | demo strip + `pipeline_stats` | two gradient overlays from coalesced runs; Exact trimmed on `play()` (not full wipe) |
 | Play ~0.75× realtime / underrun hold (DRYP) | warm held + pump stop | after take, bg warm-ahead then stop (`media-sink.ts` range); Play behind cap 0 |
 | Dense wiped on Play | `present_play_frame` / prime | do **not** trim densify markers on Play — budget/aim eviction only |
 | Cached scrub / Next-Prev lag on large viewport | Scrub blit size | densify = VF→ImageBitmap; MiB→frames shrinks cap on large CSS×DPR |
 | Fullscreen ↔ windowed black until Play/scrub | `WebPlayer::relayout` | keep markers+blit; redraw `displayed` (or warm blit); do **not** wipe store (old WebP still path) |
 | Next/Prev hold slow / key→N every step | Step VF ring + warm blit | ring first; else densify ImageBitmap |
 | Next/Prev hold: smooth then ~3s freeze (green strip) | Step soft goto + Exact=blit | miss must not abort densify; green = live blit only |
-| Pause densify dead after Play (green empty) | blit gaps in `next_gap_target` | Play clears blit, keeps markers — refill ImageBitmap |
+| Pause densify dead after Play (green empty) | blit gaps in `next_gap_target` | Play trims Exact, keeps markers — refill ImageBitmap holes on pause |
 | Blit window slides only at hard edge | `ScrubBlitLru::next_gap_frame` + edge margins | `margin_left`/`right`; idle when pinned to `0`/`last` |
 | Exact strip thrash / 100% CPU at origin/EOF | Exact `put` + gap saturate | refuse far inserts at cap (like Covered); `next_gap` None if would_evict |
 | Covered stuck same width as Exact | ingest on Exact refuse | keep Covered marker when Exact `put` refuses — dim can outgrow blit |
@@ -202,7 +202,7 @@ Finish in-flight GOP on aim move, settle hold, salvage, eviction — unchanged. 
 
 **Contiguous arming:** `ScrubChunkStore::no_gaps` when the extent is a single run. While `no_gaps` **and under frame budget**, keep expanding. Edge-idle (`ScrubPolicy::margin_left` / `margin_right`) applies only when **at capacity**, and only for edges that can still expand (`start > 0` / `end < last`). Visited scrub frames stay until budget eviction (farthest from aim).
 
-Demo strip: dim Covered = store markers (coverage); bright Exact = live blit (step-ready). Two CSS `linear-gradient` overlays (O(1) DOM) from coalesced runs — no per-frame ticks; ahead/behind VF rings are buffer meters only. Marks stay visible during Play. `play()` clears blit (Exact empty) but keeps markers. While paused, `video` keeps rAF ticking so marks update during fill.
+Demo strip: dim Covered = store markers (coverage); bright Exact = live blit (step-ready). Two CSS `linear-gradient` overlays (O(1) DOM) from coalesced runs — no per-frame ticks; ahead/behind VF rings are buffer meters only. Marks stay visible during Play. `play()` **trims** Exact (free Play VF VRAM via farthest-from-playhead eviction; not a full wipe) and keeps markers. While paused, `video` keeps rAF ticking so marks update during fill.
 
 ## Gotchas
 
@@ -289,7 +289,7 @@ Model: [Frame and decode caches](#frame-and-decode-caches).
 Engine-side pacing notes; UI queue / signals: `skills/leptos.md`.
 
 - **Underrun clock hold** — when the presentation queue is empty mid-play, **freeze** the media clock (`hold_media_clock_for_underrun` / stop audio) and let prefetch refill; resume with `start_media_clock` at the snapped time. Do **not** prefer `skip_behind` here — Chrome DRYP raced audio → `skipped≈242` then Ended before EOF. `skip_behind` remains for explicit catch-up APIs; same-GOP soft (no dense wipe). EOF: do not `Ended` while presentation still holds frames. Probe: `e2e/player.play.dryp.spec.ts`.
-- **Play VideoFrame pool** — densify stays **off** while playing (`abort_scrub_fill(false)` on Play — no rearm). **Play behind cap 0** (drop aged VF in `install_displayed`; clear step ring on `play()`) — keeping `STEP_BEHIND_CAP`=8 during Play pinned ~21 VFs with held/ahead and starved Chromium. Pause/scrub still uses behind=8 for Prev. Ready strip = Covered+Exact gradient overlays from `coalesce_frame_runs` (ahead/behind not painted). Exact empty after blit clear on Play. Probes: `e2e/player.play.dryp.spec.ts`.
+- **Play VideoFrame pool** — densify stays **off** while playing (`abort_scrub_fill(false)` on Play — no rearm). **Play behind cap 0** (drop aged VF in `install_displayed`; clear step ring on `play()`) — keeping `STEP_BEHIND_CAP`=8 during Play pinned ~21 VFs with held/ahead and starved Chromium. Pause/scrub still uses behind=8 for Prev. Ready strip = Covered+Exact gradient overlays from `coalesce_frame_runs` (ahead/behind not painted). Exact: on Play **trim** via `scrub_blit_cap_during_play` / `exact_frames_to_free_for_play_vram` (displayed + presentation + slack in YUV → RGBA slots), evict farthest — do **not** `blit.clear()` (was cold Exact every Pause). Pause restores full blit budget + densify. Probes: `e2e/player.play.dryp.spec.ts`.
 - **Play warm-ahead / pump stop** — after `take_held` in dual-async `decode_frame`, do **not** `stop` the packet pump before returning the frame (that raced backpressure → empty `held` → cold pump every 1–2 frames → ~0.75× realtime underrun holds on DRYP). Return immediately; background task parks ≥4 ahead then stops. Bump `pump_epoch` before each new cold range so only one feeder runs. `mediabunny: src/media-sink.ts mediaSamplesInRange` keeps decoding while the consumer pulls.
 - **Densify blit** — OffscreenCanvas `transferToImageBitmap` (sync) at viewport buffer capped by source display + monitor (`screen`×DPR). Blit cap = aim-centered MiB→frames (`scrub_blit_frame_budget`; recompute on `relayout`). Eviction = farthest from playhead. Seek / Next / Prev / settle paint decode VF or warm blit — never a compressed still on canvas (`mediabunny:` CanvasSink VF + `poolSize`).
 - **Freeze cause** — filling the whole prefetch queue *after* each present blocks the deadline (feels like short freezes on long/heavy clips). Prefetch must use wall-clock spare time instead.

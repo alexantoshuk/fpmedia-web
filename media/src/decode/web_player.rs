@@ -22,7 +22,7 @@ use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
 use crate::types::{
     AudioMetadata, FrameId, GopProfile, ScrubPolicy, VideoMetadata, coalesce_frame_runs,
-    scrub_blit_frame_budget,
+    exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play, scrub_blit_frame_budget,
 };
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
@@ -39,6 +39,9 @@ pub const PRESENTATION_QUEUE_CAP: usize = 4;
 pub const STEP_BEHIND_CAP: usize = 8;
 /// Behind ring while `CacheFillMode::Play` — drop aged VF immediately.
 const STEP_BEHIND_CAP_PLAY: usize = 0;
+/// Extra in-flight / held VF beyond displayed + presentation queue when sizing
+/// Exact trim on Play (YUV↔RGBA heuristic headroom).
+const PLAY_EXACT_VRAM_VF_SLACK: usize = 4;
 /// Frames to decode before starting the media clock (rest filled by prefetch).
 const PLAY_PRIME_FRAMES: usize = 2;
 /// Start-of-clip frames prepared into `loop_prime` before EOF (one decoder).
@@ -572,14 +575,13 @@ impl WebPlayer {
     pub fn play(&self) {
         self.shared.fill_mode.set(CacheFillMode::Play);
         // Cancel densify hard — do **not** rearm `scrub_pending` (Play must not
-        // keep filling gaps). Keep scrub *markers*; drop live ImageBitmaps so Play
-        // decode is not fighting densify GPU residency (fullscreen / after warm).
+        // keep filling gaps). Keep scrub *markers*; trim Exact (ImageBitmap) by
+        // Play VF VRAM estimate — evict farthest from playhead, do not wipe all
+        // (was: full clear → cold Exact on every Pause).
         self.cancel_ops();
         self.abort_scrub_fill(false);
         self.clear_scrub_direction();
-        if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
-            blit.clear();
-        }
+        self.trim_exact_for_play();
         // Free Chromium VideoFrame pool for prefetch — step ring is Pause/Prev only.
         self.clear_step_behind_ring();
         self.shared.player.borrow_mut().play();
@@ -588,6 +590,23 @@ impl WebPlayer {
         self.shared.underrun_holds.set(0);
         self.shared.underrun_hold_ms.set(0.0);
         self.shared.underrun_hold_since_ms.set(None);
+    }
+
+    /// Shrink Exact to leave GPU headroom for Play VF pool; keep near-playhead bitmaps.
+    fn trim_exact_for_play(&self) {
+        let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() else {
+            return;
+        };
+        let meta = self.shared.player.borrow().metadata().clone();
+        let policy = meta.scrub_policy();
+        let buf_w = self.shared.canvas.width().max(1);
+        let buf_h = self.shared.canvas.height().max(1);
+        let full = scrub_blit_frame_budget(buf_w, buf_h, policy.blit_mib);
+        let play_vfs = 1 + PRESENTATION_QUEUE_CAP + PLAY_EXACT_VRAM_VF_SLACK;
+        let reserve =
+            exact_frames_to_free_for_play_vram(play_vfs, meta.width, meta.height, buf_w, buf_h);
+        blit.set_playhead(self.state().frame);
+        blit.set_max(scrub_blit_cap_during_play(full, reserve));
     }
 
     pub fn pause(&self) {
@@ -2337,7 +2356,15 @@ fn apply_clip_budgets(shared: &Shared) {
     // `mediabunny:` CanvasSink width/height/fit + poolSize (sized, bounded VRAM).
     let buf_w = shared.canvas.width().max(1);
     let buf_h = shared.canvas.height().max(1);
-    let blit_cap = scrub_blit_frame_budget(buf_w, buf_h, policy.blit_mib);
+    let full = scrub_blit_frame_budget(buf_w, buf_h, policy.blit_mib);
+    let blit_cap = if shared.fill_mode.get() == CacheFillMode::Play {
+        let play_vfs = 1 + PRESENTATION_QUEUE_CAP + PLAY_EXACT_VRAM_VF_SLACK;
+        let reserve =
+            exact_frames_to_free_for_play_vram(play_vfs, meta.width, meta.height, buf_w, buf_h);
+        scrub_blit_cap_during_play(full, reserve)
+    } else {
+        full
+    };
     shared.scrub_blit.borrow_mut().set_max(blit_cap);
 }
 
@@ -2439,8 +2466,8 @@ fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     let dir = shared.scrub_dir.get();
     let policy = shared.player.borrow().metadata().scrub_policy();
     let (margin_left, margin_right) = (policy.margin_left, policy.margin_right);
-    // Play keeps markers and clears blit — ImageBitmap holes must win over
-    // marker `no_gaps`, or pause densify never re-warms the Exact strip.
+    // Play keeps markers and trims Exact (not a full wipe) — ImageBitmap holes
+    // must still win over marker `no_gaps`, or pause densify never re-warms Exact.
     if let Some(blit_gap) =
         shared
             .scrub_blit

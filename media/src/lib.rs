@@ -49,8 +49,9 @@ pub use types::{
     GopProfile, MAX_SCRUB_BLIT_FRAMES, MAX_SCRUB_CACHE_FRAMES, MIN_SCRUB_BLIT_FRAMES,
     MIN_SCRUB_CACHE_FRAMES, SCRUB_BLIT_LRU, SHORT_GOP_MAX_LEN, ScrubDragMode, ScrubPolicy,
     Timestamp, VideoCodec, VideoMetadata, build_aac_asc, coalesce_frame_runs,
-    estimated_decoded_frame_bytes, nearer_gap_with_dir, scrub_blit_frame_budget,
-    scrub_cache_frame_budget, scrub_edge_margins, scrub_gap_fill_armed, scrub_preview_choice,
+    estimated_decoded_frame_bytes, exact_frames_to_free_for_play_vram, nearer_gap_with_dir,
+    scrub_blit_cap_during_play, scrub_blit_frame_budget, scrub_cache_frame_budget,
+    scrub_edge_margins, scrub_gap_fill_armed, scrub_preview_choice,
 };
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]

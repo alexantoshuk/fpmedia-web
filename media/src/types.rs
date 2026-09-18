@@ -211,6 +211,34 @@ pub fn scrub_blit_frame_budget(width: u32, height: u32, max_mib: usize) -> usize
         .max(1)
 }
 
+/// How many Exact (`ImageBitmap`) slots to free so Play can hold `play_vf_count`
+/// decoded `VideoFrame`s (YUV) without fighting densify VRAM.
+///
+/// Converts Play VF byte estimate → blit RGBA slots at the canvas buffer size.
+/// Local invention (mediabunny: no Play↔CanvasSink eviction couple).
+pub fn exact_frames_to_free_for_play_vram(
+    play_vf_count: usize,
+    coded_width: u32,
+    coded_height: u32,
+    blit_width: u32,
+    blit_height: u32,
+) -> usize {
+    if play_vf_count == 0 {
+        return 0;
+    }
+    let play_bytes = estimated_decoded_frame_bytes(coded_width, coded_height)
+        .saturating_mul(play_vf_count as u64);
+    let blit_w = blit_width.max(1) as u64;
+    let blit_h = blit_height.max(1) as u64;
+    let blit_per = (blit_w * blit_h * BLIT_BYTES_PER_PIXEL).max(1);
+    play_bytes.div_ceil(blit_per) as usize
+}
+
+/// Exact cap while playing: keep near-playhead bitmaps, free `reserve` farthest.
+pub fn scrub_blit_cap_during_play(full_cap: usize, reserve_frames: usize) -> usize {
+    full_cap.saturating_sub(reserve_frames).max(1)
+}
+
 /// Keyframe spacing class used to pick scrub fill policy (not the byte budget).
 ///
 /// Derived from sync-sample spacing after open (and after AVC sync verify).
@@ -619,6 +647,23 @@ mod tests {
         assert_eq!(
             scrub_blit_frame_budget(160, 90, DEFAULT_SCRUB_BLIT_MIB_LONG),
             MAX_SCRUB_BLIT_FRAMES
+        );
+    }
+
+    #[test]
+    fn play_exact_vram_reserve_trims_but_keeps_floor() {
+        // Same buffer as coded: YUV 1.5 vs RGBA 4 → ~3 VF ≈ 2 Exact slots (ceil).
+        let reserve = exact_frames_to_free_for_play_vram(9, 1280, 720, 1280, 720);
+        assert!(reserve >= 1);
+        assert!(reserve < 9);
+        let full = scrub_blit_frame_budget(1280, 720, DEFAULT_SCRUB_BLIT_MIB_SHORT);
+        let during = scrub_blit_cap_during_play(full, reserve);
+        assert!(during < full);
+        assert!(during >= 1);
+        assert_eq!(scrub_blit_cap_during_play(10, 100), 1);
+        assert_eq!(
+            exact_frames_to_free_for_play_vram(0, 1920, 1080, 1920, 1080),
+            0
         );
     }
 }
