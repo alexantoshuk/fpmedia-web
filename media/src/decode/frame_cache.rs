@@ -405,6 +405,7 @@ impl ScrubChunkStore {
     }
 
     /// Drop one resident (bad encode / blit failure).
+    #[allow(dead_code)] // kept for ingest rollback / future Exact-only failure paths
     pub fn remove(&mut self, frame: FrameId) -> bool {
         self.remove_frame(frame)
     }

@@ -2385,24 +2385,14 @@ fn ingest_scrub_bitmap_only(
         if blit.put(frame, bitmap) {
             return true;
         }
-        // `put` already closed the bitmap on refuse.
-        if inserted_new {
-            let _ = shared
-                .scrub_chunks
-                .try_borrow_mut()
-                .map(|mut s| s.remove(frame));
-        }
-        false
-    } else {
-        bitmap.close();
-        if inserted_new {
-            let _ = shared
-                .scrub_chunks
-                .try_borrow_mut()
-                .map(|mut s| s.remove(frame));
-        }
-        false
+        // Exact at cap refused a far frame — keep Covered marker so densify
+        // coverage can grow beyond the blit window (Play already keeps markers
+        // after clearing Exact). `put` closed the bitmap.
+        return inserted_new;
     }
+    bitmap.close();
+    // Borrow race on blit — still keep a newly inserted marker.
+    inserted_new
 }
 
 fn ingest_scrub_frame_shared(
