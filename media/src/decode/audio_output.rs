@@ -164,12 +164,12 @@ impl AudioOutput {
 
     /// Set review playback rate. While playing, snaps origins and restarts the pump.
     ///
-    /// Callers must not invoke this for shuttle rates while wanting audio — use
-    /// [`Self::store_playback_rate`] + stop instead ([`crate::is_shuttle_rate`]).
+    /// Callers must not invoke this for shuttle/reverse rates while wanting audio — use
+    /// [`Self::store_playback_rate`] + stop instead ([`crate::is_wall_clock_rate`]).
     pub fn set_playback_rate(self: &Rc<Self>, rate: f64) {
         let rate = normalize_playback_rate(rate);
-        if crate::is_shuttle_rate(rate) {
-            // Shuttle: keep the cell updated but never schedule pitched audio.
+        if crate::is_wall_clock_rate(rate) {
+            // Shuttle / reverse: keep the cell updated but never schedule pitched audio.
             if self.playing.get() {
                 let _ = self.stop();
             }

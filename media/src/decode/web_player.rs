@@ -454,12 +454,12 @@ impl WebPlayer {
         self.is_playing() && self.presentation_len() < self.play_presentation_cap()
     }
 
-    /// Playback rate: forward `0.25…8`, reverse shuttle `−8…−2`.
-    /// `|rate| >= 2` → shuttle (wall clock, audio off). Direction flip clears the
+    /// Playback rate: forward `0.25…8`, reverse `−8…−1`.
+    /// `|rate| >= 2` or reverse → wall clock, audio off. Direction flip clears the
     /// present queue. Live change snaps clock origins.
     pub fn set_playback_rate(&self, rate: f64) {
         let rate = crate::normalize_playback_rate(rate);
-        let shuttle = crate::is_shuttle_rate(rate);
+        let wall = crate::is_wall_clock_rate(rate);
         let was_reverse = self.is_reverse();
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
         let t = self.media_time().max(0.0);
@@ -467,7 +467,7 @@ impl WebPlayer {
             || audio.as_ref().is_some_and(|a| a.is_playing());
 
         if let Some(a) = audio {
-            if shuttle {
+            if wall {
                 if a.is_playing() {
                     let _ = a.stop();
                 }
@@ -480,7 +480,7 @@ impl WebPlayer {
                     }
                 }
             } else {
-                // Review rate — may leave shuttle (wall → audio) while still playing.
+                // Forward review rate — may leave shuttle (wall → audio) while still playing.
                 self.shared.clock.borrow_mut().set_playback_rate(rate);
                 if was_playing && !a.is_playing() {
                     self.shared.clock.borrow_mut().start(t);
@@ -550,13 +550,13 @@ impl WebPlayer {
 
     /// Arm the media clock after `prime_playback` (host play path).
     ///
-    /// Review rate + audio track → decode/schedule pump (mediabunny `play` +
-    /// `runAudioIterator`). Shuttle (`rate >= 2`) or no audio → wall `performance`.
+    /// Forward review + audio track → decode/schedule pump (mediabunny `play` +
+    /// `runAudioIterator`). Shuttle / reverse / no audio → wall `performance`.
     pub async fn start_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.finish_underrun_hold_timer();
         self.shared.clock.borrow_mut().start(media_time_secs);
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
-        if self.is_shuttle() {
+        if crate::is_wall_clock_rate(self.playback_rate()) {
             if let Some(a) = audio {
                 let _ = a.stop();
                 a.store_playback_rate(self.playback_rate());

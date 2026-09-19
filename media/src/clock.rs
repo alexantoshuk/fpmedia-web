@@ -7,11 +7,12 @@
 //!
 //! Playback rate multiplies driver elapsed time. Public API:
 //! - forward review/shuttle: `0.25…8`
-//! - reverse shuttle only: `−8…−2` (no reverse review yet)
+//! - reverse JKL: `−8…−1` (full reverse review `−0.25…−1.75` later)
 //!
 //! `|rate| >= `[`PLAYBACK_RATE_SHUTTLE_MIN`] → shuttle policy (wall clock, audio off,
-//! lighter present queue). Reverse present = decode forward per frame, queue toward
-//! the past (mediabunny: no reverse iterator — GOP/key restart; `#350` encode-reverse).
+//! lighter present queue). Any reverse also uses wall + audio off until reverse
+//! review ships. Reverse present = decode forward per frame, queue toward the past
+//! (mediabunny: no reverse iterator — GOP/key restart; `#350` encode-reverse).
 //! mediabunny has no rate API — base formula stays `origin + elapsed`; we add `* rate`.
 
 /// Minimum forward playback rate (Frame.io review floor).
@@ -20,12 +21,14 @@ pub const PLAYBACK_RATE_MIN: f64 = 0.25;
 pub const PLAYBACK_RATE_MAX: f64 = 8.0;
 /// Frame.io review slider ceiling (UI hint; API still allows up to [`PLAYBACK_RATE_MAX`]).
 pub const PLAYBACK_RATE_REVIEW_MAX: f64 = 1.75;
+/// Minimum |reverse| rate (JKL −1×).
+pub const PLAYBACK_RATE_REVERSE_MIN: f64 = 1.0;
 /// |rate| at or above this uses shuttle decode/present/audio policy.
 pub const PLAYBACK_RATE_SHUTTLE_MIN: f64 = 2.0;
 /// Snap step for review + shuttle rates.
 pub const PLAYBACK_RATE_STEP: f64 = 0.05;
 
-/// Clamp + snap. Forward `0.25…8`; reverse shuttle `−8…−2` only.
+/// Clamp + snap. Forward `0.25…8`; reverse `−8…−1`.
 pub fn normalize_playback_rate(rate: f64) -> f64 {
     if !rate.is_finite() || rate == 0.0 {
         return 1.0;
@@ -33,9 +36,9 @@ pub fn normalize_playback_rate(rate: f64) -> f64 {
     if rate < 0.0 {
         let mag = rate
             .abs()
-            .clamp(PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_MAX);
+            .clamp(PLAYBACK_RATE_REVERSE_MIN, PLAYBACK_RATE_MAX);
         let snapped = (mag / PLAYBACK_RATE_STEP).round() * PLAYBACK_RATE_STEP;
-        return -snapped.clamp(PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_MAX);
+        return -snapped.clamp(PLAYBACK_RATE_REVERSE_MIN, PLAYBACK_RATE_MAX);
     }
     let clamped = rate.clamp(PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX);
     let snapped = (clamped / PLAYBACK_RATE_STEP).round() * PLAYBACK_RATE_STEP;
@@ -47,9 +50,14 @@ pub fn is_shuttle_rate(rate: f64) -> bool {
     normalize_playback_rate(rate).abs() >= PLAYBACK_RATE_SHUTTLE_MIN
 }
 
-/// True when rate plays toward the past (J shuttle).
+/// True when rate plays toward the past (J shuttle / −1×).
 pub fn is_reverse_rate(rate: f64) -> bool {
     normalize_playback_rate(rate) < 0.0
+}
+
+/// Wall clock + audio off: shuttle (`|rate| >= 2`) or any reverse (until reverse review).
+pub fn is_wall_clock_rate(rate: f64) -> bool {
+    is_shuttle_rate(rate) || is_reverse_rate(rate)
 }
 
 /// Playback media clock origins. Pure Rust — drivers (wall / audio) are passed in.
@@ -167,8 +175,13 @@ mod tests {
         assert!(c.is_shuttle());
         c.start(10.0);
         assert!((c.media_time(Some(1.0)) - 8.0).abs() < 1e-9);
-        c.set_playback_rate(-0.5); // snaps into reverse shuttle band
-        assert!((c.playback_rate() - -2.0).abs() < 1e-9);
+        c.set_playback_rate(-1.0);
+        assert!((c.playback_rate() - -1.0).abs() < 1e-9);
+        assert!(c.is_reverse());
+        assert!(!c.is_shuttle());
+        assert!(is_wall_clock_rate(-1.0));
+        c.set_playback_rate(-0.5); // snaps to reverse floor (−1×)
+        assert!((c.playback_rate() - -1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -180,12 +193,15 @@ mod tests {
         assert!((normalize_playback_rate(9.0) - 8.0).abs() < 1e-9);
         assert!((normalize_playback_rate(f64::NAN) - 1.0).abs() < 1e-9);
         assert!((normalize_playback_rate(-3.0) - -3.0).abs() < 1e-9);
-        assert!((normalize_playback_rate(-1.0) - -2.0).abs() < 1e-9);
+        assert!((normalize_playback_rate(-1.0) - -1.0).abs() < 1e-9);
         assert!((normalize_playback_rate(-9.0) - -8.0).abs() < 1e-9);
         assert!(is_shuttle_rate(2.0));
         assert!(is_shuttle_rate(-2.0));
+        assert!(!is_shuttle_rate(-1.0));
         assert!(!is_shuttle_rate(1.75));
+        assert!(is_wall_clock_rate(-1.0));
         assert!(is_reverse_rate(-2.0));
+        assert!(is_reverse_rate(-1.0));
         assert!(!is_reverse_rate(2.0));
     }
 }
