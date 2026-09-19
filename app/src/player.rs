@@ -9,11 +9,11 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 
-/// Frame.io JKL shuttle ladder (J walks left, L walks right, K → 1×).
-const JKL_STEPS: [f64; 8] = [-8.0, -4.0, -2.0, -1.0, 1.0, 2.0, 4.0, 8.0];
+/// Frame.io JKL shuttle ladder (forward only: J slower toward 1×, L faster, K → 1×).
+const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
 
 fn jkl_nearest_index(rate: f64) -> usize {
-    let mut best = 4; // 1.0
+    let mut best = 0; // 1.0
     let mut best_dist = f64::INFINITY;
     for (i, &step) in JKL_STEPS.iter().enumerate() {
         let d = (rate - step).abs();
@@ -25,7 +25,7 @@ fn jkl_nearest_index(rate: f64) -> usize {
     best
 }
 
-/// `dir`: −1 = J (slower forward / more reverse), +1 = L.
+/// `dir`: −1 = J (slower), +1 = L (faster).
 fn jkl_step(rate: f64, dir: i32) -> f64 {
     let i = jkl_nearest_index(rate);
     let next = (i as i32 + dir).clamp(0, (JKL_STEPS.len() - 1) as i32) as usize;
@@ -402,7 +402,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     <label
                         class="wm-rate"
                         data-testid="playback-rate"
-                        title="Playback rate (0.25–1.75 review; J/L = −8…−1 / 1 / 2…8; K = 1×)"
+                        title="Playback rate (0.25–1.75 review; J/L = 1 / 2 / 4 / 8; K = 1×)"
                     >
                         <span class="wm-rate-label">
                             {move || format!("{:.2}x", video.playback_rate.get())}

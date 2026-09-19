@@ -40,7 +40,7 @@ pub struct VideoRef {
     pub has_audio: RwSignal<bool>,
     pub volume: RwSignal<f64>,
     pub muted: RwSignal<bool>,
-    /// Frame.io-style playback rate (forward 0.25–8; reverse −8…−1).
+    /// Frame.io-style playback rate (forward 0.25–8).
     pub playback_rate: RwSignal<f64>,
     /// Non-`Send` callbacks registered by the mounted [`Video`] component.
     pub(crate) ops: StoredValue<Option<VideoOps>, LocalStorage>,

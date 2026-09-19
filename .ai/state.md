@@ -13,7 +13,6 @@
 ### Play / scrub (short path)
 
 1. Fixed-pitch audio for review rates (non-1×) — currently muted except exact 1×.
-2. Reverse review (−0.25…−1.75) + reverse loop-to-end.
 
 ### Media engine
 
