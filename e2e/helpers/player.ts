@@ -55,6 +55,7 @@ export class DemoPlayer {
   readonly prev: Locator;
   readonly next: Locator;
   readonly seek: Locator;
+  readonly playbackRate: Locator;
   readonly prefetchQueue: Locator;
   readonly prefetchAhead: Locator;
   readonly frameCache: Locator;
@@ -75,6 +76,7 @@ export class DemoPlayer {
     this.prev = page.getByTestId("btn-prev");
     this.next = page.getByTestId("btn-next");
     this.seek = page.getByTestId("btn-seek");
+    this.playbackRate = page.getByTestId("playback-rate");
     this.prefetchQueue = page.getByTestId("meter-prefetch-queue-detail");
     this.prefetchAhead = page.getByTestId("meter-prefetch-ahead-detail");
     this.frameCache = page.getByTestId("meter-frame-cache-detail");
@@ -102,6 +104,23 @@ export class DemoPlayer {
 
   async readStatus(): Promise<PlayerStatus> {
     return parseStatus(await this.status.innerText());
+  }
+
+  /** Parsed rate badge (`1.00x`, `-2.00x`). */
+  async readPlaybackRate(): Promise<number> {
+    const text = (await this.playbackRate.innerText()).trim();
+    const m = text.match(/(-?[\d.]+)\s*x/i);
+    if (!m) throw new Error(`playback-rate badge unreadable: ${text}`);
+    return Number(m[1]);
+  }
+
+  async waitPlaybackRate(rate: number, timeout = 5_000) {
+    await expect
+      .poll(async () => (await this.readPlaybackRate()).toFixed(2), {
+        timeout,
+        message: `playback rate did not reach ${rate}`,
+      })
+      .toBe(rate.toFixed(2));
   }
 
   async waitPlayhead(frame: number, timeout = 10_000) {

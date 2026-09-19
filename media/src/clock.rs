@@ -9,11 +9,12 @@
 //! - forward review/shuttle: `0.25…8`
 //! - reverse JKL: `−8…−1` (full reverse review `−0.25…−1.75` later)
 //!
-//! `|rate| >= `[`PLAYBACK_RATE_SHUTTLE_MIN`] → shuttle policy (wall clock, audio off,
-//! lighter present queue). Any reverse also uses wall + audio off until reverse
-//! review ships. Reverse present = decode forward per frame, queue toward the past
-//! (mediabunny: no reverse iterator — GOP/key restart; `#350` encode-reverse).
-//! mediabunny has no rate API — base formula stays `origin + elapsed`; we add `* rate`.
+//! `|rate| >= `[`PLAYBACK_RATE_SHUTTLE_MIN`] → shuttle policy (lighter present queue).
+//! **Temp:** wall clock + audio off for every rate except exact `1.0` until non-1×
+//! rates are stable ([`is_wall_clock_rate`]). Reverse present = decode forward per
+//! frame, queue toward the past (mediabunny: no reverse iterator — GOP/key restart;
+//! `#350` encode-reverse). mediabunny has no rate API — base formula stays
+//! `origin + elapsed`; we add `* rate`.
 
 /// Minimum forward playback rate (Frame.io review floor).
 pub const PLAYBACK_RATE_MIN: f64 = 0.25;
@@ -23,7 +24,7 @@ pub const PLAYBACK_RATE_MAX: f64 = 8.0;
 pub const PLAYBACK_RATE_REVIEW_MAX: f64 = 1.75;
 /// Minimum |reverse| rate (JKL −1×).
 pub const PLAYBACK_RATE_REVERSE_MIN: f64 = 1.0;
-/// |rate| at or above this uses shuttle decode/present/audio policy.
+/// |rate| at or above this uses shuttle decode/present policy.
 pub const PLAYBACK_RATE_SHUTTLE_MIN: f64 = 2.0;
 /// Snap step for review + shuttle rates.
 pub const PLAYBACK_RATE_STEP: f64 = 0.05;
@@ -45,7 +46,7 @@ pub fn normalize_playback_rate(rate: f64) -> f64 {
     snapped.clamp(PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX)
 }
 
-/// True when |rate| should use shuttle policy (audio off, wall clock, lighter queue).
+/// True when |rate| should use shuttle decode/present policy (lighter queue).
 pub fn is_shuttle_rate(rate: f64) -> bool {
     normalize_playback_rate(rate).abs() >= PLAYBACK_RATE_SHUTTLE_MIN
 }
@@ -55,9 +56,12 @@ pub fn is_reverse_rate(rate: f64) -> bool {
     normalize_playback_rate(rate) < 0.0
 }
 
-/// Wall clock + audio off: shuttle (`|rate| >= 2`) or any reverse (until reverse review).
+/// Wall clock + audio off for every rate except exact `1.0`.
+///
+/// Temp until non-1× (review + shuttle + reverse) is stable — avoids audio
+/// rearm / pitch churn on JKL steps. `mediabunny: no equivalent` (no rate API).
 pub fn is_wall_clock_rate(rate: f64) -> bool {
-    is_shuttle_rate(rate) || is_reverse_rate(rate)
+    (normalize_playback_rate(rate) - 1.0).abs() > 1e-9
 }
 
 /// Playback media clock origins. Pure Rust — drivers (wall / audio) are passed in.
@@ -199,6 +203,11 @@ mod tests {
         assert!(is_shuttle_rate(-2.0));
         assert!(!is_shuttle_rate(-1.0));
         assert!(!is_shuttle_rate(1.75));
+        assert!(!is_wall_clock_rate(1.0));
+        assert!(!is_wall_clock_rate(1.02)); // snaps to 1.0
+        assert!(is_wall_clock_rate(0.5));
+        assert!(is_wall_clock_rate(1.5));
+        assert!(is_wall_clock_rate(2.0));
         assert!(is_wall_clock_rate(-1.0));
         assert!(is_reverse_rate(-2.0));
         assert!(is_reverse_rate(-1.0));

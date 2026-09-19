@@ -39,7 +39,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
   (volume/mute/transport). A future pure-**`<Audio>` / `AudioRef`** reuses the same demux + decode + clock
   without a video track or canvas.
 - **Play vs scrub residency (agreed):** Play stays mediabunny-light (tiny `VideoFrame` pool, densify off). Scrub densify critical path = **decode → `ImageBitmap` → canvas** (`mediabunny:` CanvasSink-style). `ScrubChunkStore` holds **resident markers** only (gap geometry). Demo strip: dim green = marker coverage, bright green = blit window (two CSS gradient overlays; kept on Play for markers). **Seek / settle** paint decode `VideoFrame`. **Next / Prev** prefer VF ring, else warm blit, else soft warm decode (densify keeps running). Resize/fullscreen keeps scrub trail; canvas buffer wipe → repaint from `displayed` (else warm blit).
-- **JKL shuttle (Frame.io):** ladder `−8, −4, −2, −1, 1, 2, 4, 8`. **J** walks left, **L** walks right (clamp at ends; path through **±1×** before flipping direction). **K** resets rate to **1×**, then pause/play. Demo keys: `app/src/player.rs` (`JKL_STEPS`). Review slider `0.25…1.75` is separate from the ladder.
+- **JKL shuttle (Frame.io):** ladder `−8, −4, −2, −1, 1, 2, 4, 8`. **J** walks left, **L** walks right (clamp at ends; path through **±1×** before flipping direction). **K** resets rate to **1×**, then pause/play. Demo keys: `app/src/player.rs` (`JKL_STEPS`). Review slider `0.25…1.75` is separate from the ladder. **Temp:** audio only at exact **1×** (`is_wall_clock_rate`) until non-1× rates are stable.
 
 ---
 

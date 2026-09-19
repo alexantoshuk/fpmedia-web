@@ -455,8 +455,8 @@ impl WebPlayer {
     }
 
     /// Playback rate: forward `0.25…8`, reverse `−8…−1`.
-    /// `|rate| >= 2` or reverse → wall clock, audio off. Direction flip clears the
-    /// present queue. Live change snaps clock origins.
+    /// Non-1× → wall clock, audio off ([`crate::is_wall_clock_rate`]). Direction
+    /// flip clears the present queue. Live change snaps clock origins.
     pub fn set_playback_rate(&self, rate: f64) {
         let rate = crate::normalize_playback_rate(rate);
         let wall = crate::is_wall_clock_rate(rate);
@@ -480,7 +480,7 @@ impl WebPlayer {
                     }
                 }
             } else {
-                // Forward review rate — may leave shuttle (wall → audio) while still playing.
+                // Exact 1× — may leave wall (shuttle/review) → audio while still playing.
                 self.shared.clock.borrow_mut().set_playback_rate(rate);
                 if was_playing && !a.is_playing() {
                     self.shared.clock.borrow_mut().start(t);
@@ -550,8 +550,8 @@ impl WebPlayer {
 
     /// Arm the media clock after `prime_playback` (host play path).
     ///
-    /// Forward review + audio track → decode/schedule pump (mediabunny `play` +
-    /// `runAudioIterator`). Shuttle / reverse / no audio → wall `performance`.
+    /// Forward 1× + audio track → decode/schedule pump (mediabunny `play` +
+    /// `runAudioIterator`). Non-1× / no audio → wall `performance`.
     pub async fn start_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.finish_underrun_hold_timer();
         self.shared.clock.borrow_mut().start(media_time_secs);
