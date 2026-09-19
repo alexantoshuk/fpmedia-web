@@ -8,10 +8,10 @@ pub type FrameId = u64;
 /// Scene cuts shorten some GOPs (large max−min spread) but `max ≤` this still
 /// counts as short-IP — do **not** gate on spread (was false-`Long` on ShotGrid).
 pub const SHORT_GOP_MAX_LEN: u32 = 30;
-/// Default dense-cache RAM budget (decoded `VideoFrame` estimate).
-/// Frame count = budget / (w×h×1.5), clamped by [`MAX_SCRUB_CACHE_FRAMES`].
-/// Prefer overriding via [`ScrubPolicy::scrub_cache_mib`], not this global alone.
-pub const DEFAULT_SCRUB_CACHE_MIB: usize = 1280;
+/// Default dense-cache marker budget (decoded-frame **estimate** only — store holds
+/// markers, not pixels). Frame count = budget / (w×h×1.5), clamped by
+/// [`MAX_SCRUB_CACHE_FRAMES`]. Prefer [`ScrubPolicy::scrub_cache_mib`].
+pub const DEFAULT_SCRUB_CACHE_MIB: usize = 8192;
 /// Reference live blit count at 1280×720 for Short ([`DEFAULT_SCRUB_BLIT_MIB_SHORT`]).
 /// Prefer [`scrub_blit_frame_budget`] from policy MiB × canvas buffer — do not raise this alone.
 pub const SCRUB_BLIT_LRU: usize = 96;
@@ -30,8 +30,10 @@ pub const DECODED_BYTES_PER_PIXEL_NUM: u64 = 3;
 pub const DECODED_BYTES_PER_PIXEL_DEN: u64 = 2;
 /// Floor so tiny resolutions / tiny budgets still keep a usable ring.
 pub const MIN_SCRUB_CACHE_FRAMES: usize = 8;
-/// Ceiling so tiny coded sizes cannot explode residency (decoder pool / WASM).
-pub const MAX_SCRUB_CACHE_FRAMES: usize = 512;
+/// Ceiling on Covered markers (gap geometry). Markers are cheap; keep a hard
+/// cap so pathological tiny coded sizes cannot densify forever. Exact blit
+/// stays on [`MAX_SCRUB_BLIT_FRAMES`] / `blit_mib`.
+pub const MAX_SCRUB_CACHE_FRAMES: usize = 4096;
 /// Floor for [`ScrubPolicy::margin_left`] (timeline earlier / lower FrameId).
 pub const EDGE_MARGIN_LEFT_MIN: u64 = 8;
 /// Ceiling for [`ScrubPolicy::margin_left`] — keep below ~¼ typical blit window.

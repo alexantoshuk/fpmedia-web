@@ -151,8 +151,8 @@ Densify `on_frame`: VF → `transferToImageBitmap` + marker. `mediabunny:` Canva
 
 | Constant | Default | Meaning |
 | -------- | ------- | ------- |
-| `DEFAULT_SCRUB_CACHE_MIB` | 1280 | Scrub-store frame budget (decoded-frame estimate; clamped by `MAX_SCRUB_CACHE_FRAMES`) |
-| `MIN_SCRUB_CACHE_FRAMES` / `MAX_SCRUB_CACHE_FRAMES` | 8 / 512 | Floor / ceiling after MiB→frames |
+| `DEFAULT_SCRUB_CACHE_MIB` | 8192 | Covered marker budget (YUV-sized **estimate**; store is markers only) |
+| `MIN_SCRUB_CACHE_FRAMES` / `MAX_SCRUB_CACHE_FRAMES` | 8 / 4096 | Floor / ceiling after MiB→frames — Exact blit unchanged |
 | `PRESENTATION_QUEUE_CAP` | 4 | Play/Next ahead depth (with `STEP_BEHIND_CAP` ≈ 1+8+4 live VF) |
 | `STEP_BEHIND_CAP` | 8 | Live VF behind playhead for Prev without key→N |
 | `SCRUB_BLIT_LRU` | 96 | Reference blit count at 1280×720 for Short; real cap = [`scrub_blit_frame_budget`] from `blit_mib` × CSS×DPR buffer — tune MiB per profile, not this alone |
