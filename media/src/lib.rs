@@ -27,7 +27,8 @@ pub use bitstream::{
 };
 pub use clock::{
     MediaClock, PLAYBACK_RATE_MAX, PLAYBACK_RATE_MIN, PLAYBACK_RATE_REVIEW_MAX,
-    PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_STEP, is_shuttle_rate, normalize_playback_rate,
+    PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_STEP, is_reverse_rate, is_shuttle_rate,
+    normalize_playback_rate,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use demux::open_mp4_path;

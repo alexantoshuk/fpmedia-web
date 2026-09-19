@@ -12,8 +12,8 @@
 
 ### Play / scrub (short path)
 
-1. J reverse shuttle (negative rate / reverse decode).
-2. Fixed-pitch audio for review rates (non-1×).
+1. Fixed-pitch audio for review rates (non-1×).
+2. Reverse review (−0.25…−1.75) + reverse loop-to-end.
 
 ### Media engine
 

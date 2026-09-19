@@ -5,35 +5,51 @@
 //! With audio, the host/engine uses [`AudioContext.currentTime`](https://developer.mozilla.org/en-US/docs/Web/API/BaseAudioContext/currentTime)
 //! (mediabunny `examples/media-player` `getPlaybackTime`).
 //!
-//! Playback rate multiplies driver elapsed time. Public API: 0.25–8.
-//! Review UI typically stays ≤1.75; `rate >= `[`PLAYBACK_RATE_SHUTTLE_MIN`] switches
-//! internal shuttle policy (wall clock, audio off, lighter present queue).
+//! Playback rate multiplies driver elapsed time. Public API:
+//! - forward review/shuttle: `0.25…8`
+//! - reverse shuttle only: `−8…−2` (no reverse review yet)
+//!
+//! `|rate| >= `[`PLAYBACK_RATE_SHUTTLE_MIN`] → shuttle policy (wall clock, audio off,
+//! lighter present queue). Reverse present = decode forward per frame, queue toward
+//! the past (mediabunny: no reverse iterator — GOP/key restart; `#350` encode-reverse).
 //! mediabunny has no rate API — base formula stays `origin + elapsed`; we add `* rate`.
 
-/// Minimum playback rate (Frame.io review floor).
+/// Minimum forward playback rate (Frame.io review floor).
 pub const PLAYBACK_RATE_MIN: f64 = 0.25;
-/// Maximum playback rate (JKL shuttle ceiling).
+/// Maximum |rate| (JKL shuttle ceiling).
 pub const PLAYBACK_RATE_MAX: f64 = 8.0;
 /// Frame.io review slider ceiling (UI hint; API still allows up to [`PLAYBACK_RATE_MAX`]).
 pub const PLAYBACK_RATE_REVIEW_MAX: f64 = 1.75;
-/// Rates at or above this use shuttle decode/present/audio policy.
+/// |rate| at or above this uses shuttle decode/present/audio policy.
 pub const PLAYBACK_RATE_SHUTTLE_MIN: f64 = 2.0;
 /// Snap step for review + shuttle rates.
 pub const PLAYBACK_RATE_STEP: f64 = 0.05;
 
-/// Clamp + snap to [`PLAYBACK_RATE_STEP`] within 0.25–8.
+/// Clamp + snap. Forward `0.25…8`; reverse shuttle `−8…−2` only.
 pub fn normalize_playback_rate(rate: f64) -> f64 {
-    if !rate.is_finite() {
+    if !rate.is_finite() || rate == 0.0 {
         return 1.0;
+    }
+    if rate < 0.0 {
+        let mag = rate
+            .abs()
+            .clamp(PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_MAX);
+        let snapped = (mag / PLAYBACK_RATE_STEP).round() * PLAYBACK_RATE_STEP;
+        return -snapped.clamp(PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_MAX);
     }
     let clamped = rate.clamp(PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX);
     let snapped = (clamped / PLAYBACK_RATE_STEP).round() * PLAYBACK_RATE_STEP;
     snapped.clamp(PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX)
 }
 
-/// True when rate should use shuttle policy (audio off, wall clock, lighter queue).
+/// True when |rate| should use shuttle policy (audio off, wall clock, lighter queue).
 pub fn is_shuttle_rate(rate: f64) -> bool {
-    normalize_playback_rate(rate) >= PLAYBACK_RATE_SHUTTLE_MIN
+    normalize_playback_rate(rate).abs() >= PLAYBACK_RATE_SHUTTLE_MIN
+}
+
+/// True when rate plays toward the past (J shuttle).
+pub fn is_reverse_rate(rate: f64) -> bool {
+    normalize_playback_rate(rate) < 0.0
 }
 
 /// Playback media clock origins. Pure Rust — drivers (wall / audio) are passed in.
@@ -41,7 +57,7 @@ pub fn is_shuttle_rate(rate: f64) -> bool {
 pub struct MediaClock {
     /// Media time (seconds) at the last [`Self::start`] / pause snap.
     media_origin: f64,
-    /// Media seconds per driver second (1.0 = realtime).
+    /// Media seconds per driver second (1.0 = realtime; negative = reverse).
     rate: f64,
     playing: bool,
 }
@@ -73,6 +89,10 @@ impl MediaClock {
         is_shuttle_rate(self.rate)
     }
 
+    pub fn is_reverse(&self) -> bool {
+        is_reverse_rate(self.rate)
+    }
+
     /// Set playback rate (already normalized by callers that need Frame.io snap).
     pub fn set_playback_rate(&mut self, rate: f64) {
         self.rate = normalize_playback_rate(rate);
@@ -98,7 +118,8 @@ impl MediaClock {
     /// Current media time.
     ///
     /// - Playing + `driver_elapsed` = seconds since [`Self::start`] on the active
-    ///   driver (wall delta or `ctx.currentTime - ctx_origin`), scaled by rate.
+    ///   driver (wall delta or `ctx.currentTime - ctx_origin`), scaled by rate
+    ///   (negative rate rewinds).
     /// - Paused → [`Self::media_origin`].
     pub fn media_time(&self, driver_elapsed: Option<f64>) -> f64 {
         if self.playing {
@@ -139,6 +160,18 @@ mod tests {
     }
 
     #[test]
+    fn reverse_rate_rewinds() {
+        let mut c = MediaClock::new();
+        c.set_playback_rate(-2.0);
+        assert!(c.is_reverse());
+        assert!(c.is_shuttle());
+        c.start(10.0);
+        assert!((c.media_time(Some(1.0)) - 8.0).abs() < 1e-9);
+        c.set_playback_rate(-0.5); // snaps into reverse shuttle band
+        assert!((c.playback_rate() - -2.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn normalize_snaps_to_step() {
         assert!((normalize_playback_rate(1.0) - 1.0).abs() < 1e-9);
         assert!((normalize_playback_rate(1.02) - 1.0).abs() < 1e-9);
@@ -146,7 +179,13 @@ mod tests {
         assert!((normalize_playback_rate(0.1) - 0.25).abs() < 1e-9);
         assert!((normalize_playback_rate(9.0) - 8.0).abs() < 1e-9);
         assert!((normalize_playback_rate(f64::NAN) - 1.0).abs() < 1e-9);
+        assert!((normalize_playback_rate(-3.0) - -3.0).abs() < 1e-9);
+        assert!((normalize_playback_rate(-1.0) - -2.0).abs() < 1e-9);
+        assert!((normalize_playback_rate(-9.0) - -8.0).abs() < 1e-9);
         assert!(is_shuttle_rate(2.0));
+        assert!(is_shuttle_rate(-2.0));
         assert!(!is_shuttle_rate(1.75));
+        assert!(is_reverse_rate(-2.0));
+        assert!(!is_reverse_rate(2.0));
     }
 }

@@ -106,7 +106,7 @@ pub fn DemoPlayer() -> impl IntoView {
         }
     });
 
-    // ← / → step when paused; L/K shuttle (J reverse later). Skip when typing.
+    // ← / → step when paused; J/K/L shuttle. Skip when typing.
     let _transport_keys = use_event_listener(window(), ev::keydown, move |ev| {
         let Some(target) = ev.target() else {
             return;
@@ -144,6 +144,21 @@ pub fn DemoPlayer() -> impl IntoView {
                     4.0
                 } else {
                     8.0
+                };
+                video.set_playback_rate(next);
+                if !video.playing.get_untracked() {
+                    video.play();
+                }
+            }
+            "j" | "J" => {
+                ev.prevent_default();
+                let rate = video.playback_rate.get_untracked();
+                let next = if rate > -2.0 {
+                    -2.0
+                } else if rate > -4.0 {
+                    -4.0
+                } else {
+                    -8.0
                 };
                 video.set_playback_rate(next);
                 if !video.playing.get_untracked() {
@@ -377,7 +392,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     <label
                         class="wm-rate"
                         data-testid="playback-rate"
-                        title="Playback rate (0.25–1.75 review; L = 2/4/8 shuttle)"
+                        title="Playback rate (0.25–1.75 review; L/J = ±2/4/8 shuttle)"
                     >
                         <span class="wm-rate-label">
                             {move || format!("{:.2}x", video.playback_rate.get())}
@@ -390,7 +405,12 @@ pub fn DemoPlayer() -> impl IntoView {
                             max="1.75"
                             step="0.05"
                             prop:value=move || {
-                                video.playback_rate.get().min(1.75).to_string()
+                                let r = video.playback_rate.get();
+                                if r < 0.0 {
+                                    "0.25".to_string()
+                                } else {
+                                    r.min(1.75).to_string()
+                                }
                             }
                             prop:disabled=move || !video.ready.get()
                             on:input=move |ev| {

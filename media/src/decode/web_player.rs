@@ -30,8 +30,21 @@ use crate::types::{
 /// Chromium's pool on DRYP play (`flush/idle` mid-GOP with `decodeQ≈12`).
 /// Pair with [`STEP_BEHIND_CAP`] (ring ≈ 1 displayed + 8 behind + 4 ahead).
 pub const PRESENTATION_QUEUE_CAP: usize = 4;
-/// Ahead depth while shuttling (`rate >= 2`) — keep decode light.
+/// Ahead depth while shuttling forward (`rate >= 2`) — keep decode light.
 pub const SHUTTLE_PRESENTATION_QUEUE_CAP: usize = 2;
+/// Reverse shuttle holds one decoded GOP trail (present-back). Larger caps
+/// plus eager prev-GOP decode pin too many `VideoFrame`s and starve Chromium
+/// (DRYP: queue drains, `holds ~25s`, refill never lands). mediabunny #350:
+/// short per-GOP decode passes — not a multi-GOP VF buffer.
+pub const REVERSE_PRESENTATION_QUEUE_CAP: usize = 32;
+/// Start decoding the previous GOP only once the reverse queue is this thin —
+/// keeps peak live VF ≈ one GOP (not two overlapping `decode_gop`s).
+const REVERSE_PREV_GOP_WARM_BELOW: usize = 8;
+/// Freeze the reverse clock when the trail is this thin so −2× cannot burn the
+/// whole GOP in a few rAFs before `decode_gop` returns.
+const REVERSE_UNDERRUN_WATERMARK: usize = 4;
+/// Max reverse presents per rAF (−2× ≈ 2 media frames/tick; small slack).
+const REVERSE_PRESENT_PER_TICK: usize = 4;
 /// Live VF older than the playhead for Prev without key→N (step/scrub ring).
 /// mediabunny reverse always restarts from key unless samples are retained —
 /// this is the SampleCursor-lite behind window (`media-sink.ts` flush on rewind).
@@ -416,31 +429,40 @@ impl WebPlayer {
         self.shared.clock.borrow().playback_rate()
     }
 
-    /// True when current rate uses shuttle policy (`>= 2`).
+    /// True when current rate uses shuttle policy (`|rate| >= 2`).
     pub fn is_shuttle(&self) -> bool {
         self.shared.clock.borrow().is_shuttle()
     }
 
+    /// True when playing toward the past (J shuttle).
+    pub fn is_reverse(&self) -> bool {
+        self.shared.clock.borrow().is_reverse()
+    }
+
     fn play_presentation_cap(&self) -> usize {
-        if self.is_shuttle() {
+        if self.is_reverse() {
+            REVERSE_PRESENTATION_QUEUE_CAP
+        } else if self.is_shuttle() {
             SHUTTLE_PRESENTATION_QUEUE_CAP
         } else {
             PRESENTATION_QUEUE_CAP
         }
     }
 
-    /// True when the play prefetch loop should decode another ahead frame.
+    /// True when the play prefetch loop should decode another ahead/behind frame.
     pub fn wants_play_prefetch(&self) -> bool {
         self.is_playing() && self.presentation_len() < self.play_presentation_cap()
     }
 
-    /// Playback rate 0.25–8 (step 0.05). `>= 2` → shuttle (wall clock, audio off).
-    /// Live change snaps clock origins.
+    /// Playback rate: forward `0.25…8`, reverse shuttle `−8…−2`.
+    /// `|rate| >= 2` → shuttle (wall clock, audio off). Direction flip clears the
+    /// present queue. Live change snaps clock origins.
     pub fn set_playback_rate(&self, rate: f64) {
         let rate = crate::normalize_playback_rate(rate);
         let shuttle = crate::is_shuttle_rate(rate);
+        let was_reverse = self.is_reverse();
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
-        let t = self.media_time();
+        let t = self.media_time().max(0.0);
         let was_playing = self.shared.clock.borrow().is_playing()
             || audio.as_ref().is_some_and(|a| a.is_playing());
 
@@ -457,42 +479,47 @@ impl WebPlayer {
                         self.shared.wall_origin.set(Some(now / 1000.0));
                     }
                 }
-                return;
-            }
-
-            // Review rate — may leave shuttle (wall → audio) while still playing.
-            self.shared.clock.borrow_mut().set_playback_rate(rate);
-            if was_playing && !a.is_playing() {
-                self.shared.clock.borrow_mut().start(t);
-                self.shared.wall_origin.set(None);
-                a.store_playback_rate(rate);
-                let audio = Rc::clone(&a);
-                let start_t = t;
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Err(e) = audio.start_spawned(start_t).await {
-                        web_sys::console::warn_1(
-                            &format!("webmedia: audio after shuttle: {e}").into(),
-                        );
-                    }
-                });
-            } else if a.is_playing() {
-                a.set_playback_rate(rate);
-                self.shared.clock.borrow_mut().start(t);
             } else {
-                a.store_playback_rate(rate);
-            }
-            return;
-        }
-
-        let playing = self.shared.clock.borrow().is_playing();
-        if playing {
-            self.shared.clock.borrow_mut().set_playback_rate(rate);
-            self.shared.clock.borrow_mut().start(t);
-            if let Some(now) = performance_now_ms() {
-                self.shared.wall_origin.set(Some(now / 1000.0));
+                // Review rate — may leave shuttle (wall → audio) while still playing.
+                self.shared.clock.borrow_mut().set_playback_rate(rate);
+                if was_playing && !a.is_playing() {
+                    self.shared.clock.borrow_mut().start(t);
+                    self.shared.wall_origin.set(None);
+                    a.store_playback_rate(rate);
+                    let audio = Rc::clone(&a);
+                    let start_t = t;
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if let Err(e) = audio.start_spawned(start_t).await {
+                            web_sys::console::warn_1(
+                                &format!("webmedia: audio after shuttle: {e}").into(),
+                            );
+                        }
+                    });
+                } else if a.is_playing() {
+                    a.set_playback_rate(rate);
+                    self.shared.clock.borrow_mut().start(t);
+                } else {
+                    a.store_playback_rate(rate);
+                }
             }
         } else {
+            let playing = self.shared.clock.borrow().is_playing();
             self.shared.clock.borrow_mut().set_playback_rate(rate);
+            if playing {
+                self.shared.clock.borrow_mut().start(t);
+                if let Some(now) = performance_now_ms() {
+                    self.shared.wall_origin.set(Some(now / 1000.0));
+                }
+            }
+        }
+
+        // Forward ↔ reverse: drop the wrong-direction queue and hard-reset the
+        // decoder — `decode_gop` warm state left forward `decode_frame` wedged
+        // after J→Play (even when the flip happened while paused).
+        if was_reverse != crate::is_reverse_rate(rate) {
+            self.clear_presentation();
+            self.clear_step_ring();
+            self.invalidate_decoder();
         }
     }
 
@@ -959,7 +986,7 @@ impl WebPlayer {
         };
         PipelineStats {
             presentation_len,
-            presentation_cap: PRESENTATION_QUEUE_CAP,
+            presentation_cap: self.play_presentation_cap(),
             presentation_from,
             presentation_to,
             held_len,
@@ -1396,13 +1423,33 @@ impl WebPlayer {
     /// Used to freeze the media clock (not for `skip_behind`). Distinct from a
     /// healthy empty queue while waiting for the next frame's deadline.
     pub fn play_underrun_hold(&self) -> bool {
-        // Shuttle keeps the clock running — freeze feels stuck at 2–8×; present
-        // already drops overdue frames when the queue catches up.
-        if self.is_shuttle() {
-            return false;
-        }
         if !self.is_playing() || self.shared.restarting.get() {
             return false;
+        }
+        // Forward shuttle: keep clock running (skip overdue when frames arrive).
+        // Reverse shuttle: freeze when the clock wants an older frame we do not
+        // have yet — otherwise the scrubber rewinds on a frozen canvas.
+        if self.is_shuttle() && !self.is_reverse() {
+            return false;
+        }
+        if self.is_reverse() {
+            let Ok(target) = self.reverse_clock_target() else {
+                return false;
+            };
+            if target >= self.state().frame {
+                return false;
+            }
+            let front = self.shared.presentation.borrow().front().map(|q| q.frame);
+            // Hold when we cannot catch up: empty, gap (`front < target`), or the
+            // trail is below watermark (−2× otherwise empties the GOP before refill).
+            if self.presentation_len() < REVERSE_UNDERRUN_WATERMARK {
+                return true;
+            }
+            return match front {
+                None => true,
+                Some(f) if f < target => true,
+                _ => false,
+            };
         }
         if self.presentation_len() > 0 {
             return false;
@@ -1416,6 +1463,12 @@ impl WebPlayer {
             return false;
         };
         self.media_time() >= start
+    }
+
+    fn reverse_clock_target(&self) -> Result<FrameId, MediaError> {
+        let t = self.media_time().max(0.0);
+        let player = self.shared.player.borrow();
+        Ok(player.track().index().frame_at_time(t).unwrap_or(0))
     }
 
     /// Media-clock seconds ahead of the next needed frame while the presentation
@@ -1456,6 +1509,10 @@ impl WebPlayer {
         if count == 0 {
             self.shared.player.borrow_mut().pause();
             return Ok(DuePresent::Ended);
+        }
+
+        if self.is_reverse() {
+            return self.present_due_reverse(media_time_secs);
         }
 
         let last_end = {
@@ -1530,6 +1587,87 @@ impl WebPlayer {
             break;
         }
 
+        Ok(DuePresent::Playing { did_draw })
+    }
+
+    /// Reverse shuttle present: show frames down to `frame_at_time(media_time)`.
+    ///
+    /// At −2× one rAF covers ~2 media frames — present up to
+    /// [`REVERSE_PRESENT_PER_TICK`] queued heads with `frame >= target` (catch-up),
+    /// then stop. Do **not** paint older-than-target heads (gap → underrun hold).
+    /// Do **not** End merely because `media_time <= 0` while still mid-timeline
+    /// (clock can reach 0 during a starved reverse; that aborted Play and left
+    /// forward broken after J).
+    /// Queue stays descending (front = next older). Decode is still key→N forward
+    /// (`mediabunny: #350` per-GOP decode, present back).
+    fn present_due_reverse(&self, media_time_secs: f64) -> Result<DuePresent, MediaError> {
+        let first_start = self.frame_timestamp_seconds(0)?;
+        let target = {
+            let player = self.shared.player.borrow();
+            player
+                .track()
+                .index()
+                .frame_at_time(media_time_secs.max(0.0))
+                .unwrap_or(0)
+        };
+
+        // Only end reverse when we have actually presented the first frame.
+        if self.state().frame == 0
+            && target == 0
+            && self.presentation_len() == 0
+            && (media_time_secs <= first_start || media_time_secs <= 0.0)
+        {
+            self.shared.player.borrow_mut().pause();
+            self.clear_presentation();
+            self.clear_step_ring();
+            return Ok(DuePresent::Ended);
+        }
+
+        let mut did_draw = false;
+        let mut presented = 0usize;
+        loop {
+            // Already on the clock target — discard a duplicate head if prefetch raced.
+            if self.state().frame == target {
+                let front = self.shared.presentation.borrow().front().map(|q| q.frame);
+                if front == Some(target)
+                    && let Some(q) = self.shared.presentation.borrow_mut().pop_front()
+                {
+                    drop(q.video);
+                }
+                break;
+            }
+
+            let front_frame = self.shared.presentation.borrow().front().map(|q| q.frame);
+            let Some(front_frame) = front_frame else {
+                break;
+            };
+            // Gap: only older frames buffered — wait for decode of `target`.
+            if front_frame < target {
+                break;
+            }
+            // `front_frame >= target`: due or overdue — present head and continue
+            // until we hit `target`, the per-tick cap, or the queue runs out.
+
+            let queued = self
+                .shared
+                .presentation
+                .borrow_mut()
+                .pop_front()
+                .expect("front checked");
+            let start = self.frame_timestamp_seconds(queued.frame)?;
+            let lag_ms = ((start - media_time_secs) * 1000.0).abs();
+            if lag_ms > 1.0 {
+                self.shared.last_behind_ms.set(Some(lag_ms));
+            }
+            self.present_play_frame(queued.frame, queued.video)?;
+            self.touch_playhead(queued.frame);
+            self.shared.player.borrow_mut().commit_frame(queued.frame)?;
+            did_draw = true;
+            presented += 1;
+            if queued.frame == target || presented >= REVERSE_PRESENT_PER_TICK {
+                break;
+            }
+        }
         Ok(DuePresent::Playing { did_draw })
     }
 
@@ -1676,6 +1814,9 @@ impl WebPlayer {
 
     /// Push the next presentation-order frame (ignores the restarting gate).
     async fn enqueue_next_presentation_frame(&self, epoch: u64) -> Result<bool, MediaError> {
+        if self.is_reverse() {
+            return self.enqueue_prev_presentation_frame(epoch).await;
+        }
         if self.presentation_len() >= self.play_presentation_cap() {
             return Ok(false);
         }
@@ -1708,6 +1849,180 @@ impl WebPlayer {
             .borrow_mut()
             .push_back(QueuedFrame { frame: next, video });
         Ok(true)
+    }
+
+    /// Reverse shuttle: fill toward the past.
+    ///
+    /// Full GOP decode via `decode_gop`, then present back (mediabunny `#350`).
+    /// Per-frame key→N cannot keep −2× on Long GOPs. `|rate| >= 4` → sync only.
+    async fn enqueue_prev_presentation_frame(&self, epoch: u64) -> Result<bool, MediaError> {
+        if self.presentation_len() >= self.play_presentation_cap() {
+            return Ok(false);
+        }
+        let (track, cur, aim, key_hop) = {
+            let player = self.shared.player.borrow();
+            let cur = player.state().frame;
+            let aim = player
+                .track()
+                .index()
+                .frame_at_time(self.media_time().max(0.0))
+                .unwrap_or(0);
+            let key_hop = self.playback_rate().abs() + f64::EPSILON >= 4.0;
+            (player.track_rc(), cur, aim, key_hop)
+        };
+        if cur == 0 && aim == 0 {
+            return Ok(false);
+        }
+
+        let need = aim.min(cur.saturating_sub(1));
+        let oldest = self.shared.presentation.borrow().back().map(|q| q.frame);
+        let has_need = self
+            .shared
+            .presentation
+            .borrow()
+            .iter()
+            .any(|q| q.frame == need);
+
+        if has_need {
+            // Prefetch the previous GOP once this one is nearly drained and the
+            // oldest buffered frame is a key. Eager decode while the queue is
+            // still fat overlaps two GOPs of live VideoFrames → Chromium pool
+            // starve (mediabunny #350: short per-GOP passes).
+            let Some(oldest) = oldest else {
+                return Ok(false);
+            };
+            if oldest == 0 {
+                return Ok(false);
+            }
+            let oldest_is_key = track.index().get(oldest).is_some_and(|e| e.is_sync);
+            if !oldest_is_key
+                || self.presentation_len() > REVERSE_PREV_GOP_WARM_BELOW
+                || self.presentation_len() >= self.play_presentation_cap()
+            {
+                return Ok(false);
+            }
+            return self
+                .refill_reverse_queue_through(&track, oldest.saturating_sub(1), key_hop, epoch)
+                .await;
+        }
+
+        // Clock wants a frame older than our buffer → load the GOP behind `oldest`.
+        if let Some(oldest) = oldest
+            && need < oldest
+        {
+            if oldest == 0 {
+                return Ok(false);
+            }
+            return self
+                .refill_reverse_queue_through(&track, oldest.saturating_sub(1), key_hop, epoch)
+                .await;
+        }
+
+        // Empty / gap near playhead — decode the GOP that contains `need`.
+        let anchor = cur.max(need).max(1);
+        self.refill_reverse_queue_through(&track, anchor, key_hop, epoch)
+            .await
+    }
+
+    /// Decode the GOP that holds frames just before `anchor` (`nearest_keyframe(anchor-1)`).
+    ///
+    /// Using `nearest_keyframe(anchor)` when `anchor` is sync yields an empty keep-set
+    /// (`id < anchor` is outside that GOP) and left reverse underrun-held for tens of
+    /// seconds after the first key boundary.
+    async fn refill_reverse_queue_through(
+        &self,
+        track: &Rc<crate::demux::Mp4VideoTrack>,
+        anchor: FrameId,
+        key_hop: bool,
+        epoch: u64,
+    ) -> Result<bool, MediaError> {
+        if anchor == 0 {
+            return Ok(false);
+        }
+        let Some(key) = track.index().nearest_keyframe(anchor.saturating_sub(1)) else {
+            return Ok(false);
+        };
+        let collected: Rc<RefCell<Vec<(FrameId, OwnedVideoFrame)>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        let collected_cb = Rc::clone(&collected);
+        let cancelled = || !self.is_current(epoch);
+
+        let mut decoder = self.take_decoder(epoch).await?;
+        if self.shared.decoder_reset.get() {
+            decoder.reset()?;
+            self.shared.decoder_reset.set(false);
+        }
+        let gop_result = decoder
+            .decode_gop(track, key, &cancelled, &mut |id, vf| {
+                if id >= anchor {
+                    drop(vf);
+                    return;
+                }
+                collected_cb.borrow_mut().push((id, vf));
+            })
+            .await;
+        if cancelled() {
+            let _ = decoder.reset();
+            *self.decoder.borrow_mut() = Some(decoder);
+            if let Ok(mut c) = collected.try_borrow_mut() {
+                c.clear();
+            }
+            return Ok(false);
+        }
+        *self.decoder.borrow_mut() = Some(decoder);
+        if let Err(MediaError::Cancelled) = gop_result {
+            if let Ok(mut c) = collected.try_borrow_mut() {
+                c.clear();
+            }
+            return Ok(false);
+        }
+        gop_result?;
+
+        if !self.is_playing() || !self.is_current(epoch) || !self.is_reverse() {
+            if let Ok(mut c) = collected.try_borrow_mut() {
+                c.clear();
+            }
+            return Ok(false);
+        }
+
+        let mut frames = std::mem::take(&mut *collected.borrow_mut());
+        if key_hop {
+            frames.retain(|(id, _)| track.index().get(*id).is_some_and(|e| e.is_sync));
+        }
+        frames.sort_unstable_by_key(|b| std::cmp::Reverse(b.0)); // descending
+
+        let cap = self.play_presentation_cap();
+        let mut q = self.shared.presentation.borrow_mut();
+        let mut i = 0;
+        while i < q.len() {
+            if q[i].frame >= anchor {
+                let drop_q = q.remove(i).expect("index checked");
+                drop(drop_q.video);
+            } else {
+                i += 1;
+            }
+        }
+
+        let mut added = 0usize;
+        for (id, video) in frames {
+            if q.iter().any(|x| x.frame == id) {
+                drop(video);
+                continue;
+            }
+            if q.len() >= cap {
+                drop(video);
+                continue;
+            }
+            let insert_at = q.iter().position(|x| x.frame < id).unwrap_or(q.len());
+            q.insert(insert_at, QueuedFrame { frame: id, video });
+            added += 1;
+        }
+        while q.len() > cap {
+            if let Some(drop_q) = q.pop_back() {
+                drop(drop_q.video);
+            }
+        }
+        Ok(added > 0)
     }
 
     pub async fn prefetch_until(&self, deadline_ms: f64) -> Result<usize, MediaError> {
