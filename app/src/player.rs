@@ -106,8 +106,8 @@ pub fn DemoPlayer() -> impl IntoView {
         }
     });
 
-    // ← / → match Prev / Next buttons (skip when typing in an input).
-    let _arrow_keys = use_event_listener(window(), ev::keydown, move |ev| {
+    // ← / → step when paused; L/K shuttle (J reverse later). Skip when typing.
+    let _transport_keys = use_event_listener(window(), ev::keydown, move |ev| {
         let Some(target) = ev.target() else {
             return;
         };
@@ -117,20 +117,46 @@ pub fn DemoPlayer() -> impl IntoView {
                 return;
             }
         }
-        // Enqueue even while busy — OpQueue coalesces to latest Step so hold/repeat
-        // does not drop, then burst when busy clears (see skills/leptos.md).
-        let can_step = video.ready.get_untracked() && !video.playing.get_untracked();
-        if !can_step {
+        if !video.ready.get_untracked() {
             return;
         }
         match ev.key().as_str() {
             "ArrowLeft" => {
+                if video.playing.get_untracked() {
+                    return;
+                }
                 ev.prevent_default();
                 video.previous_frame();
             }
             "ArrowRight" => {
+                if video.playing.get_untracked() {
+                    return;
+                }
                 ev.prevent_default();
                 video.next_frame();
+            }
+            "l" | "L" => {
+                ev.prevent_default();
+                let rate = video.playback_rate.get_untracked();
+                let next = if rate < 2.0 {
+                    2.0
+                } else if rate < 4.0 {
+                    4.0
+                } else {
+                    8.0
+                };
+                video.set_playback_rate(next);
+                if !video.playing.get_untracked() {
+                    video.play();
+                }
+            }
+            "k" | "K" => {
+                ev.prevent_default();
+                if video.playing.get_untracked() {
+                    video.pause();
+                } else {
+                    video.play();
+                }
             }
             _ => {}
         }
@@ -344,6 +370,33 @@ pub fn DemoPlayer() -> impl IntoView {
                                 let input: HtmlInputElement = event_target(&ev);
                                 if let Ok(v) = input.value().parse::<f64>() {
                                     video.set_volume(v);
+                                }
+                            }
+                        />
+                    </label>
+                    <label
+                        class="wm-rate"
+                        data-testid="playback-rate"
+                        title="Playback rate (0.25–1.75 review; L = 2/4/8 shuttle)"
+                    >
+                        <span class="wm-rate-label">
+                            {move || format!("{:.2}x", video.playback_rate.get())}
+                        </span>
+                        <input
+                            type="range"
+                            class="wm-rate-input"
+                            data-testid="playback-rate-input"
+                            min="0.25"
+                            max="1.75"
+                            step="0.05"
+                            prop:value=move || {
+                                video.playback_rate.get().min(1.75).to_string()
+                            }
+                            prop:disabled=move || !video.ready.get()
+                            on:input=move |ev| {
+                                let input: HtmlInputElement = event_target(&ev);
+                                if let Ok(v) = input.value().parse::<f64>() {
+                                    video.set_playback_rate(v);
                                 }
                             }
                         />

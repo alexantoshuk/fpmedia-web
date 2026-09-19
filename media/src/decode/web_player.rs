@@ -30,6 +30,8 @@ use crate::types::{
 /// Chromium's pool on DRYP play (`flush/idle` mid-GOP with `decodeQ≈12`).
 /// Pair with [`STEP_BEHIND_CAP`] (ring ≈ 1 displayed + 8 behind + 4 ahead).
 pub const PRESENTATION_QUEUE_CAP: usize = 4;
+/// Ahead depth while shuttling (`rate >= 2`) — keep decode light.
+pub const SHUTTLE_PRESENTATION_QUEUE_CAP: usize = 2;
 /// Live VF older than the playhead for Prev without key→N (step/scrub ring).
 /// mediabunny reverse always restarts from key unless samples are retained —
 /// this is the SampleCursor-lite behind window (`media-sink.ts` flush on rewind).
@@ -410,6 +412,90 @@ impl WebPlayer {
             .unwrap_or(true)
     }
 
+    pub fn playback_rate(&self) -> f64 {
+        self.shared.clock.borrow().playback_rate()
+    }
+
+    /// True when current rate uses shuttle policy (`>= 2`).
+    pub fn is_shuttle(&self) -> bool {
+        self.shared.clock.borrow().is_shuttle()
+    }
+
+    fn play_presentation_cap(&self) -> usize {
+        if self.is_shuttle() {
+            SHUTTLE_PRESENTATION_QUEUE_CAP
+        } else {
+            PRESENTATION_QUEUE_CAP
+        }
+    }
+
+    /// True when the play prefetch loop should decode another ahead frame.
+    pub fn wants_play_prefetch(&self) -> bool {
+        self.is_playing() && self.presentation_len() < self.play_presentation_cap()
+    }
+
+    /// Playback rate 0.25–8 (step 0.05). `>= 2` → shuttle (wall clock, audio off).
+    /// Live change snaps clock origins.
+    pub fn set_playback_rate(&self, rate: f64) {
+        let rate = crate::normalize_playback_rate(rate);
+        let shuttle = crate::is_shuttle_rate(rate);
+        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        let t = self.media_time();
+        let was_playing = self.shared.clock.borrow().is_playing()
+            || audio.as_ref().is_some_and(|a| a.is_playing());
+
+        if let Some(a) = audio {
+            if shuttle {
+                if a.is_playing() {
+                    let _ = a.stop();
+                }
+                a.store_playback_rate(rate);
+                self.shared.clock.borrow_mut().set_playback_rate(rate);
+                if was_playing {
+                    self.shared.clock.borrow_mut().start(t);
+                    if let Some(now) = performance_now_ms() {
+                        self.shared.wall_origin.set(Some(now / 1000.0));
+                    }
+                }
+                return;
+            }
+
+            // Review rate — may leave shuttle (wall → audio) while still playing.
+            self.shared.clock.borrow_mut().set_playback_rate(rate);
+            if was_playing && !a.is_playing() {
+                self.shared.clock.borrow_mut().start(t);
+                self.shared.wall_origin.set(None);
+                a.store_playback_rate(rate);
+                let audio = Rc::clone(&a);
+                let start_t = t;
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Err(e) = audio.start_spawned(start_t).await {
+                        web_sys::console::warn_1(
+                            &format!("webmedia: audio after shuttle: {e}").into(),
+                        );
+                    }
+                });
+            } else if a.is_playing() {
+                a.set_playback_rate(rate);
+                self.shared.clock.borrow_mut().start(t);
+            } else {
+                a.store_playback_rate(rate);
+            }
+            return;
+        }
+
+        let playing = self.shared.clock.borrow().is_playing();
+        if playing {
+            self.shared.clock.borrow_mut().set_playback_rate(rate);
+            self.shared.clock.borrow_mut().start(t);
+            if let Some(now) = performance_now_ms() {
+                self.shared.wall_origin.set(Some(now / 1000.0));
+            }
+        } else {
+            self.shared.clock.borrow_mut().set_playback_rate(rate);
+        }
+    }
+
     /// Media timeline seconds (audio `AudioContext` when present, else wall).
     pub fn media_time(&self) -> f64 {
         if let Some(a) = self.shared.audio.borrow().as_ref()
@@ -437,12 +523,22 @@ impl WebPlayer {
 
     /// Arm the media clock after `prime_playback` (host play path).
     ///
-    /// With an audio track this starts the decode/schedule pump (mediabunny
-    /// `play` + `runAudioIterator`). Without audio, uses wall `performance`.
+    /// Review rate + audio track → decode/schedule pump (mediabunny `play` +
+    /// `runAudioIterator`). Shuttle (`rate >= 2`) or no audio → wall `performance`.
     pub async fn start_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.finish_underrun_hold_timer();
         self.shared.clock.borrow_mut().start(media_time_secs);
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        if self.is_shuttle() {
+            if let Some(a) = audio {
+                let _ = a.stop();
+                a.store_playback_rate(self.playback_rate());
+            }
+            if let Some(now) = performance_now_ms() {
+                self.shared.wall_origin.set(Some(now / 1000.0));
+            }
+            return Ok(());
+        }
         if let Some(a) = audio {
             self.shared.wall_origin.set(None);
             a.start_spawned(media_time_secs).await?;
@@ -1300,6 +1396,11 @@ impl WebPlayer {
     /// Used to freeze the media clock (not for `skip_behind`). Distinct from a
     /// healthy empty queue while waiting for the next frame's deadline.
     pub fn play_underrun_hold(&self) -> bool {
+        // Shuttle keeps the clock running — freeze feels stuck at 2–8×; present
+        // already drops overdue frames when the queue catches up.
+        if self.is_shuttle() {
+            return false;
+        }
         if !self.is_playing() || self.shared.restarting.get() {
             return false;
         }
@@ -1575,7 +1676,7 @@ impl WebPlayer {
 
     /// Push the next presentation-order frame (ignores the restarting gate).
     async fn enqueue_next_presentation_frame(&self, epoch: u64) -> Result<bool, MediaError> {
-        if self.presentation_len() >= PRESENTATION_QUEUE_CAP {
+        if self.presentation_len() >= self.play_presentation_cap() {
             return Ok(false);
         }
         let (track, next) = {
@@ -1611,7 +1712,7 @@ impl WebPlayer {
 
     pub async fn prefetch_until(&self, deadline_ms: f64) -> Result<usize, MediaError> {
         let mut decoded = 0usize;
-        while self.is_playing() && self.presentation_len() < PRESENTATION_QUEUE_CAP {
+        while self.is_playing() && self.presentation_len() < self.play_presentation_cap() {
             if let Some(now) = performance_now_ms()
                 && now + PREFETCH_DEADLINE_SLACK_MS >= deadline_ms
             {
@@ -1695,7 +1796,7 @@ impl WebPlayer {
 
     /// Decode up to `min_frames` into the presentation queue (bypasses restarting gate).
     async fn prime_presentation(&self, min_frames: usize, epoch: u64) -> Result<(), MediaError> {
-        let target = min_frames.min(PRESENTATION_QUEUE_CAP);
+        let target = min_frames.min(self.play_presentation_cap());
         while self.presentation_len() < target {
             if !self.is_current(epoch) {
                 return Err(MediaError::Cancelled);
@@ -1754,7 +1855,12 @@ impl WebPlayer {
         let mut presentation = self.shared.presentation.borrow_mut();
         presentation.retain(|x| x.frame != q.frame);
         presentation.push_front(q);
-        while presentation.len() > PRESENTATION_QUEUE_CAP {
+        let cap = if self.is_shuttle() {
+            SHUTTLE_PRESENTATION_QUEUE_CAP
+        } else {
+            PRESENTATION_QUEUE_CAP
+        };
+        while presentation.len() > cap {
             if let Some(drop_q) = presentation.pop_back() {
                 drop(drop_q.video);
             }

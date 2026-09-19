@@ -40,6 +40,8 @@ pub struct VideoRef {
     pub has_audio: RwSignal<bool>,
     pub volume: RwSignal<f64>,
     pub muted: RwSignal<bool>,
+    /// Frame.io-style playback rate (0.25–8; review UI typically ≤1.75).
+    pub playback_rate: RwSignal<f64>,
     /// Non-`Send` callbacks registered by the mounted [`Video`] component.
     pub(crate) ops: StoredValue<Option<VideoOps>, LocalStorage>,
 }
@@ -64,6 +66,7 @@ pub(crate) struct VideoOps {
     pub set_loop: Rc<dyn Fn(bool)>,
     pub set_volume: Rc<dyn Fn(f64)>,
     pub set_muted: Rc<dyn Fn(bool)>,
+    pub set_playback_rate: Rc<dyn Fn(f64)>,
 }
 
 impl VideoRef {
@@ -86,6 +89,7 @@ impl VideoRef {
             has_audio: RwSignal::new(false),
             volume: RwSignal::new(0.7),
             muted: RwSignal::new(false),
+            playback_rate: RwSignal::new(1.0),
             ops: StoredValue::new_local(None),
         }
     }
@@ -320,6 +324,18 @@ impl VideoRef {
             .flatten()
         {
             set_muted(muted);
+        }
+    }
+
+    pub fn set_playback_rate(&self, rate: f64) {
+        let r = webmedia::normalize_playback_rate(rate);
+        self.playback_rate.set(r);
+        if let Some(set_rate) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.set_playback_rate)))
+            .flatten()
+        {
+            set_rate(r);
         }
     }
 }

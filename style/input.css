@@ -106,7 +106,8 @@ body {
 .wm-player:fullscreen .wm-pipeline,
 .wm-player:fullscreen .wm-error,
 .wm-player:fullscreen .wm-buffer-meters,
-.wm-player:fullscreen .wm-volume {
+.wm-player:fullscreen .wm-volume,
+.wm-player:fullscreen .wm-rate {
   color: #d4d4d4;
 }
 
@@ -382,6 +383,31 @@ body {
 }
 
 .wm-volume-input:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.wm-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--wm-muted);
+  font-size: 0.9em;
+}
+
+.wm-rate-label {
+  user-select: none;
+  min-width: 3.2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.wm-rate-input {
+  width: 6.5rem;
+  accent-color: var(--wm-accent);
+  cursor: pointer;
+}
+
+.wm-rate-input:disabled {
   opacity: 0.45;
   cursor: default;
 }

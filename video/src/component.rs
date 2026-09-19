@@ -102,6 +102,7 @@ pub fn Video(
     let has_audio = video.has_audio;
     let volume = video.volume;
     let muted = video.muted;
+    let playback_rate = video.playback_rate;
 
     // mediabunny CallSerializer + asyncId — one queue for open / seek / play-prime.
     let queue = OpQueue::new(busy);
@@ -453,8 +454,23 @@ pub fn Video(
                     match op {
                         HostOp::Open { blob, canvas } => {
                             run_open(
-                                &queue, id, blob, canvas, &player, &sync_ui, &fps_meter, ready,
-                                metadata, error, status, fps, pipeline, has_audio, volume, muted,
+                                &queue,
+                                id,
+                                blob,
+                                canvas,
+                                &player,
+                                &sync_ui,
+                                &fps_meter,
+                                ready,
+                                metadata,
+                                error,
+                                status,
+                                fps,
+                                pipeline,
+                                has_audio,
+                                volume,
+                                muted,
+                                playback_rate,
                             )
                             .await;
                         }
@@ -830,6 +846,17 @@ pub fn Video(
         }) as Rc<dyn Fn(bool)>
     };
 
+    let set_playback_rate_fn = {
+        let player = Rc::clone(&player);
+        Rc::new(move |r: f64| {
+            if let Ok(borrow) = player.try_borrow()
+                && let Some(p) = borrow.as_ref()
+            {
+                p.set_playback_rate(r);
+            }
+        }) as Rc<dyn Fn(f64)>
+    };
+
     let close_fn = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
@@ -874,6 +901,7 @@ pub fn Video(
         set_loop: set_loop_fn,
         set_volume: set_volume_fn,
         set_muted: set_muted_fn,
+        set_playback_rate: set_playback_rate_fn,
     }));
 
     on_cleanup({
@@ -998,6 +1026,7 @@ async fn run_open(
     has_audio: RwSignal<bool>,
     volume: RwSignal<f64>,
     muted: RwSignal<bool>,
+    playback_rate: RwSignal<f64>,
 ) {
     web_sys::console::log_1(&"webmedia: open task running".into());
     if !queue.is_current(id) {
@@ -1017,6 +1046,7 @@ async fn run_open(
             let p = Rc::new(p);
             metadata.set(Some(p.metadata()));
             has_audio.set(p.has_audio());
+            p.set_playback_rate(playback_rate.get_untracked());
             if p.has_audio() {
                 p.set_volume(volume.get_untracked());
                 p.set_muted(muted.get_untracked());
@@ -1263,10 +1293,7 @@ async fn run_play_prime(
                 let need = {
                     let borrow = player.borrow();
                     borrow.as_ref().is_some_and(|p| {
-                        p.is_playing()
-                            && !p.is_restarting()
-                            && !pause_prefetch
-                            && p.presentation_len() < webmedia::PRESENTATION_QUEUE_CAP
+                        !p.is_restarting() && !pause_prefetch && p.wants_play_prefetch()
                     })
                 };
                 if need {

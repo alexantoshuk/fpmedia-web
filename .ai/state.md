@@ -12,9 +12,8 @@
 
 ### Play / scrub (short path)
 
-1. Optional: contiguous densify coverage as a dedicated timeline buffer bar (strip already Covered+Exact gradients).
-2. Spot-check Wing It mid-timeline Next/Prev after blit MiB (windowed vs fullscreen Exact width).
-3. Frame.io-oriented playback rate (≈0.25–1.75 / JKL); reverse/J later — not YouTube-style.
+1. J reverse shuttle (negative rate / reverse decode).
+2. Fixed-pitch audio for review rates (non-1×).
 
 ### Media engine
 

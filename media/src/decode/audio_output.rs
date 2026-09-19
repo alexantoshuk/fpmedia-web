@@ -1,8 +1,10 @@
 //! Audio decode + `AudioContext` scheduling (mediabunny media-player pattern).
 //!
 //! `AudioDecoder` → `AudioData` → `f32-planar` → `AudioBuffer` →
-//! `AudioBufferSourceNode` at `ctx_origin + timestamp - media_at_start`.
-//! Media time = `context.currentTime - ctx_origin + media_at_start` while playing.
+//! `AudioBufferSourceNode` at `ctx_origin + (timestamp - media_at_start) / rate`.
+//! Media time = `media_at_start + (context.currentTime - ctx_origin) * rate` while playing.
+//! Rate has **no** mediabunny equivalent — invented on top of `getPlaybackTime` /
+//! `runAudioIterator` (`examples/media-player/media-player.ts`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -22,6 +24,7 @@ use web_sys::{
 use crate::decode::owned_audio_data::OwnedAudioData;
 use crate::demux::Mp4AudioTrack;
 use crate::error::MediaError;
+use crate::normalize_playback_rate;
 use crate::types::AudioMetadata;
 
 /// How far ahead of media time to keep scheduling before yielding (seconds).
@@ -39,6 +42,8 @@ pub struct AudioOutput {
     gain: GainNode,
     volume: Cell<f64>,
     muted: Cell<bool>,
+    /// Media seconds per context second (Frame.io review range).
+    rate: Cell<f64>,
     /// Bumped on stop/seek so in-flight pumps exit.
     epoch: Cell<u64>,
     /// `AudioContext.currentTime` when play started.
@@ -111,6 +116,7 @@ impl AudioOutput {
             gain,
             volume: Cell::new(0.7),
             muted: Cell::new(false),
+            rate: Cell::new(1.0),
             epoch: Cell::new(0),
             ctx_origin: Cell::new(None),
             media_at_start: Cell::new(0.0),
@@ -147,6 +153,75 @@ impl AudioOutput {
         self.muted.get()
     }
 
+    pub fn playback_rate(&self) -> f64 {
+        self.rate.get()
+    }
+
+    /// Store rate without rearming the pump (paused / shuttle hand-off).
+    pub fn store_playback_rate(&self, rate: f64) {
+        self.rate.set(normalize_playback_rate(rate));
+    }
+
+    /// Set review playback rate. While playing, snaps origins and restarts the pump.
+    ///
+    /// Callers must not invoke this for shuttle rates while wanting audio — use
+    /// [`Self::store_playback_rate`] + stop instead ([`crate::is_shuttle_rate`]).
+    pub fn set_playback_rate(self: &Rc<Self>, rate: f64) {
+        let rate = normalize_playback_rate(rate);
+        if crate::is_shuttle_rate(rate) {
+            // Shuttle: keep the cell updated but never schedule pitched audio.
+            if self.playing.get() {
+                let _ = self.stop();
+            }
+            self.rate.set(rate);
+            return;
+        }
+        if (self.rate.get() - rate).abs() < 1e-12 {
+            return;
+        }
+        if !self.playing.get() {
+            self.rate.set(rate);
+            return;
+        }
+        let t = self.media_time();
+        self.epoch.set(self.epoch.get().wrapping_add(1));
+        let epoch = self.epoch.get();
+        self.stop_queued_nodes();
+        if let Ok(mut q) = self.pending.try_borrow_mut() {
+            q.clear();
+        }
+        self.rate.set(rate);
+        self.media_at_start.set(t.max(0.0));
+        self.ctx_origin.set(Some(self.context.current_time()));
+
+        let this = Rc::clone(self);
+        wasm_bindgen_futures::spawn_local(async move {
+            let taken = this.decoder.borrow_mut().take();
+            if let Some(dec) = taken {
+                let _ = dec.reset();
+                let meta = this.track.metadata();
+                let codec = match meta.codec.codec_string.as_deref() {
+                    Some(c) => c,
+                    None => {
+                        *this.decoder.borrow_mut() = Some(dec);
+                        return;
+                    }
+                };
+                if let Err(e) = configure_decoder(&dec, meta, codec).await {
+                    web_sys::console::warn_1(
+                        &format!("webmedia: audio rate-rearm configure: {e}").into(),
+                    );
+                    *this.decoder.borrow_mut() = Some(dec);
+                    return;
+                }
+                *this.decoder.borrow_mut() = Some(dec);
+            }
+            if let Err(e) = this.run_pump(epoch, t).await {
+                web_sys::console::warn_1(&format!("webmedia: audio rate-rearm pump: {e}").into());
+            }
+        });
+    }
+
     fn apply_gain(&self) {
         let actual = if self.muted.get() {
             0.0
@@ -162,7 +237,8 @@ impl AudioOutput {
         if self.playing.get()
             && let Some(origin) = self.ctx_origin.get()
         {
-            return self.context.current_time() - origin + self.media_at_start.get();
+            let elapsed = self.context.current_time() - origin;
+            return self.media_at_start.get() + elapsed.max(0.0) * self.rate.get();
         }
         self.media_at_start.get()
     }
@@ -381,15 +457,18 @@ impl AudioOutput {
         node.connect_with_audio_node(&self.gain)?;
 
         let sample_rate = self.context.sample_rate() as f64;
-        let mut start = ctx_origin + timestamp_secs - self.media_at_start.get();
+        let rate = self.rate.get().max(1e-6);
+        let mut start = ctx_origin + (timestamp_secs - self.media_at_start.get()) / rate;
         // Round to sample boundaries — mediabunny media-player.
         start = (sample_rate * start).round() / sample_rate;
 
         let now = self.context.current_time();
+        node.playback_rate().set_value(rate as f32);
         if start >= now {
             node.start_with_when(start)?;
         } else {
-            let offset = now - start;
+            // Context lateness → buffer seconds: multiply by rate.
+            let offset = (now - start) * rate;
             // Past the whole buffer — skip (would be silent / throw).
             if offset >= duration {
                 return Ok(());
