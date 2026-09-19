@@ -731,7 +731,10 @@ pub fn Video(
                 );
             },
             SCRUB_DRAG_THROTTLE_MS,
-            ThrottleOptions::default().leading(true).trailing(true),
+            // trailing=false: a post-pointerup trailing drag can enqueue after
+            // settle + PlayPrime and silently kill play (EOF→scrub→Play smoke).
+            // Settle already exacts the live playhead; trailing is redundant.
+            ThrottleOptions::default().leading(true).trailing(false),
         )
     };
 

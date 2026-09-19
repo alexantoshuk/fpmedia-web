@@ -37,7 +37,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Regress play/seek after a “local” decode knob tweak | `AGENTS.md` Mediabunny-first pre-edit gate | cite mediabunny path first — no latency/prune/queue invent |
 | Pause→Seek same / Prev→Next ≠ pause frame | Scrub cache `put_chunk` / present_and_cache | canvas must replace scrub resident |
 | Play lag right after scrub (long GOP) | Scrub cache + `skills/leptos.md` Play after scrub | seek restart / densify before PlayPrime |
-| Play after scrub no-op (esp. after EOF) | `skills/leptos.md` Play after scrub | UI `playing` before prime + stale clock → Ended kills PlayPrime |
+| Play after scrub no-op (esp. after EOF) | `skills/leptos.md` Play after scrub | stale clock / UI `playing` early; **or** scrub throttle trailing drag after settle kills PlayPrime |
 | A/V desync / silent play with audio track | [Audio + media clock](#audio--media-clock) | video must use `WebPlayer::media_time()` (AudioContext), not host wall-clock |
 | `RefCell already borrowed` (decode / scrub / open / Drop) | [RefCell / WASM re-entry](#refcell--wasm-re-entry) | `if let`/`while let` + `borrow_mut`; JS re-entry |
 | QT / large `.mov` open freeze | Demux `re_mp4` sample ranges | size-0 `skip_box`; no `CachedSource` during verify |
