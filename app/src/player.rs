@@ -9,29 +9,6 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 
-/// Frame.io JKL shuttle ladder (forward only: J slower toward 1×, L faster, K → 1×).
-const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
-
-fn jkl_nearest_index(rate: f64) -> usize {
-    let mut best = 0; // 1.0
-    let mut best_dist = f64::INFINITY;
-    for (i, &step) in JKL_STEPS.iter().enumerate() {
-        let d = (rate - step).abs();
-        if d < best_dist {
-            best_dist = d;
-            best = i;
-        }
-    }
-    best
-}
-
-/// `dir`: −1 = J (slower), +1 = L (faster).
-fn jkl_step(rate: f64, dir: i32) -> f64 {
-    let i = jkl_nearest_index(rate);
-    let next = (i as i32 + dir).clamp(0, (JKL_STEPS.len() - 1) as i32) as usize;
-    JKL_STEPS[next]
-}
-
 /// Coalesce scrub engine work after the Leptos/tachys event callback releases its
 /// `RefCell`. Duplicate targets (left-edge clamp spams `frame=0`) collapse to one
 /// pending sample so microtasks do not pile up and re-enter cache inserts.
@@ -157,31 +134,6 @@ pub fn DemoPlayer() -> impl IntoView {
                 }
                 ev.prevent_default();
                 video.next_frame();
-            }
-            "l" | "L" => {
-                ev.prevent_default();
-                let next = jkl_step(video.playback_rate.get_untracked(), 1);
-                video.set_playback_rate(next);
-                if !video.playing.get_untracked() {
-                    video.play();
-                }
-            }
-            "j" | "J" => {
-                ev.prevent_default();
-                let next = jkl_step(video.playback_rate.get_untracked(), -1);
-                video.set_playback_rate(next);
-                if !video.playing.get_untracked() {
-                    video.play();
-                }
-            }
-            "k" | "K" => {
-                ev.prevent_default();
-                video.set_playback_rate(1.0);
-                if video.playing.get_untracked() {
-                    video.pause();
-                } else {
-                    video.play();
-                }
             }
             _ => {}
         }
@@ -402,7 +354,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     <label
                         class="wm-rate"
                         data-testid="playback-rate"
-                        title="Playback rate (0.25–1.75 review; J/L = 1 / 2 / 4 / 8; K = 1×)"
+                        title="Playback rate (0.25–1.75 review; API allows up to 8×)"
                     >
                         <span class="wm-rate-label">
                             {move || format!("{:.2}x", video.playback_rate.get())}

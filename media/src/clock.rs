@@ -6,20 +6,20 @@
 //! (mediabunny `examples/media-player` `getPlaybackTime`).
 //!
 //! Playback rate multiplies driver elapsed time. Public API: forward `0.25…8`
-//! (JKL shuttle `1 / 2 / 4 / 8`; review slider `0.25…1.75`).
+//! (review slider typically `0.25…1.75`).
 //!
 //! `|rate| >= `[`PLAYBACK_RATE_SHUTTLE_MIN`] → shuttle policy (lighter present queue).
 //! **Temp:** wall clock + audio off for every rate except exact `1.0` until non-1×
 //! rates are stable ([`is_wall_clock_rate`]). mediabunny has no rate API — base
 //! formula stays `origin + elapsed`; we add `* rate`.
 //!
-//! Reverse rates are not supported (product deferred). Historical notes on
+//! Reverse rates / JKL keys are not supported (product deferred). Historical notes on
 //! WebCodecs reverse (GOP forward decode + present-back, `#350`) live in
 //! `.ai/skills/media.md`.
 
 /// Minimum forward playback rate (Frame.io review floor).
 pub const PLAYBACK_RATE_MIN: f64 = 0.25;
-/// Maximum rate (JKL shuttle ceiling).
+/// Maximum rate (API ceiling; demo review slider tops at [`PLAYBACK_RATE_REVIEW_MAX`]).
 pub const PLAYBACK_RATE_MAX: f64 = 8.0;
 /// Frame.io review slider ceiling (UI hint; API still allows up to [`PLAYBACK_RATE_MAX`]).
 pub const PLAYBACK_RATE_REVIEW_MAX: f64 = 1.75;
@@ -45,8 +45,8 @@ pub fn is_shuttle_rate(rate: f64) -> bool {
 
 /// Wall clock + audio off for every rate except exact `1.0`.
 ///
-/// Temp until non-1× (review + shuttle) is stable — avoids audio rearm / pitch
-/// churn on JKL steps. `mediabunny: no equivalent` (no rate API).
+/// Temp until non-1× (review + faster rates) is stable — avoids audio rearm / pitch
+/// churn. `mediabunny: no equivalent` (no rate API).
 pub fn is_wall_clock_rate(rate: f64) -> bool {
     (normalize_playback_rate(rate) - 1.0).abs() > 1e-9
 }
