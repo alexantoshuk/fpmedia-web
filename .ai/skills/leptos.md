@@ -12,7 +12,7 @@
 | Browse / file picker does nothing on Android Chrome | `.wm-file input` must not be `display:none` — opacity overlay (see gotcha) |
 | Open never finishes / console stops at `open_blob start` | File-input `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
 | Play / Next / Prev disabled or silent no-op | UI-owned `playing`; recover when session is `None` |
-| Play after scrub does nothing (esp. after EOF) | Defer UI `playing` until after prime+clock; snap clock; **scrub drag throttle `trailing(false)`** (post-up drag kills PlayPrime) |
+| Play after scrub does nothing (esp. after EOF) | Defer UI `playing` until after prime+clock; snap clock; **scrub drag throttle `trailing(false)`**; Play→scrub→release: `defer_scrub_finish` applies settle **then** `play()` (immediate `play()` loses to `enqueue_scrub` dropping PlayPrime) |
 | EOF with `loop` off — host never notified | `VideoRef::ended`; clear on open/close/seek/play |
 | Decoder/cache leak after leaving a clip | `VideoRef::close()` (also on unmount) |
 | URL open hangs / CORS / full download | `VideoRef::open_url` = fetch→Blob→`open_blob` (not Range) |

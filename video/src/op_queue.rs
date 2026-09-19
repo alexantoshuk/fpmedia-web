@@ -86,14 +86,31 @@ impl OpQueue {
         self.begin_drain_locked(&mut st)
     }
 
-    /// Async scrub: drop pending seek/step/scrub/play (keep open), enqueue latest.
-    /// Does **not** set `busy` — drag must not disable Prev/Next. Caller must
-    /// `WebPlayer::cancel_ops` so the in-flight scrub aborts.
+    /// Async scrub: drop pending seek/step/scrub (keep open). Drag also drops
+    /// pending PlayPrime. **Settle keeps PlayPrime** and inserts ahead of it so
+    /// play-after-scrub stays behind exact settle (`VideoRef::play` contract).
     pub fn enqueue_scrub(&self, frame: u32, settle: bool) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
-        st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
-        st.pending.push_back((id, HostOp::Scrub { frame, settle }));
+        if settle {
+            st.pending.retain(|(_, o)| {
+                matches!(o, HostOp::Open { .. } | HostOp::PlayPrime)
+            });
+            let scrub = (id, HostOp::Scrub { frame, settle: true });
+            if let Some(pos) = st
+                .pending
+                .iter()
+                .position(|(_, o)| matches!(o, HostOp::PlayPrime))
+            {
+                st.pending.insert(pos, scrub);
+            } else {
+                st.pending.push_back(scrub);
+            }
+        } else {
+            st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
+            st.pending
+                .push_back((id, HostOp::Scrub { frame, settle: false }));
+        }
         self.begin_drain_locked(&mut st)
     }
 

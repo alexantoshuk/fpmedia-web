@@ -13,13 +13,27 @@ use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 /// `RefCell`. Duplicate targets (left-edge clamp spams `frame=0`) collapse to one
 /// pending sample so microtasks do not pile up and re-enter cache inserts.
 /// `settle` = pointer up (exact-first); drag keeps densify on.
+/// `resume_play` = after the coalesced settle is applied, enqueue PlayPrime
+/// (must not call `play()` before settle is queued — `enqueue_scrub` drops PlayPrime).
 fn defer_scrub(video: VideoRef, frame: u32, settle: bool) {
+    defer_scrub_inner(video, frame, settle, false);
+}
+
+fn defer_scrub_finish(video: VideoRef, frame: u32, resume_play: bool) {
+    defer_scrub_inner(video, frame, true, resume_play);
+}
+
+fn defer_scrub_inner(video: VideoRef, frame: u32, settle: bool, resume_play: bool) {
     thread_local! {
         static PENDING: std::cell::Cell<Option<(u32, bool)>> =
             const { std::cell::Cell::new(None) };
         static SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static RESUME_PLAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     PENDING.with(|p| p.set(Some((frame, settle))));
+    if resume_play {
+        RESUME_PLAY.with(|r| r.set(true));
+    }
     if SCHEDULED.with(|s| s.get()) {
         return;
     }
@@ -36,8 +50,12 @@ fn defer_scrub(video: VideoRef, frame: u32, settle: bool) {
             }
         }
         SCHEDULED.with(|s| s.set(false));
+        // Play **after** settle enqueue so PlayPrime stays behind scrub in OpQueue.
+        if RESUME_PLAY.with(|r| r.replace(false)) {
+            video.play();
+        }
         if let Some((frame, settle)) = PENDING.with(|p| p.get()) {
-            defer_scrub(video, frame, settle);
+            defer_scrub_inner(video, frame, settle, false);
         }
     });
 }
@@ -122,18 +140,37 @@ pub fn DemoPlayer() -> impl IntoView {
         }
         match ev.key().as_str() {
             "ArrowLeft" => {
-                if video.playing.get_untracked() {
-                    return;
-                }
                 ev.prevent_default();
-                video.previous_frame();
+                if video.playing.get_untracked() {
+                    video.pause();
+                } else {
+                    video.previous_frame();
+                }
             }
             "ArrowRight" => {
+                ev.prevent_default();
                 if video.playing.get_untracked() {
-                    return;
+                    video.pause();
+                } else {
+                    video.next_frame();
+                }
+            }
+            " " | "Spacebar" => {
+                // Ignore when typing in inputs (frame, rate, etc.).
+                if let Some(t) = ev.target()
+                    && let Ok(el) = t.dyn_into::<Element>()
+                {
+                    let tag = el.tag_name().to_ascii_lowercase();
+                    if tag == "input" || tag == "textarea" || tag == "select" {
+                        return;
+                    }
                 }
                 ev.prevent_default();
-                video.next_frame();
+                if video.playing.get_untracked() {
+                    video.pause();
+                } else {
+                    video.play();
+                }
             }
             _ => {}
         }
@@ -556,6 +593,8 @@ fn cache_strip_gradient(
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
+    /// Scrub began while playing → resume after pointer-up settle.
+    let resume_after_scrub = RwSignal::new(false);
 
     let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
         if !video.ready.get_untracked() {
@@ -567,6 +606,14 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
         let max_frame = video.frame_count.get_untracked().saturating_sub(1);
         let frame = ((x / w) * max_frame as f64).round() as u32;
         Some(frame.min(max_frame))
+    };
+
+    let finish_scrub = move || {
+        scrubbing.set(false);
+        let frame = video.playhead.get_untracked();
+        let resume = resume_after_scrub.get_untracked();
+        resume_after_scrub.set(false);
+        defer_scrub_finish(video, frame, resume);
     };
 
     view! {
@@ -589,6 +636,12 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 if let Ok(html) = el.clone().dyn_into::<web_sys::HtmlElement>() {
                     let _ = html.set_pointer_capture(ev.pointer_id());
                 }
+                if video.playing.get_untracked() {
+                    resume_after_scrub.set(true);
+                    video.pause();
+                } else {
+                    resume_after_scrub.set(false);
+                }
                 scrubbing.set(true);
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
                     defer_scrub(video, frame, false);
@@ -606,12 +659,10 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 }
             }
             on:pointerup=move |_| {
-                scrubbing.set(false);
-                let frame = video.playhead.get_untracked();
-                defer_scrub(video, frame, true);
+                finish_scrub();
             }
             on:pointercancel=move |_| {
-                scrubbing.set(false);
+                finish_scrub();
             }
         >
             <div class="wm-scrubber-track">
