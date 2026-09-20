@@ -35,6 +35,9 @@ use crate::types::AudioMetadata;
 
 /// How far ahead of media time to keep scheduling before yielding (seconds).
 const AHEAD_SECS: f64 = 1.0;
+/// Seconds of audio to schedule synchronously in [`AudioOutput::restart_warm`]
+/// before returning (loop seam / underrun resume — avoid silent video).
+const WARM_PRIME_SECS: f64 = 0.08;
 
 struct PendingSample {
     timestamp_secs: f64,
@@ -304,10 +307,33 @@ impl AudioOutput {
 
     /// Stop scheduled nodes and cancel the decode pump. Returns snapped media time.
     ///
+    /// Hard stop: also [`AudioDecoder::reset`] so the next [`Self::begin`] reconfigures
+    /// (pause / seek). For video underrun / loop seam use [`Self::hold_underrun`] +
+    /// [`Self::restart_warm`] instead — those keep the decoder configured.
+    ///
     /// Reentrant-safe: decode/`onended` may re-enter while we tear down.
     pub fn stop(&self) -> f64 {
+        let t = self.cancel_pump_and_silence();
+        if let Ok(dec) = self.decoder.try_borrow()
+            && let Some(dec) = dec.as_ref()
+        {
+            let _ = dec.reset();
+        }
+        t
+    }
+
+    /// Soft hold for video underrun: silence + cancel pump, **keep** decoder configured.
+    ///
+    /// Resume with [`Self::restart_warm`]. Avoids the audible stop/reconfigure gap that
+    /// made EOF / loop seams feel like "audio-only lag" while video stayed on-canvas.
+    /// `mediabunny: examples/media-player` keeps the audio path warm across brief stalls;
+    /// full iterator recreate is for seeks (our [`Self::stop`] + [`Self::begin`]).
+    pub fn hold_underrun(&self) -> f64 {
+        self.cancel_pump_and_silence()
+    }
+
+    fn cancel_pump_and_silence(&self) -> f64 {
         let t = self.media_time();
-        // Cancel in-flight pump first (checked after every await).
         self.epoch.set(self.epoch.get().wrapping_add(1));
         self.playing.set(false);
         self.ctx_origin.set(None);
@@ -316,11 +342,6 @@ impl AudioOutput {
         self.clear_stretch();
         if let Ok(mut q) = self.pending.try_borrow_mut() {
             q.clear();
-        }
-        if let Ok(dec) = self.decoder.try_borrow()
-            && let Some(dec) = dec.as_ref()
-        {
-            let _ = dec.reset();
         }
         t
     }
@@ -338,6 +359,8 @@ impl AudioOutput {
 
     /// Begin playback from `media_time_secs`. Resumes the context and arms origins;
     /// the decode/schedule pump is started by [`Self::start_spawned`].
+    ///
+    /// Hard path (pause→play / seek): resets + reconfigures the decoder.
     pub async fn begin(&self, media_time_secs: f64) -> Result<u64, MediaError> {
         self.stop();
         self.resume_context().await?;
@@ -372,6 +395,115 @@ impl AudioOutput {
             .into(),
         );
         Ok(epoch)
+    }
+
+    /// Warm restart after [`Self::hold_underrun`] or loop seam — no decoder
+    /// teardown. Primes the first scheduled buffer(s) before returning so the
+    /// canvas seam is not silent while the pump catches up.
+    pub async fn restart_warm(self: &Rc<Self>, media_time_secs: f64) -> Result<(), MediaError> {
+        let _ = self.cancel_pump_and_silence();
+        self.resume_context().await?;
+
+        let epoch = self.epoch.get();
+        let t = media_time_secs.max(0.0);
+        self.media_at_start.set(t);
+        self.ctx_origin.set(Some(self.context.current_time()));
+        self.playing.set(true);
+        *self.error.borrow_mut() = None;
+        self.reset_stretch_for_rate();
+
+        // Keep the decoder instance; soft reset+configure without repeating
+        // `isConfigSupported` (already passed on open). Needed so loop seam
+        // can seek to t=0 after an EOF flush without a cold `begin`.
+        let taken = self.decoder.borrow_mut().take();
+        if let Some(dec) = taken {
+            let meta = self.track.metadata();
+            let codec = meta
+                .codec
+                .codec_string
+                .as_deref()
+                .ok_or(MediaError::UnsupportedCodec)?;
+            let _ = dec.reset();
+            reconfigure_decoder_fast(&dec, meta, codec)?;
+            *self.decoder.borrow_mut() = Some(dec);
+        } else {
+            return Err(MediaError::WebCodecs("audio decoder missing".into()));
+        }
+
+        web_sys::console::log_1(
+            &format!(
+                "webmedia: audio restart_warm t={:.3}s rate={}",
+                t,
+                self.rate.get()
+            )
+            .into(),
+        );
+
+        let start_sample = self.track.sample_at_or_after(t).unwrap_or(0);
+        let next = self.prime_schedule(epoch, start_sample).await?;
+        let this = Rc::clone(self);
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = this.pump(epoch, next).await
+                && !e.is_cancelled()
+            {
+                web_sys::console::warn_1(&format!("webmedia: audio warm pump error: {e}").into());
+            }
+        });
+        Ok(())
+    }
+
+    /// Decode + schedule until ~[`WARM_PRIME_SECS`] of audio is queued (or EOF).
+    /// Returns the next sample index for the background pump.
+    async fn prime_schedule(&self, epoch: u64, mut sample_idx: u64) -> Result<u64, MediaError> {
+        let count = self.track.sample_count();
+        let prime_until = self.media_at_start.get() + WARM_PRIME_SECS;
+        while sample_idx < count {
+            if self.epoch.get() != epoch {
+                return Ok(sample_idx);
+            }
+            if let Some(err) = self.error.borrow().clone() {
+                return Err(MediaError::WebCodecs(err));
+            }
+
+            loop {
+                let next = self.pending.borrow_mut().pop_front();
+                let Some(pending) = next else {
+                    break;
+                };
+                if self.epoch.get() != epoch {
+                    return Ok(sample_idx);
+                }
+                let ts = pending.timestamp_secs;
+                self.schedule_pending(ts, &pending.data)?;
+                if ts >= prime_until {
+                    return Ok(sample_idx);
+                }
+            }
+
+            let sample = self.track.encoded_sample(sample_idx).await?;
+            if self.epoch.get() != epoch {
+                return Ok(sample_idx);
+            }
+            self.feed_chunk(&sample)?;
+            sample_idx += 1;
+
+            if self.pending.borrow().is_empty() {
+                yield_timeout_ms(0).await;
+            }
+        }
+
+        // Drain decoder outputs at EOF of prime window.
+        loop {
+            let next = self.pending.borrow_mut().pop_front();
+            let Some(pending) = next else {
+                break;
+            };
+            if self.epoch.get() != epoch {
+                break;
+            }
+            self.schedule_pending(pending.timestamp_secs, &pending.data)?;
+        }
+        Ok(sample_idx)
     }
 
     /// Decode + schedule loop from `media_time_secs` (cancel via [`Self::stop`]).
@@ -642,6 +774,21 @@ async fn configure_decoder(
         .unwrap_or(false);
     if !supported {
         return Err(MediaError::CodecUnsupported(codec.to_string()));
+    }
+    decoder.configure(&config)?;
+    Ok(())
+}
+
+/// Reconfigure after [`AudioDecoder::reset`] without a second support probe
+/// (open already validated the codec). Used by warm restart / loop seam.
+fn reconfigure_decoder_fast(
+    decoder: &AudioDecoder,
+    meta: &AudioMetadata,
+    codec: &str,
+) -> Result<(), MediaError> {
+    let config = AudioDecoderConfig::new(codec, meta.number_of_channels, meta.sample_rate);
+    if !meta.codec.description.is_empty() {
+        config.set_description(&Uint8Array::from(meta.codec.description.as_slice()));
     }
     decoder.configure(&config)?;
     Ok(())

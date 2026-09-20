@@ -28,6 +28,7 @@ _(empty)_
 
 ### Later
 
+- 4K loop/EOF residual: first-GOP warm after wrap — holds already 0; see `skills/media.md` “4K residual loop/EOF seam”.
 - Broader packet / sample / canvas sink layering (decode pump+consumer shipped).
 - Dual-source compare layout hooks.
 - Publish `webmedia` / `video` crates for reuse by host apps.

@@ -28,7 +28,7 @@ use crate::bitstream::{avc_nal_length_size, sanitize_avc_packet_for_chromium};
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
-use crate::types::{EncodedSample, FrameId, GopProfile, VideoMetadata};
+use crate::types::{EncodedSample, FrameId, GopProfile, PlayPolicy, VideoMetadata};
 
 /// WebCodecs is `SecureContext`-only. LAN `http://192.168.x.x` (phone → desktop
 /// `cargo leptos watch`) leaves `VideoDecoder` undefined; calling
@@ -67,8 +67,10 @@ const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
 const REORDER_FEED_SLACK: usize = 8;
 /// Presentation-order frames to keep ahead of the current target in `held`
 /// while the Play/prefetch pump runs (cross-GOP). Too small → underrun hold
-/// every GOP on BBB (~0.93×); matches presentation queue depth.
-const DECODE_WARM_AHEAD: usize = 4;
+/// every GOP on BBB (~0.93×). Hd default = [`crate::PLAY_WARM_AHEAD_HD`]; live
+/// value is [`DecoderCore::warm_ahead`] from [`PlayPolicy`].
+#[allow(dead_code)]
+const DECODE_WARM_AHEAD: usize = crate::PLAY_WARM_AHEAD_HD;
 /// Only salvage pruned frames within this PTS gap of the seek target. Farther
 /// frames are closed immediately — keeping every key→N VideoFrame alive exhausts
 /// Chromium's pool and wedges at `decodeQ≈41, held=0` (Wing It seek/settle).
@@ -119,17 +121,25 @@ impl DecoderConfig {
 
     /// Build a WebCodecs config.
     ///
-    /// Do **not** set `hardwareAcceleration: prefer-hardware` on the support
-    /// check — many browsers report `supported: false` even when software
-    /// (or opportunistic HW) decode works, which blocks open entirely.
-    fn to_web_config(&self, optimize_for_latency: bool) -> VideoDecoderConfig {
+    /// Do **not** set `hardwareAcceleration: prefer-hardware` on the open
+    /// support check — many browsers report `supported: false` even when
+    /// software (or opportunistic HW) decode works, which blocks open.
+    /// Prefer-hardware is applied only at configure when the play policy
+    /// asked for it **and** a separate HW support probe passed
+    /// (mediabunny: `decoderOptions.hardwareAcceleration`, PR #406).
+    fn to_web_config(
+        &self,
+        optimize_for_latency: bool,
+        prefer_hardware: bool,
+    ) -> VideoDecoderConfig {
         let config = VideoDecoderConfig::new(&self.codec);
         config.set_coded_width(self.width);
         config.set_coded_height(self.height);
         config.set_description(&Uint8Array::from(self.description.as_slice()));
-        // Prefer low-latency configure for reliable open / first-frame seek.
-        // (Throughput-oriented `false` can be revisited once open is stable.)
         config.set_optimize_for_latency(optimize_for_latency);
+        if prefer_hardware {
+            config.set_hardware_acceleration(web_sys::HardwareAcceleration::PreferHardware);
+        }
         config
     }
 }
@@ -168,6 +178,10 @@ struct DecoderCore {
     decoder: VideoDecoder,
     config: DecoderConfig,
     optimize_for_latency: bool,
+    /// `prefer-hardware` on configure (Uhd main only after HW support probe).
+    prefer_hardware: bool,
+    /// Pump warm frames past consumer target ([`PlayPolicy::decode_warm_ahead`]).
+    warm_ahead: usize,
     /// Bumped on teardown so late browser callbacks become no-ops.
     generation: Rc<Cell<u64>>,
     /// Bumped on detach/reset/invalidate/Drop so in-flight pumps stop feeding.
@@ -202,10 +216,12 @@ impl DecoderCore {
     fn from_config(
         config: DecoderConfig,
         optimize_for_latency: bool,
+        prefer_hardware: bool,
+        warm_ahead: usize,
         pump_epoch: Rc<Cell<u64>>,
         all_intra: bool,
     ) -> Result<Self, MediaError> {
-        let web_config = config.to_web_config(optimize_for_latency);
+        let web_config = config.to_web_config(optimize_for_latency, prefer_hardware);
 
         let generation = Rc::new(Cell::new(0));
         let frames: Rc<RefCell<Vec<OwnedVideoFrame>>> = Rc::new(RefCell::new(Vec::new()));
@@ -282,6 +298,8 @@ impl DecoderCore {
             decoder,
             config,
             optimize_for_latency,
+            prefer_hardware,
+            warm_ahead: warm_ahead.max(1),
             generation,
             pump_epoch,
             frames,
@@ -332,6 +350,8 @@ impl DecoderCore {
         self.detach_decoder();
         let config = self.config.clone();
         let optimize_for_latency = self.optimize_for_latency;
+        let prefer_hardware = self.prefer_hardware;
+        let warm_ahead = self.warm_ahead;
         let pump_epoch = Rc::clone(&self.pump_epoch);
         // Retire Closures before `*self = …` Drop — JS may still invoke them.
         let old_output = std::mem::replace(&mut self._on_output, Closure::new(|_| {}));
@@ -341,7 +361,14 @@ impl DecoderCore {
         std::mem::forget(old_error);
         std::mem::forget(old_dequeue);
 
-        *self = Self::from_config(config, optimize_for_latency, pump_epoch, all_intra)?;
+        *self = Self::from_config(
+            config,
+            optimize_for_latency,
+            prefer_hardware,
+            warm_ahead,
+            pump_epoch,
+            all_intra,
+        )?;
         *self.prune_interim.borrow_mut() = interim;
         Ok(())
     }
@@ -635,22 +662,40 @@ pub struct WebCodecsDecoder {
 }
 
 impl WebCodecsDecoder {
+    /// Main play/seek decoder — knobs from [`VideoMetadata::play_policy`].
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
+        Self::create_with_policy(meta, meta.play_policy()).await
+    }
+
+    /// Scrub densify decoder — always [`PlayPolicy::hd`] knobs (no prefer-hardware)
+    /// so Uhd play can keep the sole HW session (mediabunny dual-HW stall).
+    pub async fn create_scrub(meta: &VideoMetadata) -> Result<Self, MediaError> {
+        Self::create_with_policy(meta, PlayPolicy::hd()).await
+    }
+
+    async fn create_with_policy(
+        meta: &VideoMetadata,
+        policy: PlayPolicy,
+    ) -> Result<Self, MediaError> {
         ensure_webcodecs_available()?;
         let config = DecoderConfig::from_meta(meta)?;
         // Prefer throughput configure — `optimizeForLatency: true` wedges Chromium
         // on sustained play/deep key→N (`backpressure q≈41` / `flush/idle`).
         // mediabunny leaves this optional; we set false for VOD scrub+play.
         let optimize_for_latency = false;
-        let web_config = config.to_web_config(optimize_for_latency);
+        // Open gate: never require prefer-hardware (FHD-safe).
+        let probe = config.to_web_config(optimize_for_latency, false);
         web_sys::console::log_1(
             &format!(
-                "webmedia: VideoDecoder isConfigSupported ({}, {}x{})…",
-                config.codec, config.width, config.height
+                "webmedia: VideoDecoder isConfigSupported ({}, {}x{}, play={})…",
+                config.codec,
+                config.width,
+                config.height,
+                policy.label()
             )
             .into(),
         );
-        let support = JsFuture::from(VideoDecoder::is_config_supported(&web_config))
+        let support = JsFuture::from(VideoDecoder::is_config_supported(&probe))
             .await
             .map_err(MediaError::from)?;
         let supported = js_sys::Reflect::get(&support, &"supported".into())
@@ -660,15 +705,43 @@ impl WebCodecsDecoder {
         if !supported {
             return Err(MediaError::CodecUnsupported(config.codec.clone()));
         }
+
+        let mut prefer_hardware = false;
+        if policy.prefer_hardware {
+            let hw_probe = config.to_web_config(optimize_for_latency, true);
+            let hw_support = JsFuture::from(VideoDecoder::is_config_supported(&hw_probe))
+                .await
+                .map_err(MediaError::from)?;
+            prefer_hardware = js_sys::Reflect::get(&hw_support, &"supported".into())
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if prefer_hardware {
+                web_sys::console::log_1(&"webmedia: VideoDecoder prefer-hardware ok".into());
+            } else {
+                web_sys::console::warn_1(
+                    &"webmedia: prefer-hardware unsupported; software configure".into(),
+                );
+            }
+        }
+
         let pump_epoch = Rc::new(Cell::new(0));
         let all_intra = matches!(meta.gop_profile, GopProfile::AllIntra);
         let core = DecoderCore::from_config(
             config,
             optimize_for_latency,
+            prefer_hardware,
+            policy.decode_warm_ahead,
             Rc::clone(&pump_epoch),
             all_intra,
         )?;
-        web_sys::console::log_1(&"webmedia: VideoDecoder configured".into());
+        web_sys::console::log_1(
+            &format!(
+                "webmedia: VideoDecoder configured (warm={}, hw={prefer_hardware})",
+                policy.decode_warm_ahead
+            )
+            .into(),
+        );
         Ok(Self {
             core: Rc::new(RefCell::new(core)),
             pump_epoch,
@@ -783,10 +856,11 @@ impl WebCodecsDecoder {
             c.collect_and_prune_held(target_us)?;
             if let Some(ready) = c.take_held(target_us) {
                 let ahead = c.held.iter().filter(|h| h.pts_us > target_us).count();
+                let want = c.warm_ahead;
                 drop(c);
                 // Hit in held — still keep a cross-GOP pump warm so Play does not
                 // drain the buffer dry between takes (was: return with no feeder).
-                if ahead < DECODE_WARM_AHEAD {
+                if ahead < want {
                     self.spawn_warm_pump(Rc::clone(track), key_do, target_do, target_us);
                 }
                 return Ok(ready);
@@ -933,7 +1007,7 @@ impl WebCodecsDecoder {
                 let signals_bg = Rc::clone(&signals);
                 let pump_epoch_bg = Rc::clone(&self.pump_epoch);
                 spawn_local(async move {
-                    const WANT_AHEAD: usize = DECODE_WARM_AHEAD;
+                    let want_ahead = core_bg.borrow().warm_ahead;
                     for _ in 0..80 {
                         if pump_epoch_bg.get() != pump_epoch_now || signals_bg.stop.get() {
                             return;
@@ -948,7 +1022,7 @@ impl WebCodecsDecoder {
                             let idle = c.decode_queue_size() == 0
                                 && !c.raw_outputs_pending()
                                 && c.input_timestamps.is_empty();
-                            ahead >= WANT_AHEAD || (signals_bg.done.get() && idle)
+                            ahead >= want_ahead || (signals_bg.done.get() && idle)
                         };
                         if can_stop {
                             break;
@@ -1379,13 +1453,14 @@ impl FramePump {
         let stopped = || self.signals.stop.get() || self.pump_epoch.get() != self.epoch;
         // Feeding a little past the target (B/P reorder) is intentional; do not
         // drain the entire GOP — that amplified PTS desync on rapid PREV.
-        // Cross-GOP warm: keep going until DECODE_WARM_AHEAD presentation frames
+        // Cross-GOP warm: keep going until `warm_ahead` presentation frames
         // sit ahead of the target (Play seam). mediabunny mediaSamplesInRange
         // does not stop at the next IDR.
         let max_feeds = (self.track.frame_count() as usize)
             .saturating_add(32)
             .max(64);
         let mut saw_target = self.warm_only;
+        let warm_ahead = self.core.borrow().warm_ahead;
         for _ in 0..max_feeds {
             if stopped() {
                 break;
@@ -1401,18 +1476,18 @@ impl FramePump {
                 saw_target = true;
             }
             // After the target has appeared in `held` (or was taken), park
-            // DECODE_WARM_AHEAD frames past it — may cross the next GOP.
+            // `warm_ahead` frames past it — may cross the next GOP.
             // Requiring `has_target` forever made the pump run to EOF once the
             // consumer took the frame (BBB held≈3200). Stopping before
             // `saw_target` would break seek (B-frames with pts>target first).
-            if saw_target && ahead >= DECODE_WARM_AHEAD {
+            if saw_target && ahead >= warm_ahead {
                 break;
             }
             if saw_target
                 && fed
                     >= self
                         .target_do
-                        .saturating_add(REORDER_FEED_SLACK + DECODE_WARM_AHEAD)
+                        .saturating_add(REORDER_FEED_SLACK + warm_ahead)
             {
                 break;
             }

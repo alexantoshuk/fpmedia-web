@@ -340,6 +340,128 @@ impl ScrubPolicy {
     }
 }
 
+/// Coded-size class for play knobs. Scrub stays on [`ScrubPolicy`] (GOP).
+///
+/// Product: smooth 1× play is primary; scrub is secondary. **Hd must keep the
+/// historical Full-HD defaults** (`PRESENTATION_QUEUE_CAP` / warm-ahead = 4,
+/// no `prefer-hardware`) so FHD play+scrub stay unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolutionClass {
+    /// height &lt; [`UHD_MIN_HEIGHT`] — current Full-HD / below behaviour.
+    Hd,
+    /// height ≥ [`UHD_MIN_HEIGHT`] (4K+).
+    Uhd,
+}
+
+/// Minimum coded height for [`ResolutionClass::Uhd`].
+pub const UHD_MIN_HEIGHT: u32 = 2160;
+
+/// Play presentation ahead — Hd (= historical `PRESENTATION_QUEUE_CAP`).
+pub const PLAY_PRESENTATION_CAP_HD: usize = 4;
+/// Play presentation ahead — Uhd (local invention; absorb 4K decode latency).
+pub const PLAY_PRESENTATION_CAP_UHD: usize = 10;
+/// Decode warm-ahead — Hd (= historical `DECODE_WARM_AHEAD`).
+pub const PLAY_WARM_AHEAD_HD: usize = 4;
+/// Decode warm-ahead — Uhd.
+pub const PLAY_WARM_AHEAD_UHD: usize = 8;
+/// Loop prime buffer — Hd (historical default 8).
+pub const PLAY_LOOP_PRIME_FRAMES_HD: usize = 8;
+/// Loop prime buffer — Uhd (≥ presentation_cap so restart is not starved).
+pub const PLAY_LOOP_PRIME_FRAMES_UHD: usize = 12;
+/// Near-EOF / loop-prepare wall budget — Hd.
+pub const PLAY_EOF_BUDGET_SECS_HD: f64 = 0.4;
+/// Near-EOF / loop-prepare wall budget — Uhd (4K last-GOP decode is slower).
+pub const PLAY_EOF_BUDGET_SECS_UHD: f64 = 1.0;
+/// Extra near-EOF lead for non-loop Uhd (0 = Hd: no special non-loop EOF zone).
+pub const PLAY_EOF_LEAD_SECS_HD: f64 = 0.0;
+pub const PLAY_EOF_LEAD_SECS_UHD: f64 = 1.0;
+
+/// Per-clip **play** knobs (primary). Derived from coded height, not GOP.
+///
+/// Local invention for Uhd queue/warm/EOF (mediabunny has no resolution play
+/// profile). HW preference mirrors mediabunny optional
+/// `decoderOptions.hardwareAcceleration` (PR #406) — only on Uhd main decoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayPolicy {
+    pub class: ResolutionClass,
+    /// Presentation-queue ahead while playing (non-shuttle).
+    pub presentation_cap: usize,
+    /// Packet-pump warm frames past the consumer target.
+    pub decode_warm_ahead: usize,
+    /// Try `prefer-hardware` on configure after a separate support probe.
+    /// Support-check without HW still gates open (FHD-safe).
+    pub prefer_hardware: bool,
+}
+
+impl PlayPolicy {
+    /// Historical Full-HD defaults — also used for scrub decoder (never steal HW).
+    pub fn hd() -> Self {
+        Self {
+            class: ResolutionClass::Hd,
+            presentation_cap: PLAY_PRESENTATION_CAP_HD,
+            decode_warm_ahead: PLAY_WARM_AHEAD_HD,
+            prefer_hardware: false,
+        }
+    }
+
+    pub fn from_resolution(height: u32) -> Self {
+        if height >= UHD_MIN_HEIGHT {
+            Self {
+                class: ResolutionClass::Uhd,
+                presentation_cap: PLAY_PRESENTATION_CAP_UHD,
+                decode_warm_ahead: PLAY_WARM_AHEAD_UHD,
+                prefer_hardware: true,
+            }
+        } else {
+            Self::hd()
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self.class {
+            ResolutionClass::Hd => "hd",
+            ResolutionClass::Uhd => "uhd",
+        }
+    }
+
+    /// Frames to decode into `loop_prime` before the seam.
+    pub fn loop_prime_frames(self) -> usize {
+        match self.class {
+            ResolutionClass::Hd => PLAY_LOOP_PRIME_FRAMES_HD,
+            ResolutionClass::Uhd => PLAY_LOOP_PRIME_FRAMES_UHD,
+        }
+    }
+
+    /// Wall seconds of presentation to keep near EOF while loop-prime fills
+    /// (also sizes the loop near-EOF cap).
+    pub fn loop_prime_budget_secs(self) -> f64 {
+        match self.class {
+            ResolutionClass::Hd => PLAY_EOF_BUDGET_SECS_HD,
+            ResolutionClass::Uhd => PLAY_EOF_BUDGET_SECS_UHD,
+        }
+    }
+
+    /// Non-loop near-EOF lead: pull the remaining tail into the presentation
+    /// queue early so 4K last-GOP decode does not underrun before `Ended`.
+    /// Hd is `0` — FHD path unchanged.
+    pub fn eof_lead_secs(self) -> f64 {
+        match self.class {
+            ResolutionClass::Hd => PLAY_EOF_LEAD_SECS_HD,
+            ResolutionClass::Uhd => PLAY_EOF_LEAD_SECS_UHD,
+        }
+    }
+}
+
+impl ResolutionClass {
+    pub fn from_height(height: u32) -> Self {
+        if height >= UHD_MIN_HEIGHT {
+            Self::Uhd
+        } else {
+            Self::Hd
+        }
+    }
+}
+
 /// Media timestamp in seconds (f64 for UI; prefer [`Timestamp::from_ticks`] internally).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timestamp {
@@ -399,7 +521,16 @@ impl VideoMetadata {
         Timestamp::from_ticks(self.duration_ticks as i64, self.timescale)
     }
 
-    /// Scrub knobs for this clip (`GopProfile` → soft-drag / densify / budgets).
+    /// Play knobs (primary) — from coded height. Hd ≡ historical FHD defaults.
+    pub fn play_policy(&self) -> PlayPolicy {
+        PlayPolicy::from_resolution(self.height)
+    }
+
+    pub fn resolution_class(&self) -> ResolutionClass {
+        ResolutionClass::from_height(self.height)
+    }
+
+    /// Scrub knobs (secondary) — `GopProfile` → soft-drag / densify / budgets.
     pub fn scrub_policy(&self) -> ScrubPolicy {
         ScrubPolicy::from_gop_profile(self.gop_profile)
     }
@@ -524,6 +655,37 @@ mod tests {
             }
             .label(),
             "GOP ~200 (max 250)"
+        );
+    }
+
+    #[test]
+    fn play_policy_hd_matches_historical_defaults() {
+        let hd = PlayPolicy::from_resolution(1080);
+        assert_eq!(hd, PlayPolicy::hd());
+        assert_eq!(hd.presentation_cap, PLAY_PRESENTATION_CAP_HD);
+        assert_eq!(hd.decode_warm_ahead, PLAY_WARM_AHEAD_HD);
+        assert!(!hd.prefer_hardware);
+        assert_eq!(hd.label(), "hd");
+        // 1080p / 1440p stay Hd — do not retune working FHD.
+        assert_eq!(PlayPolicy::from_resolution(1440).class, ResolutionClass::Hd);
+    }
+
+    #[test]
+    fn play_policy_uhd_at_2160() {
+        let uhd = PlayPolicy::from_resolution(2160);
+        assert_eq!(uhd.class, ResolutionClass::Uhd);
+        assert_eq!(uhd.presentation_cap, PLAY_PRESENTATION_CAP_UHD);
+        assert_eq!(uhd.decode_warm_ahead, PLAY_WARM_AHEAD_UHD);
+        assert!(uhd.prefer_hardware);
+        assert_eq!(uhd.label(), "uhd");
+        assert!(uhd.presentation_cap > PLAY_PRESENTATION_CAP_HD);
+        assert_eq!(uhd.loop_prime_frames(), PLAY_LOOP_PRIME_FRAMES_UHD);
+        assert!(uhd.loop_prime_budget_secs() > PlayPolicy::hd().loop_prime_budget_secs());
+        assert!(uhd.eof_lead_secs() > 0.0);
+        assert_eq!(PlayPolicy::hd().eof_lead_secs(), 0.0);
+        assert_eq!(
+            PlayPolicy::hd().loop_prime_frames(),
+            PLAY_LOOP_PRIME_FRAMES_HD
         );
     }
 

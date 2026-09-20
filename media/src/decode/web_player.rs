@@ -28,10 +28,11 @@ use crate::types::{
 };
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
-/// Keep small — each slot pins a `VideoFrame`; 16 + in-flight decode starved
+/// Keep small on Hd — each slot pins a `VideoFrame`; 16 + in-flight decode starved
 /// Chromium's pool on DRYP play (`flush/idle` mid-GOP with `decodeQ≈12`).
 /// Pair with [`STEP_BEHIND_CAP`] (ring ≈ 1 displayed + 8 behind + 4 ahead).
-pub const PRESENTATION_QUEUE_CAP: usize = 4;
+/// Hd default = [`crate::PLAY_PRESENTATION_CAP_HD`]; Uhd uses [`PlayPolicy`].
+pub const PRESENTATION_QUEUE_CAP: usize = crate::PLAY_PRESENTATION_CAP_HD;
 /// Ahead depth while shuttling forward (`rate >= 2`) — keep decode light.
 pub const SHUTTLE_PRESENTATION_QUEUE_CAP: usize = 2;
 /// Live VF older than the playhead for Prev without key→N (step/scrub ring).
@@ -49,12 +50,13 @@ const PLAY_EXACT_VRAM_VF_SLACK: usize = 4;
 /// Frames to decode before starting the media clock (rest filled by prefetch).
 const PLAY_PRIME_FRAMES: usize = 2;
 /// Start-of-clip frames prepared into `loop_prime` before EOF (one decoder).
-const LOOP_PRIME_FRAMES: usize = 8;
-/// Wall-time budget for `fill_loop_prime` while the end still drains.
-/// Near EOF the presentation cap grows to ≈ `budget * fps * rate` so review
-/// rates (1.1–1.75) keep enough queued frames; default cap=4 is only ~0.1s.
-/// `mediabunny: no equivalent` (no loop/rate API).
-const LOOP_PRIME_BUDGET_SECS: f64 = 0.4;
+/// Hd default alias — live value from [`PlayPolicy::loop_prime_frames`].
+#[allow(dead_code)]
+const LOOP_PRIME_FRAMES: usize = crate::PLAY_LOOP_PRIME_FRAMES_HD;
+/// Wall-time budget for `fill_loop_prime` / near-EOF cap (Hd alias).
+/// Live value from [`PlayPolicy::loop_prime_budget_secs`].
+#[allow(dead_code)]
+const LOOP_PRIME_BUDGET_SECS: f64 = crate::PLAY_EOF_BUDGET_SECS_HD;
 /// Ceiling on near-EOF presentation growth (live VF VRAM).
 const LOOP_NEAR_END_PRESENTATION_CAP_MAX: usize = 64;
 /// Wall-clock lag above this → skip to nearest keyframe instead of exact frame.
@@ -431,26 +433,65 @@ impl WebPlayer {
     }
 
     fn play_presentation_cap(&self) -> usize {
+        if self.is_shuttle() {
+            return SHUTTLE_PRESENTATION_QUEUE_CAP;
+        }
+        let policy = self.metadata().play_policy();
+        // Loop: keep a long drain buffer while `fill_loop_prime` owns the decoder.
         if self.is_looping() && self.is_playing() && self.near_loop_prepare_zone() {
             return self.loop_drain_frames_for_rate();
         }
-        if self.is_shuttle() {
-            SHUTTLE_PRESENTATION_QUEUE_CAP
-        } else {
-            PRESENTATION_QUEUE_CAP
+        // Uhd (loop or not): once inside eof lead, allow the whole remaining
+        // tail into the presentation queue so last-GOP decode does not underrun.
+        // Hd `eof_lead_secs == 0` → never enters (FHD unchanged).
+        if policy.eof_lead_secs() > 0.0 && self.near_eof_lead(policy.eof_lead_secs()) {
+            let remaining = self.frames_left_on_timeline();
+            return remaining
+                .max(policy.presentation_cap)
+                .min(LOOP_NEAR_END_PRESENTATION_CAP_MAX);
         }
+        policy.presentation_cap
     }
 
-    /// Frames to keep queued near EOF so `fill_loop_prime` finishes before drain.
-    fn loop_drain_frames_for_rate(&self) -> usize {
+    /// Frames from current playhead through EOF (inclusive of current).
+    fn frames_left_on_timeline(&self) -> usize {
+        let state = self.state();
+        state.frame_count.saturating_sub(state.frame).max(1) as usize
+    }
+
+    /// True when playhead is within `lead_secs` of EOF (rate-scaled).
+    fn near_eof_lead(&self, lead_secs: f64) -> bool {
+        if lead_secs <= 0.0 {
+            return false;
+        }
+        let count = self.state().frame_count;
+        if count == 0 {
+            return false;
+        }
+        let left = self.frames_left_on_timeline() as f64;
         let rate = self.playback_rate().max(crate::PLAYBACK_RATE_MIN);
         let fps = self
             .metadata()
             .fps
             .filter(|f| f.is_finite() && *f > 0.0)
             .unwrap_or(24.0);
-        let needed = (LOOP_PRIME_BUDGET_SECS * fps * rate).ceil() as usize;
-        needed.clamp(PRESENTATION_QUEUE_CAP, LOOP_NEAR_END_PRESENTATION_CAP_MAX)
+        let lead_frames = (lead_secs * fps * rate).ceil().max(1.0);
+        left <= lead_frames
+    }
+
+    /// Frames to keep queued near EOF so `fill_loop_prime` finishes before drain.
+    fn loop_drain_frames_for_rate(&self) -> usize {
+        let policy = self.metadata().play_policy();
+        let rate = self.playback_rate().max(crate::PLAYBACK_RATE_MIN);
+        let fps = self
+            .metadata()
+            .fps
+            .filter(|f| f.is_finite() && *f > 0.0)
+            .unwrap_or(24.0);
+        let budget = policy.loop_prime_budget_secs();
+        let needed = (budget * fps * rate).ceil() as usize;
+        let floor = policy.presentation_cap.max(policy.loop_prime_frames());
+        needed.clamp(floor, LOOP_NEAR_END_PRESENTATION_CAP_MAX)
     }
 
     /// Playhead is within the rate-scaled loop-prepare lead of EOF.
@@ -634,11 +675,49 @@ impl WebPlayer {
     ///
     /// Prefer this over `skip_behind` when Chromium decode briefly lags the
     /// audio clock (DRYP: skip spiral → `skipped≈242` then End before EOF).
-    /// Keeps `playing` true; host resumes via [`Self::start_media_clock`] once
+    /// Keeps `playing` true; host resumes via [`Self::resume_media_clock`] once
     /// prefetch has frames again.
+    ///
+    /// Soft-holds audio ([`AudioOutput::hold_underrun`]) — silence without
+    /// `AudioDecoder` reset — so resume is not a cold reconfigure gap.
     pub fn hold_media_clock_for_underrun(&self) -> f64 {
         self.note_underrun_hold_start();
-        self.stop_media_clock()
+        let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
+            a.hold_underrun()
+        } else {
+            self.media_time()
+        };
+        self.shared.wall_origin.set(None);
+        self.shared.clock.borrow_mut().snap(t);
+        t
+    }
+
+    /// Warm resume after [`Self::hold_media_clock_for_underrun`] or loop seam.
+    ///
+    /// Reuses the configured `AudioDecoder` + primes the first buffers
+    /// ([`AudioOutput::restart_warm`]). Fresh Play after pause still uses
+    /// [`Self::start_media_clock`] (hard begin).
+    pub async fn resume_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
+        self.finish_underrun_hold_timer();
+        self.shared.clock.borrow_mut().start(media_time_secs);
+        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        if crate::is_wall_clock_rate(self.playback_rate()) {
+            if let Some(a) = audio {
+                let _ = a.stop();
+                a.store_playback_rate(self.playback_rate());
+            }
+            if let Some(now) = performance_now_ms() {
+                self.shared.wall_origin.set(Some(now / 1000.0));
+            }
+            return Ok(());
+        }
+        if let Some(a) = audio {
+            self.shared.wall_origin.set(None);
+            a.restart_warm(media_time_secs).await?;
+        } else if let Some(now) = performance_now_ms() {
+            self.shared.wall_origin.set(Some(now / 1000.0));
+        }
+        Ok(())
     }
 
     fn note_underrun_hold_start(&self) {
@@ -768,7 +847,7 @@ impl WebPlayer {
         let buf_w = self.shared.canvas.width().max(1);
         let buf_h = self.shared.canvas.height().max(1);
         let full = scrub_blit_frame_budget(buf_w, buf_h, policy.blit_mib);
-        let play_vfs = 1 + PRESENTATION_QUEUE_CAP + PLAY_EXACT_VRAM_VF_SLACK;
+        let play_vfs = 1 + meta.play_policy().presentation_cap + PLAY_EXACT_VRAM_VF_SLACK;
         let reserve =
             exact_frames_to_free_for_play_vram(play_vfs, meta.width, meta.height, buf_w, buf_h);
         blit.set_playhead(self.state().frame);
@@ -1672,7 +1751,8 @@ impl WebPlayer {
         self.invalidate_decoder();
         let track = self.shared.player.borrow().track_rc();
         let count = self.state().frame_count;
-        let n = (LOOP_PRIME_FRAMES as FrameId).clamp(1, count.max(1));
+        let n =
+            (self.metadata().play_policy().loop_prime_frames() as FrameId).clamp(1, count.max(1));
         let mut buf: VecDeque<QueuedFrame> = VecDeque::new();
 
         for frame in 0..n {
@@ -1723,8 +1803,12 @@ impl WebPlayer {
             self.touch_playhead(0);
             if self.is_playing() && self.is_current(epoch) {
                 self.trim_exact_for_play();
-                self.prime_presentation(LOOP_PRIME_FRAMES.saturating_sub(1), epoch)
-                    .await?;
+                let ahead = self
+                    .metadata()
+                    .play_policy()
+                    .loop_prime_frames()
+                    .saturating_sub(1);
+                self.prime_presentation(ahead, epoch).await?;
             }
             Ok(())
         }
@@ -2548,7 +2632,7 @@ fn apply_clip_budgets(shared: &Shared) {
     let buf_h = shared.canvas.height().max(1);
     let full = scrub_blit_frame_budget(buf_w, buf_h, policy.blit_mib);
     let blit_cap = if shared.fill_mode.get() == CacheFillMode::Play {
-        let play_vfs = 1 + PRESENTATION_QUEUE_CAP + PLAY_EXACT_VRAM_VF_SLACK;
+        let play_vfs = 1 + meta.play_policy().presentation_cap + PLAY_EXACT_VRAM_VF_SLACK;
         let reserve =
             exact_frames_to_free_for_play_vram(play_vfs, meta.width, meta.height, buf_w, buf_h);
         scrub_blit_cap_during_play(full, reserve)
@@ -2723,7 +2807,7 @@ async fn fill_one_gap(
     let taken = shared.scrub_decoder.borrow_mut().take();
     let mut decoder = match taken {
         Some(d) => d,
-        None => WebCodecsDecoder::create(&meta).await?,
+        None => WebCodecsDecoder::create_scrub(&meta).await?,
     };
     if cancelled() {
         *shared.scrub_decoder.borrow_mut() = Some(decoder);

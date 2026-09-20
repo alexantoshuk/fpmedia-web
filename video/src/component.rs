@@ -263,7 +263,10 @@ pub fn Video(
                                             performance_now_ms().map(|n| n / 1000.0).unwrap_or(0.0);
                                         s.restarting = false;
                                     }
-                                    let _ = p.start_media_clock(0.0).await;
+                                    // Warm audio restart — loop_prime already painted
+                                    // video; hard `start_media_clock` tore down the
+                                    // AudioDecoder and felt like audio-only lag.
+                                    let _ = p.resume_media_clock(0.0).await;
                                 }
                                 Err(e) if e.is_cancelled() => {
                                     if let Some(s) = session.borrow_mut().as_mut() {
@@ -368,7 +371,7 @@ pub fn Video(
                                         .as_ref()
                                         .map(|s| s.media_origin)
                                         .unwrap_or(0.0);
-                                    match p.start_media_clock(t).await {
+                                    match p.resume_media_clock(t).await {
                                         Ok(()) => {
                                             if let Some(s) = session.borrow_mut().as_mut() {
                                                 s.resuming_clock = false;

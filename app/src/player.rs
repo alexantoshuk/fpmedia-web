@@ -543,7 +543,13 @@ pub fn DemoPlayer() -> impl IntoView {
                                 video
                                     .metadata
                                     .get()
-                                    .map(|m| m.gop_profile.label())
+                                    .map(|m| {
+                                        format!(
+                                            "{} · play:{}",
+                                            m.gop_profile.label(),
+                                            m.play_policy().label()
+                                        )
+                                    })
                                     .unwrap_or_else(|| "—".into()),
                                 video.timestamp.get(),
                                 fps_part,
