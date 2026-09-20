@@ -4,8 +4,7 @@
 
 ## In progress
 
-- Confirm URL play after 512 MiB `CachedSource` + network fill (`e2e/player.play.gop12-url-vs-local.spec.ts`).
-- Re-save scrub baselines for testvideo GOP12 + GOP48 (`npm run e2e:baseline:save` with app on :3000).
+_(empty)_
 
 ---
 
