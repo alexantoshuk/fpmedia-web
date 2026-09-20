@@ -7,6 +7,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::MediaClock;
@@ -2471,8 +2473,18 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
                             .set(Some(playhead_and_last(&shared).0));
                         return Ok(());
                     }
-                    // Macrotask so paused rAF can refresh the ready strip.
-                    sleep_ms(0).await;
+                    if made_progress {
+                        // One display frame after a GOP of VF→ImageBitmap so the
+                        // GPU process can reclaim before the next burst (Chrome
+                        // whole-window black flash under densify VRAM pressure).
+                        // Keep Exact blit at viewport size — do not shrink the window.
+                        // mediabunny: CanvasSink poolSize stays tiny; no equivalent
+                        // pacing — local yield only (`sleep_ms(0)` was too short).
+                        wait_animation_frame().await;
+                    } else {
+                        // Macrotask so paused rAF can refresh the ready strip.
+                        sleep_ms(0).await;
+                    }
                 }
                 Err(MediaError::Cancelled) => {
                     // Settle/seek hold — exit so scrub HW yields immediately
@@ -2765,6 +2777,26 @@ async fn yield_event_loop() {
         &wasm_bindgen::JsValue::UNDEFINED,
     ))
     .await;
+}
+
+/// Await one animation frame with a dedicated Closure (not Promise.resolve).
+///
+/// Used to pace densify between GOPs so Chrome's GPU process can reclaim after
+/// a burst of `transferToImageBitmap`. Do not pass `resolve` directly to rAF.
+async fn wait_animation_frame() {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let Some(window) = web_sys::window() else {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+            return;
+        };
+        let resolve = resolve.clone();
+        let cb = Closure::once(move |_t: f64| {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        });
+        let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
+        cb.forget();
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 async fn sleep_ms(ms: i32) {
