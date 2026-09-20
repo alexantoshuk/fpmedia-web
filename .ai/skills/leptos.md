@@ -41,7 +41,7 @@ Decode / densify / WebCodecs hangs → `skills/media.md` triage.
 | DOM node | `NodeRef::<html::Canvas>` (etc.) |
 | Resize / observe / DOM events / rAF helpers | **`leptos-use`** (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) — not raw `web-sys` + `Closure` |
 
-Prefer `leptos-use` whenever it covers the Web API. Raw `web-sys` in `video/` for media plumbing (canvas, `Performance`); in `app/` only for demo File / input element types.
+Prefer `leptos-use` whenever it covers the Web API. Raw `web-sys` in `media_components/` for media plumbing (canvas, `Performance`); in `app/` only for demo File / input element types.
 
 ---
 
@@ -65,7 +65,7 @@ Only classes that appear **literally** in `.rs` / `.css` are emitted. Do not bui
 
 ---
 
-## Video element gotchas (`video` crate)
+## Video element gotchas (`media_components::video`)
 
 1. Open / seek / play-prime are **async** and share `&mut`-equivalent `WebPlayer` state — serialize them on one local **op queue** (`OpQueue`, mediabunny `CallSerializer` + demo `asyncId`). Do not gate with ad-hoc `if busy { return }` (that drops user input). `busy` means the queue is draining.
 2. Do not call `pause` / `is_playing` on the Rust player while another async method is awaiting (aliasing). Mirror play state in a Leptos signal for the UI. **Never hold `RefCell`/`borrow_mut` across `.await`** — clone the `Rc<WebPlayer>`, await, then put it back (otherwise Loop/sync_ui panics: `RefCell already borrowed`).

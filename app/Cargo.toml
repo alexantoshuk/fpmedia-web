@@ -32,7 +32,7 @@ web-sys = { workspace = true, optional = true, features = [
     "KeyboardEvent",
     "Window",
 ] }
-video = { path = "../video", optional = true }
+media_components = { path = "../media_components", optional = true }
 
 [features]
 default = []
@@ -46,7 +46,7 @@ csr = [
     "dep:js-sys",
     "dep:web-sys",
     "dep:leptos-use",
-    "dep:video",
+    "dep:media_components",
 ]
 ssr = [
     "leptos/ssr",

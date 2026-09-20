@@ -1,8 +1,8 @@
 [package]
-name = "video"
+name = "media_components"
 version = "0.1.0"
 edition = "2024"
-description = "Leptos <Video> element over the webmedia engine"
+description = "Leptos media elements (<Video>, later <Audio>) over the webmedia engine"
 publish = false
 
 [lib]

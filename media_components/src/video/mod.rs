@@ -1,7 +1,7 @@
 //! Leptos `<Video>` element — frame-accurate media stage over [`webmedia::WebPlayer`].
 //!
 //! Analogous to HTML `<video>`: owns canvas, open/decode, play clock, seek/step.
-//! Host UI (controls, file picker) lives outside this crate.
+//! Host UI (controls, file picker) lives in the demo `app` crate.
 
 mod component;
 mod op_queue;

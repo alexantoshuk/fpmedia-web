@@ -12,8 +12,7 @@ _(empty)_
 
 ### Layout / crates
 
-- Rename crate `video` → `media_components` (`video` module = current `<Video>`; later `audio` module).
-- Then `media_components::helpers` — shared UI math (cache progress segments, coalesced runs → CSS/%, time formatters). Keyboard chrome stays in demo `app`.
+- `media_components::helpers` — shared UI math (cache progress segments, coalesced runs → CSS/%, time formatters). Keyboard chrome stays in demo `app`.
 
 ### Media engine
 

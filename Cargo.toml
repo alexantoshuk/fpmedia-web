@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["media", "video", "app", "frontend", "server"]
+members = ["media", "media_components", "app", "frontend", "server"]
 
 [profile.release]
 codegen-units = 1

@@ -19,8 +19,8 @@ use webmedia::{
     is_no_http_range, open_mp4_media_source_cached_with_progress,
 };
 
-use crate::op_queue::{HostOp, OpQueue};
-use crate::{VideoOps, VideoRef};
+use super::op_queue::{HostOp, OpQueue};
+use super::{VideoOps, VideoRef};
 
 type PlayerHandle = Rc<RefCell<Option<Rc<WebPlayer>>>>;
 

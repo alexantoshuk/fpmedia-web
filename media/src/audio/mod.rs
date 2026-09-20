@@ -4,7 +4,7 @@
 //! - `wasm32` + `webcodecs`: [`output`] (`AudioDecoder` → `AudioContext`) + [`owned`].
 //!
 //! [`crate::clock::MediaClock`] stays shared (wall or audio-driven timeline).
-//! UI hosts (`video` crate / future `media_components`) only call engine APIs —
+//! UI hosts (`media_components`) only call engine APIs —
 //! no keyboard chrome here.
 
 mod demux;

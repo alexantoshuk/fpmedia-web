@@ -139,11 +139,11 @@ cargo leptos watch                                      # dev → http://127.0.0
 cargo leptos build                                      # build → target/site/
 cargo check -p server                                   # server (ssr) type check
 cargo check --target wasm32-unknown-unknown -p frontend # CSR WASM client + UI
-cargo check --target wasm32-unknown-unknown -p video    # Video element crate
+cargo check --target wasm32-unknown-unknown -p media_components # <Video> element crate
 # Pre-commit only (see CONTRIBUTING.md):
 cargo clippy -p webmedia --all-targets --all-features -- -D warnings
 cargo clippy --target wasm32-unknown-unknown -p frontend -- -D warnings
-cargo clippy --target wasm32-unknown-unknown -p video -- -D warnings
+cargo clippy --target wasm32-unknown-unknown -p media_components -- -D warnings
 cargo test -p webmedia                                  # media engine unit/integration tests
 npm install && npm run e2e:install                      # once: Playwright (+ Chromium if CDN ok)
 npm run e2e                                             # browser smoke (app up on :3000; Win uses system Chrome)

@@ -104,7 +104,7 @@ Layering (do **not** put decode/`AudioContext` in `VideoRef`):
   WebPlayer::media_time() ──► video present_due / host rAF
 ```
 
-Future pure-audio: same `audio::` modules + `MediaClock` behind `AudioPlayer` / `<Audio>` (no canvas). Planned UI crate rename: `video` → `media_components` with `video` + `audio` modules (API-only, like HTML media elements).
+Future pure-audio: same `audio::` modules + `MediaClock` behind `AudioPlayer` / `<Audio>` (no canvas). UI crate: `media_components` with `video` + planned `audio` modules (API-only, like HTML media elements).
 
 **mediabunny:** `examples/media-player/media-player.ts` (`getPlaybackTime` / `runAudioIterator`); `AudioBufferSink` (`src/media-sink.ts`). Rate/pitch: **no equivalent** — review rates use `audio::TimeStretcher` (Vanilagy WSOLA gist ≈ Chromium `preservesPitch`). Do not open `AudioContext` only as a disposable clock (`resume` + early `close` → `Closed before resume completed`).
 
@@ -234,7 +234,7 @@ Do **not** retune Hd when changing Uhd. Support-check never requires HW (open st
 
 **Contiguous arming:** `ScrubChunkStore::no_gaps` when the extent is a single run. While `no_gaps` **and under frame budget**, keep expanding. Edge-idle (`ScrubPolicy::margin_left` / `margin_right`) applies only when **at capacity**, and only for edges that can still expand (`start > 0` / `end < last`). Visited scrub frames stay until budget eviction (farthest from aim).
 
-Demo strip: dim Covered = store markers (coverage); bright Exact = live blit (step-ready). Two CSS `linear-gradient` overlays (O(1) DOM) from coalesced runs — no per-frame ticks; ahead/behind VF rings are buffer meters only. Marks stay visible during Play. `play()` **trims** Exact (free Play VF VRAM via farthest-from-playhead eviction; not a full wipe) and keeps markers. While paused, `video` keeps rAF ticking so marks update during fill.
+Demo strip: dim Covered = store markers (coverage); bright Exact = live blit (step-ready). Two CSS `linear-gradient` overlays (O(1) DOM) from coalesced runs — no per-frame ticks; ahead/behind VF rings are buffer meters only. Marks stay visible during Play. `play()` **trims** Exact (free Play VF VRAM via farthest-from-playhead eviction; not a full wipe) and keeps markers. While paused, `<Video>` keeps rAF ticking so marks update during fill.
 
 ## Gotchas
 
@@ -337,8 +337,8 @@ Engine-side pacing notes; UI queue / signals: `skills/leptos.md`.
 - **`web_sys_unstable_apis`** — required. Set in `.cargo/config.toml`.
 - **`VideoDecoderInit::new` argument order** in current `web-sys` is `(error, output)`.
 - **Timestamps in web-sys** — `EncodedVideoChunkInit` uses `i32` µs / `u32` duration; clamp long timelines.
-- **Workspace isolation** — do not import `video` / `app` / Leptos into `media/`.
+- **Workspace isolation** — do not import `media_components` / `app` / Leptos into `media/`.
 - **Mobile / LAN HTTP** — WebCodecs needs a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). `http://localhost` OK; LAN IP HTTP is not.
-- **Playback canvas size** — blit at CSS contain size × DPR, capped by **source display** and **monitor** (`screen` × DPR; removed fixed edge-1280). Measured from the **parent viewport** box (object-fit: contain). **Lock** buffer size + CSS `aspect-ratio` on open / `WebPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. `video`: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`. **Fullscreen:** size change clears canvas pixels — `repaint_after_buffer_resize` from `displayed` (else warm blit); do **not** clear scrub markers/blit (legacy WebP wipe). Soft upscale until densify refreshes at the new size is OK.
+- **Playback canvas size** — blit at CSS contain size × DPR, capped by **source display** and **monitor** (`screen` × DPR; removed fixed edge-1280). Measured from the **parent viewport** box (object-fit: contain). **Lock** buffer size + CSS `aspect-ratio` on open / `WebPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. `media_components::video`: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`. **Fullscreen:** size change clears canvas pixels — `repaint_after_buffer_resize` from `displayed` (else warm blit); do **not** clear scrub markers/blit (legacy WebP wipe). Soft upscale until densify refreshes at the new size is OK.
 - **Throttle play UI** — do not `sync_ui` / update fps signals every frame; ~10 Hz is enough. Reactive status updates every present compete with decode/draw on the main thread.
 - **Prefetch at EOF** — if `prefetch_one` returns `false` (end of track / full), the background pump **must** `await` rAF (or sleep). `continue` without yield spins the main thread and freezes the tab.

@@ -1,10 +1,10 @@
-//! Demo controls over [`video::Video`] — not production chrome.
+//! Demo controls over [`media_components::Video`] — not production chrome.
 
 use leptos::ev;
 use leptos::html::{Div, Input};
 use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
-use video::{ReadyFrameKind, Video, VideoMetadata, VideoRef};
+use media_components::{ReadyFrameKind, ReadyFrameMark, Video, VideoMetadata, VideoRef};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
@@ -742,7 +742,7 @@ pub fn DemoPlayer() -> impl IntoView {
 ///
 /// Build a hard-stop `linear-gradient` for coalesced cache runs (O(1) DOM).
 fn cache_strip_gradient(
-    marks: &[video::ReadyFrameMark],
+    marks: &[ReadyFrameMark],
     kind: ReadyFrameKind,
     max: f64,
     color: &str,

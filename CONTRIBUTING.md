@@ -34,10 +34,10 @@ While iterating on a change, prefer `cargo check` (and targeted crate checks). D
 cargo fmt --all -- --check
 cargo clippy -p webmedia --all-targets --all-features -- -D warnings
 cargo clippy --target wasm32-unknown-unknown -p frontend -- -D warnings
-cargo clippy --target wasm32-unknown-unknown -p video -- -D warnings
+cargo clippy --target wasm32-unknown-unknown -p media_components -- -D warnings
 cargo check -p server
 cargo check --target wasm32-unknown-unknown -p frontend
-cargo check --target wasm32-unknown-unknown -p video
+cargo check --target wasm32-unknown-unknown -p media_components
 cargo test -p webmedia
 cargo leptos build
 ```
