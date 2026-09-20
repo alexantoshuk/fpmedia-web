@@ -15,8 +15,8 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlCanvasElement, Response};
 use webmedia::{
-    BlobSource, DuePresent, MediaSource, OpenMp4Options, UrlSource, WebPlayer, is_no_http_range,
-    open_mp4_media_source_cached_with_progress,
+    BlobSource, DuePresent, MediaError, MediaSource, OpenMp4Options, UrlSource, WebPlayer,
+    is_no_http_range, open_mp4_media_source_cached_with_progress,
 };
 
 use crate::op_queue::{HostOp, OpQueue};
@@ -635,13 +635,12 @@ pub fn Video(
             let queue = queue.clone();
             let kick_drain = Rc::clone(&kick_drain);
             spawn_local(async move {
-                let opened = resolve_url_source(&url).await;
+                let opened = resolve_url_source(&url, |msg| status.set(msg.to_string())).await;
                 if !queue.is_current(fetch_id) {
                     return;
                 }
                 match opened {
                     Ok(source) => {
-                        status.set("Opening (progressive)…".into());
                         if queue.enqueue_open(source, canvas) {
                             kick_drain();
                         }
@@ -1351,10 +1350,14 @@ async fn run_play_prime(
 }
 
 /// Resolve `https:` via [`UrlSource`] (HTTP Range); `blob:` / no-Range hosts via
-/// full fetch → [`BlobSource`].
-async fn resolve_url_source(url: &str) -> Result<std::sync::Arc<dyn MediaSource>, String> {
+/// full fetch → [`BlobSource`]. Status line only — no confirm dialogs.
+async fn resolve_url_source(
+    url: &str,
+    on_status: impl Fn(&str),
+) -> Result<std::sync::Arc<dyn MediaSource>, String> {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("blob:") {
+        on_status("Opening blob…");
         let blob = fetch_url_as_blob(url).await?;
         return Ok(std::sync::Arc::new(BlobSource::new(blob)));
     }
@@ -1364,23 +1367,59 @@ async fn resolve_url_source(url: &str) -> Result<std::sync::Arc<dyn MediaSource>
         ));
     }
 
+    on_status("Probing HTTP Range…");
     match UrlSource::connect(url.to_string()).await {
         Ok(src) => {
+            let size_kb = src.size() / 1024;
             web_sys::console::log_1(
-                &format!("webmedia: open_url UrlSource size={} KB", src.size() / 1024).into(),
+                &format!("webmedia: open_url UrlSource size={size_kb} KB").into(),
             );
+            on_status(&format!("Opening (progressive, ~{size_kb} KB)…"));
             Ok(std::sync::Arc::new(src))
         }
         Err(e) if is_no_http_range(&e) => {
+            // mediabunny: src/source.ts UrlSource — non-206 → sequential/full path;
+            // we fall back to a whole-resource fetch into BlobSource.
             web_sys::console::warn_1(
                 &format!("webmedia: no HTTP Range ({e}); full download fallback").into(),
             );
+            let size_hint = content_length_from_no_range(&e)
+                .map(format_byte_size)
+                .map(|s| format!(" (~{s})"))
+                .unwrap_or_default();
+            on_status(&format!(
+                "No HTTP Range — downloading full file{size_hint}…"
+            ));
             let blob = fetch_url_as_blob(url).await?;
             let size_kb = (blob.size() as u64) / 1024;
             web_sys::console::log_1(&format!("webmedia: open_url full fetch ~{size_kb} KB").into());
+            on_status(&format!(
+                "Opening (full download, ~{})…",
+                format_byte_size(blob.size() as u64)
+            ));
             Ok(std::sync::Arc::new(BlobSource::new(blob)))
         }
         Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Parse `content-length=N` from [`is_no_http_range`] error text when present.
+fn content_length_from_no_range(err: &MediaError) -> Option<u64> {
+    let msg = err.to_string();
+    let rest = msg.split("content-length=").nth(1)?;
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn format_byte_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.0} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{bytes} B")
     }
 }
 
