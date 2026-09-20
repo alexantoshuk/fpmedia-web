@@ -28,7 +28,7 @@ use web_sys::{
 
 use crate::audio::Mp4AudioTrack;
 use crate::audio::TimeStretcher;
-use crate::audio::owned::OwnedAudioData;
+use crate::audio::owned_audio_data::OwnedAudioData;
 use crate::error::MediaError;
 use crate::normalize_playback_rate;
 use crate::types::AudioMetadata;
@@ -44,7 +44,7 @@ struct PendingSample {
     data: OwnedAudioData,
 }
 
-/// Optional audio sink attached to [`crate::WebPlayer`].
+/// Optional audio sink attached to [`crate::VideoPlayer`].
 pub struct AudioOutput {
     track: Rc<Mp4AudioTrack>,
     context: AudioContext,

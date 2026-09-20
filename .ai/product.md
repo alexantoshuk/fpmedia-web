@@ -23,7 +23,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 | ------- | ------- |
 | **`media_components` crate** | Leptos `<Video>` + `VideoRef` — media element API only (HTML `<video>` analog). Modules: `video` (+ planned `audio`, `helpers`) |
 | **Demo app** | `app` / `frontend` — file picker, transport buttons, **keyboard (JKL/Space/arrows)**, status (not production chrome) |
-| **Library API** | `webmedia` crate — demux + frame index + `Player` / `WebPlayer`; audio engine under `audio/` |
+| **Library API** | `webmedia` crate — demux + frame index + `Player` / `VideoPlayer`; audio engine under `audio/` |
 
 ---
 
@@ -32,7 +32,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - **Primary position** = presentation `FrameId` (0-based), not `time * fps`.
 - Exact frame N uses keyframe cascade (nearest sync → decode → target), including B-frame / decode-order windows.
 - Player layout/state must allow **1–2 media sources** later (compare) — never hard-assume a single source forever.
-- `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, source metadata via `VideoRef::metadata` / `WebPlayer::metadata()`.
+- `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, source metadata via `VideoRef::metadata` / `VideoPlayer::metadata()`.
 - Continuous play uses a **wall-clock** media timeline until an audio track exists; then video slaves to audio
   (`AudioContext` clock — mediabunny media-player pattern).
 - Audio decode/output lives in the **`webmedia` engine** (`audio/` module), not inside `VideoRef`. UI hosts stay thin

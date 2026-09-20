@@ -12,7 +12,7 @@ use crate::error::MediaError;
 
 /// Pin CSS aspect-ratio and allocate the bitmap buffer once for this video.
 ///
-/// Call on open (and on container resize via [`crate::WebPlayer::relayout`]) —
+/// Call on open (and on container resize via [`crate::VideoPlayer::relayout`]) —
 /// not per frame. Layout follows CSS **contain** inside the parent box (like
 /// `<video>` + `object-fit: contain`).
 pub fn configure_canvas_for_video(

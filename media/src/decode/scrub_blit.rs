@@ -25,12 +25,12 @@ use crate::error::MediaError;
 pub struct ScrubChunk;
 
 /// Reusable VF -> `ImageBitmap` surface (not in the DOM).
-pub struct EncodeCanvas {
+pub struct BlitCanvas {
     offscreen: OffscreenCanvas,
     off_ctx: OffscreenCanvasRenderingContext2d,
 }
 
-impl EncodeCanvas {
+impl BlitCanvas {
     pub fn new() -> Result<Self, MediaError> {
         let offscreen = OffscreenCanvas::new(1, 1).map_err(MediaError::from)?;
         let off_ctx = offscreen
@@ -71,18 +71,18 @@ impl EncodeCanvas {
     }
 }
 
-/// Lazy [`EncodeCanvas`] holder for `Shared`.
+/// Lazy [`BlitCanvas`] holder for `Shared`.
 #[derive(Default)]
-pub struct EncodeCanvasSlot(RefCell<Option<EncodeCanvas>>);
+pub struct BlitCanvasSlot(RefCell<Option<BlitCanvas>>);
 
-impl EncodeCanvasSlot {
-    pub fn with_encoder<R>(
+impl BlitCanvasSlot {
+    pub fn with_blit<R>(
         &self,
-        f: impl FnOnce(&EncodeCanvas) -> Result<R, MediaError>,
+        f: impl FnOnce(&BlitCanvas) -> Result<R, MediaError>,
     ) -> Result<R, MediaError> {
         let mut slot = self.0.borrow_mut();
         if slot.is_none() {
-            *slot = Some(EncodeCanvas::new()?);
+            *slot = Some(BlitCanvas::new()?);
         }
         f(slot.as_ref().expect("just inserted"))
     }

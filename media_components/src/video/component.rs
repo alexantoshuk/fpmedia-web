@@ -15,14 +15,14 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlCanvasElement, Response};
 use webmedia::{
-    BlobSource, DuePresent, MediaError, MediaSource, OpenMp4Options, UrlSource, WebPlayer,
+    BlobSource, DuePresent, MediaError, MediaSource, OpenMp4Options, UrlSource, VideoPlayer,
     is_no_http_range, open_mp4_media_source_cached_with_progress,
 };
 
 use super::op_queue::{HostOp, OpQueue};
 use super::{VideoOps, VideoRef};
 
-type PlayerHandle = Rc<RefCell<Option<Rc<WebPlayer>>>>;
+type PlayerHandle = Rc<RefCell<Option<Rc<VideoPlayer>>>>;
 
 /// Media-clock + UI throttle state for an active play session.
 struct PlaySession {
@@ -885,7 +885,7 @@ pub fn Video(
             queue.cancel_all();
             playing.set(false);
             let _ = session.borrow_mut().take();
-            // Drop WebPlayer (decoder + caches); cancel_ops via Drop.
+            // Drop VideoPlayer (decoder + caches); cancel_ops via Drop.
             let retiring = player.borrow_mut().take();
             if let Some(p) = retiring {
                 p.pause();
@@ -993,7 +993,7 @@ fn enqueue_scrub(
     if player.borrow().as_ref().is_none() {
         return;
     }
-    // Leaving play: full pause once. Already paused: do **not** call `WebPlayer::pause`
+    // Leaving play: full pause once. Already paused: do **not** call `VideoPlayer::pause`
     // on every pointer sample (re-enters scrub pipeline / parks queue and can nest
     // into Leptos event handlers → tachys `RefCell already borrowed`).
     let leaving_play = playing.get_untracked();
@@ -1498,7 +1498,7 @@ async fn open_source_staged(
     source: std::sync::Arc<dyn MediaSource>,
     canvas: HtmlCanvasElement,
     on_status: impl Fn(&str),
-) -> Result<WebPlayer, String> {
+) -> Result<VideoPlayer, String> {
     on_status("Starting demux…");
     web_sys::console::log_1(&"webmedia: demux start".into());
     let opened = open_mp4_media_source_cached_with_progress(
@@ -1528,7 +1528,7 @@ async fn open_source_staged(
         video.frame_count(),
         if audio.is_some() { " + audio" } else { "" }
     ));
-    WebPlayer::from_tracks_with_fetch(video, audio, canvas, opened.fetch_map)
+    VideoPlayer::from_tracks_with_fetch(video, audio, canvas, opened.fetch_map)
         .await
         .map_err(|e| e.to_string())
 }

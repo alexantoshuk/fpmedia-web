@@ -27,7 +27,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Play ~0.75× realtime / underrun hold (long GOP ~48) | warm held + pump stop | after take, bg warm-ahead then stop (`media-sink.ts` range); Play behind cap 0 |
 | Dense wiped on Play | `present_play_frame` / prime | do **not** trim densify markers on Play — budget/aim eviction only |
 | Cached scrub / Next-Prev lag on large viewport | Scrub blit size | densify = VF→ImageBitmap; MiB→frames shrinks cap on large CSS×DPR |
-| Fullscreen ↔ windowed black until Play/scrub | `WebPlayer::relayout` | keep markers+blit; redraw `displayed` (or warm blit); do **not** wipe store (old WebP still path) |
+| Fullscreen ↔ windowed black until Play/scrub | `VideoPlayer::relayout` | keep markers+blit; redraw `displayed` (or warm blit); do **not** wipe store (old WebP still path) |
 | Next/Prev hold slow / key→N every step | Step VF ring + warm blit | ring first; else densify ImageBitmap |
 | Next/Prev hold: smooth then ~3s freeze (green strip) | Step soft goto + Exact=blit | miss must not abort densify; green = live blit only |
 | Pause densify dead after Play (green empty) | blit gaps in `next_gap_target` | Play trims Exact, keeps markers — refill ImageBitmap holes on pause |
@@ -43,7 +43,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Pause→Seek same / Prev→Next ≠ pause frame | Scrub cache `put_chunk` / present_and_cache | canvas must replace scrub resident |
 | Play lag right after scrub (long GOP) | Scrub cache + `skills/leptos.md` Play after scrub | seek restart / densify before PlayPrime |
 | Play after scrub no-op (esp. after EOF) | `skills/leptos.md` Play after scrub | stale clock / UI `playing` early; **or** scrub throttle trailing drag after settle kills PlayPrime |
-| A/V desync / silent play with audio track | [Audio + media clock](#audio--media-clock) | video must use `WebPlayer::media_time()` (AudioContext), not host wall-clock |
+| A/V desync / silent play with audio track | [Audio + media clock](#audio--media-clock) | video must use `VideoPlayer::media_time()` (AudioContext), not host wall-clock |
 | Rate wrong / pitch stretch only / no slow-mo | Playback rate gotcha | `normalize_playback_rate` forward-only; clock `* rate`; ≤4× = WSOLA fixed-pitch |
 | Shuttle / 8× silent stop mid-clip (no error; Play continues) | `present_due` EOF wall | Clock raced past duration while playhead mid — snap + don’t End until last frame |
 | Shuttle / non-1× choppy / audio ticks | Playback rate gotcha | `>4` silent (`is_wall_clock_rate`); shuttle present still `≥2` |
@@ -76,19 +76,19 @@ media/src/                 ← package name: webmedia
 ├── audio/                 ← audio engine (isolated from canvas / video decode)
 │   ├── demux.rs           ← Mp4AudioTrack
 │   ├── stretch.rs         ← WSOLA fixed-pitch (Vanilagy gist; ≤4×)
-│   ├── owned.rs           ← OwnedAudioData (cfg webcodecs)
+│   ├── owned_audio_data.rs ← OwnedAudioData (cfg webcodecs)
 │   └── output.rs          ← AudioDecoder → (+WSOLA) → AudioContext (cfg webcodecs)
 ├── demux/
 │   ├── boxes.rs           ← top-level ISOBMFF scan + ftyp/moov/moof stub
 │   └── mp4.rs             ← re_mp4 → Mp4VideoTrack (+ builds audio via audio::); OpenedMp4
 ├── player.rs              ← play/pause/seek_frame/step → DecodeWindow
-└── decode/                ← cfg(wasm32 + webcodecs) — video path
+├── video_player/          ← cfg(wasm32 + webcodecs) — VideoPlayer façade (A+V orchestration)
+└── decode/                ← cfg(wasm32 + webcodecs) — WebCodecs + canvas + scrub blit
     ├── webcodecs.rs       ← DecoderCore + dual-async decode_frame; decode_gop
     ├── frame_cache.rs     ← ScrubChunkStore + FrameRunIndex + ThumbCache shell
-    ├── scrub_encode.rs    ← VideoFrame → ImageBitmap (densify blit)
+    ├── scrub_blit.rs      ← VideoFrame → ImageBitmap (densify blit); stays in decode/
     ├── owned_video_frame.rs ← OwnedVideoFrame (close on drop)
-    ├── canvas.rs          ← draw VideoFrame
-    └── web_player.rs      ← WebPlayer façade (open_blob; optional audio::AudioOutput)
+    └── canvas.rs          ← draw VideoFrame
 ```
 
 ### Audio + media clock
@@ -101,7 +101,7 @@ Layering (do **not** put decode/`AudioContext` in `VideoRef`):
   MediaClock ◄── AudioContext.currentTime (when track exists)
        │         else wall Performance clock
        ▼
-  WebPlayer::media_time() ──► video present_due / host rAF
+  VideoPlayer::media_time() ──► video present_due / host rAF
 ```
 
 Future pure-audio: same `audio::` modules + `MediaClock` behind `AudioPlayer` / `<Audio>` (no canvas). UI crate: `media_components` with `video` + planned `audio` modules (API-only, like HTML media elements).
@@ -121,7 +121,7 @@ Exact frame N does **not** require all-intra video. Cascade:
 nearest sync (by decode timestamp) → decode … → target
 ```
 
-`Player::seek_frame` returns a `DecodeWindow`; `WebPlayer` feeds it to WebCodecs, keeps the target `VideoFrame`, draws to canvas.
+`Player::seek_frame` returns a `DecodeWindow`; `VideoPlayer` feeds it to WebCodecs, keeps the target `VideoFrame`, draws to canvas.
 
 ## Mediabunny reference
 
@@ -134,9 +134,9 @@ Rust/WASM friction (Closures, `JsFuture`, `RefCell`) is adaptation of the same c
 ### Ported patterns (engine)
 
 - Decode-order pump + held buffer + PTS remap + output-callback wait (`decode_frame`); prefer feed-ahead over flush.
-- Bounded presentation queue + `decodeQueueSize` backpressure + skip-when-behind (`WebPlayer`).
-- Bitstream keyframe verification (`verifyKeyPackets`) — AVC: demote lying `stss` unless IDR **or** exact Recovery Point SEI; Chromium &lt;145 demotes SEI keys; ≥145 / FF / Safari keep them. HEVC: demote unless IRAP NAL types 16…23 (`BLA_W_LP`…`RSV_IRAP_VCL23`); `hvcC` length size from byte 21 (`mediabunny: src/codec-data.ts determineVideoPacketType`). **Async verify** for Blob/progressive (`verify_avc_sync: true`); sync `block_on` cannot drive `BlobSource`. **Deferred open** (`defer_avc_sync: true` on WebPlayer / `<Video>`): arm pending queue, bg `verify_next_pending`, on-demand `ensure_key_verified` in `decode_frame` / `decode_gop` / `decode_cascade`; scrub settle awaits full verify.
-- Seek/pause cancel — `WebPlayer` `op_epoch` (mediabunny dispose / asyncId). Host UI queue: `skills/leptos.md`.
+- Bounded presentation queue + `decodeQueueSize` backpressure + skip-when-behind (`VideoPlayer`).
+- Bitstream keyframe verification (`verifyKeyPackets`) — AVC: demote lying `stss` unless IDR **or** exact Recovery Point SEI; Chromium &lt;145 demotes SEI keys; ≥145 / FF / Safari keep them. HEVC: demote unless IRAP NAL types 16…23 (`BLA_W_LP`…`RSV_IRAP_VCL23`); `hvcC` length size from byte 21 (`mediabunny: src/codec-data.ts determineVideoPacketType`). **Async verify** for Blob/progressive (`verify_avc_sync: true`); sync `block_on` cannot drive `BlobSource`. **Deferred open** (`defer_avc_sync: true` on VideoPlayer / `<Video>`): arm pending queue, bg `verify_next_pending`, on-demand `ensure_key_verified` in `decode_frame` / `decode_gop` / `decode_cascade`; scrub settle awaits full verify.
+- Seek/pause cancel — `VideoPlayer` `op_epoch` (mediabunny dispose / asyncId). Host UI queue: `skills/leptos.md`.
 - Blob reads: `blob.slice(start,end).arrayBuffer()` (avoid `blob.stream()` on Safari/iOS).
 - Do not pass Promise `resolve` directly to `requestAnimationFrame` / `setTimeout`; use a `Closure`.
 - **Chromium first AVC packet** — strip NALs before AUD and reserved types 20–31 (`VideoDecoderWrapper` / Chromium issues 470109459, #396). Race `flush()` with a timeout as a safety net.
@@ -162,7 +162,7 @@ Decoded Exact residency is **`ImageBitmap` blit + resident markers**. Dual `Vide
 
 | Store | Role | Ownership |
 | ----- | ---- | --------- |
-| **Presentation queue** | Play-ahead + Next hits | `WebPlayer` deque; `PRESENTATION_QUEUE_CAP` (4) |
+| **Presentation queue** | Play-ahead + Next hits | `VideoPlayer` deque; `PRESENTATION_QUEUE_CAP` (4) |
 | **Step behind ring** | Prev hits (live VF) | `displayed` + `step_behind`; `STEP_BEHIND_CAP` (8); **Play uses cap 0** |
 | **`ScrubChunkStore`** | Gap geometry | **markers only**; densify inserts resident |
 | **`ScrubBlitLru`** | Scrub/step canvas present + Exact strip | densify `ImageBitmap`; cap from [`scrub_blit_frame_budget`] (`ScrubPolicy::blit_mib` × canvas buffer) |
@@ -230,7 +230,7 @@ Do **not** retune Hd when changing Uhd. Support-check never requires HW (open st
 | **Play** | Off (scrub epoch cancelled) | Present + prefetch into presentation queue |
 | **Scrub / paused** | On via scrub decoder when `ScrubPolicy::densify` | Seeks / steps / PREV GOP fill as needed |
 
-**One entry:** `WebPlayer::enter_scrub_cache_pipeline(focus)` for pause, scrub drag/hold/release, and post-seek/step: scrub mode → park presentation into densify markers + blit → aim at `focus` → `scrub_cache_fill_task` densifies the **GOP** of the next gap until budget-saturated. `play()` switches to Play mode and cancels scrub fill. **In-flight GOP densify is not cancelled when aim moves**. Abort densify only on settle hold / play / scrub-epoch. **Scrub hybrid:** drag keeps densify on; pointer-up settle calls `prepare_scrub_settle` **before** the async op. Exact: **one** key→N cascade (`goto_frame_with_interim`). Salvage pruned PTS `< target` into scrub store **without blit**. Never blit interim. Fill task **exits** on hold. PREV uses mid-GOP `fill_gop_into_cache` present.
+**One entry:** `VideoPlayer::enter_scrub_cache_pipeline(focus)` for pause, scrub drag/hold/release, and post-seek/step: scrub mode → park presentation into densify markers + blit → aim at `focus` → `scrub_cache_fill_task` densifies the **GOP** of the next gap until budget-saturated. `play()` switches to Play mode and cancels scrub fill. **In-flight GOP densify is not cancelled when aim moves**. Abort densify only on settle hold / play / scrub-epoch. **Scrub hybrid:** drag keeps densify on; pointer-up settle calls `prepare_scrub_settle` **before** the async op. Exact: **one** key→N cascade (`goto_frame_with_interim`). Salvage pruned PTS `< target` into scrub store **without blit**. Never blit interim. Fill task **exits** on hold. PREV uses mid-GOP `fill_gop_into_cache` present.
 
 **Contiguous arming:** `ScrubChunkStore::no_gaps` when the extent is a single run. While `no_gaps` **and under frame budget**, keep expanding. Edge-idle (`ScrubPolicy::margin_left` / `margin_right`) applies only when **at capacity**, and only for edges that can still expand (`start > 0` / `end < last`). Visited scrub frames stay until budget eviction (farthest from aim).
 
@@ -256,8 +256,8 @@ Demo strip: dim Covered = store markers (coverage); bright Exact = live blit (st
 - **B-frame held buffer + PTS remap** — park not-yet-presented frames in `held` (`PTS >= target` during seek prune — never drop post-target or play/prefetch loses warm ahead). Prefer matching `VideoFrame.timestamp()` when present in `input_timestamps`, else FIFO. After taking the target, briefly drain already-decoded outputs into `held` before stopping the pump. **`optimizeForLatency: false`** for VOD (true → `backpressure q≈41` / mid-GOP wedge on long-GOP play). Do **not** require `prefer-hardware` in `isConfigSupported`.
 - **`decodeQueueSize` backpressure** — mediabunny: `sampleQueue.length + decodeQueueSize > computeMaxQueueSize(…)` then `await queueDequeue` resolved on **new** sample output **or consumer take**. Port: `held.len() + decodeQueueSize` vs `compute_max_queue_size(held.len())`; wait on `ondequeue` / new `output` / `setTimeout(0)`. Wake dequeue waiters on output, `take_held`, prune-close, and GOP consumer drain (mediabunny `onQueueDequeue`). **Never** treat already-buffered `frames` as progress (instant re-wake while queue stuck → false `backpressure timed out` after ~2–3s). Do not count `held` toward the encoded cap beyond empty/non-empty max pick — held is B-frame reorder. **Dual-async `decode_frame`** (`DecoderCore` + `spawn_local` pump + consumer pull; `mediabunny: src/media-sink.ts mediaSamplesInRange`): pump sets `wait_for_consumer` and awaits at `q==0` until take/prune (starved-spin safety if the needed frame is still unfed). **Single-task paths** (`decode_gop`, key cascade) still escape at `q==0` — no concurrent taker. Wake consumer via `not_empty_waiters` when `held` gains samples. **While cascading key→N, close PTS `< target` in the same remap pass** (`collect_and_prune_held`) — park `>= target` so play/prefetch warm-continue works. Use mediabunny empty/non-empty depths (40/8) only. After `flush()`, clear `key_order`/`fed_through` even on miss (else next delta → `key frame required`). **Play:** `present_and_cache` (not `present_only`); keep `PRESENTATION_QUEUE_CAP` small (4) + `STEP_BEHIND_CAP` (8). **`backpressure timed out (q≈41, held=0)`:** one hard `reset`+retry (same as flush/idle) — wedged Chromium after underrun catch-up. **After settle / sync exact:** `invalidate_decoder` before densify so leftover main `decodeQ` does not compete with the scrub decoder. **`decode_gop` (scrub fill):** drain remapped frames to `on_frame` / dense `insert_frame` as they emerge (`flush_held_into_gop` / `feed_sample_gop`) so `held` stays empty and the ready strip paints per tick — do **not** batch `insert_gop` after the whole GOP. Yield with **`setTimeout(0)`** (macrotask) between feeds so paused rAF can refresh the strip; microtask-only `Promise.resolve` chains starve painting. **Drag densify → settle:** `await_decode_capacity` / `feed_sample(_gop)` must honor cancel every spin (hold / scrub_epoch); do **not** run the 2s `flush_with_timeout` after cancel — abort hard-reset instead. Fill task on `Cancelled` + `hold_densify_for_exact` must **return immediately** (no sleep/continue) so `scrub_busy` clears and exact owns GPU.
 - **Closure reentrancy** — never `resolve.call0()` synchronously inside `output`/`dequeue` callbacks. Defer with **`spawn_local`**. On teardown: bump generation, `set_ondequeue(None)`, `close()`, **forget** old Closures.
-- **Op cancel** — `WebPlayer::op_epoch` / `cancel_ops` / `begin_op`. After every decode await, if epoch changed → drop owned frame (`OwnedVideoFrame` closes on drop) + `MediaError::Cancelled` (UI treats as soft). `pause()` bumps epoch. Prefetch returns `Ok(false)` on cancel. Host: open/play epoch guards so late async cannot install session/player. **Rapid PREV:** soft `invalidate` (clear timestamps/held only) while chunks are still in the browser decoder desyncs PTS remap → rare `flush/idle without pts=… (held=0)`. Fix: `decoder.reset()`/`recreate` on invalidate; `decoder_reset` flag when the slot is empty; cancel checks inside the decode pump; one reset+retry on flush/idle miss.
-- **Media clock** — wall-clock until audio track exists; then video slaves to `AudioContext` (`MediaClock` + `AudioOutput`). Hosts must call `WebPlayer::media_time()` — do not keep a parallel wall timeline in `VideoRef` once audio is attached. Do not open `AudioContext` only as a clock: `resume()` + early `close()` throws `Closed before resume completed`. **Resume on Play before `prime_playback`** — a long prime after the click leaves the context `suspended` (silent). (`mediabunny: examples/media-player getPlaybackTime` / `runAudioIterator`)
+- **Op cancel** — `VideoPlayer::op_epoch` / `cancel_ops` / `begin_op`. After every decode await, if epoch changed → drop owned frame (`OwnedVideoFrame` closes on drop) + `MediaError::Cancelled` (UI treats as soft). `pause()` bumps epoch. Prefetch returns `Ok(false)` on cancel. Host: open/play epoch guards so late async cannot install session/player. **Rapid PREV:** soft `invalidate` (clear timestamps/held only) while chunks are still in the browser decoder desyncs PTS remap → rare `flush/idle without pts=… (held=0)`. Fix: `decoder.reset()`/`recreate` on invalidate; `decoder_reset` flag when the slot is empty; cancel checks inside the decode pump; one reset+retry on flush/idle miss.
+- **Media clock** — wall-clock until audio track exists; then video slaves to `AudioContext` (`MediaClock` + `AudioOutput`). Hosts must call `VideoPlayer::media_time()` — do not keep a parallel wall timeline in `VideoRef` once audio is attached. Do not open `AudioContext` only as a clock: `resume()` + early `close()` throws `Closed before resume completed`. **Resume on Play before `prime_playback`** — a long prime after the click leaves the context `suspended` (silent). (`mediabunny: examples/media-player getPlaybackTime` / `runAudioIterator`)
 - **Playback rate** — forward only (`0.25…8`). Negative rates normalize to `1.0`. Fixed-pitch audio through [`PLAYBACK_RATE_AUDIO_MAX`] (`4×`); above that → wall clock + mute (`is_wall_clock_rate`). Shuttle **present** policy still `≥2` (`is_shuttle_rate`, underrun hold off) and is independent of mute. **False EOF at shuttle:** empty presentation + `media_time ≥ duration` while playhead `< last` → snap clock to playhead, keep Playing (`snap_playing_clock_to_playhead`); do not `Ended` (`mediabunny: no equivalent` rate API). Audio path: `AudioContext` + WSOLA (`audio::TimeStretcher`; Vanilagy gist ≈ Chromium `preservesPitch`; `mediabunny: no equivalent` rate API). Exact 1× bypasses stretcher. Demo: review slider; **JKL** ladder `1/2/4/8` (J/L step, K → 1× + play/pause); **Space** play/pause without rate reset. On rate **decrease** snap clock to displayed/committed playhead (`set_playback_rate` / `rate_decrease_snap_time`) or J keeps skip-catching. **K while playing:** `pause` then `set_playback_rate(1)` — rate→1× while playing spawns audio; pause after leaves music on a stopped picture. Spawn re-checks `player.playing` + non-wall rate.
 - **Loop seam at review rates** — `prepare_loop_if_needed` only after EOF is queued; Hd default cap=4 leaves ~0.1s wall drain at 1.75× while `fill_loop_prime` needs ~0.3s → `NeedsLoop` waits / cold restart (visible pause). Near EOF raise cap to ≈ `budget * fps * rate` (`PlayPolicy::loop_prime_budget_secs`, Hd 0.4 / Uhd 1.0; clamp floor…64). Uhd also expands non-loop near-EOF (`eof_lead_secs=1`) to pull the remaining tail. Do **not** set `restarting` during prepare (prefetch gated by `preparing_loop` only) so the tail keeps presenting. `mediabunny: no equivalent` (no loop/rate API).
 - **Future: reverse (deferred)** — WebCodecs has no reverse iterator. Practical approach (`mediabunny: #350`): short forward `decode_gop` / key passes, retain (prefer canvas/`ImageBitmap`, not large live VF queues — Chromium `decodeQ≈41` pool starve), present descending, snap clock on key-hop. Dense −1× realtime needs buffer ≥ next-pass wall time (~2 Short GOPs on 1080p); Long GOPs stay slideshow. Do not hold clock on thin trail during fill (freezes last frames for whole decode). Empty/gap hold only if clock would run away. Key-hop (`|rate|≥2` style): present older sync + snap — refusing `front < target` wedges at reverse entry.
@@ -339,6 +339,6 @@ Engine-side pacing notes; UI queue / signals: `skills/leptos.md`.
 - **Timestamps in web-sys** — `EncodedVideoChunkInit` uses `i32` µs / `u32` duration; clamp long timelines.
 - **Workspace isolation** — do not import `media_components` / `app` / Leptos into `media/`.
 - **Mobile / LAN HTTP** — WebCodecs needs a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). `http://localhost` OK; LAN IP HTTP is not.
-- **Playback canvas size** — blit at CSS contain size × DPR, capped by **source display** and **monitor** (`screen` × DPR; removed fixed edge-1280). Measured from the **parent viewport** box (object-fit: contain). **Lock** buffer size + CSS `aspect-ratio` on open / `WebPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. `media_components::video`: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`. **Fullscreen:** size change clears canvas pixels — `repaint_after_buffer_resize` from `displayed` (else warm blit); do **not** clear scrub markers/blit (legacy WebP wipe). Soft upscale until densify refreshes at the new size is OK.
+- **Playback canvas size** — blit at CSS contain size × DPR, capped by **source display** and **monitor** (`screen` × DPR; removed fixed edge-1280). Measured from the **parent viewport** box (object-fit: contain). **Lock** buffer size + CSS `aspect-ratio` on open / `VideoPlayer::relayout` — resizing `canvas.width/height` every present changes intrinsic aspect and jitters layout ±1px. `media_components::video`: `leptos_use::use_resize_observer` on `.wm-viewport` → `relayout`. **Fullscreen:** size change clears canvas pixels — `repaint_after_buffer_resize` from `displayed` (else warm blit); do **not** clear scrub markers/blit (legacy WebP wipe). Soft upscale until densify refreshes at the new size is OK.
 - **Throttle play UI** — do not `sync_ui` / update fps signals every frame; ~10 Hz is enough. Reactive status updates every present compete with decode/draw on the main thread.
 - **Prefetch at EOF** — if `prefetch_one` returns `false` (end of track / full), the background pump **must** `await` rAF (or sleep). `continue` without yield spins the main thread and freezes the tab.

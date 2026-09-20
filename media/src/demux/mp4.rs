@@ -249,7 +249,7 @@ impl Mp4VideoTrack {
         if self.fragments_complete() {
             return Ok(());
         }
-        // Native / tests: run inline. Wasm: bg worker in WebPlayer runs the step;
+        // Native / tests: run inline. Wasm: bg worker in VideoPlayer runs the step;
         // we only poll here.
         #[cfg(not(target_arch = "wasm32"))]
         {

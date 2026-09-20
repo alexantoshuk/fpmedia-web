@@ -3,7 +3,7 @@
 //! Isolated from the Leptos/`app` stack.
 //!
 //! - Always: MP4 demux + presentation-order frame index + player API (encoded samples).
-//! - Feature `webcodecs` on `wasm32`: WebCodecs decode → canvas via [`WebPlayer`].
+//! - Feature `webcodecs` on `wasm32`: WebCodecs decode → canvas via [`VideoPlayer`].
 //!
 //! Frame index (presentation order) is the primary position identifier —
 //! timestamps are derived from the sample table, not `time * fps`.
@@ -21,6 +21,8 @@ mod util;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod decode;
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+mod video_player;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use audio::{AudioOutput, OwnedAudioData};
@@ -72,7 +74,11 @@ pub use types::{
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use decode::{
-    AsVideoFrame, DuePresent, OwnedVideoFrame, PRESENTATION_QUEUE_CAP, PipelineStats,
-    ReadyFrameKind, ReadyFrameMark, STEP_BEHIND_CAP, WebCodecsDecoder, WebPlayer, canvas_2d,
-    configure_canvas_for_video, draw_frame_to_canvas, draw_frame_with_context,
+    AsVideoFrame, OwnedVideoFrame, WebCodecsDecoder, canvas_2d, configure_canvas_for_video,
+    draw_frame_to_canvas, draw_frame_with_context,
+};
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+pub use video_player::{
+    DuePresent, PRESENTATION_QUEUE_CAP, PipelineStats, ReadyFrameKind, ReadyFrameMark,
+    STEP_BEHIND_CAP, VideoPlayer,
 };

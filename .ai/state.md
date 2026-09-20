@@ -16,10 +16,10 @@ _(empty)_
 
 ### Media engine
 
-- Pure audio path: `AudioPlayer` + `media_components::audio` (`AudioRef`) reusing `webmedia::audio`.
+- Pure audio path: `AudioPlayer` + `media_components::audio` (`AudioRef`) reusing `webmedia::audio` (mirror of `VideoPlayer`, thin — no canvas/scrub).
 - Progressive-open follow-ups: coalesce adjacent sample ranges; UrlSource parallel Range workers / sequential fallback (mediabunny orchestrator).
+- Split `video_player/` into play/scrub/seek modules (orchestration only; `scrub_blit` stays in `decode/`).
 - Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
-- Optional: group visual decode under `webmedia::video` (mirror `audio/`; name is engine module, not the UI crate).
 - Temporary deps: workspace pins `rerun-io/re_mp4` @ `aa5be9b` ([#35](https://github.com/rerun-io/re_mp4/pull/35) merged; not on crates.io yet).
 - Upstream/re_mp4: nested `skip_box(0)` livelock on QT size-0 padding (we work around in `SparseBoxReader`).
 - Drop `re_mp4` git pin when the next crates.io release includes #35.

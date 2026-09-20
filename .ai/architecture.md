@@ -15,7 +15,7 @@
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — demo host (controls) + thin SSR shell |
 | Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only; HTML `<video>` analog). Modules: `video` (+ planned `audio`, `helpers`) |
-| Media engine | `webmedia` crate — demux + frame index + player; wasm WebCodecs; **`audio/`** module for demux/stretch/output |
+| Media engine | `webmedia` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `media_components/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
 
@@ -23,7 +23,7 @@
 
 Long-lived chrome lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Details: `skills/leptos.md`.
 
-**Browser APIs in `media_components/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the media crate owns (WebCodecs / `AudioContext`). The **media clock** (wall or audio) is owned by `webmedia` (`MediaClock` / `AudioOutput`) — hosts call `WebPlayer::media_time()`, they do not open `AudioContext` themselves.
+**Browser APIs in `media_components/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the media crate owns (WebCodecs / `AudioContext`). The **media clock** (wall or audio) is owned by `webmedia` (`MediaClock` / `AudioOutput`) — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
 
 ---
 
@@ -31,7 +31,7 @@ Long-lived chrome lives **outside** matched routes when routes are added. **Reso
 
 ```
 webmedia/
-├── media/                 ← crate name `webmedia`: demux + FrameIndex + Player + WebPlayer
+├── media/                 ← crate name `webmedia`: demux + FrameIndex + Player + VideoPlayer
 ├── media_components/      ← crate name `media_components`: Leptos <Video> (+ later <Audio>)
 ├── app/                   ← demo host UI + shell()
 ├── frontend/              ← wasm mount (hydrate)
@@ -71,7 +71,7 @@ webmedia/
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
 | Progressive open via `MediaSource` | Ranged reads (`BlobSource` / `UrlSource` / `MemorySource` + `CachedSource`); parse `moov` (+ `moof` for single-file fMP4), fetch samples by offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline, **`GopProfile`**: `.ai/skills/media.md`. |
-| Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA live in `webmedia::audio`. `WebPlayer` orchestrates A+V; `VideoRef` only volume/mute **API**. Keyboard/chrome stay in demo `app`. Future `<Audio>` shares `audio/` (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
+| Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA live in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` only volume/mute **API**. Keyboard/chrome stay in demo `app`. Future `<Audio>` shares `audio/` (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
 | Component API like HTML media | Element crates expose open/play/seek/rate/volume — not host keybindings. Demo owns JKL/Space/arrows until optional helpers in `media_components`. |
 
 ---

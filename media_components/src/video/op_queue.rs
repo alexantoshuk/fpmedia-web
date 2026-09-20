@@ -15,7 +15,7 @@ use leptos::prelude::*;
 use web_sys::HtmlCanvasElement;
 use webmedia::MediaSource;
 
-/// Commands that must not overlap on the shared [`webmedia::WebPlayer`].
+/// Commands that must not overlap on the shared [`webmedia::VideoPlayer`].
 pub(crate) enum HostOp {
     Open {
         source: Arc<dyn MediaSource>,

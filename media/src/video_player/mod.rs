@@ -1,7 +1,8 @@
-//! High-level browser player: demux + WebCodecs + canvas.
+//! Browser video player façade: demux + WebCodecs decode + canvas (+ optional audio).
 //!
-//! Present and decode share the player via interior mutability so an rAF
-//! present loop never waits on `prefetch_one` (mediabunny-style split).
+//! Decode plumbing lives in [`crate::decode`]; this module owns play/scrub/seek orchestration.
+//! Present and decode share the player via interior mutability so an rAF present loop
+//! never waits on `prefetch_one` (mediabunny-style split).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -18,7 +19,7 @@ use crate::decode::frame_cache::{
     DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, ScrubBlitLru, ScrubChunkStore, ThumbCache,
 };
 use crate::decode::owned_video_frame::OwnedVideoFrame;
-use crate::decode::scrub_encode::{EncodeCanvasSlot, ScrubChunk, draw_image_bitmap};
+use crate::decode::scrub_blit::{BlitCanvasSlot, ScrubChunk, draw_image_bitmap};
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
@@ -91,7 +92,7 @@ struct Shared {
     /// Live blit LRU for scrub present (`createImageBitmap`).
     scrub_blit: RefCell<ScrubBlitLru>,
     /// Reusable OffscreenCanvas for VideoFrame → ImageBitmap.
-    encode_canvas: EncodeCanvasSlot,
+    encode_canvas: BlitCanvasSlot,
     /// Filmstrip thumbs (caller-sized); separate budget from scrub chunks.
     thumb_cache: RefCell<ThumbCache>,
     /// Second decoder for background gap fill (does not steal main playback).
@@ -189,7 +190,7 @@ pub struct PipelineStats {
     pub decode_queue_size: u32,
     pub frames_skipped: u64,
     pub last_behind_ms: Option<f64>,
-    /// Underrun clock-freeze edges since last [`WebPlayer::play`].
+    /// Underrun clock-freeze edges since last [`VideoPlayer::play`].
     pub underrun_holds: u64,
     /// Wall ms spent frozen for underrun since last play (includes in-progress hold).
     pub underrun_hold_ms: f64,
@@ -246,14 +247,15 @@ pub enum DuePresent {
     Ended,
 }
 
-/// Frame-accurate player that decodes with WebCodecs and draws to a canvas.
-pub struct WebPlayer {
+/// Frame-accurate video player (WebCodecs → canvas); optional audio via [`crate::AudioOutput`].
+/// Pure-audio hosts will use a separate `AudioPlayer` over the same audio modules.
+pub struct VideoPlayer {
     shared: Rc<Shared>,
     /// `None` only while an async decode owns the decoder (must not re-enter).
     decoder: RefCell<Option<WebCodecsDecoder>>,
 }
 
-impl WebPlayer {
+impl VideoPlayer {
     pub async fn open_mp4_bytes(
         bytes: Vec<u8>,
         canvas: HtmlCanvasElement,
@@ -368,7 +370,7 @@ impl WebPlayer {
             step_behind: RefCell::new(VecDeque::new()),
             scrub_chunks: RefCell::new(ScrubChunkStore::new(max_frames)),
             scrub_blit: RefCell::new(ScrubBlitLru::new(1)),
-            encode_canvas: EncodeCanvasSlot::default(),
+            encode_canvas: BlitCanvasSlot::default(),
             thumb_cache: RefCell::new(ThumbCache::new(DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS)),
             scrub_decoder: RefCell::new(None),
             scrub_epoch: Cell::new(0),
@@ -2664,7 +2666,7 @@ impl WebPlayer {
     }
 }
 
-impl Drop for WebPlayer {
+impl Drop for VideoPlayer {
     fn drop(&mut self) {
         self.clear_loop_prime();
         self.clear_presentation();
@@ -2826,7 +2828,7 @@ fn ingest_scrub_bitmap_only(
 ) -> bool {
     let (bitmap, _width, _height) = match shared
         .encode_canvas
-        .with_encoder(|enc| enc.frame_to_bitmap(video, target_w.max(1), target_h.max(1)))
+        .with_blit(|enc| enc.frame_to_bitmap(video, target_w.max(1), target_h.max(1)))
     {
         Ok(p) => p,
         Err(_) => return false,
