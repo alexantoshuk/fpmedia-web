@@ -52,7 +52,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Remote URL open very slow (esp. fMP4 / GitHub Releases) | Demux scan + coalesce; demo `/proxy` redirect cache | sliding 64 KiB scan window; pack ≤1 MiB Range GETs for moof load; proxy caches signed redirect ~30 min |
 | UI stuck / controls dead (not decode) | `skills/leptos.md` triage | OpQueue, `playing`, `spawn_local` |
 
-**Probes:** `e2e/player.smoke.spec.ts`; **Chrome long-GOP play** `e2e/player.play.long-gop.spec.ts`; **EOF/loop** `e2e/player.play.eof-loop.spec.ts` (testvideo AVC 1080p GOP12); **JKL** `e2e/player.jkl.spec.ts`; scrub settle `e2e/perf.scrub.settle.spec.ts`; drag→settle `e2e/perf.scrub.drag-settle.spec.ts`; general scrub `e2e/perf.scrub.probe.spec.ts`. **Decode-sink gate:** `e2e/perf.scrub.baseline.spec.ts` / `npm run e2e:baseline:save|compare` (testvideo GOP12+GOP48; `e2e/baselines/`).
+**Probes:** `e2e/player.smoke.spec.ts`; **testvideo matrix** `e2e/player.matrix.spec.ts` / `npm run e2e:matrix` (GOP12, bf2, GOP48, fMP4, 60 fps, scenecut; HEVC via `WEBMEDIA_MATRIX_HEVC=1`); **Chrome long-GOP play** `e2e/player.play.long-gop.spec.ts`; **EOF/loop** `e2e/player.play.eof-loop.spec.ts` (testvideo AVC 1080p GOP12); **JKL** `e2e/player.jkl.spec.ts`; scrub settle `e2e/perf.scrub.settle.spec.ts`; drag→settle `e2e/perf.scrub.drag-settle.spec.ts`; general scrub `e2e/perf.scrub.probe.spec.ts`. **Decode-sink gate:** `e2e/perf.scrub.baseline.spec.ts` / `npm run e2e:baseline:save|compare` (testvideo GOP12+GOP48; `e2e/baselines/`).
 
 ## Module map (`media/src`)
 
