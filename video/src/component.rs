@@ -586,6 +586,11 @@ pub fn Video(
             fps.set(None);
             pipeline.set(None);
             metadata.set(None);
+            frame.set(0);
+            playhead.set(0);
+            frame_count.set(0);
+            timestamp.set(0.0);
+            has_audio.set(false);
             let size_kb = (blob.size() as u64) / 1024;
             status.set(format!("Opening (~{size_kb} KB, progressive)…"));
             fps_meter.borrow_mut().reset();
@@ -626,6 +631,11 @@ pub fn Video(
             fps.set(None);
             pipeline.set(None);
             metadata.set(None);
+            frame.set(0);
+            playhead.set(0);
+            frame_count.set(0);
+            timestamp.set(0.0);
+            has_audio.set(false);
             fps_meter.borrow_mut().reset();
             busy.set(true);
             // Same-origin /proxy bypasses CDN CORS (GitHub Releases, S3, …).
