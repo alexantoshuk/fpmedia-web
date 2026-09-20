@@ -487,7 +487,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             type="url"
                             class="wm-url-input"
                             node_ref=url_input
-                            placeholder="https://… or blob:…"
+                            placeholder="https://… (proxied) or blob:…"
                             data-testid="url-input"
                             prop:disabled=move || video.busy.get()
                             on:keydown=move |ev: leptos::ev::KeyboardEvent| {

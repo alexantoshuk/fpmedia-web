@@ -146,7 +146,7 @@ impl VideoRef {
         self.ended.set(false);
         // Do **not** `seek_frame` here when `frame != playhead`. After scrub, settle
         // is already cascading key→playhead; a Play-time seek cancels that work and
-        // restarts the GOP (multi-second lag on Wing It–class clips). PlayPrime
+        // restarts the GOP (multi-second lag on long-GOP clips). PlayPrime
         // waits behind settle (or seeks only if still mismatched after).
         if let Some(play) = self
             .ops

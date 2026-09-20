@@ -628,6 +628,8 @@ pub fn Video(
             metadata.set(None);
             fps_meter.borrow_mut().reset();
             busy.set(true);
+            // Same-origin /proxy bypasses CDN CORS (GitHub Releases, S3, …).
+            let url = same_origin_media_proxy_url(&url).unwrap_or(url);
             status.set(format!("Opening {url}…"));
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("webmedia: open_url start {url}").into());
@@ -1351,6 +1353,28 @@ async fn run_play_prime(
 
 /// Resolve `https:` via [`UrlSource`] (HTTP Range); `blob:` / no-Range hosts via
 /// full fetch → [`BlobSource`]. Status line only — no confirm dialogs.
+///
+/// Remote `http(s):` URLs are rewritten to same-origin `/proxy?url=…` when the
+/// page has a `window` (demo Axum shell) so GitHub Release / S3 CORS does not
+/// block Range GETs.
+fn same_origin_media_proxy_url(remote: &str) -> Option<String> {
+    let trimmed = remote.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("https:") || lower.starts_with("http:")) {
+        return None;
+    }
+    if trimmed.contains("/proxy?") {
+        return None;
+    }
+    let window = web_sys::window()?;
+    let origin = window.location().origin().ok()?;
+    if trimmed.starts_with(&origin) {
+        return None;
+    }
+    let enc = String::from(js_sys::encode_uri_component(trimmed));
+    Some(format!("{origin}/proxy?url={enc}"))
+}
+
 async fn resolve_url_source(
     url: &str,
     on_status: impl Fn(&str),
