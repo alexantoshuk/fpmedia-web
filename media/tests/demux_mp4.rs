@@ -185,9 +185,8 @@ fn progressive_fragmented_mp4_open_matches_bytes() {
     assert_progressive_fmp4_matches_full(bytes);
 }
 
-/// Pexels vertical fMP4 probe (not committed). Override with `WEBMEDIA_FMP4_URL`.
-const DEFAULT_FMP4_URL: &str =
-    "https://videos.pexels.com/video-files/39355913/16751924_1080_1920_30fps.mp4";
+/// testvideo fMP4 plate (AVC 1080p 24fps fragmented GOP12). Override with `WEBMEDIA_FMP4_URL`.
+const DEFAULT_FMP4_URL: &str = "https://github.com/alexantoshuk/testvideo/releases/download/v0.1.0/avc_1080p_24_fmp4_gop12_bf0.mp4";
 
 fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, String> {
     let output = std::process::Command::new("curl")
@@ -246,7 +245,7 @@ fn assert_progressive_fmp4_matches_full(bytes: Vec<u8>) {
 /// cargo test -p webmedia --test demux_mp4 progressive_fmp4_from_url -- --ignored --nocapture
 /// ```
 #[test]
-#[ignore = "network: downloads fMP4 from Pexels (or WEBMEDIA_FMP4_URL)"]
+#[ignore = "network: downloads fMP4 from testvideo Release (or WEBMEDIA_FMP4_URL)"]
 fn progressive_fmp4_from_url() {
     let url = std::env::var("WEBMEDIA_FMP4_URL").unwrap_or_else(|_| DEFAULT_FMP4_URL.to_string());
     let bytes = fetch_url_bytes(&url).unwrap_or_else(|e| panic!("fetch {url}: {e}"));

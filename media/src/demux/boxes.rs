@@ -68,6 +68,13 @@ pub struct LoadedBox {
 /// Prefetch this many leading bytes so top-level headers (ftyp/free/mdat) need
 /// one Blob round-trip instead of many tiny `array_buffer`s on large files.
 const HEAD_PREFETCH: usize = 64 * 1024;
+/// When scanning past the initial head, refill in this chunk size (network RTT).
+const SCAN_WINDOW: usize = 64 * 1024;
+/// Merge adjacent load ranges if the gap is at most this many bytes (fMP4 moof+mdat hdr).
+const COALESCE_GAP: u64 = 256;
+/// Cap a coalesced Range GET so we over-fetch `mdat` media to pull several `moof`s
+/// per RTT on high-latency hosts (GitHub Releases), without multi‑10 MiB spikes.
+const MAX_COALESCE_RUN: usize = 1024 * 1024;
 
 /// Walk all top-level boxes (`moov` required).
 ///
@@ -80,14 +87,16 @@ pub async fn scan_top_level(source: &dyn MediaSource) -> Result<Vec<TopLevelBox>
         return Err(MediaError::Mp4("empty media source".into()));
     }
 
-    // One ranged read covers typical leading atoms; moov-at-end only needs this
-    // to learn `mdat` size, then a second read loads moov.
-    let head_len = (file_size as usize).min(HEAD_PREFETCH);
-    let head = source.read(0, head_len).await?;
-    if head.len() < HEADER_SIZE {
+    // Sliding window: first chunk from 0, then refill when the scan walks past it
+    // (fMP4 has hundreds of moof/mdat — one 8-byte Range per box is unusable on
+    // high-RTT hosts like GitHub Releases).
+    let mut win_off = 0u64;
+    let first_len = (file_size as usize).min(HEAD_PREFETCH);
+    let mut win = source.read(0, first_len).await?;
+    if win.len() < HEADER_SIZE {
         return Err(MediaError::Mp4(format!(
             "truncated file head (got {} bytes)",
-            head.len()
+            win.len()
         )));
     }
 
@@ -96,8 +105,17 @@ pub async fn scan_top_level(source: &dyn MediaSource) -> Result<Vec<TopLevelBox>
     let mut saw_moov = false;
 
     while offset < file_size {
+        ensure_scan_window(
+            source,
+            &mut win_off,
+            &mut win,
+            offset,
+            HEADER_SIZE,
+            file_size,
+        )
+        .await?;
         let (header_len, box_size, typ) =
-            read_box_header_at(source, &head, offset, file_size).await?;
+            read_box_header_at_window(&win, win_off, offset, file_size, source).await?;
 
         let entry = TopLevelBox {
             offset,
@@ -130,6 +148,101 @@ pub async fn scan_top_level(source: &dyn MediaSource) -> Result<Vec<TopLevelBox>
     }
 
     Ok(boxes)
+}
+
+async fn ensure_scan_window(
+    source: &dyn MediaSource,
+    win_off: &mut u64,
+    win: &mut Vec<u8>,
+    pos: u64,
+    need: usize,
+    file_size: u64,
+) -> Result<(), MediaError> {
+    let need_u = need as u64;
+    let win_end = win_off.saturating_add(win.len() as u64);
+    if pos >= *win_off && pos.saturating_add(need_u) <= win_end {
+        return Ok(());
+    }
+    let available = file_size.saturating_sub(pos) as usize;
+    if available < need {
+        return Err(MediaError::Mp4(format!(
+            "truncated box header at offset {pos} (need {need}, have {available})"
+        )));
+    }
+    let chunk = SCAN_WINDOW.min(available).max(need);
+    *win = source.read(pos, chunk).await?;
+    *win_off = pos;
+    if win.len() < need {
+        return Err(MediaError::Mp4(format!(
+            "truncated scan window at {pos} (got {}, want {need})",
+            win.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Parse a box header using the sliding window, fetching the 8-byte largesize
+/// extension into the window when needed.
+async fn read_box_header_at_window(
+    win: &[u8],
+    win_off: u64,
+    offset: u64,
+    file_size: u64,
+    source: &dyn MediaSource,
+) -> Result<(u64, u64, [u8; 4]), MediaError> {
+    let rel = (offset - win_off) as usize;
+    if rel + HEADER_SIZE > win.len() {
+        return Err(MediaError::Mp4(format!(
+            "scan window miss at {offset} (win_off={win_off}, len={})",
+            win.len()
+        )));
+    }
+    let header = &win[rel..rel + HEADER_SIZE];
+    let size32 = u32::from_be_bytes(header[0..4].try_into().unwrap());
+    let typ: [u8; 4] = header[4..8].try_into().unwrap();
+
+    let (header_len, box_size) = if size32 == 1 {
+        let ext = if rel + EXTENDED_HEADER_SIZE <= win.len() {
+            win[rel + 8..rel + 16].to_vec()
+        } else {
+            source.read(offset + 8, 8).await?
+        };
+        if ext.len() < 8 {
+            return Err(MediaError::Mp4(format!(
+                "truncated largesize at offset {offset}"
+            )));
+        }
+        let size64 = u64::from_be_bytes(ext[0..8].try_into().unwrap());
+        if size64 < EXTENDED_HEADER_SIZE as u64 {
+            return Err(MediaError::Mp4(format!(
+                "invalid largesize {size64} at offset {offset}"
+            )));
+        }
+        (EXTENDED_HEADER_SIZE as u64, size64)
+    } else if size32 == 0 {
+        (HEADER_SIZE as u64, file_size - offset)
+    } else {
+        if (size32 as u64) < HEADER_SIZE as u64 {
+            return Err(MediaError::Mp4(format!(
+                "invalid box size {size32} at offset {offset}"
+            )));
+        }
+        (HEADER_SIZE as u64, u64::from(size32))
+    };
+
+    if box_size < header_len {
+        return Err(MediaError::Mp4(format!(
+            "box size {box_size} < header at offset {offset}"
+        )));
+    }
+    if offset.saturating_add(box_size) > file_size {
+        return Err(MediaError::Mp4(format!(
+            "box {} at {offset} size {box_size} exceeds file size {file_size}",
+            std::str::from_utf8(&typ).unwrap_or("????")
+        )));
+    }
+
+    Ok((header_len, box_size, typ))
 }
 
 /// Truncate `moov` before trailing size-0 / short padding and patch the size field.
@@ -182,71 +295,6 @@ fn sanitize_moov_padding(bytes: &mut Vec<u8>) -> Result<(), MediaError> {
     Ok(())
 }
 
-async fn read_box_header_at(
-    source: &dyn MediaSource,
-    head: &[u8],
-    offset: u64,
-    file_size: u64,
-) -> Result<(u64, u64, [u8; 4]), MediaError> {
-    let header = if offset + HEADER_SIZE as u64 <= head.len() as u64 {
-        head[offset as usize..offset as usize + HEADER_SIZE].to_vec()
-    } else {
-        source.read(offset, HEADER_SIZE).await?
-    };
-    if header.len() < HEADER_SIZE {
-        return Err(MediaError::Mp4(format!(
-            "truncated box header at offset {offset} (got {} bytes, file_size={file_size})",
-            header.len()
-        )));
-    }
-
-    let size32 = u32::from_be_bytes(header[0..4].try_into().unwrap());
-    let typ: [u8; 4] = header[4..8].try_into().unwrap();
-
-    let (header_len, box_size) = if size32 == 1 {
-        let ext = if offset + EXTENDED_HEADER_SIZE as u64 <= head.len() as u64 {
-            head[offset as usize + 8..offset as usize + 16].to_vec()
-        } else {
-            source.read(offset + 8, 8).await?
-        };
-        if ext.len() < 8 {
-            return Err(MediaError::Mp4(format!(
-                "truncated largesize at offset {offset}"
-            )));
-        }
-        let size64 = u64::from_be_bytes(ext[0..8].try_into().unwrap());
-        if size64 < EXTENDED_HEADER_SIZE as u64 {
-            return Err(MediaError::Mp4(format!(
-                "invalid largesize {size64} at offset {offset}"
-            )));
-        }
-        (EXTENDED_HEADER_SIZE as u64, size64)
-    } else if size32 == 0 {
-        (HEADER_SIZE as u64, file_size - offset)
-    } else {
-        if (size32 as u64) < HEADER_SIZE as u64 {
-            return Err(MediaError::Mp4(format!(
-                "invalid box size {size32} at offset {offset}"
-            )));
-        }
-        (HEADER_SIZE as u64, u64::from(size32))
-    };
-
-    if box_size < header_len {
-        return Err(MediaError::Mp4(format!(
-            "box size {box_size} < header at offset {offset}"
-        )));
-    }
-    if offset.saturating_add(box_size) > file_size {
-        return Err(MediaError::Mp4(format!(
-            "box {} at {offset} size {box_size} exceeds file size {file_size}",
-            std::str::from_utf8(&typ).unwrap_or("????")
-        )));
-    }
-
-    Ok((header_len, box_size, typ))
-}
-
 /// Load bytes needed for progressive `re_mp4` parse:
 /// - full `ftyp` + `moov` (+ every `moof` for fragmented files)
 /// - headers only for everything else (`mdat`/`free`/`mfra`/…) so `BoxHeader::read` works
@@ -266,36 +314,63 @@ async fn load_ftyp_moov_with_progress(
             "Fragmented MP4: loading {moof_count} moof box(es)…"
         ));
     }
-    let mut loaded = Vec::new();
 
-    for mut info in boxes {
-        let need = if info.needs_full_body() {
-            info.size as usize
-        } else {
-            usize::from(info.header_len)
-        };
-        if info.is_moov() {
-            progress(&format!(
-                "Reading moov @ {} ({:.1} KB)…",
-                info.offset,
-                need as f64 / 1024.0
-            ));
-            crate::util::yield_now().await;
-        } else if info.is_ftyp() {
-            progress("Reading ftyp…");
-        } else if info.is_moof() {
-            crate::util::yield_now().await;
-        }
-        let mut bytes = source.read(info.offset, need).await?;
-        if bytes.len() != need {
+    // Build per-box byte needs, then coalesce into fewer Range GETs (high-RTT
+    // proxies / GitHub Releases — one RTT per moof is too slow).
+    let needs: Vec<(usize, u64, usize)> = boxes
+        .iter()
+        .enumerate()
+        .map(|(i, info)| {
+            let need = if info.needs_full_body() {
+                info.size as usize
+            } else {
+                usize::from(info.header_len)
+            };
+            (i, info.offset, need)
+        })
+        .collect();
+
+    if let Some((_, off, need)) = needs.iter().find(|(i, _, _)| boxes[*i].is_moov()) {
+        progress(&format!(
+            "Reading moov @ {off} ({:.1} KB)…",
+            *need as f64 / 1024.0
+        ));
+    }
+
+    let runs = coalesce_byte_runs(&needs);
+    progress(&format!(
+        "Fetching {} range(s) for {} top-level box(es)…",
+        runs.len(),
+        boxes.len()
+    ));
+
+    let mut loaded_bytes: Vec<Option<Vec<u8>>> = vec![None; boxes.len()];
+    for (run_off, run_len, members) in runs {
+        crate::util::yield_now().await;
+        let chunk = source.read(run_off, run_len).await?;
+        if chunk.len() < run_len {
             return Err(MediaError::Mp4(format!(
-                "short {} read at {}: got {} want {}",
-                info.type_str(),
-                info.offset,
-                bytes.len(),
-                need
+                "short coalesced read at {run_off}: got {} want {run_len}",
+                chunk.len()
             )));
         }
+        for (box_idx, box_off, box_len) in members {
+            let start = (box_off - run_off) as usize;
+            let end = start + box_len;
+            if end > chunk.len() {
+                return Err(MediaError::Mp4(format!(
+                    "coalesced slice OOB for box {box_idx} at {box_off}"
+                )));
+            }
+            loaded_bytes[box_idx] = Some(chunk[start..end].to_vec());
+        }
+    }
+
+    let mut loaded = Vec::with_capacity(boxes.len());
+    for (i, mut info) in boxes.into_iter().enumerate() {
+        let mut bytes = loaded_bytes[i]
+            .take()
+            .ok_or_else(|| MediaError::Mp4(format!("missing load for box {i}")))?;
         if bytes.len() >= 8 {
             let typ = &bytes[4..8];
             if typ != info.typ.as_slice() {
@@ -320,6 +395,43 @@ async fn load_ftyp_moov_with_progress(
     }
 
     Ok(loaded)
+}
+
+/// One box body to load: `(box index in scan, file offset, byte length)`.
+type BoxLoadNeed = (usize, u64, usize);
+/// One Range GET: `(start, length, members of this run)`.
+type CoalesceRun = (u64, usize, Vec<BoxLoadNeed>);
+
+/// Merge sorted `(box_idx, offset, len)` into fewer Range GETs.
+///
+/// Adjacent / near needs merge via [`COALESCE_GAP`]. On fMP4, `moof` bodies are
+/// separated by large `mdat`s — also pack into ≤[`MAX_COALESCE_RUN`] windows so
+/// one RTT covers several fragments (extra media bytes are read then discarded
+/// when slicing).
+fn coalesce_byte_runs(needs: &[BoxLoadNeed]) -> Vec<CoalesceRun> {
+    let mut sorted = needs.to_vec();
+    sorted.sort_by_key(|(_, off, _)| *off);
+    let mut runs: Vec<CoalesceRun> = Vec::new();
+    for &(idx, off, len) in &sorted {
+        if len == 0 {
+            continue;
+        }
+        let need_end = off.saturating_add(len as u64);
+        if let Some((run_off, run_len, members)) = runs.last_mut() {
+            let run_end = *run_off + *run_len as u64;
+            let gap_ok = off <= run_end.saturating_add(COALESCE_GAP);
+            let packed_end = need_end.max(run_end);
+            let pack_ok = packed_end.saturating_sub(*run_off) as usize <= MAX_COALESCE_RUN
+                && off < run_off.saturating_add(MAX_COALESCE_RUN as u64);
+            if gap_ok || pack_ok {
+                *run_len = (packed_end - *run_off) as usize;
+                members.push((idx, off, len));
+                continue;
+            }
+        }
+        runs.push((off, len, vec![(idx, off, len)]));
+    }
+    runs
 }
 
 /// Sparse reader: real bytes for loaded segments; unread gaps are zeros.
@@ -650,5 +762,27 @@ mod tests {
         // After header, gap zeros until we seek.
         r.seek(SeekFrom::Start(40 + 100)).unwrap();
         assert_eq!(r.stream_position().unwrap(), 140);
+    }
+
+    #[test]
+    fn coalesce_packs_fmp4_style_gaps_into_mb_runs() {
+        // moof @0 (400), mdat hdr @400 (8), moof @200_000 (400) — second moof
+        // sits inside a 1 MiB window from the first run start.
+        let needs = vec![(0usize, 0u64, 400usize), (1, 400, 8), (2, 200_000, 400)];
+        let runs = coalesce_byte_runs(&needs);
+        assert_eq!(runs.len(), 1, "expected one packed run, got {}", runs.len());
+        assert_eq!(runs[0].0, 0);
+        assert_eq!(runs[0].1, 200_400);
+        assert_eq!(runs[0].2.len(), 3);
+    }
+
+    #[test]
+    fn coalesce_splits_when_over_max_run() {
+        let needs = vec![
+            (0usize, 0u64, 100usize),
+            (1, (MAX_COALESCE_RUN as u64) + 10, 100),
+        ];
+        let runs = coalesce_byte_runs(&needs);
+        assert_eq!(runs.len(), 2);
     }
 }

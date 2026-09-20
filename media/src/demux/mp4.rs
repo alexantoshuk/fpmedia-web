@@ -283,7 +283,7 @@ pub async fn open_mp4_source_cached_with_progress(
     let mp4 =
         crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
     // Verify on the raw source first — CachedSource's 8 MiB prefetch on every
-    // scattered keyframe would thrash WASM (BBB ≈600 syncs → multi‑GB of Blob reads).
+    // scattered keyframe would thrash WASM (~600 syncs on long 1080p → multi‑GB of Blob reads).
     let mut opened = build_opened(
         mp4,
         Arc::clone(&source),
