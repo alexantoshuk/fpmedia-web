@@ -15,7 +15,8 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlCanvasElement, Response};
 use webmedia::{
-    BlobSource, DuePresent, OpenMp4Options, WebPlayer, open_mp4_media_source_cached_with_progress,
+    BlobSource, DuePresent, MediaSource, OpenMp4Options, UrlSource, WebPlayer, is_no_http_range,
+    open_mp4_media_source_cached_with_progress,
 };
 
 use crate::op_queue::{HostOp, OpQueue};
@@ -452,11 +453,11 @@ pub fn Video(
                         continue;
                     }
                     match op {
-                        HostOp::Open { blob, canvas } => {
+                        HostOp::Open { source, canvas } => {
                             run_open(
                                 &queue,
                                 id,
-                                blob,
+                                source,
                                 canvas,
                                 &player,
                                 &sync_ui,
@@ -587,7 +588,9 @@ pub fn Video(
             fps_meter.borrow_mut().reset();
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("webmedia: open_blob start ~{size_kb} KB").into());
-            if queue.enqueue_open(blob, canvas) {
+            let source: std::sync::Arc<dyn MediaSource> =
+                std::sync::Arc::new(BlobSource::new(blob));
+            if queue.enqueue_open(source, canvas) {
                 kick_drain();
             }
         }) as Rc<dyn Fn(web_sys::Blob)>
@@ -622,26 +625,21 @@ pub fn Video(
             metadata.set(None);
             fps_meter.borrow_mut().reset();
             busy.set(true);
-            status.set(format!("Fetching {url}…"));
+            status.set(format!("Opening {url}…"));
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("webmedia: open_url start {url}").into());
 
             let queue = queue.clone();
             let kick_drain = Rc::clone(&kick_drain);
             spawn_local(async move {
-                let fetched = fetch_url_as_blob(&url).await;
+                let opened = resolve_url_source(&url).await;
                 if !queue.is_current(fetch_id) {
                     return;
                 }
-                match fetched {
-                    Ok(blob) => {
-                        let size_kb = (blob.size() as u64) / 1024;
-                        status.set(format!("Opening (~{size_kb} KB)…"));
-                        #[cfg(target_arch = "wasm32")]
-                        web_sys::console::log_1(
-                            &format!("webmedia: open_url fetched ~{size_kb} KB").into(),
-                        );
-                        if queue.enqueue_open(blob, canvas) {
+                match opened {
+                    Ok(source) => {
+                        status.set("Opening (progressive)…".into());
+                        if queue.enqueue_open(source, canvas) {
                             kick_drain();
                         }
                     }
@@ -649,7 +647,7 @@ pub fn Video(
                         busy.set(false);
                         ready.set(false);
                         error.set(Some(e.clone()));
-                        status.set("Fetch failed.".into());
+                        status.set("Open URL failed.".into());
                         #[cfg(target_arch = "wasm32")]
                         web_sys::console::error_1(&e.into());
                     }
@@ -1012,7 +1010,7 @@ enum SeekOrStep {
 async fn run_open(
     queue: &OpQueue,
     id: u64,
-    blob: web_sys::Blob,
+    source: std::sync::Arc<dyn MediaSource>,
     canvas: HtmlCanvasElement,
     player: &PlayerHandle,
     sync_ui: &Rc<dyn Fn()>,
@@ -1033,7 +1031,7 @@ async fn run_open(
         return;
     }
     *player.borrow_mut() = None;
-    let opened = open_blob_staged(blob, canvas, move |msg: &str| {
+    let opened = open_source_staged(source, canvas, move |msg: &str| {
         web_sys::console::log_1(&format!("webmedia: status {msg}").into());
         status.set(msg.to_string());
     })
@@ -1349,9 +1347,41 @@ async fn run_play_prime(
     }
 }
 
-/// Full-resource fetch → [`web_sys::Blob`] (https / same-document `blob:`).
-///
-/// Not progressive HTTP Range — host convenience over [`crate::VideoRef::open_blob`].
+/// Resolve `https:` via [`UrlSource`] (HTTP Range); `blob:` / no-Range hosts via
+/// full fetch → [`BlobSource`].
+async fn resolve_url_source(url: &str) -> Result<std::sync::Arc<dyn MediaSource>, String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("blob:") {
+        let blob = fetch_url_as_blob(url).await?;
+        return Ok(std::sync::Arc::new(BlobSource::new(blob)));
+    }
+    if !(lower.starts_with("https:") || lower.starts_with("http:")) {
+        return Err(format!(
+            "unsupported URL scheme (need https:, http:, or blob:): {url}"
+        ));
+    }
+
+    match UrlSource::connect(url.to_string()).await {
+        Ok(src) => {
+            web_sys::console::log_1(
+                &format!("webmedia: open_url UrlSource size={} KB", src.size() / 1024).into(),
+            );
+            Ok(std::sync::Arc::new(src))
+        }
+        Err(e) if is_no_http_range(&e) => {
+            web_sys::console::warn_1(
+                &format!("webmedia: no HTTP Range ({e}); full download fallback").into(),
+            );
+            let blob = fetch_url_as_blob(url).await?;
+            let size_kb = (blob.size() as u64) / 1024;
+            web_sys::console::log_1(&format!("webmedia: open_url full fetch ~{size_kb} KB").into());
+            Ok(std::sync::Arc::new(BlobSource::new(blob)))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Full-resource fetch → [`web_sys::Blob`] (`blob:` / no-Range fallback).
 async fn fetch_url_as_blob(url: &str) -> Result<web_sys::Blob, String> {
     let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
     let resp_val = JsFuture::from(window.fetch_with_str(url))
@@ -1381,13 +1411,12 @@ fn format_js_error(what: &str, err: &wasm_bindgen::JsValue) -> String {
     format!("{what}: {err:?}")
 }
 
-async fn open_blob_staged(
-    blob: web_sys::Blob,
+async fn open_source_staged(
+    source: std::sync::Arc<dyn MediaSource>,
     canvas: HtmlCanvasElement,
     on_status: impl Fn(&str),
 ) -> Result<WebPlayer, String> {
     on_status("Starting demux…");
-    let source = std::sync::Arc::new(BlobSource::new(blob));
     web_sys::console::log_1(&"webmedia: demux start".into());
     let opened = open_mp4_media_source_cached_with_progress(
         source,

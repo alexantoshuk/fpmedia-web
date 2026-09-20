@@ -60,7 +60,7 @@ media/src/                 ← package name: webmedia
 ├── types.rs               ← FrameId, Timestamp, EncodedSample, Video/AudioMetadata
 ├── clock.rs               ← MediaClock (wall until audio; then AudioContext driver)
 ├── bitstream/             ← AVC packet type (IDR + Recovery Point SEI)
-├── source/                ← MediaSource + MemorySource + CachedSource (+ wasm BlobSource)
+├── source/                ← MediaSource + MemorySource + CachedSource (+ wasm BlobSource / UrlSource)
 ├── frame_index.rs         ← presentation order; sync_by_decode O(log k) + by_decode GOP map
 ├── demux/
 │   ├── boxes.rs           ← top-level ISOBMFF scan + ftyp/moov/moof stub

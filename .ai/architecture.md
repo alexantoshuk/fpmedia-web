@@ -69,7 +69,7 @@ webmedia/
 | WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
 | `leptos-use` for browser helpers | Observers/events/rAF in `video/`; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
-| Progressive open via `MediaSource` | Ranged reads (`BlobSource` / `MemorySource` + `CachedSource`); parse `moov` (+ `moof` for single-file fMP4), fetch samples by offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
+| Progressive open via `MediaSource` | Ranged reads (`BlobSource` / `UrlSource` / `MemorySource` + `CachedSource`); parse `moov` (+ `moof` for single-file fMP4), fetch samples by offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline, **`GopProfile`**: `.ai/skills/media.md`. |
 | Audio in engine, not `VideoRef` | Demux (`Mp4AudioTrack`) + `AudioDecoder` + `AudioContext` schedule + **`MediaClock`** live in `webmedia`. `WebPlayer` orchestrates A+V; `VideoRef` only volume/mute. Future `AudioPlayer` / `AudioRef` shares the same modules (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
 
@@ -77,9 +77,9 @@ webmedia/
 
 ## Progressive open (MediaSource)
 
-**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `MemorySource` + ~8 MiB `CachedSource`; top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`. Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
+**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` / `MemorySource` + ~8 MiB `CachedSource`; top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`; `open_url` uses HTTP Range when the server supports `206` (else full-download fallback). Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
 
-**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; coalesce adjacent sample ranges.
+**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; coalesce adjacent sample ranges; UrlSource parallel workers / sequential no-Range stream (mediabunny orchestrator).
 
 **Out of scope:** stream-only sources without random access; live / growing fMP4; DASH/HLS segment playlists; MSE remux.
 

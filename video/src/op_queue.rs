@@ -9,14 +9,16 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use std::sync::Arc;
+
 use leptos::prelude::*;
 use web_sys::HtmlCanvasElement;
+use webmedia::MediaSource;
 
 /// Commands that must not overlap on the shared [`webmedia::WebPlayer`].
-#[derive(Debug)]
 pub(crate) enum HostOp {
     Open {
-        blob: web_sys::Blob,
+        source: Arc<dyn MediaSource>,
         canvas: HtmlCanvasElement,
     },
     /// Exact presentation frame (sync — waits in the drain queue).
@@ -77,11 +79,11 @@ impl OpQueue {
 
     /// Open always supersedes: bump, drop pending, enqueue.
     /// Returns `true` if the caller should start the drain loop.
-    pub fn enqueue_open(&self, blob: web_sys::Blob, canvas: HtmlCanvasElement) -> bool {
+    pub fn enqueue_open(&self, source: Arc<dyn MediaSource>, canvas: HtmlCanvasElement) -> bool {
         let id = self.bump();
         let mut st = self.inner.borrow_mut();
         st.pending.clear();
-        st.pending.push_back((id, HostOp::Open { blob, canvas }));
+        st.pending.push_back((id, HostOp::Open { source, canvas }));
         self.busy.set(true);
         self.begin_drain_locked(&mut st)
     }

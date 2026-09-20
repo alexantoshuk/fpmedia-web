@@ -49,7 +49,9 @@ pub struct VideoRef {
 #[derive(Clone)]
 pub(crate) struct VideoOps {
     pub open_blob: Rc<dyn Fn(web_sys::Blob)>,
-    /// Host-layer fetch → [`Blob`] → same open path. Accepts `https:` and `blob:`.
+    /// Host-layer URL open. Accepts `https:` / `http:` (HTTP Range via
+    /// [`webmedia::UrlSource`] when the server supports it; full-download
+    /// fallback otherwise) and same-document `blob:`.
     pub open_url: Rc<dyn Fn(String)>,
     pub play: Rc<dyn Fn()>,
     pub pause: Rc<dyn Fn()>,
@@ -108,11 +110,12 @@ impl VideoRef {
         }
     }
 
-    /// Fetch `url` into a [`web_sys::Blob`], then open like [`Self::open_blob`].
+    /// Open a remote or `blob:` URL.
     ///
-    /// Works for `https:` (full download; needs CORS + a progressive MP4) and
-    /// same-document `blob:` URLs (`URL.createObjectURL`). Not HTTP Range /
-    /// streaming — that would be a future `UrlSource`.
+    /// `https:` / `http:` use progressive [`webmedia::UrlSource`] (HTTP Range)
+    /// when the server returns `206` + `Content-Range`; otherwise falls back to
+    /// a full download → [`Self::open_blob`]. Same-document `blob:` always goes
+    /// through fetch → Blob. Needs CORS for cross-origin hosts.
     pub fn open_url(&self, url: impl Into<String>) {
         let url = url.into();
         let open = self

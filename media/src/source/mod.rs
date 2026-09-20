@@ -1,4 +1,4 @@
-//! Ranged media byte sources (mediabunny `Source` / `BlobSource` pattern).
+//! Ranged media byte sources (mediabunny `Source` / `BlobSource` / `UrlSource`).
 //!
 //! Progressive open reads only the ranges it needs (`moov`, then samples).
 //! Native `FileSource` is deferred — see `.ai/state.md`.
@@ -8,12 +8,16 @@ mod memory;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod blob;
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+mod url;
 
 pub use cache::{CachedSource, DEFAULT_CACHE_SIZE};
 pub use memory::MemorySource;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use blob::BlobSource;
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+pub use url::{UrlSource, is_no_http_range};
 
 use std::future::Future;
 use std::pin::Pin;
