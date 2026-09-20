@@ -6,9 +6,10 @@
 //!
 //! Rate has **no** mediabunny equivalent — invented on top of `getPlaybackTime` /
 //! `runAudioIterator` (`examples/media-player/media-player.ts`). Review rates
-//! (`<` shuttle) keep pitch via WSOLA (`crate::time_stretch::TimeStretcher`,
-//! Vanilagy gist ≈ Chromium `preservesPitch`); node `playbackRate` stays `1.0`.
-//! Shuttle → mute + wall clock ([`crate::is_wall_clock_rate`]).
+//! (`<` / `=` [`crate::PLAYBACK_RATE_AUDIO_MAX`]) keep pitch via WSOLA
+//! (`crate::time_stretch::TimeStretcher`, Vanilagy gist ≈ Chromium `preservesPitch`);
+//! node `playbackRate` stays `1.0`. Above audio max → mute + wall clock
+//! ([`crate::is_wall_clock_rate`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -175,12 +176,13 @@ impl AudioOutput {
 
     /// Set review playback rate. While playing, snaps origins and restarts the pump.
     ///
-    /// Callers must not invoke this for shuttle rates while wanting audio — use
-    /// [`Self::store_playback_rate`] + stop instead ([`crate::is_wall_clock_rate`]).
+    /// Callers must not invoke this above [`crate::PLAYBACK_RATE_AUDIO_MAX`]
+    /// while wanting audio — use [`Self::store_playback_rate`] + stop instead
+    /// ([`crate::is_wall_clock_rate`]).
     pub fn set_playback_rate(self: &Rc<Self>, rate: f64) {
         let rate = normalize_playback_rate(rate);
         if crate::is_wall_clock_rate(rate) {
-            // Shuttle: keep the cell updated but never schedule audio.
+            // Above audio ceiling (e.g. 8×): keep cell updated, never schedule.
             if self.playing.get() {
                 let _ = self.stop();
             }

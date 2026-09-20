@@ -12,12 +12,12 @@
 
 ### Play / scrub (short path)
 
-_(empty — fixed-pitch review audio shipped)_
+_(empty)_
 
 ### Media engine
 
 - Re-save scrub baselines after deep-seek fix (`npm run e2e:baseline:save` then compare).
-- Spot-check A/V sync on long clips (Wing It / real AAC) after seek+play — include review rates (0.5× / 1.5×).
+- Spot-check A/V sync on long clips (Wing It / real AAC) after seek+play — include review rates and JKL `2×`/`4×` (audio on); `8×` stays mute.
 - Pure audio path later: `AudioPlayer` / `AudioRef` (no canvas) reusing demux + decode + clock.
 - HEVC bitstream key verify (AVC IDR + Recovery Point SEI done).
 - Progressive-open follow-ups: coalesce adjacent sample ranges; optional background / lazy AVC sync-verify for huge files if open latency matters.
@@ -25,7 +25,6 @@ _(empty — fixed-pitch review audio shipped)_
 - Temporary deps: workspace pins `rerun-io/re_mp4` @ `aa5be9b` ([#35](https://github.com/rerun-io/re_mp4/pull/35) merged; not on crates.io yet).
 - Upstream/re_mp4: nested `skip_box(0)` livelock on QT size-0 padding (we work around in `SparseBoxReader`).
 - Drop `re_mp4` git pin when the next crates.io release includes #35.
-- Optional: fixed-pitch (or muted) audio for shuttle rates `≥2`.
 
 ### Later
 

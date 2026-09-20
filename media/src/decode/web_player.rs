@@ -471,8 +471,9 @@ impl WebPlayer {
     }
 
     /// Playback rate: forward `0.25…8`.
-    /// Shuttle (`≥2`) → wall clock, audio off ([`crate::is_wall_clock_rate`]).
-    /// Review rates keep `AudioContext` + fixed-pitch WSOLA stretch.
+    /// Above [`crate::PLAYBACK_RATE_AUDIO_MAX`] → wall clock, audio off
+    /// ([`crate::is_wall_clock_rate`]). Through 4× keep `AudioContext` +
+    /// fixed-pitch WSOLA stretch (shuttle **present** policy still `≥2`).
     /// Live change snaps clock origins.
     ///
     /// On rate **decrease**, snap to the displayed/committed playhead — shuttle
@@ -589,8 +590,8 @@ impl WebPlayer {
 
     /// Arm the media clock after `prime_playback` (host play path).
     ///
-    /// Review / 1× + audio track → decode/schedule pump (mediabunny `play` +
-    /// `runAudioIterator`; review rates add WSOLA stretch). Shuttle / no audio
+    /// Review / 1×–4× + audio track → decode/schedule pump (mediabunny `play` +
+    /// `runAudioIterator`; non-1× adds WSOLA stretch). Above 4× / no audio
     /// → wall `performance`.
     pub async fn start_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.finish_underrun_hold_timer();

@@ -8,10 +8,11 @@
 //! Playback rate multiplies driver elapsed time. Public API: forward `0.25…8`
 //! (review slider typically `0.25…1.75`).
 //!
-//! Rates at or above [`PLAYBACK_RATE_SHUTTLE_MIN`] use shuttle policy (lighter
-//! present queue) plus wall clock and audio off ([`is_wall_clock_rate`]). Review
-//! rates keep `AudioContext` clock + fixed-pitch stretch. mediabunny has no rate
-//! API — base formula stays `origin + elapsed`; we add `* rate`.
+//! Rates at or above [`PLAYBACK_RATE_SHUTTLE_MIN`] use shuttle decode/present
+//! policy (lighter queue; no underrun hold). Audio stays on with fixed-pitch
+//! stretch through [`PLAYBACK_RATE_AUDIO_MAX`]; above that → wall clock + mute
+//! ([`is_wall_clock_rate`]). mediabunny has no rate API — base formula stays
+//! `origin + elapsed`; we add `* rate`.
 //!
 //! Reverse rates / JKL keys are not supported (product deferred). Historical notes on
 //! WebCodecs reverse (GOP forward decode + present-back, `#350`) live in
@@ -25,6 +26,10 @@ pub const PLAYBACK_RATE_MAX: f64 = 8.0;
 pub const PLAYBACK_RATE_REVIEW_MAX: f64 = 1.75;
 /// |rate| at or above this uses shuttle decode/present policy.
 pub const PLAYBACK_RATE_SHUTTLE_MIN: f64 = 2.0;
+/// Max rate with fixed-pitch audio (WSOLA). Above this → mute + wall clock.
+///
+/// JKL hits `2`/`4` with audio; `8` is silent. Aligns with HTML useful-range mute.
+pub const PLAYBACK_RATE_AUDIO_MAX: f64 = 4.0;
 /// Snap step for review + shuttle rates.
 pub const PLAYBACK_RATE_STEP: f64 = 0.05;
 
@@ -43,13 +48,14 @@ pub fn is_shuttle_rate(rate: f64) -> bool {
     normalize_playback_rate(rate) >= PLAYBACK_RATE_SHUTTLE_MIN
 }
 
-/// Wall clock + audio off — shuttle rates only (`≥` [`PLAYBACK_RATE_SHUTTLE_MIN`]).
+/// Wall clock + audio off when rate is above [`PLAYBACK_RATE_AUDIO_MAX`].
 ///
-/// Review rates use `AudioContext` + WSOLA fixed-pitch stretch
-/// (`time_stretch::TimeStretcher`). `mediabunny: no equivalent` (no rate API);
-/// stretcher: Vanilagy WSOLA gist (≈ Chromium `preservesPitch`).
+/// Rates through 4× use `AudioContext` + WSOLA fixed-pitch stretch
+/// (`time_stretch::TimeStretcher`). Shuttle present policy (`≥2`) is independent.
+/// `mediabunny: no equivalent` (no rate API); stretcher: Vanilagy WSOLA gist
+/// (≈ Chromium `preservesPitch`).
 pub fn is_wall_clock_rate(rate: f64) -> bool {
-    is_shuttle_rate(rate)
+    normalize_playback_rate(rate) > PLAYBACK_RATE_AUDIO_MAX
 }
 
 /// Playback media clock origins. Pure Rust — drivers (wall / audio) are passed in.
@@ -176,7 +182,9 @@ mod tests {
         assert!(!is_wall_clock_rate(0.5)); // review → audio + stretch
         assert!(!is_wall_clock_rate(1.5));
         assert!(!is_wall_clock_rate(1.75));
-        assert!(is_wall_clock_rate(2.0)); // shuttle → mute
+        assert!(!is_wall_clock_rate(2.0)); // shuttle present, audio on
+        assert!(!is_wall_clock_rate(4.0)); // audio ceiling inclusive
+        assert!(is_wall_clock_rate(4.05)); // above AUDIO_MAX → mute
         assert!(is_wall_clock_rate(8.0));
     }
 }

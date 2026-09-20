@@ -27,9 +27,9 @@ pub use bitstream::{
     determine_avc_packet_type_with, sanitize_avc_packet_for_chromium,
 };
 pub use clock::{
-    MediaClock, PLAYBACK_RATE_MAX, PLAYBACK_RATE_MIN, PLAYBACK_RATE_REVIEW_MAX,
-    PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_STEP, is_shuttle_rate, is_wall_clock_rate,
-    normalize_playback_rate,
+    MediaClock, PLAYBACK_RATE_AUDIO_MAX, PLAYBACK_RATE_MAX, PLAYBACK_RATE_MIN,
+    PLAYBACK_RATE_REVIEW_MAX, PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_STEP, is_shuttle_rate,
+    is_wall_clock_rate, normalize_playback_rate,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use demux::open_mp4_path;
