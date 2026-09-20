@@ -16,8 +16,6 @@ _(empty)_
 
 ### Media engine
 
-- Re-save scrub baselines after deep-seek fix (`npm run e2e:baseline:save` then compare).
-- Spot-check A/V sync on long clips (Wing It / real AAC) after seek+play — include review rates and JKL `2×`/`4×` (audio on); `8×` stays mute.
 - Pure audio path later: `AudioPlayer` / `AudioRef` (no canvas) reusing demux + decode + clock.
 - HEVC bitstream key verify (AVC IDR + Recovery Point SEI done).
 - Progressive-open follow-ups: coalesce adjacent sample ranges; optional background / lazy AVC sync-verify for huge files if open latency matters; UrlSource parallel Range workers / sequential fallback (mediabunny orchestrator).
