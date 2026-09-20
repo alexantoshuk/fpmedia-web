@@ -1707,6 +1707,42 @@ impl WebPlayer {
             .is_some_and(|q| q.frame + 1 >= count)
     }
 
+    /// Snap live play clock back to the committed playhead (shuttle clock race).
+    ///
+    /// Wall / muted shuttle: reset `MediaClock` + `wall_origin`. Audio-driven
+    /// shuttle: soft-hold then `restart_warm` so `media_time()` follows again.
+    fn snap_playing_clock_to_playhead(&self) {
+        let playhead = self.state().frame;
+        let Ok(t) = self.frame_timestamp_seconds(playhead) else {
+            return;
+        };
+        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        if let Some(a) = audio.filter(|a| a.is_playing()) {
+            let _ = a.hold_underrun();
+            self.shared.clock.borrow_mut().start(t);
+            self.shared.wall_origin.set(None);
+            let shared = Rc::clone(&self.shared);
+            wasm_bindgen_futures::spawn_local(async move {
+                if !shared.player.borrow().state().playing {
+                    return;
+                }
+                let audio = shared.audio.borrow().as_ref().map(Rc::clone);
+                if let Some(a) = audio
+                    && let Err(e) = a.restart_warm(t).await
+                {
+                    web_sys::console::warn_1(
+                        &format!("webmedia: clock snap restart_warm: {e}").into(),
+                    );
+                }
+            });
+        } else {
+            self.shared.clock.borrow_mut().start(t);
+            if let Some(now) = performance_now_ms() {
+                self.shared.wall_origin.set(Some(now / 1000.0));
+            }
+        }
+    }
+
     /// Sync present — safe to call while [`Self::prefetch_one`] is awaiting.
     pub fn present_due(&self, media_time_secs: f64) -> Result<DuePresent, MediaError> {
         if !self.is_playing() {
@@ -1746,9 +1782,20 @@ impl WebPlayer {
             // underrun hold (long-GOP stopped at 347/368 with empty error).
             if self.presentation_len() > 0 {
                 // Fall through to present remaining due frames at EOF.
-            } else if self.is_looping() {
-                return Ok(DuePresent::NeedsLoop);
             } else {
+                let playhead = self.state().frame;
+                let last_id = count.saturating_sub(1);
+                // Shuttle / wall-clock rates disable underrun hold — media_time can
+                // race past duration while decode lags (e.g. 8× HEVC 60 fps). Ending
+                // here froze mid-timeline with no error; Play continued from playhead.
+                // mediabunny: no equivalent (no rate API).
+                if playhead < last_id {
+                    self.snap_playing_clock_to_playhead();
+                    return Ok(DuePresent::Playing { did_draw: false });
+                }
+                if self.is_looping() {
+                    return Ok(DuePresent::NeedsLoop);
+                }
                 self.shared.player.borrow_mut().pause();
                 self.clear_presentation();
                 self.clear_step_ring();
