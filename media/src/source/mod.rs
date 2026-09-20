@@ -6,7 +6,6 @@
 mod cache;
 mod fetch_map;
 mod memory;
-mod tracking;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod blob;
@@ -16,7 +15,6 @@ mod url;
 pub use cache::{CachedSource, DEFAULT_CACHE_SIZE};
 pub use fetch_map::FetchMap;
 pub use memory::MemorySource;
-pub use tracking::TrackingSource;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use blob::BlobSource;

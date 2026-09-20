@@ -1,13 +1,18 @@
 //! Single-window read cache (~8 MiB), mediabunny `BlobSource` default size.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::error::MediaError;
 
+use super::fetch_map::FetchMap;
 use super::{MediaSource, ReadFuture};
 
 /// Default cache capacity (mediabunny `BlobSource` default).
 pub const DEFAULT_CACHE_SIZE: usize = 8 * 1024 * 1024;
+
+/// ISOBMFF headers are ≤16 bytes — never prefetch on those, or an `mdat` header
+/// touch pulls multi‑MiB of media into WASM.
+const NO_PREFETCH_MAX: usize = 16;
 
 #[derive(Debug, Default)]
 struct Window {
@@ -40,6 +45,8 @@ pub struct CachedSource<S> {
     inner: S,
     max_cache_size: usize,
     window: Mutex<Window>,
+    /// Demo scrubber gray strip — **resident** window only (not historical reads).
+    fetch_map: Option<Arc<FetchMap>>,
 }
 
 impl<S> CachedSource<S> {
@@ -52,6 +59,24 @@ impl<S> CachedSource<S> {
             inner,
             max_cache_size: max_cache_size.max(1),
             window: Mutex::new(Window::default()),
+            fetch_map: None,
+        }
+    }
+
+    pub fn with_fetch_map(inner: S, fetch_map: Arc<FetchMap>) -> Self {
+        Self::with_capacity_and_fetch_map(inner, DEFAULT_CACHE_SIZE, fetch_map)
+    }
+
+    pub fn with_capacity_and_fetch_map(
+        inner: S,
+        max_cache_size: usize,
+        fetch_map: Arc<FetchMap>,
+    ) -> Self {
+        Self {
+            inner,
+            max_cache_size: max_cache_size.max(1),
+            window: Mutex::new(Window::default()),
+            fetch_map: Some(fetch_map),
         }
     }
 
@@ -65,6 +90,17 @@ impl<S> CachedSource<S> {
 
     pub fn max_cache_size(&self) -> usize {
         self.max_cache_size
+    }
+
+    fn publish_resident(&self, offset: u64, len: usize) {
+        // Tiny header fills replace the real media window in the cache; keep the
+        // previous scrubber coverage so the gray bar does not collapse to 16 B.
+        if len <= NO_PREFETCH_MAX {
+            return;
+        }
+        if let Some(map) = &self.fetch_map {
+            map.note_window(offset, offset.saturating_add(len as u64));
+        }
     }
 }
 
@@ -101,9 +137,6 @@ impl<S: MediaSource> MediaSource for CachedSource<S> {
                 }
             }
 
-            // ISOBMFF headers are ≤16 bytes — never prefetch on those, or an
-            // `mdat` header touch pulls multi‑MiB of media into WASM.
-            const NO_PREFETCH_MAX: usize = 16;
             let fill_len = if want <= NO_PREFETCH_MAX {
                 want
             } else {
@@ -121,6 +154,7 @@ impl<S: MediaSource> MediaSource for CachedSource<S> {
                 offset,
                 bytes: filled,
             };
+            self.publish_resident(offset, window.bytes.len());
 
             Ok(out)
         })
@@ -210,5 +244,25 @@ mod tests {
         // Window still empty — small read must fetch again.
         let _ = poll_ready(&cached, 0, 4).unwrap();
         assert_eq!(counting.reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn fetch_map_tracks_resident_window_not_headers() {
+        let data: Vec<u8> = (0u8..64).collect();
+        let map = Arc::new(FetchMap::new());
+        let cached = CachedSource::with_capacity_and_fetch_map(
+            MemorySource::from_vec(data),
+            32,
+            Arc::clone(&map),
+        );
+
+        let _ = poll_ready(&cached, 0, 8).unwrap(); // header-sized → no UI publish
+        assert!(map.file_fractions(64).is_empty());
+
+        let _ = poll_ready(&cached, 0, 20).unwrap(); // prefetch fill
+        let f = map.file_fractions(64);
+        assert_eq!(f.len(), 1);
+        assert!((f[0].0 - 0.0).abs() < 1e-5);
+        assert!((f[0].1 - 0.5).abs() < 1e-5); // 32/64
     }
 }

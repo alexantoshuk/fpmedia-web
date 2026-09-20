@@ -48,7 +48,6 @@ pub use player::{DecodeWindow, Player, PlayerState};
 pub use source::{BlobSource, UrlSource, is_no_http_range};
 pub use source::{
     CachedSource, DEFAULT_CACHE_SIZE, FetchMap, MediaSource, MemorySource, ReadFuture,
-    TrackingSource,
 };
 pub use types::{
     AudioCodec, AudioCodecConfig, AudioMetadata, CodecConfig, DEFAULT_SCRUB_BLIT_MIB_LONG,

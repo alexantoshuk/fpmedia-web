@@ -1,11 +1,22 @@
-//! Union of fetched file byte ranges for demo buffer UI (not decode cache).
+//! Resident file-byte coverage for the demo scrubber gray strip.
 //!
-//! Local invention — HTML `<video>.buffered` is time-based; we map **file bytes →
-//! timeline %** for speed (not sample-accurate). mediabunny: no equivalent meter.
+//! Backed by [`super::CachedSource`] fills (~8 MiB each). We keep a **bounded
+//! union** of recent windows (not a single replace) so the bar does not
+//! teleport when the cache slides, and not an unbounded historical union
+//! (that painted the whole timeline after AVC verify).
+//!
+//! File offset → timeline % (not sample-accurate). mediabunny: no equivalent meter.
 
 use std::sync::Mutex;
 
-/// Half-open `[start, end)` byte intervals, merged, file-absolute.
+/// Cap total resident UI bytes (~3× default cache windows).
+const MAX_UI_BYTES: u64 = 24 * 1024 * 1024;
+/// Soft cap on disjoint segments after merge.
+const MAX_UI_RANGES: usize = 8;
+/// Merge windows separated by at most this many bytes (mdat gaps / A‑V interleave).
+const MERGE_GAP: u64 = 256 * 1024;
+
+/// Half-open `[start, end)` intervals, merged, file-absolute.
 #[derive(Debug, Default)]
 pub struct FetchMap {
     ranges: Mutex<Vec<(u64, u64)>>,
@@ -16,33 +27,39 @@ impl FetchMap {
         Self::default()
     }
 
-    /// Mark the entire file present (in-memory / full-download opens).
+    /// In-memory / full-download opens — entire file is resident.
     pub fn mark_full(&self, size: u64) {
         if size == 0 {
             return;
         }
-        self.record(0, size as usize);
+        self.set_only(0, size);
     }
 
-    /// Record a successful read (or prefetch fill).
-    pub fn record(&self, offset: u64, len: usize) {
-        if len == 0 {
-            return;
-        }
-        let start = offset;
-        let end = offset.saturating_add(len as u64);
+    /// Replace all coverage with one range (tests / mark_full).
+    pub fn set_resident(&self, start: u64, end: u64) {
+        self.set_only(start, end);
+    }
+
+    /// Note a new cache fill: merge into the union, then drop farthest segments
+    /// until under [`MAX_UI_BYTES`] / [`MAX_UI_RANGES`].
+    pub fn note_window(&self, start: u64, end: u64) {
         if end <= start {
             return;
         }
         let Ok(mut ranges) = self.ranges.lock() else {
             return;
         };
-        merge_interval(&mut ranges, start, end);
+        merge_interval(&mut ranges, start, end, MERGE_GAP);
+        trim_to_budget(&mut ranges, start, end, MAX_UI_BYTES, MAX_UI_RANGES);
     }
 
-    /// Merged ranges as fractions of `file_size` in `0.0..1.0` (for CSS gradients).
-    ///
-    /// Caps at [`MAX_UI_RANGES`] by coarsening (keeps UI cheap on fMP4 splatters).
+    pub fn clear(&self) {
+        if let Ok(mut g) = self.ranges.lock() {
+            g.clear();
+        }
+    }
+
+    /// Coverage as fractions of `file_size` in `0.0..1.0`.
     pub fn file_fractions(&self, file_size: u64) -> Vec<(f32, f32)> {
         if file_size == 0 {
             return Vec::new();
@@ -50,7 +67,7 @@ impl FetchMap {
         let Ok(ranges) = self.ranges.lock() else {
             return Vec::new();
         };
-        let mut out: Vec<(f32, f32)> = ranges
+        ranges
             .iter()
             .filter_map(|&(s, e)| {
                 if e <= s {
@@ -60,11 +77,19 @@ impl FetchMap {
                 let b = (e as f64 / file_size as f64) as f32;
                 Some((a.clamp(0.0, 1.0), b.clamp(0.0, 1.0).max(a)))
             })
-            .collect();
-        if out.len() > MAX_UI_RANGES {
-            out = coarsen_fractions(out, MAX_UI_RANGES);
+            .collect()
+    }
+
+    fn set_only(&self, start: u64, end: u64) {
+        let Ok(mut ranges) = self.ranges.lock() else {
+            return;
+        };
+        if end <= start {
+            ranges.clear();
+            return;
         }
-        out
+        ranges.clear();
+        ranges.push((start, end));
     }
 
     #[cfg(test)]
@@ -73,16 +98,14 @@ impl FetchMap {
     }
 }
 
-const MAX_UI_RANGES: usize = 48;
-
-fn merge_interval(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64) {
+fn merge_interval(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64, gap: u64) {
     let mut i = 0;
-    while i < ranges.len() && ranges[i].1 < start {
+    while i < ranges.len() && ranges[i].1.saturating_add(gap) < start {
         i += 1;
     }
     let mut merged_start = start;
     let mut merged_end = end;
-    while i < ranges.len() && ranges[i].0 <= merged_end {
+    while i < ranges.len() && ranges[i].0 <= merged_end.saturating_add(gap) {
         merged_start = merged_start.min(ranges[i].0);
         merged_end = merged_end.max(ranges[i].1);
         ranges.remove(i);
@@ -90,35 +113,63 @@ fn merge_interval(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64) {
     ranges.insert(i, (merged_start, merged_end));
 }
 
-fn coarsen_fractions(ranges: Vec<(f32, f32)>, max: usize) -> Vec<(f32, f32)> {
-    if ranges.len() <= max || max == 0 {
-        return ranges;
-    }
-    // Bucket into `max` bins across 0..1 and emit occupied bins.
-    let mut bins = vec![false; max];
-    for &(a, b) in &ranges {
-        let lo = ((a as f64) * max as f64).floor() as usize;
-        let hi = ((b as f64) * max as f64).ceil() as usize;
-        let start = lo.min(max);
-        let end = hi.min(max).max(start.saturating_add(1));
-        for bin in bins.iter_mut().take(end).skip(start) {
-            *bin = true;
+fn total_bytes(ranges: &[(u64, u64)]) -> u64 {
+    ranges.iter().map(|(s, e)| e.saturating_sub(*s)).sum()
+}
+
+fn trim_to_budget(
+    ranges: &mut Vec<(u64, u64)>,
+    new_start: u64,
+    new_end: u64,
+    max_bytes: u64,
+    max_ranges: usize,
+) {
+    let anchor = new_start / 2 + new_end / 2;
+    while ranges.len() > max_ranges || total_bytes(ranges) > max_bytes {
+        if ranges.len() <= 1 {
+            break;
         }
-    }
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < max {
-        if !bins[i] {
-            i += 1;
-            continue;
+        let mut farthest_i = 0;
+        let mut farthest_d = 0u64;
+        for (i, &(s, e)) in ranges.iter().enumerate() {
+            let mid = s / 2 + e / 2;
+            let d = mid.abs_diff(anchor);
+            if d >= farthest_d {
+                farthest_d = d;
+                farthest_i = i;
+            }
         }
-        let start = i;
-        while i < max && bins[i] {
-            i += 1;
+        // Never drop the segment that contains the new window center if unique.
+        if ranges.len() > 1
+            && ranges[farthest_i].0 <= anchor
+            && anchor < ranges[farthest_i].1
+            && ranges
+                .iter()
+                .filter(|&&(s, e)| s <= anchor && anchor < e)
+                .count()
+                == 1
+        {
+            // Pick next-farthest instead.
+            let mut second = None;
+            let mut second_d = 0u64;
+            for (i, &(s, e)) in ranges.iter().enumerate() {
+                if i == farthest_i {
+                    continue;
+                }
+                let mid = s / 2 + e / 2;
+                let d = mid.abs_diff(anchor);
+                if second.is_none() || d >= second_d {
+                    second_d = d;
+                    second = Some(i);
+                }
+            }
+            if let Some(i) = second {
+                ranges.remove(i);
+                continue;
+            }
         }
-        out.push((start as f32 / max as f32, i as f32 / max as f32));
+        ranges.remove(farthest_i);
     }
-    out
 }
 
 #[cfg(test)]
@@ -126,24 +177,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn merges_overlapping_and_adjacent() {
+    fn note_window_merges_nearby() {
         let m = FetchMap::new();
-        m.record(100, 50);
-        m.record(140, 20);
-        m.record(200, 10);
-        assert_eq!(m.snapshot(), vec![(100, 160), (200, 210)]);
+        m.note_window(0, 1_000_000);
+        m.note_window(1_100_000, 2_100_000); // within MERGE_GAP of end? 100k < 256k
+        assert_eq!(m.snapshot().len(), 1);
+        assert_eq!(m.snapshot()[0], (0, 2_100_000));
     }
 
     #[test]
-    fn fractions_span_file() {
+    fn note_window_keeps_recent_when_far() {
         let m = FetchMap::new();
-        m.record(0, 50);
-        m.record(75, 25);
-        let f = m.file_fractions(100);
-        assert_eq!(f.len(), 2);
-        assert!((f[0].0 - 0.0).abs() < 1e-5);
-        assert!((f[0].1 - 0.5).abs() < 1e-5);
-        assert!((f[1].0 - 0.75).abs() < 1e-5);
-        assert!((f[1].1 - 1.0).abs() < 1e-5);
+        m.note_window(0, 8 * 1024 * 1024);
+        m.note_window(30_000_000, 30_000_000 + 8 * 1024 * 1024);
+        let snap = m.snapshot();
+        assert!(!snap.is_empty());
+        // Newest region must remain.
+        assert!(
+            snap.iter()
+                .any(|&(s, e)| s <= 30_000_000 && 34_000_000 < e + 1)
+        );
+    }
+
+    #[test]
+    fn mark_full_spans_file() {
+        let m = FetchMap::new();
+        m.mark_full(100);
+        assert_eq!(m.file_fractions(100), vec![(0.0, 1.0)]);
+    }
+
+    #[test]
+    fn set_resident_replaces() {
+        let m = FetchMap::new();
+        m.note_window(0, 8 * 1024 * 1024);
+        m.set_resident(10_000_000, 10_000_000 + 8 * 1024 * 1024);
+        assert_eq!(m.snapshot().len(), 1);
+        assert_eq!(m.snapshot()[0].0, 10_000_000);
     }
 }

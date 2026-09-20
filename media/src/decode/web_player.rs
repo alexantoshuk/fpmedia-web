@@ -206,8 +206,8 @@ pub struct PipelineStats {
     pub ready_frames: Vec<ReadyFrameMark>,
     /// Keyframe spacing class (scrub budget / fill policy).
     pub gop_profile: GopProfile,
-    /// Fetched **file** byte ranges as fractions of file size (`0..1`), for the
-    /// demo gray buffer strip (not decode densify — see `ready_frames`).
+    /// Bounded union of recent [`crate::CachedSource`] windows as file-size
+    /// fractions (`0..1`) for the demo gray strip (not densify — green below).
     pub fetch_file_ranges: Vec<(f32, f32)>,
 }
 

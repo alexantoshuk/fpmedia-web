@@ -10,7 +10,7 @@ use crate::demux::Mp4AudioTrack;
 use crate::demux::audio::build_audio_track;
 use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
-use crate::source::{CachedSource, FetchMap, MediaSource, MemorySource, TrackingSource};
+use crate::source::{CachedSource, FetchMap, MediaSource, MemorySource};
 use crate::types::{CodecConfig, EncodedSample, FrameId, VideoCodec, VideoMetadata};
 use crate::util::block_on;
 
@@ -193,7 +193,7 @@ impl Mp4VideoTrack {
 pub struct OpenedMp4 {
     pub video: Option<Mp4VideoTrack>,
     pub audio: Option<Mp4AudioTrack>,
-    /// File-byte fetch coverage for demo buffer UI (shared with the live source).
+    /// Resident [`CachedSource`] window for the demo gray scrubber strip.
     pub fetch_map: Arc<FetchMap>,
 }
 
@@ -250,13 +250,13 @@ pub async fn open_mp4_source_with_progress(
     options: OpenMp4Options,
     mut progress: impl FnMut(&str),
 ) -> Result<Mp4VideoTrack, MediaError> {
-    let (tracked, fetch_map) = track_source(source);
+    let fetch_map = Arc::new(FetchMap::new());
     let mp4 =
-        crate::demux::parse_mp4_progressive_with_progress(tracked.as_ref(), &mut progress).await?;
+        crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
     // Verify separately (async) — `block_on` cannot drive BlobSource reads.
     let mut opened = build_opened(
         mp4,
-        Arc::clone(&tracked),
+        source,
         fetch_map,
         OpenMp4Options {
             verify_avc_sync: false,
@@ -272,9 +272,9 @@ pub async fn open_mp4_source_with_progress(
 
 /// Open via progressive parse, then attach an 8 MiB [`CachedSource`] for sample I/O.
 ///
-/// Important: demux/scan runs on the **tracked** source so header reads do not prefetch
-/// multi‑MiB windows from the middle of `mdat` via [`CachedSource`], but still update
-/// the fetch map for the demo buffer strip.
+/// Demux/scan/verify run on the **raw** source so header reads do not prefetch
+/// multi‑MiB windows. The scrubber gray strip follows the **resident** cache
+/// window only ([`CachedSource`] + [`FetchMap`]), not historical Range unions.
 pub async fn open_mp4_source_cached(
     source: Arc<dyn MediaSource>,
     options: OpenMp4Options,
@@ -288,14 +288,14 @@ pub async fn open_mp4_source_cached_with_progress(
     options: OpenMp4Options,
     mut progress: impl FnMut(&str),
 ) -> Result<Mp4VideoTrack, MediaError> {
-    let (tracked, fetch_map) = track_source(source);
+    let fetch_map = Arc::new(FetchMap::new());
     let mp4 =
-        crate::demux::parse_mp4_progressive_with_progress(tracked.as_ref(), &mut progress).await?;
-    // Verify on the tracked source first — CachedSource's 8 MiB prefetch on every
+        crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
+    // Verify on the raw source first — CachedSource's 8 MiB prefetch on every
     // scattered keyframe would thrash WASM (~600 syncs on long 1080p → multi‑GB of Blob reads).
     let mut opened = build_opened(
         mp4,
-        Arc::clone(&tracked),
+        Arc::clone(&source),
         Arc::clone(&fetch_map),
         OpenMp4Options {
             verify_avc_sync: false,
@@ -306,7 +306,7 @@ pub async fn open_mp4_source_cached_with_progress(
     {
         verify_track_avc_sync_async(track, &mut progress).await?;
     }
-    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::new(tracked));
+    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::with_fetch_map(source, fetch_map));
     if let Some(v) = opened.video.as_mut() {
         v.source = Arc::clone(&cached);
     }
@@ -330,12 +330,12 @@ pub async fn open_mp4_media_source_cached_with_progress(
     options: OpenMp4Options,
     mut progress: impl FnMut(&str),
 ) -> Result<OpenedMp4, MediaError> {
-    let (tracked, fetch_map) = track_source(source);
+    let fetch_map = Arc::new(FetchMap::new());
     let mp4 =
-        crate::demux::parse_mp4_progressive_with_progress(tracked.as_ref(), &mut progress).await?;
+        crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
     let mut opened = build_opened(
         mp4,
-        Arc::clone(&tracked),
+        Arc::clone(&source),
         Arc::clone(&fetch_map),
         OpenMp4Options {
             verify_avc_sync: false,
@@ -346,7 +346,7 @@ pub async fn open_mp4_media_source_cached_with_progress(
     {
         verify_track_avc_sync_async(track, &mut progress).await?;
     }
-    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::new(tracked));
+    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::with_fetch_map(source, fetch_map));
     if let Some(v) = opened.video.as_mut() {
         v.source = Arc::clone(&cached);
     }
@@ -361,13 +361,6 @@ pub async fn open_mp4_media_source_cached_with_progress(
 pub fn open_mp4_path(path: impl AsRef<std::path::Path>) -> Result<Mp4VideoTrack, MediaError> {
     let bytes = std::fs::read(path)?;
     open_mp4_bytes(bytes)
-}
-
-fn track_source(source: Arc<dyn MediaSource>) -> (Arc<dyn MediaSource>, Arc<FetchMap>) {
-    let fetch_map = Arc::new(FetchMap::new());
-    let tracked: Arc<dyn MediaSource> =
-        Arc::new(TrackingSource::new(source, Arc::clone(&fetch_map)));
-    (tracked, fetch_map)
 }
 
 fn build_opened(

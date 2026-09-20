@@ -735,7 +735,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     class="wm-scrubber-fetched"
                     data-testid="scrubber-fetched"
                     aria-hidden="true"
-                    title="Fetched file bytes (approx. by file offset — not decode cache)"
+                    title="Resident byte cache (recent ~8 MiB windows, bounded) — not densify"
                     style:background-image=move || {
                         let ranges = video
                             .pipeline
