@@ -30,6 +30,14 @@ Thumbs.db
 .DS_Store
 
 # Local / large media — never commit camera dumps or long clips.
-# Keep only the small tracked fixtures under media/tests/fixtures/ (see README).
+# Only tiny fixtures under media/tests/fixtures/ stay trackable.
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.m4v
+*.avi
+!media/tests/fixtures/
+!media/tests/fixtures/**
+# Optional local fMP4 (see fixtures README) — still ignore even under fixtures/
 media/tests/fixtures/fragmented_tiny.mp4
-**/kit.mp4
