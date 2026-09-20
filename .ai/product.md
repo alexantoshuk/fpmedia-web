@@ -21,7 +21,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 
 | Surface | Purpose |
 | ------- | ------- |
-| **`media_components` crate** | Leptos `<Video>` + `VideoRef` — media element API only (HTML `<video>` analog). Modules: `video` (+ planned `audio`, `helpers`) |
+| **`media_components` crate** | Leptos `<Video>` + `VideoRef` — media element API only (HTML `<video>` analog). Modules: `video`, `helpers` (+ planned `audio`) |
 | **Demo app** | `app` / `frontend` — file picker, transport buttons, **keyboard (JKL/Space/arrows)**, status (not production chrome) |
 | **Library API** | `webmedia` crate — demux + frame index + `Player` / `VideoPlayer`; audio engine under `audio/` |
 
@@ -39,8 +39,8 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
   (volume/mute/transport **API** only — no keyboard bindings). A future pure-**`<Audio>` / `AudioRef`** reuses the same
   engine modules without a video track or canvas.
 - **Component vs demo:** media element crates expose **API only** (like HTML `<video>` / `<audio>`). Keyboard shortcuts,
-  progress-bar chrome math for caches, and demo transport stay in **`app`** until shared helpers move into
-  `media_components::helpers` (after helpers land).
+  progress-bar chrome math for caches live in **`media_components::helpers`**; demo transport /
+  keyboard stay in **`app`**.
 - **Play first, scrub second:** smooth **1× play with audio** must work for any supported clip (incl. 4K via
   `PlayPolicy`). Scrub/densify yields while playing (`CacheFillMode::Play`). Full-HD play+scrub knobs stay on
   the historical Hd defaults — do not retune them when adding Uhd play ahead/HW.

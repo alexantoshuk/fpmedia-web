@@ -4,7 +4,11 @@ use leptos::ev;
 use leptos::html::{Div, Input};
 use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
-use media_components::{ReadyFrameKind, ReadyFrameMark, Video, VideoMetadata, VideoRef};
+use media_components::helpers::{
+    cache_strip_gradient, fetch_strip_gradient, format_metadata, playhead_width_css,
+    scrub_frame_from_x,
+};
+use media_components::{ReadyFrameKind, Video, VideoRef};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
@@ -739,51 +743,6 @@ pub fn DemoPlayer() -> impl IntoView {
 ///
 /// Scrub updates playhead immediately and decodes async without latching `busy`.
 /// Prev/Next/Seek/Play/Pause also drive `playhead` and commit via sync ops.
-///
-/// Build a hard-stop `linear-gradient` for coalesced cache runs (O(1) DOM).
-fn cache_strip_gradient(
-    marks: &[ReadyFrameMark],
-    kind: ReadyFrameKind,
-    max: f64,
-    color: &str,
-) -> String {
-    let max = max.max(1.0);
-    let mut stops = String::from("linear-gradient(90deg, transparent 0%");
-    let mut any = false;
-    for m in marks.iter().filter(|m| m.kind == kind) {
-        any = true;
-        let start = (m.frame as f64 / max) * 100.0;
-        let end = ((m.end.max(m.frame) as f64 + 1.0) / max) * 100.0;
-        let start = start.clamp(0.0, 100.0);
-        let end = end.clamp(0.0, 100.0).max(start);
-        stops.push_str(&format!(
-            ", transparent {start:.3}%, {color} {start:.3}%, {color} {end:.3}%, transparent {end:.3}%"
-        ));
-    }
-    if !any {
-        return "none".into();
-    }
-    stops.push_str(", transparent 100%)");
-    stops
-}
-
-/// File-byte fetch coverage → scrubber % (approximate; not sample-accurate).
-fn fetch_strip_gradient(ranges: &[(f32, f32)], color: &str) -> String {
-    if ranges.is_empty() {
-        return "none".into();
-    }
-    let mut stops = String::from("linear-gradient(90deg, transparent 0%");
-    for &(a, b) in ranges {
-        let start = (a as f64 * 100.0).clamp(0.0, 100.0);
-        let end = (b as f64 * 100.0).clamp(0.0, 100.0).max(start);
-        stops.push_str(&format!(
-            ", transparent {start:.3}%, {color} {start:.3}%, {color} {end:.3}%, transparent {end:.3}%"
-        ));
-    }
-    stops.push_str(", transparent 100%)");
-    stops
-}
-
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
@@ -795,11 +754,12 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
             return None;
         }
         let rect = el.get_bounding_client_rect();
-        let w = rect.width().max(1.0);
-        let x = (client_x - rect.left()).clamp(0.0, w);
-        let max_frame = video.frame_count.get_untracked().saturating_sub(1);
-        let frame = ((x / w) * max_frame as f64).round() as u32;
-        Some(frame.min(max_frame))
+        scrub_frame_from_x(
+            client_x,
+            rect.left(),
+            rect.width(),
+            video.frame_count.get_untracked(),
+        )
     };
 
     let finish_scrub = move || {
@@ -878,9 +838,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     class="wm-scrubber-progress"
                     data-testid="scrubber-progress"
                     style:width=move || {
-                        let max = video.frame_count.get().saturating_sub(1).max(1);
-                        let pct = (video.playhead.get() as f64 / max as f64) * 100.0;
-                        format!("{pct:.3}%")
+                        playhead_width_css(video.playhead.get(), video.frame_count.get())
                     }
                 />
             </div>
@@ -1012,27 +970,6 @@ fn MeterRow(label: &'static str, detail: Signal<String>, fill_pct: Signal<f64>) 
             </div>
         </div>
     }
-}
-
-fn format_metadata(meta: &VideoMetadata) -> String {
-    let fps = meta
-        .fps
-        .map(|v| format!("{v:.3} fps"))
-        .unwrap_or_else(|| "fps —".into());
-    let codec = meta
-        .codec
-        .codec_string
-        .clone()
-        .unwrap_or_else(|| format!("{:?}", meta.codec.codec));
-    format!(
-        "{}×{} · {} · {} · {:.3}s · {} frames",
-        meta.width,
-        meta.height,
-        fps,
-        codec,
-        meta.duration().seconds,
-        meta.frame_count
-    )
 }
 
 fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> T {

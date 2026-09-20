@@ -10,10 +10,6 @@ _(empty)_
 
 ## Next up
 
-### Layout / crates
-
-- `media_components::helpers` — shared UI math (cache progress segments, coalesced runs → CSS/%, time formatters). Keyboard chrome stays in demo `app`.
-
 ### Media engine
 
 - Pure audio path: `AudioPlayer` + `media_components::audio` (`AudioRef`) reusing `webmedia::audio` (mirror of `VideoPlayer`, thin — no canvas/scrub).

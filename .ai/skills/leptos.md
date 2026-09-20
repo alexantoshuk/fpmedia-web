@@ -16,7 +16,7 @@
 | EOF with `loop` off — host never notified | `VideoRef::ended`; clear on open/close/seek/play |
 | Decoder/cache leak after leaving a clip | `VideoRef::close()` (also on unmount) |
 | URL open hangs / CORS / slow full download | `VideoRef::open_url` → same-origin `/proxy?url=` (demo server) then `UrlSource` (Range) or blob fallback; status shows `No HTTP Range — downloading full file…` |
-| Gray scrubber bar vs green densify strips | Gray = `FetchMap` mirror of `CachedSource` resident windows (≤512 MiB budget / file-offset %); green = densify |
+| Gray scrubber bar vs green densify strips | Gray = `FetchMap` → `helpers::fetch_strip_gradient`; green = densify via `helpers::cache_strip_gradient` |
 | `RefCell already borrowed` in Loop / sync_ui / tachys | No borrow across `.await`; defer scrub work off `on:pointer*`; engine: `skills/media.md` RefCell / WASM re-entry |
 | Start stutter / low measured fps after Play | Set wall-clock origins **after** `prime_playback` |
 | Play lag right after scrub (long GOP) | Do not `seek_frame` from `VideoRef::play` — waits behind settle; densify only if no pending PlayPrime |
