@@ -204,10 +204,13 @@ pub fn DemoPlayer() -> impl IntoView {
             }
             "k" | "K" => {
                 ev.prevent_default();
-                video.set_playback_rate(1.0);
+                // Pause *before* snapping to 1× — `set_playback_rate(1)` while
+                // playing spawns audio; doing that then pause leaves music on.
                 if video.playing.get_untracked() {
                     video.pause();
+                    video.set_playback_rate(1.0);
                 } else {
+                    video.set_playback_rate(1.0);
                     video.play();
                 }
             }

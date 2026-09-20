@@ -513,8 +513,16 @@ impl WebPlayer {
                     self.shared.wall_origin.set(None);
                     a.store_playback_rate(rate);
                     let audio = Rc::clone(&a);
+                    let shared = Rc::clone(&self.shared);
                     let start_t = t;
                     wasm_bindgen_futures::spawn_local(async move {
+                        // Host may have paused after rate snap (K: pause then 1×,
+                        // or rate→pause race). Do not restart audio into a stop.
+                        if !shared.player.borrow().state().playing
+                            || crate::is_wall_clock_rate(shared.clock.borrow().playback_rate())
+                        {
+                            return;
+                        }
                         if let Err(e) = audio.start_spawned(start_t).await {
                             web_sys::console::warn_1(
                                 &format!("webmedia: audio after shuttle: {e}").into(),
