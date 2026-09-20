@@ -3,13 +3,32 @@
 //! Port of mediabunny `determineVideoPacketType` for `hevc` in `codec-data.ts`:
 //! scan length-prefixed NALs; type &lt; BLA_W_LP (16) ⇒ delta;
 //! 16…RSV_IRAP_VCL23 (23) ⇒ key (IRAP); other NAL types keep scanning.
+//!
+//! Also: Chromium first-packet NAL order sanitize (`sanitizeHevcPacketForChromium`)
+//! and RASL detection after CRA (`hasHevcRaslPicture`).
 
 use super::PacketType;
+use std::collections::HashSet;
 
 /// BLA_W_LP — first IRAP VCL type (ISO/IEC 23008-2 Table 7-1).
 const HEVC_NAL_BLA_W_LP: u8 = 16;
 /// RSV_IRAP_VCL23 — last reserved IRAP VCL type.
 const HEVC_NAL_RSV_IRAP_VCL23: u8 = 23;
+const HEVC_NAL_RASL_N: u8 = 8;
+const HEVC_NAL_RASL_R: u8 = 9;
+const HEVC_NAL_AUD: u8 = 35;
+const HEVC_NAL_EOS: u8 = 36;
+const HEVC_NAL_EOB: u8 = 37;
+
+/// Chromium HEVC AU NAL order state (mediabunny `HevcNaluOrderState`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum HevcNaluOrderState {
+    AudAllowed = 0,
+    BeforeFirstVcl = 1,
+    AfterFirstVcl = 2,
+    EoBitstreamAllowed = 3,
+    NoMoreDataAllowed = 4,
+}
 
 /// `lengthSizeMinusOne + 1` from an `hvcC` box payload (ISO/IEC 14496-15 §8.3.3.1).
 ///
@@ -37,6 +56,35 @@ fn read_nal_len(data: &[u8], offset: usize, length_size: usize) -> Option<usize>
     Some(nal_len)
 }
 
+/// Iterate length-prefixed NAL payloads: `(payload_offset, payload_len)`.
+fn iter_hevc_nals(data: &[u8], length_size: usize) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut offset = 0usize;
+    std::iter::from_fn(move || {
+        if offset + length_size > data.len() {
+            return None;
+        }
+        let nal_len = read_nal_len(data, offset, length_size)?;
+        let start = offset + length_size;
+        if nal_len == 0 || start + nal_len > data.len() {
+            return None;
+        }
+        offset = start + nal_len;
+        Some((start, nal_len))
+    })
+}
+
+fn concat_length_prefixed(nals: &[&[u8]], length_size: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    for nal in nals {
+        let len = nal.len();
+        for i in (0..length_size).rev() {
+            out.push(((len >> (8 * i)) & 0xff) as u8);
+        }
+        out.extend_from_slice(nal);
+    }
+    out
+}
+
 /// Decide key/delta by inspecting HVCC (length-prefixed) NAL units.
 ///
 /// Returns `None` if the AU is empty or truncated (cannot decide).
@@ -45,21 +93,9 @@ pub fn determine_hevc_packet_type(data: &[u8], length_size: usize) -> Option<Pac
         return None;
     }
 
-    let mut offset = 0;
     let mut saw_nal = false;
-    while offset + length_size <= data.len() {
-        let Some(nal_len) = read_nal_len(data, offset, length_size) else {
-            break;
-        };
-        offset += length_size;
-        if nal_len == 0 || offset + nal_len > data.len() {
-            return if saw_nal {
-                Some(PacketType::Delta)
-            } else {
-                None
-            };
-        }
-        let nal = &data[offset..offset + nal_len];
+    for (start, nal_len) in iter_hevc_nals(data, length_size) {
+        let nal = &data[start..start + nal_len];
         let nal_type = hevc_nal_unit_type(nal[0]);
         saw_nal = true;
 
@@ -72,7 +108,6 @@ pub fn determine_hevc_packet_type(data: &[u8], length_size: usize) -> Option<Pac
             return Some(PacketType::Key);
         }
         // VPS / SPS / PPS / AUD / SEI / …: keep scanning.
-        offset += nal_len;
     }
 
     if saw_nal {
@@ -82,18 +117,109 @@ pub fn determine_hevc_packet_type(data: &[u8], length_size: usize) -> Option<Pac
     }
 }
 
+/// True if the AU contains a RASL_N / RASL_R VCL (mediabunny `hasHevcRaslPicture`).
+///
+/// After a CRA (open-GOP) key, browsers mishandle these — drop until past them.
+pub fn has_hevc_rasl_picture(data: &[u8], length_size: usize) -> bool {
+    if length_size == 0 || length_size > 4 || data.is_empty() {
+        return false;
+    }
+    for (start, nal_len) in iter_hevc_nals(data, length_size) {
+        let ty = hevc_nal_unit_type(data[start]);
+        if ty == HEVC_NAL_RASL_N || ty == HEVC_NAL_RASL_R {
+            return true;
+        }
+        let _ = nal_len;
+    }
+    false
+}
+
+/// Strip HEVC NAL order violations that trip Chromium's `hevc.cc` validator.
+///
+/// mediabunny `sanitizeHevcPacketForChromium` — Chromium issue 507611247.
+/// Returns `None` when the AU is already clean.
+pub fn sanitize_hevc_packet_for_chromium(data: &[u8], length_size: usize) -> Option<Vec<u8>> {
+    if length_size == 0 || length_size > 4 || data.is_empty() {
+        return None;
+    }
+
+    let mut removed: HashSet<usize> = HashSet::new();
+    let mut order = HevcNaluOrderState::AudAllowed;
+
+    for (start, nal_len) in iter_hevc_nals(data, length_size) {
+        if order == HevcNaluOrderState::NoMoreDataAllowed {
+            removed.insert(start);
+            continue;
+        }
+        let ty = hevc_nal_unit_type(data[start]);
+        if order == HevcNaluOrderState::EoBitstreamAllowed && ty != HEVC_NAL_EOB {
+            removed.insert(start);
+            continue;
+        }
+
+        let mut remove = false;
+        if ty == HEVC_NAL_AUD {
+            if order > HevcNaluOrderState::AudAllowed {
+                remove = true;
+            } else {
+                order = HevcNaluOrderState::BeforeFirstVcl;
+            }
+        } else if ty <= 31 {
+            // VCL
+            if order > HevcNaluOrderState::AfterFirstVcl {
+                remove = true;
+            } else {
+                order = HevcNaluOrderState::AfterFirstVcl;
+            }
+        } else if ty == HEVC_NAL_EOS {
+            if order != HevcNaluOrderState::AfterFirstVcl {
+                remove = true;
+            } else {
+                order = HevcNaluOrderState::EoBitstreamAllowed;
+            }
+        } else if ty == HEVC_NAL_EOB {
+            if order < HevcNaluOrderState::AfterFirstVcl {
+                remove = true;
+            } else {
+                order = HevcNaluOrderState::NoMoreDataAllowed;
+            }
+        } else if matches!(ty, 32 | 33 | 34 | 39)
+            || (41..=44).contains(&ty)
+            || (48..=55).contains(&ty)
+        {
+            // VPS, SPS, PPS, PREFIX_SEI, RSV_NVCL41..44, UNSPEC48..55
+            if order > HevcNaluOrderState::BeforeFirstVcl {
+                remove = true;
+            } else {
+                order = HevcNaluOrderState::BeforeFirstVcl;
+            }
+        } else if matches!(ty, 38 | 40) || (45..=47).contains(&ty) || (56..=63).contains(&ty) {
+            // FD, SUFFIX_SEI, RSV_NVCL45..47, UNSPEC56..63
+            if order < HevcNaluOrderState::AfterFirstVcl {
+                remove = true;
+            }
+        }
+        if remove {
+            removed.insert(start);
+        }
+        let _ = nal_len;
+    }
+
+    if removed.is_empty() {
+        return None;
+    }
+
+    let kept: Vec<&[u8]> = iter_hevc_nals(data, length_size)
+        .filter(|(start, _)| !removed.contains(start))
+        .map(|(start, len)| &data[start..start + len])
+        .collect();
+    Some(concat_length_prefixed(&kept, length_size))
+}
+
 /// Build a length-prefixed AU: `[len][nal…]…` with `length_size` bytes of length.
 #[cfg(test)]
 fn prefixed_au(length_size: usize, nals: &[&[u8]]) -> Vec<u8> {
-    let mut out = Vec::new();
-    for nal in nals {
-        let len = nal.len();
-        for i in (0..length_size).rev() {
-            out.push(((len >> (8 * i)) & 0xff) as u8);
-        }
-        out.extend_from_slice(nal);
-    }
-    out
+    concat_length_prefixed(nals, length_size)
 }
 
 #[cfg(test)]
@@ -148,5 +274,39 @@ mod tests {
             determine_hevc_packet_type(&data, 4),
             Some(PacketType::Delta)
         );
+    }
+
+    #[test]
+    fn rasl_picture_detected() {
+        // RASL_N type 8 → first byte 0x10
+        let data = prefixed_au(4, &[&[0x10, 0x01]]);
+        assert!(has_hevc_rasl_picture(&data, 4));
+        let trail = prefixed_au(4, &[&[0x02, 0x01]]);
+        assert!(!has_hevc_rasl_picture(&trail, 4));
+    }
+
+    #[test]
+    fn sanitize_drops_suffix_sei_before_vcl() {
+        // SUFFIX_SEI type 40 → 0x50 before VCL IRAP — illegal order for Chromium.
+        let dirty = prefixed_au(4, &[&[0x50, 0x01], &[0x20, 0x01]]);
+        let cleaned = sanitize_hevc_packet_for_chromium(&dirty, 4).expect("changed");
+        assert!(
+            !has_suffix_sei(&cleaned, 4),
+            "suffix SEI should be stripped before VCL"
+        );
+        assert_eq!(
+            determine_hevc_packet_type(&cleaned, 4),
+            Some(PacketType::Key)
+        );
+    }
+
+    #[test]
+    fn sanitize_noop_on_clean_vps_idr() {
+        let clean = prefixed_au(4, &[&[0x40, 0x01], &[0x28, 0x01]]); // VPS + IDR_N_LP (20→0x28)
+        assert!(sanitize_hevc_packet_for_chromium(&clean, 4).is_none());
+    }
+
+    fn has_suffix_sei(data: &[u8], length_size: usize) -> bool {
+        iter_hevc_nals(data, length_size).any(|(start, _)| hevc_nal_unit_type(data[start]) == 40)
     }
 }

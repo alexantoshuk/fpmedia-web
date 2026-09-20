@@ -24,7 +24,10 @@ use web_sys::{
     VideoDecoderConfig, VideoDecoderInit, VideoFrame,
 };
 
-use crate::bitstream::{avc_nal_length_size, sanitize_avc_packet_for_chromium};
+use crate::bitstream::{
+    avc_nal_length_size, has_hevc_rasl_picture, hevc_nal_length_size,
+    sanitize_avc_packet_for_chromium, sanitize_hevc_packet_for_chromium,
+};
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
@@ -203,6 +206,8 @@ struct DecoderCore {
     held: Vec<HeldFrame>,
     /// Packets fed since last `configure` (mediabunny `currentPacketIndex`).
     packets_fed: usize,
+    /// HEVC: finished dropping post-CRA RASL (mediabunny `raslSkipped`).
+    rasl_skipped: bool,
     /// When true, every sample is a sync — soft key switch is OK (no long cascade).
     all_intra: bool,
     /// Optional: salvage pruned early frames during key→N into the host dense cache.
@@ -312,6 +317,7 @@ impl DecoderCore {
             input_timestamps: Vec::new(),
             held: Vec::new(),
             packets_fed: 0,
+            rasl_skipped: false,
             all_intra,
             prune_interim: RefCell::new(None),
             _on_output: on_output,
@@ -334,6 +340,7 @@ impl DecoderCore {
         self.clear_held();
         self.input_timestamps.clear();
         self.packets_fed = 0;
+        self.rasl_skipped = false;
         let waiting = std::mem::take(&mut *self.output_waiters.borrow_mut());
         wake_waiters_deferred(waiting);
         let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
@@ -407,6 +414,7 @@ impl DecoderCore {
             self.fed_through_order = None;
             self.key_order = None;
             self.packets_fed = 0;
+            self.rasl_skipped = false;
         }
         self.key_order = Some(key_do);
         Ok(())
@@ -580,6 +588,19 @@ impl DecoderCore {
         sample: &EncodedSample,
         force_key: bool,
     ) -> Result<(), MediaError> {
+        let hevc = self.config.codec.starts_with("hvc1") || self.config.codec.starts_with("hev1");
+        // mediabunny: drop RASL after CRA / open-GOP key until past them.
+        if hevc && self.packets_fed > 0 && !self.rasl_skipped {
+            if let Some(len_size) = hevc_nal_length_size(&self.config.description)
+                && has_hevc_rasl_picture(&sample.data, len_size)
+            {
+                // Advance pump cursor without decode / packets_fed bump.
+                self.fed_through_order = Some(sample.decode_order);
+                return Ok(());
+            }
+            self.rasl_skipped = true;
+        }
+
         let chunk_type = if force_key || sample.is_keyframe {
             EncodedVideoChunkType::Key
         } else {
@@ -589,19 +610,26 @@ impl DecoderCore {
         self.push_input_timestamp(timestamp_us);
         let timestamp_i32 = timestamp_us.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
 
-        // mediabunny: Chromium first-packet AVC AUD / reserved-NAL sanitize.
-        let sanitized =
-            if self.packets_fed == 0 && is_chromium() && self.config.codec.starts_with("avc1") {
+        // mediabunny: Chromium first-packet AVC AUD / HEVC NAL-order sanitize.
+        let sanitized = if self.packets_fed == 0 && is_chromium() {
+            if self.config.codec.starts_with("avc1") || self.config.codec.starts_with("avc3") {
                 avc_nal_length_size(&self.config.description)
                     .and_then(|len_size| sanitize_avc_packet_for_chromium(&sample.data, len_size))
+            } else if hevc {
+                hevc_nal_length_size(&self.config.description)
+                    .and_then(|len_size| sanitize_hevc_packet_for_chromium(&sample.data, len_size))
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
         if let Some(ref cleaned) = sanitized {
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(
                 &format!(
-                    "webmedia: chromium AVC sanitize first packet {}→{} B",
+                    "webmedia: chromium {} sanitize first packet {}→{} B",
+                    if hevc { "HEVC" } else { "AVC" },
                     sample.data.len(),
                     cleaned.len()
                 )
@@ -1711,6 +1739,7 @@ async fn finish_gop_for_target(
                 c.key_order = None;
                 c.input_timestamps.clear();
                 c.packets_fed = 0;
+                c.rasl_skipped = false;
             }
         }
     }

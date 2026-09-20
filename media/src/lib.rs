@@ -24,8 +24,8 @@ mod decode;
 
 pub use bitstream::{
     PacketType, accept_avc_recovery_point_sei, avc_nal_length_size, determine_avc_packet_type,
-    determine_avc_packet_type_with, determine_hevc_packet_type, hevc_nal_length_size,
-    sanitize_avc_packet_for_chromium,
+    determine_avc_packet_type_with, determine_hevc_packet_type, has_hevc_rasl_picture,
+    hevc_nal_length_size, sanitize_avc_packet_for_chromium, sanitize_hevc_packet_for_chromium,
 };
 pub use clock::{
     MediaClock, PLAYBACK_RATE_AUDIO_MAX, PLAYBACK_RATE_MAX, PLAYBACK_RATE_MIN,

@@ -11,7 +11,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Hang at `creating decoder…` (Android / LAN HTTP) | Secure context gate (`ensure_webcodecs_available`) | WebCodecs needs HTTPS/`localhost`; `http://LAN-IP` → no `VideoDecoder` |
 | Hang / stuck on open, Play disabled | [WebCodecs decode](#webcodecs-decode), Chromium first AVC packet | `flush` hang, `busy`/`!ready`, lying sync |
 | Open slow on long files / many `stss` | Demux deferred AVC sync | `defer_avc_sync`; bg verify + `ensure_key_verified` |
-| `decoder busy` / `needs a key chunk` | Decoder lifecycle, Op cancel, Yields | `take_decoder` waits ~5s wall-clock (Chrome clamps `setTimeout(0)`); clear warm state after `flush` |
+| `decoder busy` / `needs a key chunk` | Decoder lifecycle, Op cancel, Yields | `take_decoder` waits ~5s wall-clock (Chrome clamps `setTimeout(0)`); clear warm state after `flush`; HEVC: first-packet sanitize + RASL skip |
 | `backpressure timed out` | `decodeQueueSize` backpressure | wake on **new** output / take; `q≈41,held=0` → reset+retry; wire `skip_behind` on underrun |
 | Scrub exact slow / tab freeze on settle | [Scrub cache](#scrub-cache), backpressure | one key→N cascade + salvage; probes below |
 | Soft-drag eng lags playhead (Short) | ScrubPolicy soft-drag | expected until settle; blit/preview only — exact on pointer-up |
@@ -137,6 +137,7 @@ Rust/WASM friction (Closures, `JsFuture`, `RefCell`) is adaptation of the same c
 - Blob reads: `blob.slice(start,end).arrayBuffer()` (avoid `blob.stream()` on Safari/iOS).
 - Do not pass Promise `resolve` directly to `requestAnimationFrame` / `setTimeout`; use a `Closure`.
 - **Chromium first AVC packet** — strip NALs before AUD and reserved types 20–31 (`VideoDecoderWrapper` / Chromium issues 470109459, #396). Race `flush()` with a timeout as a safety net.
+- **Chromium first HEVC packet** — `sanitize_hevc_packet_for_chromium` NAL-order filter (`hevc.cc` too strict; issue 507611247). After CRA/open-GOP key, drop RASL_N/RASL_R until past (`rasl_skipped`; mediabunny `hasHevcRaslPicture`) — avoids “key frame required after configure/flush” on scrub.
 
 UI host patterns (spawn_local, OpQueue, `playing` ownership, wall-clock play loop): `skills/leptos.md`. Backlog (audio clock, sinks, filmstrip): `.ai/state.md`.
 
