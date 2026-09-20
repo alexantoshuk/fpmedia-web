@@ -514,6 +514,9 @@ pub struct VideoMetadata {
     pub codec: CodecConfig,
     /// Keyframe spacing class — drives [`ScrubPolicy`] (densify / drag mode).
     pub gop_profile: GopProfile,
+    /// Embedded tape start from QuickTime `tmcd` (if present).
+    /// Current tape TC = [`timecode::Timecode::from_start`]`(frame_id, start)`.
+    pub timecode_start: Option<timecode::Timecode>,
 }
 
 impl VideoMetadata {
@@ -599,6 +602,7 @@ mod tests {
                 description: Vec::new(),
             },
             gop_profile: GopProfile::ShortFixed { len: 12 },
+            timecode_start: None,
         };
         assert_eq!(
             meta.scrub_cache_frame_budget(),

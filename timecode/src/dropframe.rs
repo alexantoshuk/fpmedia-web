@@ -93,10 +93,7 @@ mod tests {
     fn non_drop_roundtrip() {
         for frames in [0, 1, 12, 24, 1439, 86400, 172800, 2_073_599] {
             let (h, m, s, f) = frames_to_components(frames, FrameRate::Fps24);
-            assert_eq!(
-                components_to_frames(h, m, s, f, FrameRate::Fps24),
-                frames
-            );
+            assert_eq!(components_to_frames(h, m, s, f, FrameRate::Fps24), frames);
         }
     }
 
@@ -123,7 +120,9 @@ mod tests {
 
     #[test]
     fn drop_frame_roundtrip_29_97() {
-        for frames in [0, 1, 2, 1798, 1799, 1800, 1801, 1802, 17_982, 17_983, 107_892] {
+        for frames in [
+            0, 1, 2, 1798, 1799, 1800, 1801, 1802, 17_982, 17_983, 107_892,
+        ] {
             let (h, m, s, f) = frames_to_components(frames, FrameRate::Fps29_97Df);
             let back = components_to_frames(h, m, s, f, FrameRate::Fps29_97Df);
             assert_eq!(

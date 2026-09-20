@@ -213,6 +213,7 @@ impl Mp4VideoTrack {
 
         match crate::demux::complete_mfra_backfill(source.as_ref(), plan, |_| {}).await {
             Ok(mp4) => {
+                let timecode_start = self.metadata.borrow().timecode_start;
                 let rebuilt = build_video_track(
                     &mp4,
                     Arc::clone(&self.sync_source),
@@ -220,6 +221,7 @@ impl Mp4VideoTrack {
                         verify_avc_sync: false,
                         defer_avc_sync: false,
                     },
+                    timecode_start,
                 )?;
                 let Some(fresh) = rebuilt else {
                     return Err(MediaError::Mp4("mfra backfill: no video track".into()));
@@ -612,6 +614,11 @@ pub fn open_mp4_media_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
     fetch_map.mark_full(bytes.len() as u64);
     let mp4 = Mp4::read_bytes(bytes.as_ref())?;
     let source: Arc<dyn MediaSource> = Arc::new(MemorySource::new(Arc::clone(&bytes)));
+    let timecode_start = crate::demux::timecode::find_moov_box(bytes.as_ref()).and_then(|moov| {
+        crate::demux::timecode::read_tmcd_start_sample_blocking(&mp4, moov, source.as_ref())
+            .ok()
+            .flatten()
+    });
     build_opened(
         mp4,
         source,
@@ -620,6 +627,7 @@ pub fn open_mp4_media_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
             verify_avc_sync: true,
             defer_avc_sync: false,
         },
+        timecode_start,
     )?
     .require_av()
 }
@@ -642,6 +650,8 @@ pub async fn open_mp4_source_with_progress(
     let parsed =
         crate::demux::parse_mp4_progressive_with_backfill(source.as_ref(), &mut progress).await?;
     // Verify separately (async) — `block_on` cannot drive BlobSource reads.
+    let timecode_start =
+        resolve_timecode_start(&parsed.mp4, parsed.moov_bytes.as_deref(), source.as_ref()).await;
     let mut opened = build_opened(
         parsed.mp4,
         source,
@@ -650,6 +660,7 @@ pub async fn open_mp4_source_with_progress(
             verify_avc_sync: false,
             defer_avc_sync: false,
         },
+        timecode_start,
     )?;
     if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
         v.arm_fragment_backfill(plan, Arc::clone(&v.sync_source));
@@ -686,6 +697,8 @@ pub async fn open_mp4_source_cached_with_progress(
         crate::demux::parse_mp4_progressive_with_backfill(source.as_ref(), &mut progress).await?;
     // Verify on the raw source first — CachedSource's 8 MiB prefetch on every
     // scattered keyframe would thrash WASM (~600 syncs on long 1080p → multi‑GB of Blob reads).
+    let timecode_start =
+        resolve_timecode_start(&parsed.mp4, parsed.moov_bytes.as_deref(), source.as_ref()).await;
     let mut opened = build_opened(
         parsed.mp4,
         Arc::clone(&source),
@@ -694,6 +707,7 @@ pub async fn open_mp4_source_cached_with_progress(
             verify_avc_sync: false,
             defer_avc_sync: false,
         },
+        timecode_start,
     )?;
     if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
         v.arm_fragment_backfill(plan, Arc::clone(&source));
@@ -730,6 +744,8 @@ pub async fn open_mp4_media_source_cached_with_progress(
     let fetch_map = Arc::new(FetchMap::new());
     let parsed =
         crate::demux::parse_mp4_progressive_with_backfill(source.as_ref(), &mut progress).await?;
+    let timecode_start =
+        resolve_timecode_start(&parsed.mp4, parsed.moov_bytes.as_deref(), source.as_ref()).await;
     let mut opened = build_opened(
         parsed.mp4,
         Arc::clone(&source),
@@ -738,6 +754,7 @@ pub async fn open_mp4_media_source_cached_with_progress(
             verify_avc_sync: false,
             defer_avc_sync: false,
         },
+        timecode_start,
     )?;
     if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
         v.arm_fragment_backfill(plan, Arc::clone(&source));
@@ -776,13 +793,27 @@ pub fn open_mp4_path(path: impl AsRef<std::path::Path>) -> Result<Mp4VideoTrack,
     open_mp4_bytes(bytes)
 }
 
+/// Resolve embedded `tmcd` start before `build_opened` consumes `Mp4`.
+async fn resolve_timecode_start(
+    mp4: &Mp4,
+    moov: Option<&[u8]>,
+    source: &dyn MediaSource,
+) -> Option<timecode::Timecode> {
+    let moov = moov?;
+    crate::demux::timecode::read_tmcd_start_sample(mp4, moov, source)
+        .await
+        .ok()
+        .flatten()
+}
+
 fn build_opened(
     mp4: Mp4,
     source: Arc<dyn MediaSource>,
     fetch_map: Arc<FetchMap>,
     options: OpenMp4Options,
+    timecode_start: Option<timecode::Timecode>,
 ) -> Result<OpenedMp4, MediaError> {
-    let video = build_video_track(&mp4, Arc::clone(&source), options)?;
+    let video = build_video_track(&mp4, Arc::clone(&source), options, timecode_start)?;
     let audio = build_audio_track(&mp4, source)?;
     Ok(OpenedMp4 {
         video,
@@ -795,6 +826,7 @@ fn build_video_track(
     mp4: &Mp4,
     source: Arc<dyn MediaSource>,
     options: OpenMp4Options,
+    timecode_start: Option<timecode::Timecode>,
 ) -> Result<Option<Mp4VideoTrack>, MediaError> {
     let Some(track) = mp4
         .tracks()
@@ -869,6 +901,7 @@ fn build_video_track(
             description,
         },
         gop_profile,
+        timecode_start,
     };
 
     Ok(Some(Mp4VideoTrack {

@@ -2,6 +2,7 @@
 
 mod boxes;
 mod mp4;
+mod timecode;
 
 pub use boxes::{
     FragmentBackfillPlan, TopLevelBox, complete_mfra_backfill, load_ftyp_moov,

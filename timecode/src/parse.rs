@@ -51,12 +51,15 @@ pub(crate) fn validate_components(
     }
     let max_frames = rate.nominal() as u8;
     if f >= max_frames {
-        return Err(TimecodeError::InvalidFrames(f, max_frames.saturating_sub(1)));
+        return Err(TimecodeError::InvalidFrames(
+            f,
+            max_frames.saturating_sub(1),
+        ));
     }
     // Dropped numbers at non-10th minutes (e.g. 00:01:00;00 and ;01 @ 29.97 DF).
     if rate.is_drop_frame() {
         let drop = rate.drop_count() as u8;
-        if m % 10 != 0 && f < drop {
+        if !m.is_multiple_of(10) && f < drop {
             return Err(TimecodeError::DroppedFrame(f));
         }
     }

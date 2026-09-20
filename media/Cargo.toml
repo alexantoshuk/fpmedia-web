@@ -16,6 +16,7 @@ webcodecs = [
 
 [dependencies]
 re_mp4 = { workspace = true }
+timecode = { path = "../timecode" }
 thiserror = { workspace = true }
 lru = { workspace = true }
 futures = { workspace = true }

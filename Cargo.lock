@@ -3272,6 +3272,7 @@ dependencies = [
  "lru",
  "re_mp4",
  "thiserror 2.0.20",
+ "timecode",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

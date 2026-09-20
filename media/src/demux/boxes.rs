@@ -135,6 +135,9 @@ pub struct ProgressiveParse {
     /// [`crate::CachedSource`] so the gray [`crate::FetchMap`] strip is not a
     /// permanent hole at the file head (demux ran on the raw source).
     pub cache_seed: Vec<(u64, Vec<u8>)>,
+    /// Raw top-level `moov` box (with header) for `tmcd` walk — `re_mp4` drops
+    /// unknown sample-description bodies.
+    pub moov_bytes: Option<Vec<u8>>,
 }
 
 /// Moofs fetched before UI ready (≈ first GOP). Rest via [`complete_mfra_backfill`].
@@ -1213,6 +1216,11 @@ pub async fn parse_mp4_progressive_with_backfill(
         .map(|b| (b.info.offset, b.bytes.clone()))
         .collect();
 
+    let moov_bytes = loaded
+        .iter()
+        .find(|b| b.info.is_moov())
+        .map(|b| b.bytes.clone());
+
     let mp4 = parse_loaded_boxes(file_size, loaded).map_err(|e| {
         MediaError::Mp4(format!(
             "{e} (progressive: file_size={file_size}, {ftyp_note}, moov@{moov_offset} size={moov_size}, moofs={moof_count}, loaded={loaded_bytes}B)"
@@ -1222,6 +1230,7 @@ pub async fn parse_mp4_progressive_with_backfill(
         mp4,
         backfill,
         cache_seed,
+        moov_bytes,
     })
 }
 
