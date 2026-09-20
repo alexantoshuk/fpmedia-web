@@ -1,20 +1,9 @@
 //! Resident file-byte coverage for the demo scrubber gray strip.
 //!
-//! Backed by [`super::CachedSource`] fills (~8 MiB each). We keep a **bounded
-//! union** of recent windows (not a single replace) so the bar does not
-//! teleport when the cache slides, and not an unbounded historical union
-//! (that painted the whole timeline after AVC verify).
-//!
+//! Mirrored from [`super::CachedSource`] LRU windows (not a historical union).
 //! File offset → timeline % (not sample-accurate). mediabunny: no equivalent meter.
 
 use std::sync::Mutex;
-
-/// Cap total resident UI bytes (~3× default cache windows).
-const MAX_UI_BYTES: u64 = 24 * 1024 * 1024;
-/// Soft cap on disjoint segments after merge.
-const MAX_UI_RANGES: usize = 8;
-/// Merge windows separated by at most this many bytes (mdat gaps / A‑V interleave).
-const MERGE_GAP: u64 = 256 * 1024;
 
 /// Half-open `[start, end)` intervals, merged, file-absolute.
 #[derive(Debug, Default)]
@@ -40,8 +29,22 @@ impl FetchMap {
         self.set_only(start, end);
     }
 
-    /// Note a new cache fill: merge into the union, then drop farthest segments
-    /// until under [`MAX_UI_BYTES`] / [`MAX_UI_RANGES`].
+    /// Replace coverage with the exact resident cache windows (LRU slots).
+    pub fn set_windows(&self, windows: &[(u64, u64)]) {
+        let Ok(mut ranges) = self.ranges.lock() else {
+            return;
+        };
+        ranges.clear();
+        for &(start, end) in windows {
+            if end <= start {
+                continue;
+            }
+            merge_touching(&mut ranges, start, end);
+        }
+    }
+
+    /// Note a new cache fill (tests / incremental). Prefer [`Self::set_windows`]
+    /// when the caller already knows the full resident set.
     pub fn note_window(&self, start: u64, end: u64) {
         if end <= start {
             return;
@@ -49,8 +52,7 @@ impl FetchMap {
         let Ok(mut ranges) = self.ranges.lock() else {
             return;
         };
-        merge_interval(&mut ranges, start, end, MERGE_GAP);
-        trim_to_budget(&mut ranges, start, end, MAX_UI_BYTES, MAX_UI_RANGES);
+        merge_touching(&mut ranges, start, end);
     }
 
     pub fn clear(&self) {
@@ -98,14 +100,15 @@ impl FetchMap {
     }
 }
 
-fn merge_interval(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64, gap: u64) {
+/// Merge only overlapping / abutting intervals (no soft gap).
+fn merge_touching(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64) {
     let mut i = 0;
-    while i < ranges.len() && ranges[i].1.saturating_add(gap) < start {
+    while i < ranges.len() && ranges[i].1 < start {
         i += 1;
     }
     let mut merged_start = start;
     let mut merged_end = end;
-    while i < ranges.len() && ranges[i].0 <= merged_end.saturating_add(gap) {
+    while i < ranges.len() && ranges[i].0 <= merged_end {
         merged_start = merged_start.min(ranges[i].0);
         merged_end = merged_end.max(ranges[i].1);
         ranges.remove(i);
@@ -113,90 +116,33 @@ fn merge_interval(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64, gap: u64) 
     ranges.insert(i, (merged_start, merged_end));
 }
 
-fn total_bytes(ranges: &[(u64, u64)]) -> u64 {
-    ranges.iter().map(|(s, e)| e.saturating_sub(*s)).sum()
-}
-
-fn trim_to_budget(
-    ranges: &mut Vec<(u64, u64)>,
-    new_start: u64,
-    new_end: u64,
-    max_bytes: u64,
-    max_ranges: usize,
-) {
-    let anchor = new_start / 2 + new_end / 2;
-    while ranges.len() > max_ranges || total_bytes(ranges) > max_bytes {
-        if ranges.len() <= 1 {
-            break;
-        }
-        let mut farthest_i = 0;
-        let mut farthest_d = 0u64;
-        for (i, &(s, e)) in ranges.iter().enumerate() {
-            let mid = s / 2 + e / 2;
-            let d = mid.abs_diff(anchor);
-            if d >= farthest_d {
-                farthest_d = d;
-                farthest_i = i;
-            }
-        }
-        // Never drop the segment that contains the new window center if unique.
-        if ranges.len() > 1
-            && ranges[farthest_i].0 <= anchor
-            && anchor < ranges[farthest_i].1
-            && ranges
-                .iter()
-                .filter(|&&(s, e)| s <= anchor && anchor < e)
-                .count()
-                == 1
-        {
-            // Pick next-farthest instead.
-            let mut second = None;
-            let mut second_d = 0u64;
-            for (i, &(s, e)) in ranges.iter().enumerate() {
-                if i == farthest_i {
-                    continue;
-                }
-                let mid = s / 2 + e / 2;
-                let d = mid.abs_diff(anchor);
-                if second.is_none() || d >= second_d {
-                    second_d = d;
-                    second = Some(i);
-                }
-            }
-            if let Some(i) = second {
-                ranges.remove(i);
-                continue;
-            }
-        }
-        ranges.remove(farthest_i);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn note_window_merges_nearby() {
+    fn note_window_merges_overlap() {
         let m = FetchMap::new();
         m.note_window(0, 1_000_000);
-        m.note_window(1_100_000, 2_100_000); // within MERGE_GAP of end? 100k < 256k
-        assert_eq!(m.snapshot().len(), 1);
-        assert_eq!(m.snapshot()[0], (0, 2_100_000));
+        m.note_window(900_000, 2_000_000);
+        assert_eq!(m.snapshot(), vec![(0, 2_000_000)]);
     }
 
     #[test]
-    fn note_window_keeps_recent_when_far() {
+    fn note_window_keeps_disjoint() {
         let m = FetchMap::new();
         m.note_window(0, 8 * 1024 * 1024);
         m.note_window(30_000_000, 30_000_000 + 8 * 1024 * 1024);
-        let snap = m.snapshot();
-        assert!(!snap.is_empty());
-        // Newest region must remain.
-        assert!(
-            snap.iter()
-                .any(|&(s, e)| s <= 30_000_000 && 34_000_000 < e + 1)
-        );
+        assert_eq!(m.snapshot().len(), 2);
+    }
+
+    #[test]
+    fn set_windows_replaces() {
+        let m = FetchMap::new();
+        m.note_window(0, 8 * 1024 * 1024);
+        m.set_windows(&[(10_000_000, 10_000_000 + 4 * 1024 * 1024)]);
+        assert_eq!(m.snapshot().len(), 1);
+        assert_eq!(m.snapshot()[0].0, 10_000_000);
     }
 
     #[test]

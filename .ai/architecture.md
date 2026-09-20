@@ -77,7 +77,7 @@ webmedia/
 
 ## Progressive open (MediaSource)
 
-**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` / `MemorySource` + ~8 MiB `CachedSource`; top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`; `open_url` rewrites remote `http(s)` to same-origin **`/proxy?url=`** (demo Axum forwards `Range`; bypasses GitHub Release / S3 CORS), then HTTP Range when the upstream supports `206` (else full-download fallback). Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
+**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` / `MemorySource` + `CachedSource` LRU (4×~8 MiB; mediabunny `BlobSource` is one window — multi-slot is local for progressive URL play); scrubber gray strip mirrors resident slots via `FetchMap`. Top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`; `open_url` rewrites remote `http(s)` to same-origin **`/proxy?url=`** (demo Axum forwards `Range`; bypasses GitHub Release / S3 CORS), then HTTP Range when the upstream supports `206` (else full-download fallback). Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
 
 **Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; coalesce adjacent sample ranges; UrlSource parallel workers / sequential no-Range stream (mediabunny orchestrator).
 

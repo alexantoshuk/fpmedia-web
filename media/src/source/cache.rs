@@ -1,4 +1,10 @@
-//! Single-window read cache (~8 MiB), mediabunny `BlobSource` default size.
+//! Multi-window read cache (LRU of ~8 MiB slots).
+//!
+//! mediabunny `BlobSource` default is a **single** 8 MiB window. Progressive URL
+//! play over high-RTT hosts (GitHub Releases via `/proxy`) thrashes that window
+//! when A/V sample reads alternate — underrun holds while the scrubber gray bar
+//! still looked “warm”. Local invention: keep several resident windows so gray
+//! coverage matches hot bytes (`FetchMap` rebuilt from slots).
 
 use std::sync::{Arc, Mutex};
 
@@ -7,8 +13,11 @@ use crate::error::MediaError;
 use super::fetch_map::FetchMap;
 use super::{MediaSource, ReadFuture};
 
-/// Default cache capacity (mediabunny `BlobSource` default).
+/// Per-window fill size (mediabunny `BlobSource` default).
 pub const DEFAULT_CACHE_SIZE: usize = 8 * 1024 * 1024;
+
+/// How many [`DEFAULT_CACHE_SIZE`] windows to retain (≈32 MiB total).
+pub const DEFAULT_CACHE_SLOTS: usize = 4;
 
 /// ISOBMFF headers are ≤16 bytes — never prefetch on those, or an `mdat` header
 /// touch pulls multi‑MiB of media into WASM.
@@ -37,15 +46,50 @@ impl Window {
     }
 }
 
-/// Wraps an inner [`MediaSource`] with a single contiguous cache window.
+#[derive(Debug, Default)]
+struct CacheState {
+    /// LRU order: index 0 = oldest, last = most recently used.
+    windows: Vec<Window>,
+}
+
+impl CacheState {
+    fn hit(&mut self, offset: u64, len: usize) -> Option<Vec<u8>> {
+        let idx = self.windows.iter().position(|w| w.contains(offset, len))?;
+        let out = self.windows[idx].slice(offset, len);
+        let win = self.windows.remove(idx);
+        self.windows.push(win);
+        Some(out)
+    }
+
+    fn insert(&mut self, win: Window, max_slots: usize) {
+        if win.bytes.is_empty() {
+            return;
+        }
+        // Replace overlapping / contained older windows so we don't keep duplicates.
+        let new_start = win.offset;
+        let new_end = win.offset.saturating_add(win.bytes.len() as u64);
+        self.windows.retain(|w| {
+            let s = w.offset;
+            let e = w.offset.saturating_add(w.bytes.len() as u64);
+            e <= new_start || s >= new_end
+        });
+        self.windows.push(win);
+        while self.windows.len() > max_slots.max(1) {
+            self.windows.remove(0);
+        }
+    }
+}
+
+/// Wraps an inner [`MediaSource`] with an LRU of contiguous cache windows.
 ///
-/// Requests larger than `max_cache_size` bypass the cache. Smaller misses replace
-/// the window with a fill starting at `offset` (capped by EOF and `max_cache_size`).
+/// Requests larger than `window_size` bypass the cache. Smaller misses insert a
+/// new window (capped by EOF and `window_size`), evicting the oldest slot.
 pub struct CachedSource<S> {
     inner: S,
-    max_cache_size: usize,
-    window: Mutex<Window>,
-    /// Demo scrubber gray strip — **resident** window only (not historical reads).
+    window_size: usize,
+    max_slots: usize,
+    state: Mutex<CacheState>,
+    /// Demo scrubber gray strip — mirrors **actual** resident windows.
     fetch_map: Option<Arc<FetchMap>>,
 }
 
@@ -54,29 +98,39 @@ impl<S> CachedSource<S> {
         Self::with_capacity(inner, DEFAULT_CACHE_SIZE)
     }
 
-    pub fn with_capacity(inner: S, max_cache_size: usize) -> Self {
-        Self {
-            inner,
-            max_cache_size: max_cache_size.max(1),
-            window: Mutex::new(Window::default()),
-            fetch_map: None,
-        }
+    pub fn with_capacity(inner: S, window_size: usize) -> Self {
+        Self::with_slots(inner, window_size, DEFAULT_CACHE_SLOTS, None)
     }
 
     pub fn with_fetch_map(inner: S, fetch_map: Arc<FetchMap>) -> Self {
-        Self::with_capacity_and_fetch_map(inner, DEFAULT_CACHE_SIZE, fetch_map)
+        Self::with_slots(
+            inner,
+            DEFAULT_CACHE_SIZE,
+            DEFAULT_CACHE_SLOTS,
+            Some(fetch_map),
+        )
     }
 
     pub fn with_capacity_and_fetch_map(
         inner: S,
-        max_cache_size: usize,
+        window_size: usize,
         fetch_map: Arc<FetchMap>,
+    ) -> Self {
+        Self::with_slots(inner, window_size, DEFAULT_CACHE_SLOTS, Some(fetch_map))
+    }
+
+    fn with_slots(
+        inner: S,
+        window_size: usize,
+        max_slots: usize,
+        fetch_map: Option<Arc<FetchMap>>,
     ) -> Self {
         Self {
             inner,
-            max_cache_size: max_cache_size.max(1),
-            window: Mutex::new(Window::default()),
-            fetch_map: Some(fetch_map),
+            window_size: window_size.max(1),
+            max_slots: max_slots.max(1),
+            state: Mutex::new(CacheState::default()),
+            fetch_map,
         }
     }
 
@@ -89,18 +143,24 @@ impl<S> CachedSource<S> {
     }
 
     pub fn max_cache_size(&self) -> usize {
-        self.max_cache_size
+        self.window_size
     }
 
-    fn publish_resident(&self, offset: u64, len: usize) {
-        // Tiny header fills replace the real media window in the cache; keep the
-        // previous scrubber coverage so the gray bar does not collapse to 16 B.
-        if len <= NO_PREFETCH_MAX {
+    pub fn max_slots(&self) -> usize {
+        self.max_slots
+    }
+
+    fn sync_fetch_map(&self, state: &CacheState) {
+        let Some(map) = &self.fetch_map else {
             return;
-        }
-        if let Some(map) = &self.fetch_map {
-            map.note_window(offset, offset.saturating_add(len as u64));
-        }
+        };
+        let windows: Vec<(u64, u64)> = state
+            .windows
+            .iter()
+            .filter(|w| w.bytes.len() > NO_PREFETCH_MAX)
+            .map(|w| (w.offset, w.offset.saturating_add(w.bytes.len() as u64)))
+            .collect();
+        map.set_windows(&windows);
     }
 }
 
@@ -122,39 +182,45 @@ impl<S: MediaSource> MediaSource for CachedSource<S> {
                 return Ok(Vec::new());
             }
 
-            // Bypass for oversized requests — do not thrash / truncate the window.
-            if want > self.max_cache_size {
+            // Bypass for oversized requests — do not thrash slots.
+            if want > self.window_size {
                 return self.inner.read(offset, want).await;
             }
 
             {
-                let window = self
-                    .window
+                let mut state = self
+                    .state
                     .lock()
                     .map_err(|_| MediaError::Source("cache lock poisoned".into()))?;
-                if window.contains(offset, want) {
-                    return Ok(window.slice(offset, want));
+                if let Some(hit) = state.hit(offset, want) {
+                    return Ok(hit);
                 }
             }
 
             let fill_len = if want <= NO_PREFETCH_MAX {
                 want
             } else {
-                want.max(self.max_cache_size.min(available))
+                want.max(self.window_size.min(available))
             };
             let filled = self.inner.read(offset, fill_len).await?;
-
             let out = filled.get(..want).unwrap_or(&filled).to_vec();
 
-            let mut window = self
-                .window
-                .lock()
-                .map_err(|_| MediaError::Source("cache lock poisoned".into()))?;
-            *window = Window {
-                offset,
-                bytes: filled,
-            };
-            self.publish_resident(offset, window.bytes.len());
+            // Tiny ISOBMFF header reads must not occupy an LRU slot (would
+            // evict an 8 MiB media window after a cold miss).
+            if filled.len() > NO_PREFETCH_MAX {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| MediaError::Source("cache lock poisoned".into()))?;
+                state.insert(
+                    Window {
+                        offset,
+                        bytes: filled,
+                    },
+                    self.max_slots,
+                );
+                self.sync_fetch_map(&state);
+            }
 
             Ok(out)
         })
@@ -241,28 +307,68 @@ mod tests {
         assert_eq!(counting.reads.load(Ordering::SeqCst), 1);
         assert_eq!(counting.bytes_fetched.load(Ordering::SeqCst), 32);
 
-        // Window still empty — small read must fetch again.
         let _ = poll_ready(&cached, 0, 4).unwrap();
         assert_eq!(counting.reads.load(Ordering::SeqCst), 2);
     }
 
     #[test]
-    fn fetch_map_tracks_resident_window_not_headers() {
-        let data: Vec<u8> = (0u8..64).collect();
+    fn lru_keeps_disjoint_windows_hot() {
+        let data: Vec<u8> = (0u8..128).collect();
+        let counting = CountingSource {
+            inner: MemorySource::from_vec(data.clone()),
+            reads: Arc::new(AtomicUsize::new(0)),
+            bytes_fetched: Arc::new(AtomicUsize::new(0)),
+        };
+        let cached = CachedSource::with_slots(counting.clone(), 32, 2, None);
+
+        // want > NO_PREFETCH_MAX and ≤ window_size → full-slot fill + LRU insert.
+        let _ = poll_ready(&cached, 0, 20).unwrap(); // fills 0..32
+        let _ = poll_ready(&cached, 64, 20).unwrap(); // fills 64..96
+        assert_eq!(counting.reads.load(Ordering::SeqCst), 2);
+
+        // Both still resident.
+        let _ = poll_ready(&cached, 4, 4).unwrap();
+        let _ = poll_ready(&cached, 68, 4).unwrap();
+        assert_eq!(counting.reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn fetch_map_mirrors_resident_slots() {
+        let data: Vec<u8> = (0u8..128).collect();
         let map = Arc::new(FetchMap::new());
-        let cached = CachedSource::with_capacity_and_fetch_map(
-            MemorySource::from_vec(data),
-            32,
-            Arc::clone(&map),
-        );
+        let cached =
+            CachedSource::with_slots(MemorySource::from_vec(data), 32, 2, Some(Arc::clone(&map)));
 
-        let _ = poll_ready(&cached, 0, 8).unwrap(); // header-sized → no UI publish
-        assert!(map.file_fractions(64).is_empty());
+        let _ = poll_ready(&cached, 0, 8).unwrap(); // header-sized fill — skipped in map
+        assert!(map.file_fractions(128).is_empty());
 
-        let _ = poll_ready(&cached, 0, 20).unwrap(); // prefetch fill
-        let f = map.file_fractions(64);
-        assert_eq!(f.len(), 1);
-        assert!((f[0].0 - 0.0).abs() < 1e-5);
-        assert!((f[0].1 - 0.5).abs() < 1e-5); // 32/64
+        let _ = poll_ready(&cached, 0, 20).unwrap();
+        let _ = poll_ready(&cached, 64, 20).unwrap();
+        let f = map.file_fractions(128);
+        assert_eq!(f.len(), 2);
+    }
+
+    #[test]
+    fn third_window_evicts_oldest() {
+        let data: Vec<u8> = (0u8..192).collect();
+        let counting = CountingSource {
+            inner: MemorySource::from_vec(data),
+            reads: Arc::new(AtomicUsize::new(0)),
+            bytes_fetched: Arc::new(AtomicUsize::new(0)),
+        };
+        let cached = CachedSource::with_slots(counting.clone(), 32, 2, None);
+
+        let _ = poll_ready(&cached, 0, 20).unwrap();
+        let _ = poll_ready(&cached, 64, 20).unwrap();
+        let _ = poll_ready(&cached, 128, 20).unwrap(); // evicts 0..
+        assert_eq!(counting.reads.load(Ordering::SeqCst), 3);
+
+        // Oldest miss again (header-sized — no slot insert).
+        let _ = poll_ready(&cached, 4, 4).unwrap();
+        assert_eq!(counting.reads.load(Ordering::SeqCst), 4);
+        // Newer slots still hot.
+        let _ = poll_ready(&cached, 68, 4).unwrap();
+        let _ = poll_ready(&cached, 132, 4).unwrap();
+        assert_eq!(counting.reads.load(Ordering::SeqCst), 4);
     }
 }

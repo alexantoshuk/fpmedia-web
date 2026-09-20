@@ -5,6 +5,7 @@
 ## In progress
 
 - Re-save scrub baselines for testvideo GOP12 + GOP48 (`npm run e2e:baseline:save` with app on :3000).
+- Confirm URL play after multi-window `CachedSource` (`e2e/player.play.gop12-url-vs-local.spec.ts`).
 
 ---
 
