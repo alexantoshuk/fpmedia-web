@@ -8,10 +8,10 @@
 //! Playback rate multiplies driver elapsed time. Public API: forward `0.25…8`
 //! (review slider typically `0.25…1.75`).
 //!
-//! `|rate| >= `[`PLAYBACK_RATE_SHUTTLE_MIN`] → shuttle policy (lighter present queue).
-//! **Temp:** wall clock + audio off for every rate except exact `1.0` until non-1×
-//! rates are stable ([`is_wall_clock_rate`]). mediabunny has no rate API — base
-//! formula stays `origin + elapsed`; we add `* rate`.
+//! Rates at or above [`PLAYBACK_RATE_SHUTTLE_MIN`] use shuttle policy (lighter
+//! present queue) plus wall clock and audio off ([`is_wall_clock_rate`]). Review
+//! rates keep `AudioContext` clock + fixed-pitch stretch. mediabunny has no rate
+//! API — base formula stays `origin + elapsed`; we add `* rate`.
 //!
 //! Reverse rates / JKL keys are not supported (product deferred). Historical notes on
 //! WebCodecs reverse (GOP forward decode + present-back, `#350`) live in
@@ -43,12 +43,13 @@ pub fn is_shuttle_rate(rate: f64) -> bool {
     normalize_playback_rate(rate) >= PLAYBACK_RATE_SHUTTLE_MIN
 }
 
-/// Wall clock + audio off for every rate except exact `1.0`.
+/// Wall clock + audio off — shuttle rates only (`≥` [`PLAYBACK_RATE_SHUTTLE_MIN`]).
 ///
-/// Temp until non-1× (review + faster rates) is stable — avoids audio rearm / pitch
-/// churn. `mediabunny: no equivalent` (no rate API).
+/// Review rates use `AudioContext` + WSOLA fixed-pitch stretch
+/// (`time_stretch::TimeStretcher`). `mediabunny: no equivalent` (no rate API);
+/// stretcher: Vanilagy WSOLA gist (≈ Chromium `preservesPitch`).
 pub fn is_wall_clock_rate(rate: f64) -> bool {
-    (normalize_playback_rate(rate) - 1.0).abs() > 1e-9
+    is_shuttle_rate(rate)
 }
 
 /// Playback media clock origins. Pure Rust — drivers (wall / audio) are passed in.
@@ -172,8 +173,10 @@ mod tests {
         assert!(!is_shuttle_rate(1.75));
         assert!(!is_wall_clock_rate(1.0));
         assert!(!is_wall_clock_rate(1.02)); // snaps to 1.0
-        assert!(is_wall_clock_rate(0.5));
-        assert!(is_wall_clock_rate(1.5));
-        assert!(is_wall_clock_rate(2.0));
+        assert!(!is_wall_clock_rate(0.5)); // review → audio + stretch
+        assert!(!is_wall_clock_rate(1.5));
+        assert!(!is_wall_clock_rate(1.75));
+        assert!(is_wall_clock_rate(2.0)); // shuttle → mute
+        assert!(is_wall_clock_rate(8.0));
     }
 }

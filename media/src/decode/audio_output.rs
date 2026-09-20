@@ -3,8 +3,12 @@
 //! `AudioDecoder` → `AudioData` → `f32-planar` → `AudioBuffer` →
 //! `AudioBufferSourceNode` at `ctx_origin + (timestamp - media_at_start) / rate`.
 //! Media time = `media_at_start + (context.currentTime - ctx_origin) * rate` while playing.
+//!
 //! Rate has **no** mediabunny equivalent — invented on top of `getPlaybackTime` /
-//! `runAudioIterator` (`examples/media-player/media-player.ts`).
+//! `runAudioIterator` (`examples/media-player/media-player.ts`). Review rates
+//! (`<` shuttle) keep pitch via WSOLA (`crate::time_stretch::TimeStretcher`,
+//! Vanilagy gist ≈ Chromium `preservesPitch`); node `playbackRate` stays `1.0`.
+//! Shuttle → mute + wall clock ([`crate::is_wall_clock_rate`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -25,6 +29,7 @@ use crate::decode::owned_audio_data::OwnedAudioData;
 use crate::demux::Mp4AudioTrack;
 use crate::error::MediaError;
 use crate::normalize_playback_rate;
+use crate::time_stretch::TimeStretcher;
 use crate::types::AudioMetadata;
 
 /// How far ahead of media time to keep scheduling before yielding (seconds).
@@ -54,6 +59,10 @@ pub struct AudioOutput {
     pending: Rc<RefCell<VecDeque<PendingSample>>>,
     error: Rc<RefCell<Option<String>>>,
     decoder: RefCell<Option<AudioDecoder>>,
+    /// Pitch-preserving stretch for review rates ≠ 1×.
+    stretch: RefCell<Option<TimeStretcher>>,
+    /// Next context time for a stretched chunk (contiguous wall schedule).
+    stretch_next_ctx: Cell<f64>,
     _on_output: Closure<dyn FnMut(JsValue)>,
     _on_error: Closure<dyn FnMut(JsValue)>,
 }
@@ -125,6 +134,8 @@ impl AudioOutput {
             pending,
             error,
             decoder: RefCell::new(Some(decoder)),
+            stretch: RefCell::new(None),
+            stretch_next_ctx: Cell::new(0.0),
             _on_output: on_output,
             _on_error: on_error,
         })
@@ -164,12 +175,12 @@ impl AudioOutput {
 
     /// Set review playback rate. While playing, snaps origins and restarts the pump.
     ///
-    /// Callers must not invoke this for shuttle/reverse rates while wanting audio — use
+    /// Callers must not invoke this for shuttle rates while wanting audio — use
     /// [`Self::store_playback_rate`] + stop instead ([`crate::is_wall_clock_rate`]).
     pub fn set_playback_rate(self: &Rc<Self>, rate: f64) {
         let rate = normalize_playback_rate(rate);
         if crate::is_wall_clock_rate(rate) {
-            // Shuttle / reverse: keep the cell updated but never schedule pitched audio.
+            // Shuttle: keep the cell updated but never schedule audio.
             if self.playing.get() {
                 let _ = self.stop();
             }
@@ -190,9 +201,11 @@ impl AudioOutput {
         if let Ok(mut q) = self.pending.try_borrow_mut() {
             q.clear();
         }
+        self.clear_stretch();
         self.rate.set(rate);
         self.media_at_start.set(t.max(0.0));
         self.ctx_origin.set(Some(self.context.current_time()));
+        self.reset_stretch_for_rate();
 
         let this = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
@@ -220,6 +233,30 @@ impl AudioOutput {
                 web_sys::console::warn_1(&format!("webmedia: audio rate-rearm pump: {e}").into());
             }
         });
+    }
+
+    fn clear_stretch(&self) {
+        *self.stretch.borrow_mut() = None;
+        self.stretch_next_ctx.set(0.0);
+    }
+
+    /// Arm WSOLA when rate ≠ 1; clear when exact 1×.
+    fn reset_stretch_for_rate(&self) {
+        let rate = self.rate.get();
+        if (rate - 1.0).abs() < 1e-9 {
+            self.clear_stretch();
+            return;
+        }
+        let channels = self.track.metadata().number_of_channels as usize;
+        let sample_rate = self.context.sample_rate() as f64;
+        let factor = 1.0 / rate.max(1e-6);
+        *self.stretch.borrow_mut() = Some(TimeStretcher::new(channels, sample_rate, factor));
+        self.stretch_next_ctx
+            .set(self.ctx_origin.get().unwrap_or(0.0));
+    }
+
+    fn wants_stretch(&self) -> bool {
+        (self.rate.get() - 1.0).abs() > 1e-9
     }
 
     fn apply_gain(&self) {
@@ -274,6 +311,7 @@ impl AudioOutput {
         self.ctx_origin.set(None);
         self.media_at_start.set(t);
         self.stop_queued_nodes();
+        self.clear_stretch();
         if let Ok(mut q) = self.pending.try_borrow_mut() {
             q.clear();
         }
@@ -307,6 +345,7 @@ impl AudioOutput {
         self.ctx_origin.set(Some(self.context.current_time()));
         self.playing.set(true);
         *self.error.borrow_mut() = None;
+        self.reset_stretch_for_rate();
 
         let taken = self.decoder.borrow_mut().take();
         if let Some(dec) = taken {
@@ -321,9 +360,10 @@ impl AudioOutput {
         }
         web_sys::console::log_1(
             &format!(
-                "webmedia: audio begin t={:.3}s rate={} ch={} samples={}",
+                "webmedia: audio begin t={:.3}s rate={} stretch={} ch={} samples={}",
                 media_time_secs,
-                self.track.metadata().sample_rate,
+                self.rate.get(),
+                self.wants_stretch(),
                 self.track.metadata().number_of_channels,
                 self.track.sample_count()
             )
@@ -373,10 +413,19 @@ impl AudioOutput {
                 if self.epoch.get() != epoch {
                     return Ok(());
                 }
-                self.schedule_sample(pending.timestamp_secs, &pending.data)?;
                 let ts = pending.timestamp_secs;
-                // Ahead throttle.
-                while ts - self.media_time() >= AHEAD_SECS {
+                self.schedule_pending(ts, &pending.data)?;
+                // Ahead throttle: media timeline at 1×; wall schedule when stretching.
+                loop {
+                    let ahead = if self.wants_stretch() {
+                        let now = self.context.current_time();
+                        (self.stretch_next_ctx.get() - now).max(0.0)
+                    } else {
+                        (ts - self.media_time()).max(0.0)
+                    };
+                    if ahead < AHEAD_SECS {
+                        break;
+                    }
                     if self.epoch.get() != epoch {
                         return Ok(());
                     }
@@ -411,8 +460,114 @@ impl AudioOutput {
             if self.epoch.get() != epoch {
                 return Ok(());
             }
-            self.schedule_sample(pending.timestamp_secs, &pending.data)?;
+            self.schedule_pending(pending.timestamp_secs, &pending.data)?;
         }
+        if self.epoch.get() != epoch {
+            return Ok(());
+        }
+        self.finalize_stretch()?;
+        Ok(())
+    }
+
+    fn schedule_pending(
+        &self,
+        timestamp_secs: f64,
+        data: &OwnedAudioData,
+    ) -> Result<(), MediaError> {
+        if self.wants_stretch() {
+            self.feed_stretch_and_schedule(data)
+        } else {
+            self.schedule_sample(timestamp_secs, data)
+        }
+    }
+
+    fn feed_stretch_and_schedule(&self, data: &OwnedAudioData) -> Result<(), MediaError> {
+        let planar = audio_data_to_planar(data)?;
+        let out = {
+            let mut stretch = self.stretch.borrow_mut();
+            let Some(stretcher) = stretch.as_mut() else {
+                return Ok(());
+            };
+            stretcher.append(&planar)
+        };
+        if let Some(channels) = out {
+            self.schedule_planar_buffer(&channels)?;
+        }
+        Ok(())
+    }
+
+    fn finalize_stretch(&self) -> Result<(), MediaError> {
+        let out = {
+            let mut stretch = self.stretch.borrow_mut();
+            match stretch.as_mut() {
+                Some(stretcher) => stretcher.finalize(),
+                None => return Ok(()),
+            }
+        };
+        // Drop stretcher after finalize so a late feed cannot append.
+        *self.stretch.borrow_mut() = None;
+        if let Some(channels) = out {
+            self.schedule_planar_buffer(&channels)?;
+        }
+        Ok(())
+    }
+
+    fn schedule_planar_buffer(&self, channels: &[Vec<f32>]) -> Result<(), MediaError> {
+        if channels.is_empty() || channels[0].is_empty() {
+            return Ok(());
+        }
+        let frames = channels[0].len();
+        let rate = self.context.sample_rate();
+        let duration = frames as f64 / rate as f64;
+        let buffer = self
+            .context
+            .create_buffer(channels.len() as u32, frames as u32, rate)?;
+        for (ch, data) in channels.iter().enumerate() {
+            let f32_arr = Float32Array::new_with_length(data.len() as u32);
+            f32_arr.copy_from(data);
+            buffer.copy_to_channel_with_f32_array(f32_arr.as_ref(), ch as i32)?;
+        }
+        let start = self.stretch_next_ctx.get();
+        let now = self.context.current_time();
+        self.schedule_buffer_at(buffer, start, 1.0)?;
+        if start >= now {
+            self.stretch_next_ctx.set(start + duration);
+        } else {
+            let offset = now - start;
+            if offset >= duration {
+                self.stretch_next_ctx.set(now);
+            } else {
+                self.stretch_next_ctx.set(now + duration - offset);
+            }
+        }
+        Ok(())
+    }
+
+    fn schedule_buffer_at(
+        &self,
+        buffer: AudioBuffer,
+        start: f64,
+        node_rate: f64,
+    ) -> Result<(), MediaError> {
+        let duration = buffer.duration();
+        let node = self.context.create_buffer_source()?;
+        node.set_buffer(Some(&buffer));
+        node.connect_with_audio_node(&self.gain)?;
+        let sample_rate = self.context.sample_rate() as f64;
+        // Round to sample boundaries — mediabunny media-player.
+        let start = (sample_rate * start).round() / sample_rate;
+        node.playback_rate().set_value(node_rate as f32);
+        let now = self.context.current_time();
+        if start >= now {
+            node.start_with_when(start)?;
+        } else {
+            let offset = (now - start) * node_rate;
+            if offset >= duration {
+                return Ok(());
+            }
+            node.start_with_when_and_grain_offset(now, offset)?;
+        }
+        self.queued.borrow_mut().push(node);
         Ok(())
     }
 
@@ -451,33 +606,9 @@ impl AudioOutput {
             return Ok(());
         };
         let buffer = audio_data_to_buffer(&self.context, data)?;
-        let duration = buffer.duration();
-        let node = self.context.create_buffer_source()?;
-        node.set_buffer(Some(&buffer));
-        node.connect_with_audio_node(&self.gain)?;
-
-        let sample_rate = self.context.sample_rate() as f64;
-        let rate = self.rate.get().max(1e-6);
-        let mut start = ctx_origin + (timestamp_secs - self.media_at_start.get()) / rate;
-        // Round to sample boundaries — mediabunny media-player.
-        start = (sample_rate * start).round() / sample_rate;
-
-        let now = self.context.current_time();
-        node.playback_rate().set_value(rate as f32);
-        if start >= now {
-            node.start_with_when(start)?;
-        } else {
-            // Context lateness → buffer seconds: multiply by rate.
-            let offset = (now - start) * rate;
-            // Past the whole buffer — skip (would be silent / throw).
-            if offset >= duration {
-                return Ok(());
-            }
-            node.start_with_when_and_grain_offset(now, offset)?;
-        }
-
-        self.queued.borrow_mut().push(node);
-        Ok(())
+        // Exact 1× — native buffer duration; pitch unchanged.
+        let start = ctx_origin + (timestamp_secs - self.media_at_start.get());
+        self.schedule_buffer_at(buffer, start, 1.0)
     }
 }
 
@@ -514,16 +645,9 @@ async fn configure_decoder(
     Ok(())
 }
 
-fn audio_data_to_buffer(
-    context: &AudioContext,
-    data: &OwnedAudioData,
-) -> Result<AudioBuffer, MediaError> {
+fn audio_data_to_planar(data: &OwnedAudioData) -> Result<Vec<Vec<f32>>, MediaError> {
     let channels = data.number_of_channels();
-    let frames = data.number_of_frames();
-    // Web Audio requires buffer rate == context rate.
-    let rate = context.sample_rate();
-    let buffer = context.create_buffer(channels, frames, rate)?;
-
+    let mut planar = Vec::with_capacity(channels as usize);
     for ch in 0..channels {
         let opts = AudioDataCopyToOptions::new(ch);
         opts.set_format(AudioSampleFormat::F32Planar);
@@ -536,8 +660,23 @@ fn audio_data_to_buffer(
             .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
+        planar.push(floats);
+    }
+    Ok(planar)
+}
+
+fn audio_data_to_buffer(
+    context: &AudioContext,
+    data: &OwnedAudioData,
+) -> Result<AudioBuffer, MediaError> {
+    let planar = audio_data_to_planar(data)?;
+    let channels = planar.len() as u32;
+    let frames = planar.first().map(|c| c.len()).unwrap_or(0) as u32;
+    let rate = context.sample_rate();
+    let buffer = context.create_buffer(channels, frames, rate)?;
+    for (ch, floats) in planar.iter().enumerate() {
         let f32_arr = Float32Array::new_with_length(floats.len() as u32);
-        f32_arr.copy_from(&floats);
+        f32_arr.copy_from(floats);
         buffer.copy_to_channel_with_f32_array(f32_arr.as_ref(), ch as i32)?;
     }
     Ok(buffer)

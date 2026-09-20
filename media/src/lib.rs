@@ -15,6 +15,7 @@ mod error;
 mod frame_index;
 mod player;
 mod source;
+mod time_stretch;
 mod types;
 mod util;
 
