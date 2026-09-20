@@ -22,8 +22,9 @@
 - HEVC bitstream key verify (AVC IDR + Recovery Point SEI done).
 - Progressive-open follow-ups: coalesce adjacent sample ranges; optional background / lazy AVC sync-verify for huge files if open latency matters.
 - Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
-- Temporary deps: workspace pins `alexantoshuk/re_mp4` @ `cd63eca` until [rerun-io/re_mp4#35](https://github.com/rerun-io/re_mp4/pull/35) merges.
+- Temporary deps: workspace pins `rerun-io/re_mp4` @ `aa5be9b` ([#35](https://github.com/rerun-io/re_mp4/pull/35) merged; not on crates.io yet).
 - Upstream/re_mp4: nested `skip_box(0)` livelock on QT size-0 padding (we work around in `SparseBoxReader`).
+- Drop `re_mp4` git pin when the next crates.io release includes #35.
 
 ### Later
 
@@ -31,4 +32,3 @@
 - Dual-source compare layout hooks.
 - Publish `webmedia` / `video` crates for reuse by host apps.
 - Production player chrome (demo controls in `app` stay for now).
-- Drop `re_mp4` git pin when upstream #35 is released on crates.io.

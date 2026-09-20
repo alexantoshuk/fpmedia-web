@@ -1904,10 +1904,9 @@ dependencies = [
 [[package]]
 name = "re_mp4"
 version = "0.5.1"
-source = "git+https://github.com/alexantoshuk/re_mp4?rev=cd63ecac0269668e09435cc5b9d5f3b06692c09e#cd63ecac0269668e09435cc5b9d5f3b06692c09e"
+source = "git+https://github.com/rerun-io/re_mp4?rev=aa5be9b10686f9cd1834cc8c8c75f6adbb7cf468#aa5be9b10686f9cd1834cc8c8c75f6adbb7cf468"
 dependencies = [
  "byteorder",
- "bytes",
  "num-rational",
  "serde",
  "serde_json",
