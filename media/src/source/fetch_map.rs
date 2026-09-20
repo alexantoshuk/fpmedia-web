@@ -29,7 +29,7 @@ impl FetchMap {
         self.set_only(start, end);
     }
 
-    /// Replace coverage with the exact resident cache windows (LRU slots).
+    /// Replace coverage with the exact resident cache windows.
     pub fn set_windows(&self, windows: &[(u64, u64)]) {
         let Ok(mut ranges) = self.ranges.lock() else {
             return;

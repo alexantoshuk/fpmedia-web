@@ -47,7 +47,7 @@ pub use player::{DecodeWindow, Player, PlayerState};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use source::{BlobSource, UrlSource, is_no_http_range};
 pub use source::{
-    CachedSource, DEFAULT_CACHE_SIZE, DEFAULT_CACHE_SLOTS, FetchMap, MediaSource, MemorySource,
+    CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE, FetchMap, MediaSource, MemorySource,
     ReadFuture,
 };
 pub use types::{

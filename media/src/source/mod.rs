@@ -12,7 +12,7 @@ mod blob;
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod url;
 
-pub use cache::{CachedSource, DEFAULT_CACHE_SIZE, DEFAULT_CACHE_SLOTS};
+pub use cache::{CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE};
 pub use fetch_map::FetchMap;
 pub use memory::MemorySource;
 
