@@ -92,6 +92,13 @@ export class DemoPlayer {
     await this.waitReady(timeout);
   }
 
+  /** Open via demo URL bar (rewrites remote → same-origin `/proxy`). */
+  async openUrl(url: string, timeout = 120_000) {
+    await this.page.getByTestId("url-input").fill(url);
+    await this.page.getByTestId("btn-open-url").click();
+    await this.waitReady(timeout);
+  }
+
   async waitReady(timeout = 20_000) {
     await expect
       .poll(async () => parseStatus(await this.status.innerText()).ready, {

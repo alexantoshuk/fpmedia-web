@@ -1,11 +1,11 @@
 /**
- * Scrub mechanic baselines for BBB + Wing It (save before decode-sink refactor,
- * compare after).
+ * Scrub mechanic baselines for testvideo clips (save / compare).
  *
  *   WEBMEDIA_BASELINE_MODE=save    npm run e2e:baseline:save
  *   WEBMEDIA_BASELINE_MODE=compare npm run e2e:baseline:compare
  *
- * Requires app on :3000 and the two Downloads clips (or WEBMEDIA_PERF_CLIP_*).
+ * Requires app on :3000 + network (GitHub Release via demo `/proxy`).
+ * Clips: see `e2e/helpers/testvideo.ts`.
  */
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
@@ -25,8 +25,6 @@ test.describe.configure({ timeout: 600_000 });
 
 for (const clip of PERF_CLIPS) {
   test(`scrub baseline [${clip.id}] ${clip.label}`, async ({ page }, testInfo) => {
-    test.skip(!fs.existsSync(clip.path), `missing clip: ${clip.path}`);
-
     const mode = baselineMode();
     const report = await runClipBaseline(page, clip);
 
@@ -58,7 +56,6 @@ for (const clip of PERF_CLIPS) {
     );
 
     if (mode === "save") {
-      // Always persist pre-refactor reality (including slow/wedged settles).
       const out = await saveBaseline(report);
       console.log(`saved baseline → ${out}`);
       expect(fs.existsSync(out)).toBe(true);
@@ -72,8 +69,7 @@ for (const clip of PERF_CLIPS) {
       return;
     }
 
-    // Require exact only where the saved baseline painted exact (Wing It
-    // `slow-large` is a known pre-refactor miss).
+    // Require exact only where the saved baseline painted exact.
     const baselineFile = baselinePath(clip.id);
     expect(
       fs.existsSync(baselineFile),

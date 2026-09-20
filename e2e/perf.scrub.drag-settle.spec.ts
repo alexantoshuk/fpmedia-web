@@ -1,34 +1,23 @@
 /**
  * After a multi-second densify drag, settle must get exact without scrub HW
  * staying busy (densify storm yielding).
+ * Clip: AVC 1080p 24fps GOP48 bf0 (testvideo).
  * Usage: npx playwright test e2e/perf.scrub.drag-settle.spec.ts
  */
 import { expect, test } from "@playwright/test";
-import path from "node:path";
 import { DemoPlayer } from "./helpers/player";
+import { TestvideoClip, testvideoUrl } from "./helpers/testvideo";
 
-const CLIP =
-  process.env.WEBMEDIA_PERF_CLIP ??
-  path.resolve(
-    process.env.USERPROFILE ?? "",
-    "Downloads",
-    "WING IT - Blender Open Movie.mp4",
-  );
+const CLIP_URL = testvideoUrl(TestvideoClip.gop48);
 
 test.describe.configure({ timeout: 180_000 });
 
 test("long densify drag then settle yields scrub HW for exact", async ({
   page,
 }) => {
-  test.skip(
-    !(await import("node:fs")).existsSync(CLIP),
-    `missing clip: ${CLIP}`,
-  );
-
   const player = new DemoPlayer(page);
   await player.goto();
-  await player.fileInput.setInputFiles(CLIP);
-  await player.waitReady(120_000);
+  await player.openUrl(CLIP_URL, 180_000);
 
   const box = await player.scrubber.boundingBox();
   if (!box) throw new Error("no scrubber");

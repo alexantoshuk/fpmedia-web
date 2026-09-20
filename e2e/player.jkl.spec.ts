@@ -1,31 +1,17 @@
 /**
- * Demo JKL forward shuttle on Wing It ShotGrid (local clip).
+ * Demo JKL forward shuttle (AVC 1080p 24fps GOP12 bf0).
  *
  * Ladder: 1 / 2 / 4 / 8. J slower, L faster, K → 1× + play/pause
  * (unlike Space, which toggles without resetting rate).
- * Expects app on :3000. Override with WEBMEDIA_PERF_CLIP_WINGIT.
+ * Expects app on :3000 + network (`/proxy`).
  */
 import { expect, test } from "@playwright/test";
-import fs from "node:fs";
-import path from "node:path";
 import { DemoPlayer } from "./helpers/player";
+import { TestvideoClip, testvideoUrl } from "./helpers/testvideo";
 
-const downloads = process.env.USERPROFILE
-  ? path.join(process.env.USERPROFILE, "Downloads")
-  : "";
+const CLIP_URL = testvideoUrl(TestvideoClip.gop12);
 
-export const WINGIT_CLIP =
-  process.env.WEBMEDIA_PERF_CLIP_WINGIT ??
-  path.join(downloads, "WING_IT_-_Blender_Open_Movie_SHOTGRID.mp4");
-
-test.describe("Wing It JKL (Chrome)", () => {
-  test.beforeEach(() => {
-    test.skip(
-      !fs.existsSync(WINGIT_CLIP),
-      `missing clip at ${WINGIT_CLIP} (set WEBMEDIA_PERF_CLIP_WINGIT)`,
-    );
-  });
-
+test.describe("JKL shuttle (Chrome)", () => {
   test("L walks 1→2→4→8 and playhead advances", async ({ page }) => {
     test.setTimeout(120_000);
 
@@ -37,7 +23,7 @@ test.describe("Wing It JKL (Chrome)", () => {
 
     const player = new DemoPlayer(page);
     await player.goto();
-    await player.openFixture(WINGIT_CLIP, 90_000);
+    await player.openUrl(CLIP_URL, 120_000);
 
     const opened = await player.readStatus();
     const last = opened.lastFrame ?? 0;
@@ -75,7 +61,7 @@ test.describe("Wing It JKL (Chrome)", () => {
 
     const player = new DemoPlayer(page);
     await player.goto();
-    await player.openFixture(WINGIT_CLIP, 90_000);
+    await player.openUrl(CLIP_URL, 120_000);
 
     const last = (await player.readStatus()).lastFrame ?? 0;
     const mid = Math.floor(last * 0.4);
@@ -106,7 +92,7 @@ test.describe("Wing It JKL (Chrome)", () => {
 
     const player = new DemoPlayer(page);
     await player.goto();
-    await player.openFixture(WINGIT_CLIP, 90_000);
+    await player.openUrl(CLIP_URL, 120_000);
 
     const last = (await player.readStatus()).lastFrame ?? 0;
     const mid = Math.floor(last * 0.3);

@@ -1,16 +1,20 @@
 # Scrub perf baselines
 
-JSON baselines for BBB + Wing It scrub mechanics. Capture **before** a decode
-refactor, re-run with `compare` after.
+JSON baselines for **testvideo** Release clips (AVC 1080p sync plates). Capture
+with `save`, re-run with `compare` after decode/scrub changes.
 
-## Clips (local, not in repo)
+## Clips (canonical)
 
-| Id | Default path |
-| -- | ------------ |
-| `bbb` | `%USERPROFILE%/Downloads/big_buck_bunny_1080p_h264.mov` |
-| `wing-it` | `%USERPROFILE%/Downloads/WING IT - Blender Open Movie.mp4` |
+| Id | Meta | Asset |
+| -- | ---- | ----- |
+| `avc_1080p_24_gop12_bf0` | AVC 1080p 24 fps GOP12 bf0 ~60 s AAC | [testvideo v0.1.0](https://github.com/alexantoshuk/testvideo/releases/tag/v0.1.0) |
+| `avc_1080p_24_gop48_bf0` | AVC 1080p 24 fps GOP48 bf0 ~60 s AAC | same Release |
 
-Override with `WEBMEDIA_PERF_CLIP_BBB` / `WEBMEDIA_PERF_CLIP_WING`.
+Opened via demo `open_url` → same-origin `/proxy` (GitHub Releases lack CORS).
+Override base URL with `TESTVIDEO_BASE`. Catalog: `e2e/helpers/testvideo.ts`.
+
+**Do not** point baselines at Downloads / ad-hoc local movies. In-repo tiny
+fixtures (`public/`, `media/tests/fixtures/`) are for smoke + Rust unit only.
 
 ## Scenarios (fixed)
 
@@ -20,14 +24,15 @@ Override with `WEBMEDIA_PERF_CLIP_BBB` / `WEBMEDIA_PERF_CLIP_WING`.
 
 Each scenario records drag time, settle-to-exact (`eng == playhead`) time, and sparse UI samples.
 
-**Was:** Wing It `slow-large` timed out with `eng` stuck on key (`backpressure timed out (q=41, held=0)` from settle `goto_frame(key)` + warm-continue). Fixed: settle uses one key→N cascade. Re-save baselines after confirming exact.
+After changing clip ids or scenario defs, run **save** again (old JSON under
+other names is obsolete).
 
 ## Commands
 
 App must be up on `:3000` (`cargo leptos watch`).
 
 ```sh
-# Save under e2e/baselines/pre-decode-sink/{bbb,wing-it}.json
+# Save under e2e/baselines/pre-decode-sink/{clipId}.json
 npm run e2e:baseline:save
 
 # Re-run identical scenarios; fail on exact miss or settle/drag regression

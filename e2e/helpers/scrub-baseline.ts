@@ -1,9 +1,12 @@
 /**
- * Scrub perf baseline capture + compare (pre/post decode-sink refactor).
+ * Scrub perf baseline capture + compare.
  *
  * Modes (WEBMEDIA_BASELINE_MODE):
  *   save    — write JSON under e2e/baselines/<tag>/
  *   compare — re-run identical scenarios and fail on regressions
+ *
+ * Clips: testvideo Release assets (see `helpers/testvideo.ts`). Re-save after
+ * changing clip ids or scenario defs.
  *
  * Env:
  *   WEBMEDIA_BASELINE_TAG   default pre-decode-sink
@@ -16,6 +19,11 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { DemoPlayer, type PlayerStatus } from "./player";
+import {
+  TestvideoClip,
+  TestvideoMeta,
+  testvideoUrl,
+} from "./testvideo";
 
 export const BASELINE_TAG =
   process.env.WEBMEDIA_BASELINE_TAG ?? "pre-decode-sink";
@@ -27,32 +35,26 @@ export function baselineMode(): BaselineMode {
   return raw === "compare" ? "compare" : "save";
 }
 
-export type ClipId = "bbb" | "wing-it";
+export type ClipId =
+  | typeof TestvideoClip.gop12
+  | typeof TestvideoClip.gop48;
 
 export type ClipDef = {
   id: ClipId;
   label: string;
-  path: string;
+  url: string;
 };
-
-const downloads = process.env.USERPROFILE
-  ? path.join(process.env.USERPROFILE, "Downloads")
-  : "";
 
 export const PERF_CLIPS: ClipDef[] = [
   {
-    id: "bbb",
-    label: "Big Buck Bunny 1080p H.264",
-    path:
-      process.env.WEBMEDIA_PERF_CLIP_BBB ??
-      path.join(downloads, "big_buck_bunny_1080p_h264.mov"),
+    id: TestvideoClip.gop12,
+    label: TestvideoMeta[TestvideoClip.gop12],
+    url: testvideoUrl(TestvideoClip.gop12),
   },
   {
-    id: "wing-it",
-    label: "WING IT - Blender Open Movie",
-    path:
-      process.env.WEBMEDIA_PERF_CLIP_WING ??
-      path.join(downloads, "WING IT - Blender Open Movie.mp4"),
+    id: TestvideoClip.gop48,
+    label: TestvideoMeta[TestvideoClip.gop48],
+    url: testvideoUrl(TestvideoClip.gop48),
   },
 ];
 
@@ -131,7 +133,8 @@ export type ClipBaseline = {
   tag: string;
   clipId: ClipId;
   clipLabel: string;
-  clipBasename: string;
+  /** testvideo asset filename, e.g. `avc_1080p_24_gop48_bf0.mp4`. */
+  clipAsset: string;
   createdAt: string;
   openMs: number;
   afterOpen: {
@@ -265,17 +268,12 @@ export async function runClipBaseline(
   page: Page,
   clip: ClipDef,
 ): Promise<ClipBaseline> {
-  if (!fs.existsSync(clip.path)) {
-    throw new Error(`missing clip: ${clip.path}`);
-  }
-
   const player = new DemoPlayer(page);
   const t0 = Date.now();
   await player.goto();
 
   const openStart = Date.now();
-  await player.fileInput.setInputFiles(clip.path);
-  await player.waitReady(120_000);
+  await player.openUrl(clip.url, 180_000);
   const openMs = Date.now() - openStart;
   const afterOpenSnap = await player.snapshot();
 
@@ -324,7 +322,7 @@ export async function runClipBaseline(
     tag: BASELINE_TAG,
     clipId: clip.id,
     clipLabel: clip.label,
-    clipBasename: path.basename(clip.path),
+    clipAsset: `${clip.id}.mp4`,
     createdAt: new Date().toISOString(),
     openMs,
     afterOpen: {

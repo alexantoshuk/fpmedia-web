@@ -29,7 +29,7 @@ use crate::types::{
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
 /// Keep small on Hd — each slot pins a `VideoFrame`; 16 + in-flight decode starved
-/// Chromium's pool on DRYP play (`flush/idle` mid-GOP with `decodeQ≈12`).
+/// Chromium's pool on long-GOP play (`flush/idle` mid-GOP with `decodeQ≈12`).
 /// Pair with [`STEP_BEHIND_CAP`] (ring ≈ 1 displayed + 8 behind + 4 ahead).
 /// Hd default = [`crate::PLAY_PRESENTATION_CAP_HD`]; Uhd uses [`PlayPolicy`].
 pub const PRESENTATION_QUEUE_CAP: usize = crate::PLAY_PRESENTATION_CAP_HD;
@@ -39,7 +39,7 @@ pub const SHUTTLE_PRESENTATION_QUEUE_CAP: usize = 2;
 /// mediabunny reverse always restarts from key unless samples are retained —
 /// this is the SampleCursor-lite behind window (`media-sink.ts` flush on rewind).
 /// **Play must not keep this ring** — 1+8+4 + held≈8 pins ~21 VideoFrames and
-/// starves Chromium's pool (underrun hold ≈0.77× realtime on DRYP). Forward play
+/// starves Chromium's pool (underrun hold ≈0.77× realtime on long-GOP). Forward play
 /// uses cap 0; Pause/scrub restores [`STEP_BEHIND_CAP`].
 pub const STEP_BEHIND_CAP: usize = 8;
 /// Behind ring while `CacheFillMode::Play` — drop aged VF immediately.
@@ -674,7 +674,7 @@ impl WebPlayer {
     /// Freeze the media clock while the presentation queue is empty.
     ///
     /// Prefer this over `skip_behind` when Chromium decode briefly lags the
-    /// audio clock (DRYP: skip spiral → `skipped≈242` then End before EOF).
+    /// audio clock (long-GOP: skip spiral → `skipped≈242` then End before EOF).
     /// Keeps `playing` true; host resumes via [`Self::resume_media_clock`] once
     /// prefetch has frames again.
     ///
@@ -998,7 +998,7 @@ impl WebPlayer {
     /// Pointer-up settle entry from the UI host — before the async op runs.
     ///
     /// Must not call [`Self::note_scrub_frame`] / densify kick: that starved exact
-    /// on Wing It–class long GOPs (playhead far, `eng` stuck at 0, `decodeQ≈10`).
+    /// on long-GOP long GOPs (playhead far, `eng` stuck at 0, `decodeQ≈10`).
     pub fn prepare_scrub_settle(&self, frame: FrameId) {
         self.abort_scrub_fill(true);
         self.shared.hold_densify_for_exact.set(true);
@@ -1269,7 +1269,7 @@ impl WebPlayer {
         if settle {
             // Densify is armed by the host *after* the drain loop can see a queued
             // PlayPrime — otherwise invalidate + scrub HW kick cause play-after-scrub
-            // lag on long GOPs (Wing It). Drag still densifies below.
+            // lag on long GOPs (long-GOP). Drag still densifies below.
             // Do **not** `schedule_scrub_cache_fill` here when Play is pending — host
             // skips `arm_scrub_densify_after_exact` on purpose; Pause restarts fill.
         } else {
@@ -1469,7 +1469,7 @@ impl WebPlayer {
         // Soft catch-up (mediabunny `updateNextFrame` loop): keep warm decode +
         // dense when the target stays in the same GOP. Hard invalidate only when
         // catch-up crosses into a later GOP — a full key→N after wipe was Chrome
-        // DRYP's stutter loop (play a few → clear strip → flush/idle mid-GOP).
+        // long-GOP's stutter loop (play a few → clear strip → flush/idle mid-GOP).
         // Do **not** `clear_scrub_store` here — scrub residency is unrelated to
         // underrun and wiping it was the visible "cache vanishes" symptom.
         // Behind ring is stale past the catch-up target — drop it.
@@ -1619,7 +1619,7 @@ impl WebPlayer {
         if media_time_secs >= last_end {
             // Do not End while decoded frames remain — audio can reach duration
             // while video is still draining the presentation queue after an
-            // underrun hold (DRYP stopped at 347/368 with empty error).
+            // underrun hold (long-GOP stopped at 347/368 with empty error).
             if self.presentation_len() > 0 {
                 // Fall through to present remaining due frames at EOF.
             } else if self.is_looping() {
@@ -2599,7 +2599,7 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
     shared.scrub_busy.set(false);
 
     // While exact settle/seek holds densify, leave `scrub_pending` latched and do
-    // **not** respawn — a spawn_local spin froze the tab (Wing It cold scrub).
+    // **not** respawn — a spawn_local spin froze the tab (long-GOP cold scrub).
     if shared.hold_densify_for_exact.get() {
         return result;
     }

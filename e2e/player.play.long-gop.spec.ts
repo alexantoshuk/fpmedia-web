@@ -1,29 +1,15 @@
 /**
- * Chrome play stability on DRYP (local clip — AVC 1080p GOP~50 despite the name).
- *
- * Expects app on :3000. Override path with WEBMEDIA_PERF_CLIP_DRYP.
+ * Chrome play stability on long-GOP plate (AVC 1080p 24fps GOP48 bf0).
+ * Clip: testvideo `avc_1080p_24_gop48_bf0`.
+ * Expects app on :3000 + network (`/proxy`).
  */
 import { expect, test } from "@playwright/test";
-import fs from "node:fs";
-import path from "node:path";
 import { DemoPlayer } from "./helpers/player";
+import { TestvideoClip, testvideoUrl } from "./helpers/testvideo";
 
-const downloads = process.env.USERPROFILE
-  ? path.join(process.env.USERPROFILE, "Downloads")
-  : "";
+const CLIP_URL = testvideoUrl(TestvideoClip.gop48);
 
-export const DRYP_CLIP =
-  process.env.WEBMEDIA_PERF_CLIP_DRYP ??
-  path.join(downloads, "DRYP_15_4K_H265_Final.mp4");
-
-test.describe("DRYP play (Chrome)", () => {
-  test.beforeEach(() => {
-    test.skip(
-      !fs.existsSync(DRYP_CLIP),
-      `missing clip at ${DRYP_CLIP} (set WEBMEDIA_PERF_CLIP_DRYP)`,
-    );
-  });
-
+test.describe("long-GOP play (Chrome)", () => {
   test("plays through without flush/idle or stall", async ({ page }) => {
     test.setTimeout(180_000);
 
@@ -43,8 +29,7 @@ test.describe("DRYP play (Chrome)", () => {
 
     const player = new DemoPlayer(page);
     await player.goto();
-    await player.openFixture(DRYP_CLIP);
-    // Progressive open + AVC verify on ~7MB can exceed the default ready wait.
+    await player.openUrl(CLIP_URL, 180_000);
     await expect(player.error).toHaveText("");
 
     const opened = await player.readStatus();
@@ -85,7 +70,6 @@ test.describe("DRYP play (Chrome)", () => {
       peakCache = Math.max(peakCache, cacheFrames);
 
       const ph = snap.status.playhead ?? 0;
-      // Dense may keep a pre-play densify trail; still must not stall / flush.
 
       if (ph > peak) {
         peak = ph;
@@ -97,7 +81,7 @@ test.describe("DRYP play (Chrome)", () => {
           peakCache,
           consoleErrors: consoleErrors.slice(-20),
         };
-        await test.info().attach("dryp-stall", {
+        await test.info().attach("long-gop-stall", {
           body: JSON.stringify(attach, null, 2),
           contentType: "application/json",
         });
@@ -114,7 +98,7 @@ test.describe("DRYP play (Chrome)", () => {
     }
 
     const final = await player.snapshot();
-    await test.info().attach("dryp-final", {
+    await test.info().attach("long-gop-final", {
       body: JSON.stringify(
         { final, peak, peakCache, consoleErrors: consoleErrors.slice(-30) },
         null,

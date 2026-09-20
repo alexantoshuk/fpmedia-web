@@ -42,7 +42,10 @@ const CLIP =
 test.describe.configure({ timeout: 300_000 });
 
 test("cached scrub latency", async ({ page }) => {
-  test.skip(!CLIP || !fs.existsSync(CLIP), `missing clip (set WEBMEDIA_PERF_CLIP)`);
+  test.skip(
+    !CLIP || !fs.existsSync(CLIP),
+    `missing in-repo fixture (public/short_gop.mp4) or set WEBMEDIA_PERF_CLIP to an in-repo / testvideo-cached path`,
+  );
 
   const consoleErrors: string[] = [];
   page.on("console", (msg) => {
@@ -203,7 +206,7 @@ test("cached scrub latency", async ({ page }) => {
   });
 
   expect(consoleErrors, consoleErrors.join("\n")).toEqual([]);
-  // Soft budgets — Wing It cached step should be blit-hot (≪ decode ~2s).
+  // Soft budgets — cached Next/Prev should be blit-hot (≪ cold key→N decode).
   expect(report.nextStepMs.p50, "next p50").toBeLessThan(300);
   expect(report.prevStepMs.p50, "prev p50").toBeLessThan(300);
 });

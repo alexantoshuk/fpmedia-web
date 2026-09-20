@@ -1,14 +1,14 @@
 /**
- * Chrome play / EOF / loop seam on samplelib 10s 2160p (remote URL).
- *
- * Expects app on :3000. Override with WEBMEDIA_UHD_URL.
+ * Chrome play / EOF / loop seam (AVC 1080p 24fps GOP12 bf0, ~60 s).
+ * Clip: testvideo `avc_1080p_24_gop12_bf0` via `/proxy`.
+ * Seeks near EOF so the probe does not wait the full duration.
+ * Expects app on :3000.
  */
 import { expect, test } from "@playwright/test";
 import { DemoPlayer, parseStatus } from "./helpers/player";
+import { TestvideoClip, testvideoUrl } from "./helpers/testvideo";
 
-const UHD_URL =
-  process.env.WEBMEDIA_UHD_URL ??
-  "https://samplelib.com/mp4/sample-10s-2160p.mp4";
+const CLIP_URL = testvideoUrl(TestvideoClip.gop12);
 
 type Sample = {
   t: number;
@@ -31,7 +31,7 @@ function parseLagMs(pipeline: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
-test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
+test.describe("play/EOF/loop (Chrome, testvideo GOP12)", () => {
   test("measures mid-play, EOF, and loop-seam continuity", async ({ page }) => {
     test.setTimeout(240_000);
 
@@ -41,30 +41,21 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
       if (
         msg.type() === "error" ||
         text.includes("flush/idle") ||
-        text.includes("backpressure") ||
-        text.includes("underrun") ||
-        text.includes("open_url") ||
-        text.includes("UrlSource")
+        text.includes("backpressure timed out")
       ) {
-        consoleNotes.push(`[${msg.type()}] ${text}`);
+        consoleNotes.push(text);
       }
     });
     page.on("pageerror", (err) => consoleNotes.push(`pageerror ${err}`));
 
     const player = new DemoPlayer(page);
     await player.goto();
-
-    await page.getByTestId("url-input").fill(UHD_URL);
-    await page.getByTestId("btn-open-url").click();
-    // Full download if no Range — allow generous open.
-    await player.waitReady(120_000);
+    await player.openUrl(CLIP_URL, 180_000);
     await expect(player.error).toHaveText("");
 
     const opened = await player.readStatus();
     expect(opened.ready).toBe(true);
     expect(opened.lastFrame ?? 0).toBeGreaterThan(50);
-    // Uhd play policy should attach for ≥2160.
-    expect(opened.raw).toMatch(/play:Uhd/i);
 
     const samples: Sample[] = [];
     const pushSample = async () => {
@@ -82,7 +73,10 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
       });
     };
 
-    // --- Pass A: play to EOF without loop ---
+    // --- Pass A: seek near end, play to EOF without loop ---
+    const last = opened.lastFrame ?? 0;
+    const nearEof = Math.max(0, last - 90);
+    await player.seekToFrame(nearEof);
     await player.play.click();
     await expect
       .poll(async () => (await player.readStatus()).playing, { timeout: 20_000 })
@@ -93,7 +87,6 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
     while (Date.now() < deadlineA) {
       await pushSample();
       const st = samples[samples.length - 1]!;
-      const last = opened.lastFrame ?? 0;
       const ph = st.playhead ?? 0;
       if (ph >= last * 0.85) sawNearEnd = true;
       if (!st.playing && sawNearEnd) break;
@@ -107,8 +100,8 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
     const mid = passA.filter(
       (s) =>
         s.playing &&
-        (s.playhead ?? 0) > 10 &&
-        (s.playhead ?? 0) < (opened.lastFrame ?? 0) * 0.7,
+        (s.playhead ?? 0) > nearEof &&
+        (s.playhead ?? 0) < last * 0.98,
     );
     let midRealtime = null as null | number;
     if (mid.length >= 2) {
@@ -119,7 +112,6 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
       if (dWall > 0.5 && dMedia > 0.5) midRealtime = dMedia / dWall;
     }
 
-    // Find EOF seam: last sample still playing near end → first not playing / stuck.
     let eofGapMs: number | null = null;
     for (let i = 1; i < passA.length; i++) {
       const prev = passA[i - 1]!;
@@ -148,7 +140,7 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
       contentType: "application/json",
     });
 
-    // --- Pass B: loop on, seek near start, play through one wrap ---
+    // --- Pass B: loop on, seek near end, play through one wrap ---
     samples.length = 0;
     if (!(await player.readStatus()).looping) {
       await player.loop.click();
@@ -157,8 +149,6 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
       .poll(async () => (await player.readStatus()).looping, { timeout: 5_000 })
       .toBe(true);
 
-    // Seek near end so we don't wait full 10s again.
-    const last = opened.lastFrame ?? 0;
     const nearEnd = Math.max(0, last - 30);
     await player.seekToFrame(nearEnd);
     await player.play.click();
@@ -177,12 +167,10 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
       if (!wrapped && samples.length >= 2) {
         const prev = samples[samples.length - 2]!;
         const prevPh = prev.playhead ?? 0;
-        // Wrap: was near end, now near start while still playing/looping.
         if (prevPh > last * 0.7 && ph < last * 0.2 && st.playing) {
           wrapped = true;
           beforeWrap = prev;
           wrapAt = st;
-          // Collect ~1.5s after wrap for continuity.
           const afterDeadline = Date.now() + 1_500;
           while (Date.now() < afterDeadline) {
             await page.waitForTimeout(50);
@@ -203,7 +191,6 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
         (beforeWrap.seconds ?? 0) - (wrapAt.seconds ?? 0);
     }
 
-    // After wrap: media time should advance roughly with wall (no long freeze).
     let postWrapRealtime: number | null = null;
     const post = samples.filter((s) => {
       if (!wrapAt) return false;
@@ -223,7 +210,7 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
       .reduce((m, v) => Math.max(m, v), 0);
 
     const summary = {
-      url: UHD_URL,
+      clipUrl: CLIP_URL,
       opened: opened.raw,
       passA: { midRealtime, holdsA, eofGapMs },
       passB: {
@@ -240,12 +227,12 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
       consoleNotes: consoleNotes.slice(-50),
     };
 
-    await test.info().attach("uhd-loop-summary", {
+    await test.info().attach("eof-loop-summary", {
       body: JSON.stringify(summary, null, 2),
       contentType: "application/json",
     });
     console.log(
-      "UHD summary",
+      "EOF/loop summary",
       JSON.stringify({
         midRealtime: summary.passA.midRealtime,
         holdsA: summary.passA.holdsA,
@@ -258,10 +245,8 @@ test.describe("samplelib 2160p play/EOF/loop (Chrome)", () => {
       }),
     );
 
-    // Soft assertions: must open, play Uhd, wrap once with loop, no hard errors.
     expect(consoleNotes.filter((n) => n.includes("flush/idle"))).toEqual([]);
     expect(wrapped, "did not observe loop wrap near EOF").toBe(true);
-    // Report thresholds — fail only on severe freeze (>500ms hold total or <0.7× post-wrap).
     expect(
       holdsB.ms,
       `underrun hold ms too high: ${holdsB.count}/${holdsB.ms}ms`,

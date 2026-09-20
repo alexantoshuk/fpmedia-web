@@ -505,7 +505,7 @@ impl ScrubChunkStore {
 }
 
 /// Live scrub blit handles. Evict farthest from playhead (not classic LRU) so
-/// densify ahead cannot wipe just-presented frames (Prev stayed cold on Wing It).
+/// densify ahead cannot wipe just-presented frames (Prev stayed cold on long-GOP).
 pub struct ScrubBlitLru {
     bitmaps: BTreeMap<FrameId, ImageBitmap>,
     max: usize,

@@ -1,31 +1,22 @@
 /**
- * Focused probe: cold settle must paint exact (eng == playhead).
+ * Cold scrub settle must paint exact (eng == playhead).
+ * Clip: AVC 1080p 24fps GOP48 bf0 (testvideo).
  * Usage: npx playwright test e2e/perf.scrub.settle.spec.ts
  */
 import { expect, test } from "@playwright/test";
-import fs from "node:fs";
-import path from "node:path";
 import { DemoPlayer } from "./helpers/player";
+import { TestvideoClip, testvideoUrl } from "./helpers/testvideo";
 
-const CLIP =
-  process.env.WEBMEDIA_PERF_CLIP ??
-  path.resolve(
-    process.env.USERPROFILE ?? "",
-    "Downloads",
-    "WING IT - Blender Open Movie.mp4",
-  );
+const CLIP_URL = testvideoUrl(TestvideoClip.gop48);
 
-test.describe.configure({ timeout: 120_000 });
+test.describe.configure({ timeout: 180_000 });
 
 test("cold scrub settle paints exact engine frame", async ({ page }) => {
-  test.skip(!fs.existsSync(CLIP), `missing clip: ${CLIP}`);
-
   const player = new DemoPlayer(page);
   await player.goto();
 
   const openStart = Date.now();
-  await player.fileInput.setInputFiles(CLIP);
-  await player.waitReady(60_000);
+  await player.openUrl(CLIP_URL, 180_000);
   const openMs = Date.now() - openStart;
 
   // Single click near end — pointerdown + pointerup settle (no drag densify storm).

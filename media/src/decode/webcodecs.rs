@@ -67,13 +67,13 @@ const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
 const REORDER_FEED_SLACK: usize = 8;
 /// Presentation-order frames to keep ahead of the current target in `held`
 /// while the Play/prefetch pump runs (cross-GOP). Too small → underrun hold
-/// every GOP on BBB (~0.93×). Hd default = [`crate::PLAY_WARM_AHEAD_HD`]; live
+/// every GOP on 1080p (~0.93×). Hd default = [`crate::PLAY_WARM_AHEAD_HD`]; live
 /// value is [`DecoderCore::warm_ahead`] from [`PlayPolicy`].
 #[allow(dead_code)]
 const DECODE_WARM_AHEAD: usize = crate::PLAY_WARM_AHEAD_HD;
 /// Only salvage pruned frames within this PTS gap of the seek target. Farther
 /// frames are closed immediately — keeping every key→N VideoFrame alive exhausts
-/// Chromium's pool and wedges at `decodeQ≈41, held=0` (Wing It seek/settle).
+/// Chromium's pool and wedges at `decodeQ≈41, held=0` (long-GOP seek/settle).
 /// ~8 frames @24 fps / ~10 @30 fps; densify still fills the rest after exact.
 const INTERIM_SALVAGE_MAX_BEHIND_US: i64 = 333_333;
 /// Pump safety valve: `decodeQueueSize == 0` means no `ondequeue` can ever fire,
@@ -380,7 +380,7 @@ impl DecoderCore {
     ///   when idle (mediabunny range pump feeds the next IDR without recreate).
     /// - Do **not** hard-recreate solely because `busy` when soft is OK — Play
     ///   warm-ahead often still has decodeQ when the next GOP key is needed;
-    ///   recreate every GOP was ~1 underrun hold/GOP (~0.93× on BBB).
+    ///   recreate every GOP was ~1 underrun hold/GOP (~0.93× on 1080p).
     ///   Caller awaits idle first (`run_key_cascade`).
     fn begin_key_cascade(
         &mut self,
@@ -490,9 +490,9 @@ impl DecoderCore {
     ///
     /// Keep PTS `>= target` in `held` — playback/prefetch relies on warm ahead
     /// frames surviving `take_held(target)`. Dropping post-target forced a fresh
-    /// key→N (or `flush/idle`) on every sequential frame (DRYP play lag / skip).
+    /// key→N (or `flush/idle`) on every sequential frame (long-GOP play lag / skip).
     /// Seek still closes early frames; `optimizeForLatency: false` covers long
-    /// Wing It key→N without needing to discard ahead.
+    /// long-GOP key→N without needing to discard ahead.
     ///
     /// When [`Self::prune_interim`] is set, pruned PTS `< target` go to the host
     /// dense cache instead of close — one cascade warms near-target cache.
@@ -1001,7 +1001,7 @@ impl WebCodecsDecoder {
                 // clear underrun. Keep the range pump alive in the background
                 // until warm-ahead is parked — immediate `stop` on take raced
                 // backpressure and forced a cold pump every 1–2 frames
-                // (DRYP ~0.75×). mediabunny keeps decoding while the consumer
+                // (long-GOP ~0.75×). mediabunny keeps decoding while the consumer
                 // pulls (`src/media-sink.ts` mediaSamplesInRange).
                 let core_bg = Rc::clone(&core);
                 let signals_bg = Rc::clone(&signals);
@@ -1160,7 +1160,7 @@ impl WebCodecsDecoder {
         }
         feed_sample(&core, &key_sample, true, target_us, is_cancelled).await?;
         // Poll with macrotasks (see `poll_output_or_macrotask`) — microtask-only
-        // never saw HW output on Wing It and forced flush.
+        // never saw HW output on long-GOP and forced flush.
         if poll_for_target(&core, target_us, 32, is_cancelled).await? {
             return Ok(());
         }
@@ -1478,7 +1478,7 @@ impl FramePump {
             // After the target has appeared in `held` (or was taken), park
             // `warm_ahead` frames past it — may cross the next GOP.
             // Requiring `has_target` forever made the pump run to EOF once the
-            // consumer took the frame (BBB held≈3200). Stopping before
+            // consumer took the frame (1080p held≈3200). Stopping before
             // `saw_target` would break seek (B-frames with pts>target first).
             if saw_target && ahead >= warm_ahead {
                 break;
@@ -1625,7 +1625,7 @@ async fn poll_for_target(
 /// End-of-input / reorder-slack: drain outputs, then flush once.
 ///
 /// Chrome HW often still has `decodeQueueSize > 0` when the packet pump hits
-/// GOP end (DRYP frame 49: `fed=49, q=5, stamps=9`). A short fixed spin then
+/// GOP end (long-GOP frame 49: `fed=49, q=5, stamps=9`). A short fixed spin then
 /// `flush()` raced to timeout and reported `flush/idle` while work remained.
 /// mediabunny: `await decoder.flush()` after packets exhaust — wait for real
 /// drain/emit first (`src/media-sink.ts` mediaSamplesInRange).
@@ -1636,7 +1636,7 @@ async fn finish_gop_for_target(
 ) -> Result<Option<OwnedVideoFrame>, MediaError> {
     /// Brief drain for in-flight decodeQ at GOP end. Was 400ms — blocked
     /// prefetch long enough for presentation (cap 6 ≈250ms) to underrun →
-    /// ~0.5s Play freeze every GOP on 1080p BBB. mediabunny awaits emit without
+    /// ~0.5s Play freeze every GOP on 1080p. mediabunny awaits emit without
     /// a long pre-flush sleep (`src/media-sink.ts` mediaSamplesInRange).
     const DRAIN_BEFORE_FLUSH_MS: f64 = 80.0;
     /// Extra wait after a timed-out flush while q/stamps remain.
@@ -1655,7 +1655,7 @@ async fn finish_gop_for_target(
     if pending {
         // mediabunny awaits flush to completion; Chromium HW may need a few
         // seconds for the last GOP frames — but do **not** spin 5s *before*
-        // flush (that starved play vs the audio clock on DRYP: skipped≈242).
+        // flush (that starved play vs the audio clock on long-GOP: skipped≈242).
         let flushed = flush_with_timeout_ms(core, 3_000).await?;
         {
             let mut c = core.borrow_mut();
@@ -1810,7 +1810,7 @@ async fn flush_with_timeout_ms(
 /// concurrent consumer. Single-task callers (key cascade, `decode_gop`) must
 /// keep the `decodeQueueSize == 0` escape — with no other task able to take
 /// from `held`, waiting there is a guaranteed deadlock
-/// (`backpressure timed out (q=0, held=N)` on BBB B-frames).
+/// (`backpressure timed out (q=0, held=N)` on 1080p B-frames).
 ///
 /// Do **not** treat already-buffered `frames` alone as capacity progress
 /// (that spun to timeout while `decodeQueueSize` never dropped).
@@ -1912,7 +1912,7 @@ async fn poll_output_or_macrotask(core: &Rc<RefCell<DecoderCore>>) {
         output_waiters.borrow_mut().push(resolve);
     });
     // Macrotask — HW decode often will not finish in a microtask-only spin
-    // (that path forced `flush` on Wing It frame 0 and broke Play).
+    // (that path forced `flush` on long-GOP frame 0 and broke Play).
     let tick = sleep_promise_ms(0);
     let _ = JsFuture::from(promise_race(output, tick)).await;
 }

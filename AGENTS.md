@@ -44,7 +44,7 @@ Before asking for approve-to-edit on media work, the plan **must** include:
 
 **Refuse to edit** (even after a vague `ok` on a knob-only plan) until that cite is in the plan. Probe-driven local hypotheses are fine for *diagnosis*; they do not authorize *implementation* without the port step.
 
-Anti-pattern we already paid for: invent `drop PTS > target` / global `optimizeForLatency: false` to clear Wing It `flush/idle`, then break play warm-ahead — mediabunny keeps consumer queue samples and leaves latency optional.
+Anti-pattern we already paid for: invent `drop PTS > target` / global `optimizeForLatency: false` to clear long-GOP `flush/idle`, then break play warm-ahead — mediabunny keeps consumer queue samples and leaves latency optional.
 
 ## Suboptimal proposals
 

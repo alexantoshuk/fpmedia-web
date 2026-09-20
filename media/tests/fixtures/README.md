@@ -1,8 +1,11 @@
 # Test fixtures
 
-Committed MP4s stay **tiny** (~20 KB lavfi clips). Do **not** add camera dumps,
-long clips, or multi‑MB media. Prefer URL probes or generate tiny clips locally.
-Tests that need an optional local file `skip` when it is missing.
+Committed MP4s stay **tiny** (~20 KB lavfi clips) for Rust unit/integration and
+Playwright smoke. Do **not** add camera dumps or multi‑MB media here.
+
+**FullHD A/V sync plates** live in **[testvideo](https://github.com/alexantoshuk/testvideo)**
+Releases (`e2e/helpers/testvideo.ts`). Prefer those for browser play/scrub/JKL
+probes — not Downloads / third-party sample hosts.
 
 | File | Description |
 | ---- | ----------- |
@@ -11,11 +14,10 @@ Tests that need an optional local file `skip` when it is missing.
 | `with_audio.mp4` | 320×240 + AAC sine, ~2s — audio demux / A/V clock fixture |
 | `fragmented_tiny.mp4` | **gitignored** — optional local fMP4; prefer URL test below |
 
-### fMP4 via URL (not committed)
+### fMP4 via URL (testvideo)
 
-Default probe (Pexels vertical, fragmented):
-
-`https://videos.pexels.com/video-files/39355913/16751924_1080_1920_30fps.mp4`
+Default: AVC 1080p 24 fps fMP4 GOP12 bf0 from Release v0.1.0
+(`avc_1080p_24_fmp4_gop12_bf0.mp4`).
 
 ```sh
 cargo test -p webmedia --test demux_mp4 progressive_fmp4_from_url -- --ignored --nocapture
@@ -23,8 +25,8 @@ cargo test -p webmedia --test demux_mp4 progressive_fmp4_from_url -- --ignored -
 # WEBMEDIA_FMP4_URL=https://… cargo test -p webmedia --test demux_mp4 progressive_fmp4_from_url -- --ignored
 ```
 
-
-Also copy video fixtures into `public/` so the Leptos demo can fetch them:
+Also copy video fixtures into `public/` so the Leptos demo / smoke e2e can open them
+(`public/*.mp4` is gitignored — copy after clone):
 
 ```sh
 cp media/tests/fixtures/short_gop.mp4 public/short_gop.mp4

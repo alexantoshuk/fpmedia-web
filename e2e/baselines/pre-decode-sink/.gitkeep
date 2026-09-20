@@ -1,0 +1,2 @@
+# Baselines go here after `npm run e2e:baseline:save`
+# (avc_1080p_24_gop12_bf0.json, avc_1080p_24_gop48_bf0.json)

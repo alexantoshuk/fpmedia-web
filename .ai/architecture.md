@@ -77,13 +77,22 @@ webmedia/
 
 ## Progressive open (MediaSource)
 
-**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` / `MemorySource` + ~8 MiB `CachedSource`; top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`; `open_url` uses HTTP Range when the server supports `206` (else full-download fallback). Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
+**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` / `MemorySource` + ~8 MiB `CachedSource`; top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`; `open_url` rewrites remote `http(s)` to same-origin **`/proxy?url=`** (demo Axum forwards `Range`; bypasses GitHub Release / S3 CORS), then HTTP Range when the upstream supports `206` (else full-download fallback). Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
 
 **Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; coalesce adjacent sample ranges; UrlSource parallel workers / sequential no-Range stream (mediabunny orchestrator).
 
 **Out of scope:** stream-only sources without random access; live / growing fMP4; DASH/HLS segment playlists; MSE remux.
 
-**Success bar:** BBB-class file opens to first paint without allocating the full media size in WASM.
+**Success bar:** 1080p progressive open to first paint without allocating the full media size in WASM.
+
+### Test media
+
+| Kind | Where |
+| ---- | ----- |
+| Tiny unit/smoke MP4s | `media/tests/fixtures/` (+ copies in `public/` for e2e smoke) |
+| FullHD A/V sync plates | **[testvideo](https://github.com/alexantoshuk/testvideo)** Releases — catalog `e2e/helpers/testvideo.ts` |
+
+Do **not** document or wire probes to Downloads / third-party sample hosts. In skills/gotchas prefer **meta** (fps, GOP, resolution, bf) over ad-hoc filenames; when naming an asset, use the testvideo stem (`avc_1080p_24_gop48_bf0`, …).
 
 ---
 

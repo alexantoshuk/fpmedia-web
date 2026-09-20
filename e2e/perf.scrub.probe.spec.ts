@@ -1,18 +1,18 @@
 /**
- * One-off scrub performance probe against a local MP4.
+ * One-off scrub performance probe (testvideo AVC 1080p 24fps GOP48).
  * Usage: npx playwright test e2e/perf.scrub.probe.spec.ts
  */
 import { expect, test } from "@playwright/test";
 import path from "node:path";
 import { DemoPlayer } from "./helpers/player";
+import {
+  TestvideoClip,
+  TestvideoMeta,
+  testvideoUrl,
+} from "./helpers/testvideo";
 
-const CLIP =
-  process.env.WEBMEDIA_PERF_CLIP ??
-  path.resolve(
-    process.env.USERPROFILE ?? "",
-    "Downloads",
-    "WING IT - Blender Open Movie.mp4",
-  );
+const CLIP_ID = TestvideoClip.gop48;
+const CLIP_URL = testvideoUrl(CLIP_ID);
 
 type Sample = {
   tMs: number;
@@ -30,12 +30,7 @@ type Sample = {
 
 test.describe.configure({ timeout: 180_000 });
 
-test("perf probe: Wing It scrub timeline", async ({ page }) => {
-  test.skip(
-    !(await import("node:fs")).existsSync(CLIP),
-    `missing clip: ${CLIP}`,
-  );
-
+test("perf probe: long-GOP scrub timeline", async ({ page }) => {
   const player = new DemoPlayer(page);
   const t0 = Date.now();
   const elapsed = () => Date.now() - t0;
@@ -43,8 +38,7 @@ test("perf probe: Wing It scrub timeline", async ({ page }) => {
   await player.goto();
 
   const openStart = Date.now();
-  await player.fileInput.setInputFiles(CLIP);
-  await player.waitReady(120_000);
+  await player.openUrl(CLIP_URL, 180_000);
   const openMs = Date.now() - openStart;
   const afterOpen = await player.snapshot();
 
@@ -82,7 +76,6 @@ test("perf probe: Wing It scrub timeline", async ({ page }) => {
       }
     }
     await page.mouse.up();
-    // settle window
     await page.waitForTimeout(150);
     samples.push(await sample());
     await page.waitForTimeout(500);
@@ -100,7 +93,6 @@ test("perf probe: Wing It scrub timeline", async ({ page }) => {
       const next = await sample();
       const ph = next.playhead;
       const eng = next.engine;
-      // Exact painted — densify may still run (`dense` in cache detail).
       if (ph != null && eng != null && ph === eng) {
         return { settledMs: Date.now() - start, sample: next };
       }
@@ -129,7 +121,6 @@ test("perf probe: Wing It scrub timeline", async ({ page }) => {
     sweeps.push({ label, from, to, steps, during, settle });
   }
 
-  // Step stress near middle
   const mid = afterOpen.status.lastFrame
     ? Math.floor(afterOpen.status.lastFrame / 2)
     : 100;
@@ -141,7 +132,9 @@ test("perf probe: Wing It scrub timeline", async ({ page }) => {
   }
 
   const report = {
-    clip: CLIP,
+    clipId: CLIP_ID,
+    clipMeta: TestvideoMeta[CLIP_ID],
+    clipUrl: CLIP_URL,
     openMs,
     afterOpen,
     sweeps: sweeps.map((s) => ({
@@ -163,8 +156,7 @@ test("perf probe: Wing It scrub timeline", async ({ page }) => {
     contentType: "application/json",
   });
 
-  // Also write to disk for agent analysis
-  const out = path.resolve("test-results/perf-scrub-wing-it.json");
+  const out = path.resolve("test-results/perf-scrub-gop48.json");
   await import("node:fs/promises").then((fs) =>
     fs.mkdir(path.dirname(out), { recursive: true }).then(() =>
       fs.writeFile(out, JSON.stringify(report, null, 2)),
