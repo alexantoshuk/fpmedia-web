@@ -12,7 +12,7 @@ use wasm_bindgen::closure::Closure;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::MediaClock;
-use crate::decode::audio_output::AudioOutput;
+use crate::audio::AudioOutput;
 use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, draw_frame_with_context};
 use crate::decode::frame_cache::{
     DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, ScrubBlitLru, ScrubChunkStore, ThumbCache,
@@ -301,7 +301,7 @@ impl WebPlayer {
     /// Video track plus optional audio (same container).
     pub async fn from_tracks(
         track: crate::demux::Mp4VideoTrack,
-        audio: Option<crate::demux::Mp4AudioTrack>,
+        audio: Option<crate::audio::Mp4AudioTrack>,
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
         Self::from_tracks_with_fetch(
@@ -316,7 +316,7 @@ impl WebPlayer {
     /// Like [`Self::from_tracks`], with a shared file-byte [`crate::FetchMap`].
     pub async fn from_tracks_with_fetch(
         track: crate::demux::Mp4VideoTrack,
-        audio: Option<crate::demux::Mp4AudioTrack>,
+        audio: Option<crate::audio::Mp4AudioTrack>,
         canvas: HtmlCanvasElement,
         fetch_map: std::sync::Arc<crate::FetchMap>,
     ) -> Result<Self, MediaError> {
@@ -327,7 +327,7 @@ impl WebPlayer {
 
     async fn from_player(
         player: Player,
-        audio_track: Option<crate::demux::Mp4AudioTrack>,
+        audio_track: Option<crate::audio::Mp4AudioTrack>,
         canvas: HtmlCanvasElement,
         fetch_map: std::sync::Arc<crate::FetchMap>,
         file_size: u64,

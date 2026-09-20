@@ -51,7 +51,7 @@ pub fn is_shuttle_rate(rate: f64) -> bool {
 /// Wall clock + audio off when rate is above [`PLAYBACK_RATE_AUDIO_MAX`].
 ///
 /// Rates through 4× use `AudioContext` + WSOLA fixed-pitch stretch
-/// (`time_stretch::TimeStretcher`). Shuttle present policy (`≥2`) is independent.
+/// (`time_stretch` / [`crate::audio::TimeStretcher`]). Shuttle present policy (`≥2`) is independent.
 /// `mediabunny: no equivalent` (no rate API); stretcher: Vanilagy WSOLA gist
 /// (≈ Chromium `preservesPitch`).
 pub fn is_wall_clock_rate(rate: f64) -> bool {

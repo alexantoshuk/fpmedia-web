@@ -14,8 +14,8 @@
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — demo host (controls) + thin SSR shell |
-| Media element | `video` crate — Leptos `<Video>` + `VideoRef` over `webmedia` |
-| Media engine | `webmedia` crate — demux + frame index + player; wasm WebCodecs |
+| Media element | `video` crate — Leptos `<Video>` + `VideoRef` (API-only; HTML `<video>` analog). **Next:** rename → `media_components` (`video` + `audio` modules + shared `helpers`) |
+| Media engine | `webmedia` crate — demux + frame index + player; wasm WebCodecs; **`audio/`** module for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `video/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
 
@@ -71,7 +71,8 @@ webmedia/
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
 | Progressive open via `MediaSource` | Ranged reads (`BlobSource` / `UrlSource` / `MemorySource` + `CachedSource`); parse `moov` (+ `moof` for single-file fMP4), fetch samples by offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline, **`GopProfile`**: `.ai/skills/media.md`. |
-| Audio in engine, not `VideoRef` | Demux (`Mp4AudioTrack`) + `AudioDecoder` + `AudioContext` schedule + **`MediaClock`** live in `webmedia`. `WebPlayer` orchestrates A+V; `VideoRef` only volume/mute. Future `AudioPlayer` / `AudioRef` shares the same modules (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
+| Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA live in `webmedia::audio`. `WebPlayer` orchestrates A+V; `VideoRef` only volume/mute **API**. Keyboard/chrome stay in demo `app`. Future `<Audio>` shares `audio/` (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
+| Component API like HTML media | Element crates expose open/play/seek/rate/volume — not host keybindings. Demo owns JKL/Space/arrows until optional helpers in `media_components`. |
 
 ---
 

@@ -1,10 +1,8 @@
 //! Container demuxers.
 
-mod audio;
 mod boxes;
 mod mp4;
 
-pub use audio::{AudioSampleEntry, AudioSampleId, Mp4AudioTrack};
 pub use boxes::{
     FragmentBackfillPlan, TopLevelBox, complete_mfra_backfill, load_ftyp_moov,
     parse_mp4_progressive, parse_mp4_progressive_with_backfill,

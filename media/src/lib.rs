@@ -8,6 +8,7 @@
 //! Frame index (presentation order) is the primary position identifier —
 //! timestamps are derived from the sample table, not `time * fps`.
 
+mod audio;
 mod bitstream;
 mod clock;
 mod demux;
@@ -15,12 +16,15 @@ mod error;
 mod frame_index;
 mod player;
 mod source;
-mod time_stretch;
 mod types;
 mod util;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod decode;
+
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+pub use audio::{AudioOutput, OwnedAudioData};
+pub use audio::{AudioSampleEntry, AudioSampleId, Mp4AudioTrack, TimeStretcher};
 
 pub use bitstream::{
     PacketType, accept_avc_recovery_point_sei, avc_nal_length_size, determine_avc_packet_type,
@@ -35,12 +39,11 @@ pub use clock::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use demux::open_mp4_path;
 pub use demux::{
-    AudioSampleEntry, AudioSampleId, Mp4AudioTrack, Mp4VideoTrack, OpenMp4Options, OpenedMp4,
-    TopLevelBox, load_ftyp_moov, open_mp4_bytes, open_mp4_media_bytes,
-    open_mp4_media_source_cached, open_mp4_media_source_cached_with_progress, open_mp4_source,
-    open_mp4_source_cached, open_mp4_source_cached_with_progress, open_mp4_source_with_progress,
-    parse_mp4_progressive, parse_mp4_progressive_with_progress, read_ftyp_moov_stub,
-    scan_top_level,
+    Mp4VideoTrack, OpenMp4Options, OpenedMp4, TopLevelBox, load_ftyp_moov, open_mp4_bytes,
+    open_mp4_media_bytes, open_mp4_media_source_cached, open_mp4_media_source_cached_with_progress,
+    open_mp4_source, open_mp4_source_cached, open_mp4_source_cached_with_progress,
+    open_mp4_source_with_progress, parse_mp4_progressive, parse_mp4_progressive_with_progress,
+    read_ftyp_moov_stub, scan_top_level,
 };
 pub use error::MediaError;
 pub use frame_index::{FrameEntry, FrameIndex};
@@ -69,7 +72,7 @@ pub use types::{
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use decode::{
-    AsVideoFrame, AudioOutput, DuePresent, OwnedAudioData, OwnedVideoFrame, PRESENTATION_QUEUE_CAP,
-    PipelineStats, ReadyFrameKind, ReadyFrameMark, STEP_BEHIND_CAP, WebCodecsDecoder, WebPlayer,
-    canvas_2d, configure_canvas_for_video, draw_frame_to_canvas, draw_frame_with_context,
+    AsVideoFrame, DuePresent, OwnedVideoFrame, PRESENTATION_QUEUE_CAP, PipelineStats,
+    ReadyFrameKind, ReadyFrameMark, STEP_BEHIND_CAP, WebCodecsDecoder, WebPlayer, canvas_2d,
+    configure_canvas_for_video, draw_frame_to_canvas, draw_frame_with_context,
 };

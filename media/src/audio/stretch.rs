@@ -7,7 +7,7 @@
 //! `factor` = output duration / input duration (= `1 / playback_rate`).
 //! Faster playback → `factor < 1`; slower → `factor > 1`.
 //!
-//! Wired from `decode::audio_output` on wasm; always built so native unit tests run.
+//! Wired from `audio::output` on wasm; always built so native unit tests run.
 
 #![cfg_attr(
     not(all(target_arch = "wasm32", feature = "webcodecs")),

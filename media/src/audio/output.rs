@@ -7,7 +7,7 @@
 //! Rate has **no** mediabunny equivalent — invented on top of `getPlaybackTime` /
 //! `runAudioIterator` (`examples/media-player/media-player.ts`). Review rates
 //! (`<` / `=` [`crate::PLAYBACK_RATE_AUDIO_MAX`]) keep pitch via WSOLA
-//! (`crate::time_stretch::TimeStretcher`, Vanilagy gist ≈ Chromium `preservesPitch`);
+//! (`crate::audio::TimeStretcher`, Vanilagy gist ≈ Chromium `preservesPitch`);
 //! node `playbackRate` stays `1.0`. Above audio max → mute + wall clock
 //! ([`crate::is_wall_clock_rate`]).
 
@@ -26,11 +26,11 @@ use web_sys::{
     EncodedAudioChunkType, GainNode,
 };
 
-use crate::decode::owned_audio_data::OwnedAudioData;
-use crate::demux::Mp4AudioTrack;
+use crate::audio::Mp4AudioTrack;
+use crate::audio::TimeStretcher;
+use crate::audio::owned::OwnedAudioData;
 use crate::error::MediaError;
 use crate::normalize_playback_rate;
-use crate::time_stretch::TimeStretcher;
 use crate::types::AudioMetadata;
 
 /// How far ahead of media time to keep scheduling before yielding (seconds).
@@ -44,7 +44,7 @@ struct PendingSample {
     data: OwnedAudioData,
 }
 
-/// Optional audio sink attached to [`super::WebPlayer`].
+/// Optional audio sink attached to [`crate::WebPlayer`].
 pub struct AudioOutput {
     track: Rc<Mp4AudioTrack>,
     context: AudioContext,

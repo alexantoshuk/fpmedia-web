@@ -21,9 +21,9 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 
 | Surface | Purpose |
 | ------- | ------- |
-| **`video` crate** | Leptos `<Video>` + `VideoRef` — media element (canvas, open/play/seek/step/scrub); HTML `<video>` analog |
-| **Demo app** | `app` / `frontend` — file picker, transport buttons, status (not production chrome) |
-| **Library API** | `webmedia` crate — demux + frame index + `Player` / `WebPlayer` |
+| **`video` crate** | Leptos `<Video>` + `VideoRef` — media element API only (HTML `<video>` analog). **Planned rename:** `media_components` with modules `video` + `audio` |
+| **Demo app** | `app` / `frontend` — file picker, transport buttons, **keyboard (JKL/Space/arrows)**, status (not production chrome) |
+| **Library API** | `webmedia` crate — demux + frame index + `Player` / `WebPlayer`; audio engine under `audio/` |
 
 ---
 
@@ -35,9 +35,12 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, source metadata via `VideoRef::metadata` / `WebPlayer::metadata()`.
 - Continuous play uses a **wall-clock** media timeline until an audio track exists; then video slaves to audio
   (`AudioContext` clock — mediabunny media-player pattern).
-- Audio decode/output lives in the **`webmedia` engine**, not inside `VideoRef`. UI hosts stay thin
-  (volume/mute/transport). A future pure-**`<Audio>` / `AudioRef`** reuses the same demux + decode + clock
-  without a video track or canvas.
+- Audio decode/output lives in the **`webmedia` engine** (`audio/` module), not inside `VideoRef`. UI hosts stay thin
+  (volume/mute/transport **API** only — no keyboard bindings). A future pure-**`<Audio>` / `AudioRef`** reuses the same
+  engine modules without a video track or canvas.
+- **Component vs demo:** media element crates expose **API only** (like HTML `<video>` / `<audio>`). Keyboard shortcuts,
+  progress-bar chrome math for caches, and demo transport stay in **`app`** until shared helpers move into
+  `media_components::helpers` (after crate rename).
 - **Play first, scrub second:** smooth **1× play with audio** must work for any supported clip (incl. 4K via
   `PlayPolicy`). Scrub/densify yields while playing (`CacheFillMode::Play`). Full-HD play+scrub knobs stay on
   the historical Hd defaults — do not retune them when adding Uhd play ahead/HW.

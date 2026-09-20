@@ -73,20 +73,22 @@ media/src/                 ← package name: webmedia
 ├── bitstream/             ← AVC (IDR + Recovery Point SEI) + HEVC (IRAP 16…23)
 ├── source/                ← MediaSource + MemorySource + CachedSource (+ wasm BlobSource / UrlSource)
 ├── frame_index.rs         ← presentation order; sync_by_decode O(log k) + by_decode GOP map
+├── audio/                 ← audio engine (isolated from canvas / video decode)
+│   ├── demux.rs           ← Mp4AudioTrack
+│   ├── stretch.rs         ← WSOLA fixed-pitch (Vanilagy gist; ≤4×)
+│   ├── owned.rs           ← OwnedAudioData (cfg webcodecs)
+│   └── output.rs          ← AudioDecoder → (+WSOLA) → AudioContext (cfg webcodecs)
 ├── demux/
 │   ├── boxes.rs           ← top-level ISOBMFF scan + ftyp/moov/moof stub
-│   └── mp4.rs             ← re_mp4 → Mp4VideoTrack + Mp4AudioTrack; OpenedMp4
+│   └── mp4.rs             ← re_mp4 → Mp4VideoTrack (+ builds audio via audio::); OpenedMp4
 ├── player.rs              ← play/pause/seek_frame/step → DecodeWindow
-├── time_stretch.rs        ← WSOLA fixed-pitch (Vanilagy gist; ≤4× audio)
-└── decode/                ← cfg(wasm32 + webcodecs)
+└── decode/                ← cfg(wasm32 + webcodecs) — video path
     ├── webcodecs.rs       ← DecoderCore + dual-async decode_frame; decode_gop
-    ├── audio_output.rs    ← AudioDecoder → (+WSOLA) → AudioBuffer → AudioContext
-    ├── owned_audio_data.rs← OwnedAudioData (close on drop)
     ├── frame_cache.rs     ← ScrubChunkStore + FrameRunIndex + ThumbCache shell
     ├── scrub_encode.rs    ← VideoFrame → ImageBitmap (densify blit)
     ├── owned_video_frame.rs ← OwnedVideoFrame (close on drop)
     ├── canvas.rs          ← draw VideoFrame
-    └── web_player.rs      ← WebPlayer façade (open_blob; optional audio)
+    └── web_player.rs      ← WebPlayer façade (open_blob; optional audio::AudioOutput)
 ```
 
 ### Audio + media clock
@@ -94,7 +96,7 @@ media/src/                 ← package name: webmedia
 Layering (do **not** put decode/`AudioContext` in `VideoRef`):
 
 ```text
-  Mp4AudioTrack (demux) ──► AudioOutput (decode + schedule)
+  audio::Mp4AudioTrack ──► audio::AudioOutput (decode + schedule)
                                     │
   MediaClock ◄── AudioContext.currentTime (when track exists)
        │         else wall Performance clock
@@ -102,9 +104,9 @@ Layering (do **not** put decode/`AudioContext` in `VideoRef`):
   WebPlayer::media_time() ──► video present_due / host rAF
 ```
 
-Future pure-audio: same demux + `AudioOutput` + `MediaClock` behind `AudioPlayer` / `AudioRef` (no canvas).
+Future pure-audio: same `audio::` modules + `MediaClock` behind `AudioPlayer` / `<Audio>` (no canvas). Planned UI crate rename: `video` → `media_components` with `video` + `audio` modules (API-only, like HTML media elements).
 
-**mediabunny:** `examples/media-player/media-player.ts` (`getPlaybackTime` / `runAudioIterator`); `AudioBufferSink` (`src/media-sink.ts`). Rate/pitch: **no equivalent** — review rates use `time_stretch::TimeStretcher` (Vanilagy WSOLA gist ≈ Chromium `preservesPitch`). Do not open `AudioContext` only as a disposable clock (`resume` + early `close` → `Closed before resume completed`).
+**mediabunny:** `examples/media-player/media-player.ts` (`getPlaybackTime` / `runAudioIterator`); `AudioBufferSink` (`src/media-sink.ts`). Rate/pitch: **no equivalent** — review rates use `audio::TimeStretcher` (Vanilagy WSOLA gist ≈ Chromium `preservesPitch`). Do not open `AudioContext` only as a disposable clock (`resume` + early `close` → `Closed before resume completed`).
 
 ## Frame vs time
 
@@ -256,7 +258,7 @@ Demo strip: dim Covered = store markers (coverage); bright Exact = live blit (st
 - **Closure reentrancy** — never `resolve.call0()` synchronously inside `output`/`dequeue` callbacks. Defer with **`spawn_local`**. On teardown: bump generation, `set_ondequeue(None)`, `close()`, **forget** old Closures.
 - **Op cancel** — `WebPlayer::op_epoch` / `cancel_ops` / `begin_op`. After every decode await, if epoch changed → drop owned frame (`OwnedVideoFrame` closes on drop) + `MediaError::Cancelled` (UI treats as soft). `pause()` bumps epoch. Prefetch returns `Ok(false)` on cancel. Host: open/play epoch guards so late async cannot install session/player. **Rapid PREV:** soft `invalidate` (clear timestamps/held only) while chunks are still in the browser decoder desyncs PTS remap → rare `flush/idle without pts=… (held=0)`. Fix: `decoder.reset()`/`recreate` on invalidate; `decoder_reset` flag when the slot is empty; cancel checks inside the decode pump; one reset+retry on flush/idle miss.
 - **Media clock** — wall-clock until audio track exists; then video slaves to `AudioContext` (`MediaClock` + `AudioOutput`). Hosts must call `WebPlayer::media_time()` — do not keep a parallel wall timeline in `VideoRef` once audio is attached. Do not open `AudioContext` only as a clock: `resume()` + early `close()` throws `Closed before resume completed`. **Resume on Play before `prime_playback`** — a long prime after the click leaves the context `suspended` (silent). (`mediabunny: examples/media-player getPlaybackTime` / `runAudioIterator`)
-- **Playback rate** — forward only (`0.25…8`). Negative rates normalize to `1.0`. Fixed-pitch audio through [`PLAYBACK_RATE_AUDIO_MAX`] (`4×`); above that → wall clock + mute (`is_wall_clock_rate`). Shuttle **present** policy still `≥2` (`is_shuttle_rate`, underrun hold off) and is independent of mute. **False EOF at shuttle:** empty presentation + `media_time ≥ duration` while playhead `< last` → snap clock to playhead, keep Playing (`snap_playing_clock_to_playhead`); do not `Ended` (`mediabunny: no equivalent` rate API). Audio path: `AudioContext` + WSOLA (`time_stretch::TimeStretcher`; Vanilagy gist ≈ Chromium `preservesPitch`; `mediabunny: no equivalent` rate API). Exact 1× bypasses stretcher. Demo: review slider; **JKL** ladder `1/2/4/8` (J/L step, K → 1× + play/pause); **Space** play/pause without rate reset. On rate **decrease** snap clock to displayed/committed playhead (`set_playback_rate` / `rate_decrease_snap_time`) or J keeps skip-catching. **K while playing:** `pause` then `set_playback_rate(1)` — rate→1× while playing spawns audio; pause after leaves music on a stopped picture. Spawn re-checks `player.playing` + non-wall rate.
+- **Playback rate** — forward only (`0.25…8`). Negative rates normalize to `1.0`. Fixed-pitch audio through [`PLAYBACK_RATE_AUDIO_MAX`] (`4×`); above that → wall clock + mute (`is_wall_clock_rate`). Shuttle **present** policy still `≥2` (`is_shuttle_rate`, underrun hold off) and is independent of mute. **False EOF at shuttle:** empty presentation + `media_time ≥ duration` while playhead `< last` → snap clock to playhead, keep Playing (`snap_playing_clock_to_playhead`); do not `Ended` (`mediabunny: no equivalent` rate API). Audio path: `AudioContext` + WSOLA (`audio::TimeStretcher`; Vanilagy gist ≈ Chromium `preservesPitch`; `mediabunny: no equivalent` rate API). Exact 1× bypasses stretcher. Demo: review slider; **JKL** ladder `1/2/4/8` (J/L step, K → 1× + play/pause); **Space** play/pause without rate reset. On rate **decrease** snap clock to displayed/committed playhead (`set_playback_rate` / `rate_decrease_snap_time`) or J keeps skip-catching. **K while playing:** `pause` then `set_playback_rate(1)` — rate→1× while playing spawns audio; pause after leaves music on a stopped picture. Spawn re-checks `player.playing` + non-wall rate.
 - **Loop seam at review rates** — `prepare_loop_if_needed` only after EOF is queued; Hd default cap=4 leaves ~0.1s wall drain at 1.75× while `fill_loop_prime` needs ~0.3s → `NeedsLoop` waits / cold restart (visible pause). Near EOF raise cap to ≈ `budget * fps * rate` (`PlayPolicy::loop_prime_budget_secs`, Hd 0.4 / Uhd 1.0; clamp floor…64). Uhd also expands non-loop near-EOF (`eof_lead_secs=1`) to pull the remaining tail. Do **not** set `restarting` during prepare (prefetch gated by `preparing_loop` only) so the tail keeps presenting. `mediabunny: no equivalent` (no loop/rate API).
 - **Future: reverse (deferred)** — WebCodecs has no reverse iterator. Practical approach (`mediabunny: #350`): short forward `decode_gop` / key passes, retain (prefer canvas/`ImageBitmap`, not large live VF queues — Chromium `decodeQ≈41` pool starve), present descending, snap clock on key-hop. Dense −1× realtime needs buffer ≥ next-pass wall time (~2 Short GOPs on 1080p); Long GOPs stay slideshow. Do not hold clock on thin trail during fill (freezes last frames for whole decode). Empty/gap hold only if clock would run away. Key-hop (`|rate|≥2` style): present older sync + snap — refusing `front < target` wedges at reverse entry.
 - **Audio schedule** — decode → `AudioData` → `f32-planar` → (`TimeStretcher` when rate ≠ 1) → `AudioBuffer` → `AudioBufferSourceNode` at rounded sample-boundary start time with **node rate 1.0** (never vinyl-pitch via `playbackRate`). Stop all nodes + bump epoch + reset stretcher on pause/seek. Ahead throttle ~1s like mediabunny (media timeline at 1×; wall schedule when stretching). AAC: rebuild ASC from esds profile/freq/chan when `re_mp4` drops raw description (`mp4a.40.{profile}`). Skip schedule when grain offset ≥ buffer duration. Borrow rules: [RefCell / WASM re-entry](#refcell--wasm-re-entry).

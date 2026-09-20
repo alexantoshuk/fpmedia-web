@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use re_mp4::{Mp4, TrackKind};
 
+use crate::audio::Mp4AudioTrack;
+use crate::audio::build_audio_track;
 use crate::bitstream::{
     PacketType, avc_nal_length_size, determine_avc_packet_type, determine_hevc_packet_type,
     hevc_nal_length_size,
 };
-use crate::demux::Mp4AudioTrack;
-use crate::demux::audio::build_audio_track;
 use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
 use crate::source::{CachedSource, FetchMap, MediaSource, MemorySource};
