@@ -7,7 +7,8 @@ use std::time::Instant;
 
 use webmedia::{
     GopProfile, MediaSource, MemorySource, OpenMp4Options, PacketType, Player, ReadFuture,
-    VideoCodec, avc_nal_length_size, determine_avc_packet_type, open_mp4_path, open_mp4_source,
+    VideoCodec, avc_nal_length_size, determine_avc_packet_type, determine_hevc_packet_type,
+    hevc_nal_length_size, open_mp4_bytes, open_mp4_path, open_mp4_source,
 };
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -395,4 +396,40 @@ fn demux_with_audio_track() {
     let sample = block_on(audio.encoded_sample(0)).expect("audio sample 0");
     assert!(!sample.data.is_empty());
     assert!(sample.composition_timestamp().seconds >= 0.0);
+}
+
+/// testvideo HEVC plate — bitstream IRAP verify. Override with `WEBMEDIA_HEVC_URL`.
+const DEFAULT_HEVC_URL: &str = "https://github.com/alexantoshuk/testvideo/releases/download/v0.1.0/hevc_1080p_24_gop12_bf0.mp4";
+
+#[test]
+#[ignore = "network: downloads HEVC from testvideo Release (or WEBMEDIA_HEVC_URL)"]
+fn hevc_bitstream_sync_verify_irap_keys() {
+    let url = std::env::var("WEBMEDIA_HEVC_URL").unwrap_or_else(|_| DEFAULT_HEVC_URL.into());
+    let bytes = fetch_url_bytes(&url).unwrap_or_else(|e| panic!("download {url}: {e}"));
+    let track = open_mp4_bytes(bytes).expect("open hevc");
+    let meta = track.metadata();
+    assert_eq!(meta.codec.codec, VideoCodec::Hevc);
+    let length_size =
+        hevc_nal_length_size(&meta.codec.description).expect("hvcC lengthSizeMinusOne");
+    let syncs = track.index().sync_frame_ids();
+    assert!(
+        !syncs.is_empty(),
+        "expected stss/IRAP sync candidates after verify"
+    );
+    for &frame in &syncs {
+        let sample = block_on(track.encoded_sample(frame)).expect("sample");
+        assert_eq!(
+            determine_hevc_packet_type(&sample.data, length_size),
+            Some(PacketType::Key),
+            "sync frame {frame} must be HEVC IRAP bitstream key"
+        );
+    }
+    // GOP12 plate: keys roughly every 12 frames.
+    if let (Some(&a), Some(&b)) = (syncs.first(), syncs.get(1)) {
+        let gap = b.saturating_sub(a);
+        assert!(
+            (8..=16).contains(&gap),
+            "unexpected key gap {gap} between {a} and {b}"
+        );
+    }
 }

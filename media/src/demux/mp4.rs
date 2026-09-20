@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use re_mp4::{Mp4, TrackKind};
 
-use crate::bitstream::{PacketType, avc_nal_length_size, determine_avc_packet_type};
+use crate::bitstream::{
+    PacketType, avc_nal_length_size, determine_avc_packet_type, determine_hevc_packet_type,
+    hevc_nal_length_size,
+};
 use crate::demux::Mp4AudioTrack;
 use crate::demux::audio::build_audio_track;
 use crate::error::MediaError;
@@ -19,7 +22,7 @@ use crate::util::block_on;
 /// Options for [`open_mp4_source`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OpenMp4Options {
-    /// Mediabunny-style bitstream sync verify (AVC IDR / Recovery Point SEI).
+    /// Mediabunny-style bitstream sync verify (AVC IDR / SEI; HEVC IRAP).
     pub verify_avc_sync: bool,
     /// When [`Self::verify_avc_sync`], do not block open on a full scan — queue
     /// candidates for background / on-demand [`Mp4VideoTrack::ensure_key_verified`]
@@ -27,13 +30,15 @@ pub struct OpenMp4Options {
     pub defer_avc_sync: bool,
 }
 
-/// Deferred AVC sync-verify bookkeeping (moov flags until bitstream-checked).
+/// Deferred bitstream sync-verify bookkeeping (moov flags until checked).
 #[derive(Clone, Debug, Default)]
 struct SyncVerify {
     pending: VecDeque<FrameId>,
     checked: HashSet<FrameId>,
     complete: bool,
     length_size: Option<usize>,
+    /// [`VideoCodec::Avc`] or [`VideoCodec::Hevc`] when armed.
+    codec: Option<VideoCodec>,
 }
 
 /// Demuxed H.264/H.265 (etc.) video track with a presentation-order frame index.
@@ -353,7 +358,7 @@ impl Mp4VideoTrack {
         self.sync_gen.set(self.sync_gen.get().saturating_add(1));
     }
 
-    fn arm_deferred_sync_verify(&self, length_size: usize) {
+    fn arm_deferred_sync_verify(&self, length_size: usize, codec: VideoCodec) {
         let pending: VecDeque<FrameId> = self.index.borrow().sync_frame_ids().into();
         let complete = pending.is_empty();
         *self.sync_verify.borrow_mut() = SyncVerify {
@@ -361,6 +366,7 @@ impl Mp4VideoTrack {
             checked: HashSet::new(),
             complete,
             length_size: Some(length_size),
+            codec: Some(codec),
         };
         if complete {
             self.finish_sync_verify();
@@ -377,11 +383,16 @@ impl Mp4VideoTrack {
                 .map(|e| e.is_sync)
                 .unwrap_or(false));
         }
-        let length_size = self
-            .sync_verify
-            .borrow()
-            .length_size
-            .ok_or_else(|| MediaError::Mp4("sync verify not armed".into()))?;
+        let (length_size, codec) = {
+            let sv = self.sync_verify.borrow();
+            let length_size = sv
+                .length_size
+                .ok_or_else(|| MediaError::Mp4("sync verify not armed".into()))?;
+            let codec = sv
+                .codec
+                .ok_or_else(|| MediaError::Mp4("sync verify codec missing".into()))?;
+            (length_size, codec)
+        };
         let (offset, size) = {
             let index = self.index.borrow();
             let entry = index
@@ -392,7 +403,11 @@ impl Mp4VideoTrack {
         let sample = self.sync_source.read(offset, size as usize).await?;
         let keep = sample.len() == size as usize
             && matches!(
-                determine_avc_packet_type(&sample, length_size),
+                match codec {
+                    VideoCodec::Avc => determine_avc_packet_type(&sample, length_size),
+                    VideoCodec::Hevc => determine_hevc_packet_type(&sample, length_size),
+                    VideoCodec::Other => None,
+                },
                 Some(PacketType::Key)
             );
         {
@@ -807,8 +822,16 @@ fn build_video_track(
 
     // Eager sync only for MemorySource builds (fixtures). Progressive opens
     // pass verify_avc_sync: false here and apply deferred/eager after build.
-    if options.verify_avc_sync && !options.defer_avc_sync && codec == VideoCodec::Avc {
-        verify_avc_sync_flags(&mut entries, source.as_ref(), &description)?;
+    if options.verify_avc_sync && !options.defer_avc_sync {
+        match codec {
+            VideoCodec::Avc => {
+                verify_avc_sync_flags(&mut entries, source.as_ref(), &description)?;
+            }
+            VideoCodec::Hevc => {
+                verify_hevc_sync_flags(&mut entries, source.as_ref(), &description)?;
+            }
+            VideoCodec::Other => {}
+        }
     }
 
     let index = FrameIndex::from_entries(entries);
@@ -859,7 +882,7 @@ fn classify_codec(codec_string: Option<&str>) -> VideoCodec {
     }
 }
 
-/// Apply [`OpenMp4Options`] AVC sync policy after moov build.
+/// Apply [`OpenMp4Options`] bitstream sync policy after moov build (AVC / HEVC).
 async fn apply_avc_sync_option(
     track: Option<&mut Mp4VideoTrack>,
     options: OpenMp4Options,
@@ -868,14 +891,20 @@ async fn apply_avc_sync_option(
     let Some(track) = track else {
         return Ok(());
     };
-    if !options.verify_avc_sync || track.metadata.borrow().codec.codec != VideoCodec::Avc {
+    if !options.verify_avc_sync {
         return Ok(());
     }
-    let Some(length_size) = avc_nal_length_size(&track.metadata.borrow().codec.description) else {
+    let codec = track.metadata.borrow().codec.codec;
+    let length_size = match codec {
+        VideoCodec::Avc => avc_nal_length_size(&track.metadata.borrow().codec.description),
+        VideoCodec::Hevc => hevc_nal_length_size(&track.metadata.borrow().codec.description),
+        VideoCodec::Other => None,
+    };
+    let Some(length_size) = length_size else {
         return Ok(());
     };
     if options.defer_avc_sync {
-        track.arm_deferred_sync_verify(length_size);
+        track.arm_deferred_sync_verify(length_size, codec);
         let n = track.sync_verify_pending();
         if n > 0 {
             progress(&format!(
@@ -884,7 +913,7 @@ async fn apply_avc_sync_option(
         }
         return Ok(());
     }
-    track.arm_deferred_sync_verify(length_size);
+    track.arm_deferred_sync_verify(length_size, codec);
     let total = track.sync_verify_pending();
     progress(&format!("Verifying keyframes (0/{total})…"));
     let mut i = 0usize;
@@ -918,6 +947,31 @@ fn verify_avc_sync_flags(
             continue;
         }
         match determine_avc_packet_type(&sample, length_size) {
+            Some(PacketType::Key) => {}
+            Some(PacketType::Delta) | None => entry.is_sync = false,
+        }
+    }
+    Ok(())
+}
+
+/// Clear `is_sync` when the HVCC AU is not an IRAP bitstream key.
+///
+/// mediabunny: `determineVideoPacketType` hevc — NAL types 16…23.
+fn verify_hevc_sync_flags(
+    entries: &mut [FrameEntry],
+    source: &dyn MediaSource,
+    hvcc: &[u8],
+) -> Result<(), MediaError> {
+    let Some(length_size) = hevc_nal_length_size(hvcc) else {
+        return Ok(());
+    };
+    for entry in entries.iter_mut().filter(|e| e.is_sync) {
+        let sample = block_on(source.read(entry.offset, entry.size as usize))?;
+        if sample.len() != entry.size as usize {
+            entry.is_sync = false;
+            continue;
+        }
+        match determine_hevc_packet_type(&sample, length_size) {
             Some(PacketType::Key) => {}
             Some(PacketType::Delta) | None => entry.is_sync = false,
         }
