@@ -2,10 +2,12 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use webmedia::{
-    GopProfile, MemorySource, OpenMp4Options, PacketType, Player, VideoCodec, avc_nal_length_size,
-    determine_avc_packet_type, open_mp4_path, open_mp4_source,
+    GopProfile, MediaSource, MemorySource, OpenMp4Options, PacketType, Player, ReadFuture,
+    VideoCodec, avc_nal_length_size, determine_avc_packet_type, open_mp4_path, open_mp4_source,
 };
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -222,6 +224,25 @@ fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 
+/// Counts `read` calls / max `len` so mfra open stays moof-sized, not full-file.
+struct CountingSource {
+    inner: MemorySource,
+    reads: AtomicUsize,
+    max_len: AtomicUsize,
+}
+
+impl MediaSource for CountingSource {
+    fn size(&self) -> u64 {
+        self.inner.size()
+    }
+
+    fn read(&self, offset: u64, len: usize) -> ReadFuture<'_> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.max_len.fetch_max(len, Ordering::Relaxed);
+        self.inner.read(offset, len)
+    }
+}
+
 fn assert_progressive_fmp4_matches_full(bytes: Vec<u8>) {
     let full = webmedia::open_mp4_bytes(bytes.clone()).expect("full open");
     let source: Arc<dyn webmedia::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
@@ -262,7 +283,47 @@ fn assert_progressive_fmp4_matches_full(bytes: Vec<u8>) {
 #[ignore = "network: downloads fMP4 from testvideo Release (or WEBMEDIA_FMP4_URL)"]
 fn progressive_fmp4_from_url() {
     let url = std::env::var("WEBMEDIA_FMP4_URL").unwrap_or_else(|_| DEFAULT_FMP4_URL.to_string());
+    let t_dl = Instant::now();
     let bytes = fetch_url_bytes(&url).unwrap_or_else(|e| panic!("fetch {url}: {e}"));
+    eprintln!(
+        "download {:.1} MB in {:.2}s",
+        bytes.len() as f64 / (1024.0 * 1024.0),
+        t_dl.elapsed().as_secs_f64()
+    );
+
+    // Moof-only mfra path: many small reads (not one 41 MB dump into WASM).
+    let counted = Arc::new(CountingSource {
+        inner: MemorySource::from_vec(bytes.clone()),
+        reads: AtomicUsize::new(0),
+        max_len: AtomicUsize::new(0),
+    });
+    let t_open = Instant::now();
+    let progressive = block_on(open_mp4_source(
+        counted.clone() as Arc<dyn MediaSource>,
+        OpenMp4Options {
+            verify_avc_sync: false,
+            defer_avc_sync: false,
+        },
+    ))
+    .expect("progressive fMP4 open");
+    let open_s = t_open.elapsed().as_secs_f64();
+    let reads = counted.reads.load(Ordering::Relaxed);
+    let max_len = counted.max_len.load(Ordering::Relaxed);
+    eprintln!("progressive open {open_s:.3}s; reads={reads} max_len={max_len}");
+    assert!(
+        open_s < 5.0,
+        "progressive open too slow ({open_s:.2}s) on MemorySource"
+    );
+    assert!(
+        reads >= 100,
+        "too few reads ({reads}); expected per-moof mfra path (~120 moofs)"
+    );
+    assert!(
+        max_len <= 256 * 1024,
+        "largest read {max_len} B — must not bulk-download mdat (WASM freeze)"
+    );
+    assert!(progressive.frame_count() > 0);
+
     assert_progressive_fmp4_matches_full(bytes);
 }
 

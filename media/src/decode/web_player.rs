@@ -424,8 +424,12 @@ impl WebPlayer {
                 let Some(shared) = weak.upgrade() else {
                     break;
                 };
-                // Yield to play/IO when the clock is underrunning.
-                if shared.underrun_hold_since_ms.get().is_some() {
+                // Yield to play/IO when the clock is underrunning, or while scrub
+                // densify owns the network (avoid GitHub/proxy 502 storms).
+                if shared.underrun_hold_since_ms.get().is_some()
+                    || shared.scrub_busy.get()
+                    || shared.hold_densify_for_exact.get()
+                {
                     crate::util::yield_now().await;
                     continue;
                 }

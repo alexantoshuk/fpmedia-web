@@ -27,6 +27,7 @@ log = "0.4.33"
 simple_logger = "5.2.0"
 thiserror = "2.0.19"
 lru = "0.12"
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 tokio = { version = "1.53", features = ["full"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6.11", features = ["full"] }

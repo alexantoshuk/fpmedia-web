@@ -43,6 +43,10 @@ struct SyncVerify {
 #[derive(Clone)]
 pub struct Mp4VideoTrack {
     source: Arc<dyn MediaSource>,
+    /// Uncached (or same as [`Self::source`]) reads for bitstream sync verify.
+    /// After [`CachedSource`] attach, keep the raw inner here so deferred verify
+    /// does not 8 MiB-prefetch every scattered key (GitHub/proxy 502 under scrub).
+    sync_source: Arc<dyn MediaSource>,
     metadata: RefCell<VideoMetadata>,
     index: RefCell<FrameIndex>,
     sync_verify: RefCell<SyncVerify>,
@@ -76,6 +80,11 @@ impl Mp4VideoTrack {
 
     pub fn source(&self) -> &Arc<dyn MediaSource> {
         &self.source
+    }
+
+    /// Swap playback I/O to a cached wrapper; sync-verify keeps the previous source.
+    pub fn set_playback_source(&mut self, source: Arc<dyn MediaSource>) {
+        self.source = source;
     }
 
     /// True when AVC sync verify finished (or was never required).
@@ -197,7 +206,7 @@ impl Mp4VideoTrack {
                 .ok_or(MediaError::FrameOutOfRange(frame, self.frame_count()))?;
             (entry.offset, entry.size)
         };
-        let sample = self.source.read(offset, size as usize).await?;
+        let sample = self.sync_source.read(offset, size as usize).await?;
         let keep = sample.len() == size as usize
             && matches!(
                 determine_avc_packet_type(&sample, length_size),
@@ -482,7 +491,7 @@ pub async fn open_mp4_source_cached_with_progress(
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
     let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::with_fetch_map(source, fetch_map));
     if let Some(v) = opened.video.as_mut() {
-        v.source = Arc::clone(&cached);
+        v.set_playback_source(Arc::clone(&cached));
     }
     if let Some(a) = opened.audio.as_mut() {
         a.set_source(Arc::clone(&cached));
@@ -519,7 +528,7 @@ pub async fn open_mp4_media_source_cached_with_progress(
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
     let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::with_fetch_map(source, fetch_map));
     if let Some(v) = opened.video.as_mut() {
-        v.source = Arc::clone(&cached);
+        v.set_playback_source(Arc::clone(&cached));
     }
     if let Some(a) = opened.audio.as_mut() {
         a.set_source(cached);
@@ -622,6 +631,7 @@ fn build_video_track(
     };
 
     Ok(Some(Mp4VideoTrack {
+        sync_source: Arc::clone(&source),
         source,
         metadata: RefCell::new(metadata),
         index: RefCell::new(index),
@@ -672,7 +682,7 @@ async fn apply_avc_sync_option(
     let mut i = 0usize;
     while track.verify_next_pending().await? {
         i += 1;
-        if i % 4 == 0 {
+        if i.is_multiple_of(4) {
             progress(&format!("Verifying keyframes ({i}/{total})…"));
             crate::util::yield_now().await;
         }

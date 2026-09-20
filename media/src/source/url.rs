@@ -92,32 +92,51 @@ impl MediaSource for UrlSource {
                 &format!("webmedia: UrlSource Range bytes={offset}-{end}").into(),
             );
 
-            let resp = range_get(&url, offset, end).await?;
-            let status = resp.status();
-            if status != 206 && status != 200 {
-                return Err(MediaError::Source(format!(
-                    "HTTP {status} reading bytes={offset}-{end}"
-                )));
+            // Transient CDN / proxy errors (GitHub Releases via /proxy) — brief retry.
+            let mut last_err = String::new();
+            for attempt in 0..4u32 {
+                if attempt > 0 {
+                    crate::util::yield_now().await;
+                    crate::util::yield_now().await;
+                }
+                let resp = match range_get(&url, offset, end).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        last_err = e.to_string();
+                        if last_err.contains("timed out") {
+                            continue;
+                        }
+                        return Err(e);
+                    }
+                };
+                let status = resp.status();
+                if status == 206 || status == 200 {
+                    // A 200 on a mid-file Range means the server dumped the whole object —
+                    // refuse rather than allocating multi‑100 MB into WASM.
+                    if status == 200 && offset > 0 {
+                        return Err(MediaError::Source(
+                            "no_http_range: mid-file read got HTTP 200 (Range ignored)".into(),
+                        ));
+                    }
+
+                    let buf = response_bytes(&resp).await?;
+                    if status == 200 && offset == 0 && buf.len() > want {
+                        return Ok(buf[..want].to_vec());
+                    }
+                    if buf.len() > want {
+                        return Ok(buf[..want].to_vec());
+                    }
+                    return Ok(buf);
+                }
+                last_err = format!("HTTP {status}");
+                if status != 502 && status != 503 && status != 429 {
+                    break;
+                }
             }
 
-            // A 200 on a mid-file Range means the server dumped the whole object —
-            // refuse rather than allocating multi‑100 MB into WASM.
-            if status == 200 && offset > 0 {
-                return Err(MediaError::Source(
-                    "no_http_range: mid-file read got HTTP 200 (Range ignored)".into(),
-                ));
-            }
-
-            let buf = response_bytes(&resp).await?;
-            if status == 200 && offset == 0 && buf.len() > want {
-                // Probe said 206 earlier but this read returned the full body —
-                // take only the requested prefix (rare); prefer not to keep the rest.
-                return Ok(buf[..want].to_vec());
-            }
-            if buf.len() > want {
-                return Ok(buf[..want].to_vec());
-            }
-            Ok(buf)
+            Err(MediaError::Source(format!(
+                "{last_err} reading bytes={offset}-{end}"
+            )))
         })
     }
 }
@@ -129,14 +148,57 @@ async fn range_get(url: &str, start: u64, end: u64) -> Result<Response, MediaErr
         .set("Range", &format!("bytes={start}-{end}"))
         .map_err(js_to_source)?;
 
+    let controller = web_sys::AbortController::new().map_err(js_to_source)?;
+    let signal = controller.signal();
+
     let init = RequestInit::new();
     init.set_method("GET");
     init.set_headers(&headers);
+    init.set_signal(Some(&signal));
 
     let request = Request::new_with_str_and_init(url, &init).map_err(js_to_source)?;
-    let resp_val = JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(|e| MediaError::Source(format_js_fetch_err(e)))?;
+    let fetch_promise = window.fetch_with_request(&request);
+
+    // Scale with payload: 43 MiB through GitHub needs ~60 s budget, not 15 s.
+    // Floor 15 s (small Ranges); cap 180 s.
+    let nbytes = end.saturating_sub(start).saturating_add(1);
+    let timeout_ms = (15_000i64 + (nbytes as i64 / 1_000)).clamp(15_000, 180_000) as i32;
+    let timeout = js_sys::Promise::new(&mut |resolve, _reject| {
+        let ctrl = controller.clone();
+        let resolve_ok = resolve.clone();
+        let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
+            ctrl.abort();
+            let _ = resolve_ok.call0(&wasm_bindgen::JsValue::NULL);
+        });
+        if window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                timeout_ms,
+            )
+            .is_err()
+        {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        }
+    });
+
+    let raced = js_sys::Promise::race(&js_sys::Array::of2(&fetch_promise, &timeout));
+    let resp_val = JsFuture::from(raced).await.map_err(|e| {
+        let msg = format_js_fetch_err(e);
+        if msg.to_ascii_lowercase().contains("abort") {
+            MediaError::Source(format!(
+                "Range bytes={start}-{end} timed out ({timeout_ms}ms)"
+            ))
+        } else {
+            MediaError::Source(msg)
+        }
+    })?;
+
+    if resp_val.is_null() || resp_val.is_undefined() {
+        return Err(MediaError::Source(format!(
+            "Range bytes={start}-{end} timed out ({timeout_ms}ms)"
+        )));
+    }
+
     resp_val
         .dyn_into::<Response>()
         .map_err(|_| MediaError::Source("fetch did not return a Response".into()))
