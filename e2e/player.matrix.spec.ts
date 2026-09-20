@@ -131,6 +131,20 @@ test.describe("testvideo matrix (profile / path roles)", () => {
       await player.openUrl(url, role.openTimeoutMs);
       const openMs = Date.now() - openStart;
 
+      // fMP4 warm-open is ready with a short index; wait for bg backfill before
+      // asserting full-clip expectations (minLastFrame / fps).
+      if (role.expect.minLastFrame > 0) {
+        await expect
+          .poll(
+            async () => (await player.readStatus()).lastFrame ?? 0,
+            {
+              timeout: role.openTimeoutMs,
+              message: `${role.id}: wait fragment backfill (lastFrame)`,
+            },
+          )
+          .toBeGreaterThan(role.expect.minLastFrame);
+      }
+
       await assertOpenExpectations(player, role);
       await runExercise(player, role);
 

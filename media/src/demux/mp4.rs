@@ -47,11 +47,24 @@ pub struct Mp4VideoTrack {
     /// After [`CachedSource`] attach, keep the raw inner here so deferred verify
     /// does not 8 MiB-prefetch every scattered key (GitHub/proxy 502 under scrub).
     sync_source: Arc<dyn MediaSource>,
+    /// ISOBMFF `tkhd` track id (for `tfra` provisional duration).
+    track_id: u32,
     metadata: RefCell<VideoMetadata>,
     index: RefCell<FrameIndex>,
     sync_verify: RefCell<SyncVerify>,
     /// Bumped when sync table changes (bg demote) so hosts can refresh GOP UI.
     sync_gen: Cell<u64>,
+    /// fMP4 warm-open remainder (mediabunny: fragments after `readMetadata`).
+    fragment_backfill: RefCell<Option<FragmentBackfillState>>,
+}
+
+#[derive(Clone)]
+struct FragmentBackfillState {
+    plan: crate::demux::FragmentBackfillPlan,
+    source: Arc<dyn MediaSource>,
+    complete: bool,
+    started: bool,
+    error: Option<String>,
 }
 
 impl fmt::Debug for Mp4VideoTrack {
@@ -101,10 +114,180 @@ impl Mp4VideoTrack {
         self.sync_gen.get()
     }
 
+    /// How many frames are currently in the index (may be &lt; [`Self::frame_count`] while backfilling).
+    pub fn indexed_frame_count(&self) -> u64 {
+        self.index.borrow().len() as u64
+    }
+
+    /// True when fMP4 fragment tables are fully loaded (or file was never fragmented).
+    pub fn fragments_complete(&self) -> bool {
+        self.fragment_backfill
+            .borrow()
+            .as_ref()
+            .map(|s| s.complete)
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn arm_fragment_backfill(
+        &self,
+        plan: crate::demux::FragmentBackfillPlan,
+        source: Arc<dyn MediaSource>,
+    ) {
+        self.apply_provisional_fragment_length(&plan);
+        *self.fragment_backfill.borrow_mut() = Some(FragmentBackfillState {
+            plan,
+            source,
+            complete: false,
+            started: false,
+            error: None,
+        });
+    }
+
+    /// Scrubber length before remaining moofs load (`mediabunny: tfra` lookup times).
+    ///
+    /// Index stays warm-only; [`Self::ensure_frame_indexed`] awaits backfill past it.
+    fn apply_provisional_fragment_length(&self, plan: &crate::demux::FragmentBackfillPlan) {
+        let warm_moofs = plan.warm_moof_count.max(1) as u64;
+        let total_moofs = plan.idx.moof_offsets.len() as u64;
+        if total_moofs <= warm_moofs {
+            return;
+        }
+        let mut meta = self.metadata.borrow_mut();
+        let warm_frames = meta.frame_count.max(1);
+        let warm_dur = meta.duration_ticks;
+
+        // Uniform fragment density (this plate: 120×GOP12 → exact 1440).
+        meta.frame_count = warm_frames.saturating_mul(total_moofs) / warm_moofs;
+
+        // Prefer last video `tfra` time + one warm-moof span (last entry is fragment
+        // start, not EOF). Else scale warm duration by moof count.
+        let moof_span = if warm_dur > 0 {
+            warm_dur / warm_moofs
+        } else {
+            0
+        };
+        if let Some((_, last_t)) = plan
+            .idx
+            .tfra_last_time
+            .iter()
+            .find(|(id, _)| *id == self.track_id)
+            .copied()
+        {
+            meta.duration_ticks = last_t.saturating_add(moof_span).max(1);
+        } else if warm_dur > 0 {
+            meta.duration_ticks = warm_dur.saturating_mul(total_moofs) / warm_moofs;
+        }
+
+        if meta.duration_ticks > 0 && meta.frame_count > 0 {
+            meta.fps =
+                Some(meta.frame_count as f64 * meta.timescale as f64 / meta.duration_ticks as f64);
+        }
+        self.sync_gen.set(self.sync_gen.get().saturating_add(1));
+    }
+
+    /// Mark backfill worker as started (idempotent).
+    pub fn kick_fragment_backfill(&self) {
+        if let Some(s) = self.fragment_backfill.borrow_mut().as_mut() {
+            s.started = true;
+        }
+    }
+
+    /// Load remaining moofs and replace the frame index (one-shot).
+    pub async fn run_fragment_backfill_step(&self) -> Result<(), MediaError> {
+        let (plan, source) = {
+            let mut slot = self.fragment_backfill.borrow_mut();
+            let Some(state) = slot.as_mut() else {
+                return Ok(());
+            };
+            if state.complete {
+                return Ok(());
+            }
+            state.started = true;
+            (state.plan.clone(), Arc::clone(&state.source))
+        };
+
+        match crate::demux::complete_mfra_backfill(source.as_ref(), plan, |_| {}).await {
+            Ok(mp4) => {
+                let rebuilt = build_video_track(
+                    &mp4,
+                    Arc::clone(&self.sync_source),
+                    OpenMp4Options {
+                        verify_avc_sync: false,
+                        defer_avc_sync: false,
+                    },
+                )?;
+                let Some(fresh) = rebuilt else {
+                    return Err(MediaError::Mp4("mfra backfill: no video track".into()));
+                };
+                *self.index.borrow_mut() = fresh.index.borrow().clone();
+                *self.metadata.borrow_mut() = fresh.metadata.borrow().clone();
+                // Keep existing sync_verify policy; re-arm deferred if needed.
+                if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
+                    state.complete = true;
+                    state.error = None;
+                }
+                self.sync_gen.set(self.sync_gen.get().saturating_add(1));
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
+                    state.error = Some(e.to_string());
+                    state.complete = true; // stop spinning
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Block until fragment backfill finishes (or there is nothing to do).
+    pub async fn await_fragment_backfill(&self) -> Result<(), MediaError> {
+        if self.fragments_complete() {
+            return Ok(());
+        }
+        // Native / tests: run inline. Wasm: bg worker in WebPlayer runs the step;
+        // we only poll here.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self.run_fragment_backfill_step().await;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.kick_fragment_backfill();
+            while !self.fragments_complete() {
+                if let Some(err) = self
+                    .fragment_backfill
+                    .borrow()
+                    .as_ref()
+                    .and_then(|s| s.error.clone())
+                {
+                    return Err(MediaError::Mp4(err));
+                }
+                crate::util::yield_now().await;
+            }
+            Ok(())
+        }
+    }
+
+    async fn ensure_frame_indexed(&self, frame: FrameId) -> Result<(), MediaError> {
+        if (frame as usize) < self.index.borrow().len() {
+            return Ok(());
+        }
+        if self.fragments_complete() {
+            return Err(MediaError::FrameOutOfRange(frame, self.frame_count()));
+        }
+        self.await_fragment_backfill().await?;
+        if (frame as usize) < self.index.borrow().len() {
+            Ok(())
+        } else {
+            Err(MediaError::FrameOutOfRange(frame, self.frame_count()))
+        }
+    }
+
     /// Ensure nearest sync ≤ `frame` is bitstream-verified; return that key.
     ///
     /// mediabunny: `verifyKeyPackets` on retrieve — demote lying stss and retry.
     pub async fn ensure_key_verified(&self, frame: FrameId) -> Result<FrameId, MediaError> {
+        self.ensure_frame_indexed(frame).await?;
         if self.sync_verify.borrow().length_size.is_none() {
             return self
                 .index
@@ -238,6 +421,7 @@ impl Mp4VideoTrack {
     }
 
     pub async fn encoded_sample(&self, frame: FrameId) -> Result<EncodedSample, MediaError> {
+        self.ensure_frame_indexed(frame).await?;
         let entry = {
             let index = self.index.borrow();
             index
@@ -440,11 +624,11 @@ pub async fn open_mp4_source_with_progress(
     mut progress: impl FnMut(&str),
 ) -> Result<Mp4VideoTrack, MediaError> {
     let fetch_map = Arc::new(FetchMap::new());
-    let mp4 =
-        crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
+    let parsed =
+        crate::demux::parse_mp4_progressive_with_backfill(source.as_ref(), &mut progress).await?;
     // Verify separately (async) — `block_on` cannot drive BlobSource reads.
     let mut opened = build_opened(
-        mp4,
+        parsed.mp4,
         source,
         fetch_map,
         OpenMp4Options {
@@ -452,6 +636,13 @@ pub async fn open_mp4_source_with_progress(
             defer_avc_sync: false,
         },
     )?;
+    if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
+        v.arm_fragment_backfill(plan, Arc::clone(&v.sync_source));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            v.await_fragment_backfill().await?;
+        }
+    }
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
     opened.require_video()
 }
@@ -475,12 +666,12 @@ pub async fn open_mp4_source_cached_with_progress(
     mut progress: impl FnMut(&str),
 ) -> Result<Mp4VideoTrack, MediaError> {
     let fetch_map = Arc::new(FetchMap::new());
-    let mp4 =
-        crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
+    let parsed =
+        crate::demux::parse_mp4_progressive_with_backfill(source.as_ref(), &mut progress).await?;
     // Verify on the raw source first — CachedSource's 8 MiB prefetch on every
     // scattered keyframe would thrash WASM (~600 syncs on long 1080p → multi‑GB of Blob reads).
     let mut opened = build_opened(
-        mp4,
+        parsed.mp4,
         Arc::clone(&source),
         Arc::clone(&fetch_map),
         OpenMp4Options {
@@ -488,6 +679,13 @@ pub async fn open_mp4_source_cached_with_progress(
             defer_avc_sync: false,
         },
     )?;
+    if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
+        v.arm_fragment_backfill(plan, Arc::clone(&source));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            v.await_fragment_backfill().await?;
+        }
+    }
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
     let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::with_fetch_map(source, fetch_map));
     if let Some(v) = opened.video.as_mut() {
@@ -514,10 +712,10 @@ pub async fn open_mp4_media_source_cached_with_progress(
     mut progress: impl FnMut(&str),
 ) -> Result<OpenedMp4, MediaError> {
     let fetch_map = Arc::new(FetchMap::new());
-    let mp4 =
-        crate::demux::parse_mp4_progressive_with_progress(source.as_ref(), &mut progress).await?;
+    let parsed =
+        crate::demux::parse_mp4_progressive_with_backfill(source.as_ref(), &mut progress).await?;
     let mut opened = build_opened(
-        mp4,
+        parsed.mp4,
         Arc::clone(&source),
         Arc::clone(&fetch_map),
         OpenMp4Options {
@@ -525,6 +723,14 @@ pub async fn open_mp4_media_source_cached_with_progress(
             defer_avc_sync: false,
         },
     )?;
+    if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
+        v.arm_fragment_backfill(plan, Arc::clone(&source));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            progress("Indexing remaining fragments…");
+            v.await_fragment_backfill().await?;
+        }
+    }
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
     let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::with_fetch_map(source, fetch_map));
     if let Some(v) = opened.video.as_mut() {
@@ -633,6 +839,7 @@ fn build_video_track(
     Ok(Some(Mp4VideoTrack {
         sync_source: Arc::clone(&source),
         source,
+        track_id: track.track_id,
         metadata: RefCell::new(metadata),
         index: RefCell::new(index),
         sync_verify: RefCell::new(SyncVerify {
@@ -640,6 +847,7 @@ fn build_video_track(
             ..SyncVerify::default()
         }),
         sync_gen: Cell::new(0),
+        fragment_backfill: RefCell::new(None),
     }))
 }
 

@@ -109,12 +109,32 @@ enum MfraNeedKind {
     Moof(usize),
 }
 
-struct MfraIndex {
+#[derive(Clone)]
+pub(crate) struct MfraIndex {
     mfra_off: u64,
     mfra_size: u64,
     mfra_bytes: Vec<u8>,
-    moof_offsets: Vec<u64>,
+    pub(crate) moof_offsets: Vec<u64>,
+    /// Last `tfra` timestamp per track (`mediabunny: fragmentLookupTable`).
+    pub(crate) tfra_last_time: Vec<(u32, u64)>,
 }
+
+/// Pending moofs after a warm fMP4 open (mediabunny: `readFragment` later).
+#[derive(Clone)]
+pub struct FragmentBackfillPlan {
+    pub(crate) idx: MfraIndex,
+    pub(crate) warm_moof_count: usize,
+    pub(crate) warm_loaded: Vec<LoadedBox>,
+}
+
+/// Progressive parse result — optional fragment backfill for fMP4.
+pub struct ProgressiveParse {
+    pub mp4: re_mp4::Mp4,
+    pub backfill: Option<FragmentBackfillPlan>,
+}
+
+/// Moofs fetched before UI ready (≈ first GOP). Rest via [`complete_mfra_backfill`].
+const MFRA_WARM_MOOFS: usize = 2;
 
 /// EOF `mfra` / `tfra` probe only (mediabunny: `lookForMfraBox`) — no fragment walk.
 async fn probe_mfra(source: &dyn MediaSource) -> Result<Option<MfraIndex>, MediaError> {
@@ -139,7 +159,7 @@ async fn probe_mfra(source: &dyn MediaSource) -> Result<Option<MfraIndex>, Media
     if declared != mfra_size && declared != 1 {
         return Ok(None);
     }
-    let moof_offsets = parse_mfra_moof_offsets(&mfra_bytes)?;
+    let (moof_offsets, tfra_last_time) = parse_mfra_index(&mfra_bytes)?;
     if moof_offsets.is_empty() || moof_offsets[0] >= mfra_off {
         return Ok(None);
     }
@@ -148,6 +168,7 @@ async fn probe_mfra(source: &dyn MediaSource) -> Result<Option<MfraIndex>, Media
         mfra_size,
         mfra_bytes,
         moof_offsets,
+        tfra_last_time,
     }))
 }
 
@@ -157,46 +178,74 @@ const MFRA_MOOF_FETCH_PARALLEL: usize = 4;
 
 /// Single-file fMP4 open via `mfra` / `tfra` moof offsets.
 ///
-/// Loads **moof tables only** (+ `ftyp`/`moov`); synthesizes `mdat` headers.
-/// Do **not** bulk-`read(0, mfra)`: a 41 MB plate freezes the WASM main thread on
-/// `arrayBuffer`→`Vec` even after the network body finished (~4 s) — e2e could
-/// not read `#status` for 30 s+. mediabunny: `UrlSource` streams bounded worker
-/// windows; full pre-mfra dump is a local anti-pattern for our frame-index open.
+/// **Warm path** (mediabunny: `readMetadata` then `readFragment`): load only the
+/// first [`MFRA_WARM_MOOFS`] moof tables so open can paint frame 0; remaining
+/// moofs are fetched by [`complete_mfra_backfill`]. Never bulk-`read(0, mfra)`.
 async fn load_via_mfra(
     source: &dyn MediaSource,
     idx: MfraIndex,
     progress: &mut impl FnMut(&str),
-) -> Result<Vec<LoadedBox>, MediaError> {
+) -> Result<(Vec<LoadedBox>, Option<FragmentBackfillPlan>), MediaError> {
     let n = idx.moof_offsets.len();
     progress(&format!("mfra index: {n} fragments…"));
-    load_via_mfra_per_moof(source, idx, progress).await
+    let warm = MFRA_WARM_MOOFS.min(n);
+    if warm >= n {
+        let loaded = load_via_mfra_per_moof(source, idx, 0, n, true, progress).await?;
+        return Ok((loaded, None));
+    }
+    progress(&format!("Warming first {warm}/{n} fragments for playback…"));
+    let loaded = load_via_mfra_per_moof(source, idx.clone(), 0, warm, true, progress).await?;
+    Ok((
+        loaded.clone(),
+        Some(FragmentBackfillPlan {
+            idx,
+            warm_moof_count: warm,
+            warm_loaded: loaded,
+        }),
+    ))
 }
 
+/// Fetch moofs `[start, end)` and optionally append the trailing `mfra` box.
 async fn load_via_mfra_per_moof(
     source: &dyn MediaSource,
     idx: MfraIndex,
+    start: usize,
+    end: usize,
+    include_mfra: bool,
     progress: &mut impl FnMut(&str),
 ) -> Result<Vec<LoadedBox>, MediaError> {
     let file_size = source.size();
     let n = idx.moof_offsets.len();
-
-    let first_moof = idx.moof_offsets[0];
-    let prefix = scan_top_level_from(source, 0, Some(first_moof)).await?;
-    if !prefix.iter().any(|b| b.is_moov()) {
-        return Err(MediaError::Mp4(
-            "mfra path: no moov before first moof".into(),
-        ));
+    if start > end || end > n {
+        return Err(MediaError::Mp4("mfra moof range OOB".into()));
     }
 
-    // Provisional moof reads: up to MOOF_FETCH_CAP or the gap to the next moof.
     let mut work: Vec<(MfraNeedKind, u64, usize)> = Vec::new();
-    for (i, info) in prefix.iter().enumerate() {
-        if info.needs_full_body() {
-            work.push((MfraNeedKind::Prefix(i), info.offset, info.size as usize));
+    let mut prefix: Option<Vec<TopLevelBox>> = None;
+
+    if start == 0 {
+        let first_moof = idx.moof_offsets[0];
+        let pfx = scan_top_level_from(source, 0, Some(first_moof)).await?;
+        if !pfx.iter().any(|b| b.is_moov()) {
+            return Err(MediaError::Mp4(
+                "mfra path: no moov before first moof".into(),
+            ));
         }
+        for (i, info) in pfx.iter().enumerate() {
+            if info.needs_full_body() {
+                work.push((MfraNeedKind::Prefix(i), info.offset, info.size as usize));
+            }
+        }
+        prefix = Some(pfx);
     }
-    for (i, &moof_off) in idx.moof_offsets.iter().enumerate() {
-        let next = idx.moof_offsets.get(i + 1).copied().unwrap_or(idx.mfra_off);
+
+    for (i, &moof_off) in idx.moof_offsets[start..end].iter().enumerate() {
+        let global_i = start + i;
+        let next = idx
+            .moof_offsets
+            .get(global_i + 1)
+            .copied()
+            .unwrap_or(idx.mfra_off);
         let gap = next.saturating_sub(moof_off) as usize;
         if gap < HEADER_SIZE {
             return Err(MediaError::Mp4(format!(
@@ -204,7 +253,7 @@ async fn load_via_mfra_per_moof(
             )));
         }
         let fetch = gap.clamp(HEADER_SIZE, MOOF_FETCH_CAP);
-        work.push((MfraNeedKind::Moof(i), moof_off, fetch));
+        work.push((MfraNeedKind::Moof(global_i), moof_off, fetch));
     }
 
     let needs: Vec<(usize, u64, usize)> = work
@@ -215,7 +264,8 @@ async fn load_via_mfra_per_moof(
 
     let runs = coalesce_byte_runs_adjacent(&needs);
     let total = runs.len();
-    progress(&format!("Fetching moof tables (0/{total})…"));
+    progress(&format!("Fetching moof tables ({start}/{n})…"));
+    let _ = total;
 
     let mut fetched: Vec<Option<Vec<u8>>> = vec![None; work.len()];
     fill_from_coalesce_runs(
@@ -227,35 +277,39 @@ async fn load_via_mfra_per_moof(
     )
     .await?;
 
-    let mut prefix_bytes: Vec<Option<Vec<u8>>> = vec![None; prefix.len()];
-    let mut moof_chunks: Vec<Option<Vec<u8>>> = vec![None; n];
+    let prefix_len = prefix.as_ref().map(|p| p.len()).unwrap_or(0);
+    let mut prefix_bytes: Vec<Option<Vec<u8>>> = vec![None; prefix_len];
+    let mut moof_chunks: Vec<Option<Vec<u8>>> = vec![None; end - start];
     for (wi, (kind, _, _)) in work.iter().enumerate() {
         let bytes = fetched[wi]
             .take()
             .ok_or_else(|| MediaError::Mp4("mfra load missing chunk".into()))?;
         match *kind {
             MfraNeedKind::Prefix(i) => prefix_bytes[i] = Some(bytes),
-            MfraNeedKind::Moof(i) => moof_chunks[i] = Some(bytes),
+            MfraNeedKind::Moof(i) => moof_chunks[i - start] = Some(bytes),
         }
     }
 
     let mut loaded = Vec::new();
-    for (i, mut info) in prefix.into_iter().enumerate() {
-        let mut bytes = if let Some(b) = prefix_bytes[i].take() {
-            b
-        } else {
-            synthesize_box_header(&info)
-        };
-        if info.is_moov() {
-            sanitize_moov_padding(&mut bytes)?;
-            info.size = bytes.len() as u64;
-            info.header_len = HEADER_SIZE as u8;
+    if let Some(prefix) = prefix {
+        for (i, mut info) in prefix.into_iter().enumerate() {
+            let mut bytes = if let Some(b) = prefix_bytes[i].take() {
+                b
+            } else {
+                synthesize_box_header(&info)
+            };
+            if info.is_moov() {
+                sanitize_moov_padding(&mut bytes)?;
+                info.size = bytes.len() as u64;
+                info.header_len = HEADER_SIZE as u8;
+            }
+            loaded.push(LoadedBox { info, bytes });
         }
-        loaded.push(LoadedBox { info, bytes });
     }
 
-    for (i, &moof_off) in idx.moof_offsets.iter().enumerate() {
-        let chunk = moof_chunks[i]
+    for (local_i, &moof_off) in idx.moof_offsets[start..end].iter().enumerate() {
+        let global_i = start + local_i;
+        let chunk = moof_chunks[local_i]
             .take()
             .ok_or_else(|| MediaError::Mp4(format!("mfra moof missing at {moof_off}")))?;
         let (header_len, moof_size, typ) = parse_box_header_bytes(&chunk, moof_off, file_size)?;
@@ -296,7 +350,11 @@ async fn load_via_mfra_per_moof(
             });
         }
 
-        let next_boundary = idx.moof_offsets.get(i + 1).copied().unwrap_or(idx.mfra_off);
+        let next_boundary = idx
+            .moof_offsets
+            .get(global_i + 1)
+            .copied()
+            .unwrap_or(idx.mfra_off);
         let mdat_off = moof_off.saturating_add(moof_size);
         if mdat_off > next_boundary {
             return Err(MediaError::Mp4(format!(
@@ -320,17 +378,43 @@ async fn load_via_mfra_per_moof(
         }
     }
 
-    loaded.push(LoadedBox {
-        info: TopLevelBox {
-            offset: idx.mfra_off,
-            size: idx.mfra_size,
-            header_len: HEADER_SIZE as u8,
-            typ: *b"mfra",
-        },
-        bytes: idx.mfra_bytes,
-    });
+    if include_mfra {
+        loaded.push(LoadedBox {
+            info: TopLevelBox {
+                offset: idx.mfra_off,
+                size: idx.mfra_size,
+                header_len: HEADER_SIZE as u8,
+                typ: *b"mfra",
+            },
+            bytes: idx.mfra_bytes,
+        });
+    }
 
     Ok(loaded)
+}
+
+/// Finish warm fMP4 open: fetch remaining moofs and re-parse a full sample table.
+pub async fn complete_mfra_backfill(
+    source: &dyn MediaSource,
+    plan: FragmentBackfillPlan,
+    mut progress: impl FnMut(&str),
+) -> Result<re_mp4::Mp4, MediaError> {
+    let file_size = source.size();
+    let n = plan.idx.moof_offsets.len();
+    let warm = plan.warm_moof_count;
+    progress(&format!("Indexing remaining fragments ({warm}/{n})…"));
+    let rest =
+        load_via_mfra_per_moof(source, plan.idx.clone(), warm, n, false, &mut progress).await?;
+    let mut loaded = plan.warm_loaded;
+    let mfra = loaded
+        .pop()
+        .filter(|b| b.info.is_mfra())
+        .ok_or_else(|| MediaError::Mp4("mfra backfill: warm load missing mfra".into()))?;
+    loaded.extend(rest);
+    loaded.push(mfra);
+    progress("Rebuilding frame index…");
+    crate::util::yield_now().await;
+    parse_loaded_boxes(file_size, loaded)
 }
 
 async fn scan_top_level_from(
@@ -458,12 +542,16 @@ fn parse_box_header_bytes(
     Ok((header_len, box_size, typ))
 }
 
-/// Collect unique sorted `moof` offsets from all `tfra` children of `mfra`.
-fn parse_mfra_moof_offsets(mfra: &[u8]) -> Result<Vec<u64>, MediaError> {
+/// `(moof_offsets, tfra_last_time_per_track)`.
+type MfraParse = (Vec<u64>, Vec<(u32, u64)>);
+
+/// Collect unique sorted `moof` offsets + last timestamp per track from `mfra`.
+fn parse_mfra_index(mfra: &[u8]) -> Result<MfraParse, MediaError> {
     if mfra.len() < HEADER_SIZE || &mfra[4..8] != b"mfra" {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let mut offsets = Vec::new();
+    let mut tfra_last_time = Vec::new();
     let mut pos = HEADER_SIZE;
     while pos + HEADER_SIZE <= mfra.len() {
         let size32 = u32::from_be_bytes(mfra[pos..pos + 4].try_into().unwrap()) as usize;
@@ -472,17 +560,22 @@ fn parse_mfra_moof_offsets(mfra: &[u8]) -> Result<Vec<u64>, MediaError> {
             break;
         }
         if typ == b"tfra" {
-            parse_tfra_moof_offsets(&mfra[pos..pos + size32], &mut offsets)?;
+            parse_tfra_entries(&mfra[pos..pos + size32], &mut offsets, &mut tfra_last_time)?;
         }
         pos += size32;
     }
     offsets.sort_unstable();
     offsets.dedup();
-    Ok(offsets)
+    Ok((offsets, tfra_last_time))
 }
 
-fn parse_tfra_moof_offsets(tfra: &[u8], out: &mut Vec<u64>) -> Result<(), MediaError> {
+fn parse_tfra_entries(
+    tfra: &[u8],
+    offsets: &mut Vec<u64>,
+    last_times: &mut Vec<(u32, u64)>,
+) -> Result<(), MediaError> {
     // FullBox: size(4) + 'tfra'(4) + version(1) + flags(3) + …
+    // mediabunny: isobmff-demuxer.ts case 'tfra' → fragmentLookupTable
     if tfra.len() < 16 || &tfra[4..8] != b"tfra" {
         return Ok(());
     }
@@ -491,37 +584,44 @@ fn parse_tfra_moof_offsets(tfra: &[u8], out: &mut Vec<u64>) -> Result<(), MediaE
     if body.len() < 16 {
         return Ok(());
     }
-    let _track_id = u32::from_be_bytes(body[0..4].try_into().unwrap());
+    let track_id = u32::from_be_bytes(body[0..4].try_into().unwrap());
     let length = u32::from_be_bytes(body[4..8].try_into().unwrap());
     let traf_len = ((length >> 4) & 3) as usize + 1;
     let trun_len = ((length >> 2) & 3) as usize + 1;
     let sample_len = (length & 3) as usize + 1;
     let entry_count = u32::from_be_bytes(body[8..12].try_into().unwrap()) as usize;
     let mut p = 12;
+    let mut last_time = 0u64;
     for _ in 0..entry_count {
-        let moof_off = if version == 1 {
+        let (time, moof_off) = if version == 1 {
             if p + 16 > body.len() {
                 return Err(MediaError::Mp4("truncated tfra entry (v1)".into()));
             }
-            p += 8; // time
+            let time = u64::from_be_bytes(body[p..p + 8].try_into().unwrap());
+            p += 8;
             let off = u64::from_be_bytes(body[p..p + 8].try_into().unwrap());
             p += 8;
-            off
+            (time, off)
         } else {
             if p + 8 > body.len() {
                 return Err(MediaError::Mp4("truncated tfra entry (v0)".into()));
             }
-            p += 4; // time
+            let time = u32::from_be_bytes(body[p..p + 4].try_into().unwrap()) as u64;
+            p += 4;
             let off = u32::from_be_bytes(body[p..p + 4].try_into().unwrap()) as u64;
             p += 4;
-            off
+            (time, off)
         };
         let skip = traf_len + trun_len + sample_len;
         if p + skip > body.len() {
             return Err(MediaError::Mp4("truncated tfra traf/trun/sample".into()));
         }
         p += skip;
-        out.push(moof_off);
+        offsets.push(moof_off);
+        last_time = time;
+    }
+    if entry_count > 0 {
+        last_times.push((track_id, last_time));
     }
     Ok(())
 }
@@ -672,20 +772,20 @@ fn sanitize_moov_padding(bytes: &mut Vec<u8>) -> Result<(), MediaError> {
 }
 
 /// Load bytes needed for progressive `re_mp4` parse:
-/// - full `ftyp` + `moov` (+ every `moof` for fragmented files)
+/// - full `ftyp` + `moov` (+ warm or every `moof` for fragmented files)
 /// - headers only for everything else (`mdat`/`free`/`mfra`/…) so `BoxHeader::read` works
 pub async fn load_ftyp_moov(source: &dyn MediaSource) -> Result<Vec<LoadedBox>, MediaError> {
-    load_ftyp_moov_with_progress(source, &mut |_| {}).await
+    Ok(load_ftyp_moov_with_progress(source, &mut |_| {}).await?.0)
 }
 
 async fn load_ftyp_moov_with_progress(
     source: &dyn MediaSource,
     progress: &mut impl FnMut(&str),
-) -> Result<Vec<LoadedBox>, MediaError> {
+) -> Result<(Vec<LoadedBox>, Option<FragmentBackfillPlan>), MediaError> {
     progress("Probing mfra index…");
     if let Some(idx) = probe_mfra(source).await? {
         match load_via_mfra(source, idx, progress).await {
-            Ok(loaded) => return Ok(loaded),
+            Ok(pair) => return Ok(pair),
             Err(e) => {
                 progress(&format!("mfra open failed ({e}); scanning file…"));
             }
@@ -771,7 +871,7 @@ async fn load_ftyp_moov_with_progress(
         return Err(MediaError::Mp4("moov missing after load".into()));
     }
 
-    Ok(loaded)
+    Ok((loaded, None))
 }
 
 /// Build an ISOBMFF box header matching [`TopLevelBox`] (body not included).
@@ -1038,14 +1138,26 @@ impl Seek for SparseBoxReader {
 
 /// Progressive parse with optional UI progress hooks.
 pub async fn parse_mp4_progressive(source: &dyn MediaSource) -> Result<re_mp4::Mp4, MediaError> {
-    parse_mp4_progressive_with_progress(source, |_| {}).await
+    Ok(parse_mp4_progressive_with_backfill(source, |_| {})
+        .await?
+        .mp4)
 }
 
 /// Like [`parse_mp4_progressive`], calling `progress` before slow steps.
 pub async fn parse_mp4_progressive_with_progress(
     source: &dyn MediaSource,
-    mut progress: impl FnMut(&str),
+    progress: impl FnMut(&str),
 ) -> Result<re_mp4::Mp4, MediaError> {
+    Ok(parse_mp4_progressive_with_backfill(source, progress)
+        .await?
+        .mp4)
+}
+
+/// Progressive open that may return a [`FragmentBackfillPlan`] for fMP4 warm path.
+pub async fn parse_mp4_progressive_with_backfill(
+    source: &dyn MediaSource,
+    mut progress: impl FnMut(&str),
+) -> Result<ProgressiveParse, MediaError> {
     let file_size = source.size();
     if file_size == 0 {
         return Err(MediaError::Mp4("empty media source".into()));
@@ -1057,7 +1169,7 @@ pub async fn parse_mp4_progressive_with_progress(
     #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
     web_sys::console::log_1(&format!("webmedia: scan start file_size={file_size}").into());
 
-    let loaded = load_ftyp_moov_with_progress(source, &mut progress).await?;
+    let (loaded, backfill) = load_ftyp_moov_with_progress(source, &mut progress).await?;
     let moov_offset = loaded
         .iter()
         .find(|b| b.info.is_moov())
@@ -1090,12 +1202,17 @@ pub async fn parse_mp4_progressive_with_progress(
     crate::util::yield_now().await;
     crate::util::yield_now().await;
 
-    let mut reader = SparseBoxReader::new(file_size, loaded);
-    re_mp4::Mp4::read(&mut reader, file_size).map_err(|e| {
+    let mp4 = parse_loaded_boxes(file_size, loaded).map_err(|e| {
         MediaError::Mp4(format!(
             "{e} (progressive: file_size={file_size}, {ftyp_note}, moov@{moov_offset} size={moov_size}, moofs={moof_count}, loaded={loaded_bytes}B)"
         ))
-    })
+    })?;
+    Ok(ProgressiveParse { mp4, backfill })
+}
+
+fn parse_loaded_boxes(file_size: u64, loaded: Vec<LoadedBox>) -> Result<re_mp4::Mp4, MediaError> {
+    let mut reader = SparseBoxReader::new(file_size, loaded);
+    re_mp4::Mp4::read(&mut reader, file_size).map_err(|e| MediaError::Mp4(e.to_string()))
 }
 
 /// Contiguous `ftyp`+`moov` only (debug / legacy). Prefer [`parse_mp4_progressive`].
@@ -1263,8 +1380,8 @@ mod tests {
         tfra.extend_from_slice(&1u32.to_be_bytes()); // track_ID
         tfra.extend_from_slice(&0u32.to_be_bytes()); // length sizes all 0 → 1-byte fields
         tfra.extend_from_slice(&2u32.to_be_bytes()); // entry count
-        for moof in [1000u64, 5000u64] {
-            tfra.extend_from_slice(&0u64.to_be_bytes()); // time
+        for (i, moof) in [1000u64, 5000u64].into_iter().enumerate() {
+            tfra.extend_from_slice(&(i as u64 * 1000).to_be_bytes()); // time
             tfra.extend_from_slice(&moof.to_be_bytes());
             tfra.push(1); // traf
             tfra.push(1); // trun
@@ -1280,8 +1397,9 @@ mod tests {
         let mfra_size = mfra.len() as u32;
         mfra[0..4].copy_from_slice(&mfra_size.to_be_bytes());
 
-        let offs = parse_mfra_moof_offsets(&mfra).expect("parse");
+        let (offs, lasts) = parse_mfra_index(&mfra).expect("parse");
         assert_eq!(offs, vec![1000, 5000]);
+        assert_eq!(lasts, vec![(1, 1000)]);
     }
 
     #[test]

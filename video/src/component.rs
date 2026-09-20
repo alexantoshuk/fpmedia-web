@@ -127,6 +127,10 @@ pub fn Video(
                 if playing.get_untracked() || count_changed {
                     playhead.set(engine);
                 }
+                // fMP4 bg backfill grows the index after warm open — refresh meta.
+                if count_changed {
+                    metadata.set(Some(p.metadata()));
+                }
                 // Do NOT sync `playing` from the engine. UI owns transport state;
                 // overwriting after Pause (e.g. pause missed try_borrow, then
                 // sync_ui) left playing=true with no session → Play/Next/Prev dead.
@@ -188,6 +192,9 @@ pub fn Video(
                     if let Some(p) = borrow.as_ref() {
                         // Refresh while filling and once more after busy clears.
                         pipeline.set(Some(p.pipeline_stats()));
+                        // Fragment backfill / deferred sync may grow frame_count while
+                        // paused — sync_ui only overwrites playhead when count changes.
+                        sync_ui();
                     }
                     return;
                 }

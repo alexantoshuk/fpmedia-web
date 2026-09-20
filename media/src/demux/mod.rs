@@ -6,8 +6,9 @@ mod mp4;
 
 pub use audio::{AudioSampleEntry, AudioSampleId, Mp4AudioTrack};
 pub use boxes::{
-    TopLevelBox, load_ftyp_moov, parse_mp4_progressive, parse_mp4_progressive_with_progress,
-    read_ftyp_moov_stub, scan_top_level,
+    FragmentBackfillPlan, TopLevelBox, complete_mfra_backfill, load_ftyp_moov,
+    parse_mp4_progressive, parse_mp4_progressive_with_backfill,
+    parse_mp4_progressive_with_progress, read_ftyp_moov_stub, scan_top_level,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use mp4::open_mp4_path;

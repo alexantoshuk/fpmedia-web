@@ -399,12 +399,46 @@ impl WebPlayer {
         });
         apply_clip_budgets(&shared);
         Self::kick_deferred_sync_verify(&shared);
+        Self::kick_fragment_backfill(&shared);
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
         Ok(Self {
             shared,
             decoder: RefCell::new(Some(decoder)),
         })
+    }
+
+    /// Background fMP4 moof backfill after warm open (mediabunny: `readFragment`).
+    fn kick_fragment_backfill(shared: &Rc<Shared>) {
+        let track = shared.player.borrow().track_rc();
+        if track.fragments_complete() {
+            return;
+        }
+        track.kick_fragment_backfill();
+        web_sys::console::log_1(
+            &format!(
+                "webmedia: fragment backfill bg (indexed={}/{})",
+                track.indexed_frame_count(),
+                track.frame_count()
+            )
+            .into(),
+        );
+        let track = track.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = track.run_fragment_backfill_step().await {
+                web_sys::console::error_1(
+                    &format!("webmedia: fragment backfill failed: {e}").into(),
+                );
+            } else {
+                web_sys::console::log_1(
+                    &format!(
+                        "webmedia: fragment backfill done ({} frames)",
+                        track.frame_count()
+                    )
+                    .into(),
+                );
+            }
+        });
     }
 
     /// Background bitstream sync verify (deferred open). mediabunny verifies on
@@ -1688,11 +1722,23 @@ impl WebPlayer {
         let last_end = {
             let player = self.shared.player.borrow();
             let index = player.track().index();
-            let last = index
-                .get(count - 1)
-                .ok_or(MediaError::FrameOutOfRange(count - 1, count))?;
-            last.composition_timestamp().seconds
-                + (last.duration_ticks as f64 / last.timescale.max(1) as f64)
+            let indexed = index.len() as u64;
+            if indexed == 0 {
+                return Ok(DuePresent::Ended);
+            }
+            // fMP4 warm-open: `frame_count` is provisional (tfra) while the index is
+            // still short — never `get(count-1)` until backfill finishes.
+            let last = index.get(indexed - 1).ok_or(MediaError::FrameOutOfRange(
+                indexed.saturating_sub(1),
+                count,
+            ))?;
+            let sample_end = last.composition_timestamp().seconds
+                + (last.duration_ticks as f64 / last.timescale.max(1) as f64);
+            if indexed < count {
+                sample_end.max(player.metadata().duration().seconds)
+            } else {
+                sample_end
+            }
         };
         if media_time_secs >= last_end {
             // Do not End while decoded frames remain — audio can reach duration
