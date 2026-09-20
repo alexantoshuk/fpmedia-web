@@ -19,7 +19,7 @@ _(empty)_
 
 - Pure audio path later: `AudioPlayer` / `AudioRef` (no canvas) reusing demux + decode + clock.
 - HEVC bitstream key verify (AVC IDR + Recovery Point SEI done); plate: testvideo `hevc_1080p_24_gop12_bf0`.
-- Progressive-open follow-ups: coalesce adjacent sample ranges; optional background / lazy AVC sync-verify for huge files if open latency matters; UrlSource parallel Range workers / sequential fallback (mediabunny orchestrator).
+- Progressive-open follow-ups: coalesce adjacent sample ranges; UrlSource parallel Range workers / sequential fallback (mediabunny orchestrator).
 - Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
 - Temporary deps: workspace pins `rerun-io/re_mp4` @ `aa5be9b` ([#35](https://github.com/rerun-io/re_mp4/pull/35) merged; not on crates.io yet).
 - Upstream/re_mp4: nested `skip_box(0)` livelock on QT size-0 padding (we work around in `SparseBoxReader`).

@@ -792,28 +792,30 @@ impl WebCodecsDecoder {
         is_cancelled: &dyn Fn() -> bool,
         on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)>,
     ) -> Result<OwnedVideoFrame, MediaError> {
-        let key_id = track
-            .index()
-            .nearest_keyframe(frame)
-            .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
+        let key_id = track.ensure_key_verified(frame).await?;
+        if is_cancelled() {
+            return Err(MediaError::Cancelled);
+        }
         let target_us = {
-            let entry = track
-                .index()
+            let index = track.index();
+            let entry = index
                 .get(frame)
                 .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
             ticks_to_micros(entry.composition_timestamp_ticks, entry.timescale)
         };
         let gop_ids = track.index().gop_frame_ids(key_id).unwrap_or_default();
         let mut pts_to_id: HashMap<i64, FrameId> = HashMap::with_capacity(gop_ids.len());
-        for id in &gop_ids {
-            let e = track
-                .index()
-                .get(*id)
-                .ok_or(MediaError::FrameOutOfRange(*id, track.frame_count()))?;
-            pts_to_id.insert(
-                ticks_to_micros(e.composition_timestamp_ticks, e.timescale),
-                *id,
-            );
+        {
+            let index = track.index();
+            for id in &gop_ids {
+                let e = index
+                    .get(*id)
+                    .ok_or(MediaError::FrameOutOfRange(*id, track.frame_count()))?;
+                pts_to_id.insert(
+                    ticks_to_micros(e.composition_timestamp_ticks, e.timescale),
+                    *id,
+                );
+            }
         }
         *self.core.borrow().prune_interim.borrow_mut() = Some(PruneInterim {
             pts_to_id,
@@ -835,21 +837,26 @@ impl WebCodecsDecoder {
             return Err(MediaError::Cancelled);
         }
         let core = Rc::clone(&self.core);
-        let entry = track
-            .index()
-            .get(frame)
-            .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
-        let target_us = ticks_to_micros(entry.composition_timestamp_ticks, entry.timescale);
-        let target_do = entry.decode_order;
-        let key_id = track
-            .index()
-            .nearest_keyframe(frame)
-            .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
-        let key_do = track
-            .index()
-            .get(key_id)
-            .map(|e| e.decode_order)
-            .ok_or(MediaError::FrameOutOfRange(key_id, track.frame_count()))?;
+        // On-demand bitstream verify (deferred open). mediabunny: verifyKeyPackets on retrieve.
+        let key_id = track.ensure_key_verified(frame).await?;
+        if is_cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+        let (target_us, target_do, key_do) = {
+            let index = track.index();
+            let entry = index
+                .get(frame)
+                .ok_or(MediaError::FrameOutOfRange(frame, track.frame_count()))?;
+            let key_do = index
+                .get(key_id)
+                .map(|e| e.decode_order)
+                .ok_or(MediaError::FrameOutOfRange(key_id, track.frame_count()))?;
+            (
+                ticks_to_micros(entry.composition_timestamp_ticks, entry.timescale),
+                entry.decode_order,
+                key_do,
+            )
+        };
 
         {
             let mut c = core.borrow_mut();
@@ -872,7 +879,7 @@ impl WebCodecsDecoder {
         // the key (do not flush — that demands a key on the next delta and still
         // misses when Chromium has wedged mid-GOP).
         let fed_order = core.borrow().fed_through_order;
-        if fed_order.is_some_and(|fed| entry.decode_order <= fed) {
+        if fed_order.is_some_and(|fed| target_do <= fed) {
             for _ in 0..24 {
                 if is_cancelled() {
                     return Err(MediaError::Cancelled);
@@ -894,8 +901,7 @@ impl WebCodecsDecoder {
                 wait_for_frame_progress(&core).await;
             }
             if !holds_target(&core, target_us)
-                && fed_order
-                    .is_some_and(|fed| fed.saturating_sub(entry.decode_order) >= REORDER_FEED_SLACK)
+                && fed_order.is_some_and(|fed| fed.saturating_sub(target_do) >= REORDER_FEED_SLACK)
             {
                 self.run_key_cascade(
                     track,
@@ -921,9 +927,9 @@ impl WebCodecsDecoder {
         // cannot re-emit a consumed frame without cascading from the key again.
         let (needs_cascade, target_consumed, sequential_next) = {
             let c = core.borrow();
-            let consumed = c.fed_through_order.is_some_and(|fed| {
-                entry.decode_order <= fed && !c.input_timestamps.contains(&target_us)
-            });
+            let consumed = c
+                .fed_through_order
+                .is_some_and(|fed| target_do <= fed && !c.input_timestamps.contains(&target_us));
             let sequential = c
                 .key_order
                 .is_some_and(|prev| is_sequential_next_key(track, prev, key_do));
@@ -1264,30 +1270,39 @@ impl WebCodecsDecoder {
             return self.abort_gop_partial();
         }
         let core = Rc::clone(&self.core);
-        let key_entry = track
-            .index()
-            .get(key_frame)
-            .ok_or(MediaError::FrameOutOfRange(key_frame, track.frame_count()))?;
-        if !key_entry.is_sync {
-            return Err(MediaError::WebCodecs(format!(
-                "decode_gop requires sync key (frame={key_frame})"
-            )));
+        // Densify may start before bg verify finishes — verify this key on demand.
+        let key_frame = track.ensure_key_verified(key_frame).await?;
+        if is_cancelled() {
+            return self.abort_gop_partial();
         }
-        let key_do = key_entry.decode_order;
-        let gop_ids = track
-            .index()
-            .gop_frame_ids(key_frame)
-            .ok_or(MediaError::FrameOutOfRange(key_frame, track.frame_count()))?;
+        let (key_do, gop_ids) = {
+            let index = track.index();
+            let key_entry = index
+                .get(key_frame)
+                .ok_or(MediaError::FrameOutOfRange(key_frame, track.frame_count()))?;
+            if !key_entry.is_sync {
+                return Err(MediaError::WebCodecs(format!(
+                    "decode_gop requires sync key (frame={key_frame})"
+                )));
+            }
+            let key_do = key_entry.decode_order;
+            let gop_ids = index
+                .gop_frame_ids(key_frame)
+                .ok_or(MediaError::FrameOutOfRange(key_frame, track.frame_count()))?;
+            (key_do, gop_ids)
+        };
         let mut pts_to_id: HashMap<i64, FrameId> = HashMap::with_capacity(gop_ids.len());
-        for id in &gop_ids {
-            let e = track
-                .index()
-                .get(*id)
-                .ok_or(MediaError::FrameOutOfRange(*id, track.frame_count()))?;
-            pts_to_id.insert(
-                ticks_to_micros(e.composition_timestamp_ticks, e.timescale),
-                *id,
-            );
+        {
+            let index = track.index();
+            for id in &gop_ids {
+                let e = index
+                    .get(*id)
+                    .ok_or(MediaError::FrameOutOfRange(*id, track.frame_count()))?;
+                pts_to_id.insert(
+                    ticks_to_micros(e.composition_timestamp_ticks, e.timescale),
+                    *id,
+                );
+            }
         }
 
         core.borrow_mut().begin_key_cascade(key_do, false, false)?;
@@ -1589,8 +1604,8 @@ fn is_sequential_next_key(track: &Mp4VideoTrack, prev_key_do: usize, new_key_do:
     track
         .index()
         .next_keyframe_after(prev_key_frame)
-        .and_then(|nk| track.index().get(nk))
-        .is_some_and(|e| e.decode_order == new_key_do)
+        .and_then(|nk| track.index().get(nk).map(|e| e.decode_order))
+        .is_some_and(|d| d == new_key_do)
 }
 
 /// Drain outputs for up to `turns` macrotasks; `true` once the target is held.

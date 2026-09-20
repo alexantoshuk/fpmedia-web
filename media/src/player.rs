@@ -61,7 +61,7 @@ impl Player {
         })
     }
 
-    pub fn metadata(&self) -> &VideoMetadata {
+    pub fn metadata(&self) -> VideoMetadata {
         self.track.metadata()
     }
 

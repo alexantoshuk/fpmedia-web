@@ -272,6 +272,7 @@ impl WebPlayer {
             source,
             crate::OpenMp4Options {
                 verify_avc_sync: true,
+                defer_avc_sync: true,
             },
         )
         .await?;
@@ -331,7 +332,7 @@ impl WebPlayer {
         fetch_map: std::sync::Arc<crate::FetchMap>,
         file_size: u64,
     ) -> Result<Self, MediaError> {
-        let meta = player.metadata().clone();
+        let meta = player.metadata();
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
         let ctx = canvas_2d(&canvas)?;
@@ -397,6 +398,7 @@ impl WebPlayer {
             file_size,
         });
         apply_clip_budgets(&shared);
+        Self::kick_deferred_sync_verify(&shared);
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
         Ok(Self {
@@ -405,8 +407,51 @@ impl WebPlayer {
         })
     }
 
+    /// Background bitstream sync verify (deferred open). mediabunny verifies on
+    /// packet retrieve; we also walk remaining candidates so scrub settle is safe.
+    fn kick_deferred_sync_verify(shared: &Rc<Shared>) {
+        let track = shared.player.borrow().track_rc();
+        if track.sync_verify_complete() {
+            return;
+        }
+        let pending = track.sync_verify_pending();
+        web_sys::console::log_1(
+            &format!("webmedia: deferred sync verify bg ({pending} candidates)").into(),
+        );
+        let weak = Rc::downgrade(shared);
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                let Some(shared) = weak.upgrade() else {
+                    break;
+                };
+                // Yield to play/IO when the clock is underrunning.
+                if shared.underrun_hold_since_ms.get().is_some() {
+                    crate::util::yield_now().await;
+                    continue;
+                }
+                let track = shared.player.borrow().track_rc();
+                if track.sync_verify_complete() {
+                    break;
+                }
+                match track.verify_next_pending().await {
+                    Ok(true) => crate::util::yield_now().await,
+                    Ok(false) => {
+                        web_sys::console::log_1(&"webmedia: deferred sync verify done".into());
+                        break;
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("webmedia: deferred sync verify stopped ({e})").into(),
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     pub fn metadata(&self) -> VideoMetadata {
-        self.shared.player.borrow().metadata().clone()
+        self.shared.player.borrow().metadata()
     }
 
     pub fn audio_metadata(&self) -> Option<AudioMetadata> {
@@ -1164,14 +1209,11 @@ impl WebPlayer {
 
     fn duration_of(&self, frame: FrameId) -> Result<f64, MediaError> {
         let player = self.shared.player.borrow();
-        let entry = player
-            .track()
-            .index()
-            .get(frame)
-            .ok_or(MediaError::FrameOutOfRange(
-                frame,
-                player.state().frame_count,
-            ))?;
+        let index = player.track().index();
+        let entry = index.get(frame).ok_or(MediaError::FrameOutOfRange(
+            frame,
+            player.state().frame_count,
+        ))?;
         if entry.duration_ticks == 0 || entry.timescale == 0 {
             return Err(MediaError::MissingFrameDuration(frame));
         }
@@ -1253,6 +1295,13 @@ impl WebPlayer {
             self.clear_loop_prime();
 
             if settle {
+                // v1: exact scrub needs a fully verified sync table.
+                {
+                    let track = self.shared.player.borrow().track_rc();
+                    if !track.sync_verify_complete() {
+                        track.await_sync_verify_complete().await?;
+                    }
+                }
                 // Keep the last drag frame on canvas until exact decode VF paints.
                 // Do **not** blit key/preview from store — key is often far from
                 // target and flashes a wrong frame; store is low-q drag trail only.
@@ -1554,14 +1603,11 @@ impl WebPlayer {
 
     pub fn frame_timestamp_seconds(&self, frame: FrameId) -> Result<f64, MediaError> {
         let player = self.shared.player.borrow();
-        let entry = player
-            .track()
-            .index()
-            .get(frame)
-            .ok_or(MediaError::FrameOutOfRange(
-                frame,
-                player.state().frame_count,
-            ))?;
+        let index = player.track().index();
+        let entry = index.get(frame).ok_or(MediaError::FrameOutOfRange(
+            frame,
+            player.state().frame_count,
+        ))?;
         Ok(entry.composition_timestamp().seconds)
     }
 
@@ -1637,9 +1683,8 @@ impl WebPlayer {
 
         let last_end = {
             let player = self.shared.player.borrow();
-            let last = player
-                .track()
-                .index()
+            let index = player.track().index();
+            let last = index
                 .get(count - 1)
                 .ok_or(MediaError::FrameOutOfRange(count - 1, count))?;
             last.composition_timestamp().seconds

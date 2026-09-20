@@ -1497,9 +1497,10 @@ async fn open_source_staged(
     let opened = open_mp4_media_source_cached_with_progress(
         source,
         OpenMp4Options {
-            // Mediabunny verifyKeyPackets — demote lying stss (non-IDR / inexact
-            // SEI) so skip-behind does not jump to a fake key and die.
+            // Deferred AVC sync — play on-demand; scrub settle waits for full verify.
+            // mediabunny: verifyKeyPackets on retrieve.
             verify_avc_sync: true,
+            defer_avc_sync: true,
         },
         |msg| on_status(msg),
     )

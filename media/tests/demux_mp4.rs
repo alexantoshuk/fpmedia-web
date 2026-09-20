@@ -54,18 +54,29 @@ fn demux_short_gop_metadata_and_frames() {
     let fps = meta.fps.expect("fps");
     assert!((fps - 24.0).abs() < 0.01, "fps={fps}");
 
-    let index = track.index();
-    let syncs: Vec<_> = index
-        .frames()
-        .iter()
-        .filter(|e| e.is_sync)
-        .map(|e| e.frame)
-        .collect();
-    assert_eq!(syncs, vec![0, 12, 24, 36]);
-    assert_eq!(meta.gop_profile, GopProfile::ShortFixed { len: 12 });
-    assert_eq!(meta.gop_profile.label(), "GOP 12");
-    // 320×240 fits entirely under the default MiB budget.
-    assert_eq!(meta.scrub_cache_frame_budget(), 48);
+    let (syncs, nearest_checks, window) = {
+        let index = track.index();
+        let syncs: Vec<_> = index
+            .frames()
+            .iter()
+            .filter(|e| e.is_sync)
+            .map(|e| e.frame)
+            .collect();
+        assert_eq!(syncs, vec![0, 12, 24, 36]);
+        assert_eq!(meta.gop_profile, GopProfile::ShortFixed { len: 12 });
+        assert_eq!(meta.gop_profile.label(), "GOP 12");
+        // 320×240 fits entirely under the default MiB budget.
+        assert_eq!(meta.scrub_cache_frame_budget(), 48);
+
+        let nearest_checks = (
+            index.nearest_keyframe(0),
+            index.nearest_keyframe(11),
+            index.nearest_keyframe(12),
+            index.nearest_keyframe(25),
+        );
+        let window = index.decode_window(14).expect("window");
+        (syncs, nearest_checks, window)
+    };
 
     // verifyKeyPackets: every remaining sync is a bitstream key (IDR / exact SEI).
     let length_size = avc_nal_length_size(&meta.codec.description).expect("avcC length");
@@ -78,12 +89,11 @@ fn demux_short_gop_metadata_and_frames() {
         );
     }
 
-    assert_eq!(index.nearest_keyframe(0), Some(0));
-    assert_eq!(index.nearest_keyframe(11), Some(0));
-    assert_eq!(index.nearest_keyframe(12), Some(12));
-    assert_eq!(index.nearest_keyframe(25), Some(24));
+    assert_eq!(nearest_checks.0, Some(0));
+    assert_eq!(nearest_checks.1, Some(0));
+    assert_eq!(nearest_checks.2, Some(12));
+    assert_eq!(nearest_checks.3, Some(24));
 
-    let window = index.decode_window(14).expect("window");
     assert_eq!(window.first().copied(), Some(12));
     assert_eq!(window.last().copied(), Some(14));
     assert_eq!(window.len(), 3);
@@ -103,26 +113,28 @@ fn demux_with_b_frames_reorder_windows() {
         return;
     }
     let track = open_mp4_path(&path).expect("open fixture");
-    let index = track.index();
-    assert_eq!(track.frame_count(), 48);
+    {
+        let index = track.index();
+        assert_eq!(track.frame_count(), 48);
 
-    // Presentation frame 1 is a B (decode after the upcoming P).
-    let f1 = index.get(1).expect("frame 1");
-    let f3 = index.get(3).expect("frame 3");
-    assert!(
-        f1.decode_order > f3.decode_order,
-        "B before P in presentation"
-    );
-    assert_eq!(f1.decode_order, 2);
-    assert_eq!(f3.decode_order, 1);
+        // Presentation frame 1 is a B (decode after the upcoming P).
+        let f1 = index.get(1).expect("frame 1");
+        let f3 = index.get(3).expect("frame 3");
+        assert!(
+            f1.decode_order > f3.decode_order,
+            "B before P in presentation"
+        );
+        assert_eq!(f1.decode_order, 2);
+        assert_eq!(f3.decode_order, 1);
 
-    // Window for B1 must include the later P (presentation id 3).
-    let w1 = index.decode_window(1).expect("window 1");
-    assert_eq!(w1, vec![0, 3, 1]);
+        // Window for B1 must include the later P (presentation id 3).
+        let w1 = index.decode_window(1).expect("window 1");
+        assert_eq!(w1, vec![0, 3, 1]);
 
-    // Seeking to P alone only needs I + P.
-    let w3 = index.decode_window(3).expect("window 3");
-    assert_eq!(w3, vec![0, 3]);
+        // Seeking to P alone only needs I + P.
+        let w3 = index.decode_window(3).expect("window 3");
+        assert_eq!(w3, vec![0, 3]);
+    }
 
     let player = Player::from_track(track).expect("player");
     let cascade = block_on(player.window_at(1)).expect("cascade");
@@ -149,6 +161,7 @@ fn progressive_source_open_matches_bytes_offsets() {
         source,
         OpenMp4Options {
             verify_avc_sync: true,
+            defer_avc_sync: false,
         },
     ))
     .expect("progressive open");
@@ -216,6 +229,7 @@ fn assert_progressive_fmp4_matches_full(bytes: Vec<u8>) {
         source,
         OpenMp4Options {
             verify_avc_sync: true,
+            defer_avc_sync: false,
         },
     ))
     .expect("progressive fMP4 open");
@@ -250,6 +264,40 @@ fn progressive_fmp4_from_url() {
     let url = std::env::var("WEBMEDIA_FMP4_URL").unwrap_or_else(|_| DEFAULT_FMP4_URL.to_string());
     let bytes = fetch_url_bytes(&url).unwrap_or_else(|e| panic!("fetch {url}: {e}"));
     assert_progressive_fmp4_matches_full(bytes);
+}
+
+#[test]
+fn deferred_avc_sync_verify_on_demand() {
+    let path = fixture("short_gop.mp4");
+    if !path.exists() {
+        eprintln!("skip: missing fixture {}", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read");
+    let source: Arc<dyn webmedia::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
+    let track = block_on(open_mp4_source(
+        source,
+        OpenMp4Options {
+            verify_avc_sync: true,
+            defer_avc_sync: true,
+        },
+    ))
+    .expect("deferred open");
+
+    assert!(!track.sync_verify_complete());
+    assert!(track.sync_verify_pending() > 0);
+
+    let key = block_on(track.ensure_key_verified(14)).expect("ensure key");
+    assert_eq!(key, 12);
+    assert!(track.sync_verify_pending() < 4);
+
+    block_on(track.await_sync_verify_complete()).expect("finish verify");
+    assert!(track.sync_verify_complete());
+    assert_eq!(track.sync_verify_pending(), 0);
+    assert_eq!(
+        track.metadata().gop_profile,
+        GopProfile::ShortFixed { len: 12 }
+    );
 }
 
 #[test]
