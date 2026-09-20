@@ -101,6 +101,11 @@ pub fn format_metadata(meta: &VideoMetadata) -> String {
     )
 }
 
+/// SMPTE string for `frame` using embedded start (or zero) + rate from metadata.
+pub fn format_timecode_at(meta: &VideoMetadata, frame: u32) -> Option<String> {
+    meta.timecode_at(u64::from(frame)).map(|tc| tc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

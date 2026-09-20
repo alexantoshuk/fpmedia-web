@@ -5,8 +5,8 @@ use leptos::html::{Div, Input};
 use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
 use media_components::helpers::{
-    cache_strip_gradient, fetch_strip_gradient, format_metadata, playhead_width_css,
-    scrub_frame_from_x,
+    cache_strip_gradient, fetch_strip_gradient, format_metadata, format_timecode_at,
+    playhead_width_css, scrub_frame_from_x,
 };
 use media_components::{ReadyFrameKind, Video, VideoRef};
 use wasm_bindgen::JsCast;
@@ -670,8 +670,14 @@ pub fn DemoPlayer() -> impl IntoView {
                             } else {
                                 format!("frame {ph} (eng {eng})")
                             };
+                            let tc_part = video
+                                .metadata
+                                .get()
+                                .and_then(|m| format_timecode_at(&m, ph))
+                                .map(|tc| format!(" · {tc}"))
+                                .unwrap_or_default();
                             format!(
-                                "{frame_part} / {} · {} · {:.3}s{}{}{}",
+                                "{frame_part} / {}{tc_part} · {} · {:.3}s{}{}{}",
                                 video.frame_count.get().saturating_sub(1),
                                 video
                                     .metadata

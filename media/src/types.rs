@@ -543,6 +543,32 @@ impl VideoMetadata {
         let mib = self.scrub_policy().scrub_cache_mib;
         scrub_cache_frame_budget(self.frame_count, self.width, self.height, mib)
     }
+
+    /// Absolute frame count of embedded start TC, or `0` (zero-based tape).
+    pub fn timecode_origin_frames(&self) -> i64 {
+        self.timecode_start.map(|tc| tc.total_frames()).unwrap_or(0)
+    }
+
+    /// Rate for SMPTE display: `tmcd` rate if present, else nominal from [`Self::fps`].
+    pub fn timecode_rate(&self) -> Option<timecode::FrameRate> {
+        if let Some(tc) = self.timecode_start {
+            return Some(tc.rate());
+        }
+        self.fps
+            .and_then(|fps| timecode::FrameRate::from_float(fps, false))
+    }
+
+    /// Tape (or zero) timecode for presentation `frame_id`.
+    ///
+    /// Hot path: `origin_frames + frame_id` then format — same math as
+    /// [`timecode::Timecode::from_start`], without rebuilding the start value.
+    pub fn timecode_at(&self, frame_id: u64) -> Option<timecode::Timecode> {
+        let rate = self.timecode_rate()?;
+        let abs = self
+            .timecode_origin_frames()
+            .saturating_add(frame_id as i64);
+        Some(timecode::Timecode::from_frames(abs, rate))
+    }
 }
 
 #[cfg(test)]
@@ -607,6 +633,38 @@ mod tests {
         assert_eq!(
             meta.scrub_cache_frame_budget(),
             scrub_cache_frame_budget(10_000, 1920, 1080, DEFAULT_SCRUB_CACHE_MIB)
+        );
+    }
+
+    #[test]
+    fn timecode_at_zero_and_start_offset() {
+        let mut meta = VideoMetadata {
+            width: 320,
+            height: 240,
+            timescale: 24,
+            duration_ticks: 240,
+            frame_count: 48,
+            fps: Some(24.0),
+            codec: CodecConfig {
+                codec: VideoCodec::Avc,
+                codec_string: None,
+                description: Vec::new(),
+            },
+            gop_profile: GopProfile::ShortFixed { len: 12 },
+            timecode_start: None,
+        };
+        assert_eq!(meta.timecode_origin_frames(), 0);
+        assert_eq!(
+            meta.timecode_at(24).map(|tc| tc.to_string()).as_deref(),
+            Some("00:00:01:00")
+        );
+
+        meta.timecode_start =
+            Some(timecode::Timecode::parse("10:00:00:00", timecode::FrameRate::Fps24).unwrap());
+        assert_eq!(meta.timecode_origin_frames(), 864_000);
+        assert_eq!(
+            meta.timecode_at(24).map(|tc| tc.to_string()).as_deref(),
+            Some("10:00:01:00")
         );
     }
 
