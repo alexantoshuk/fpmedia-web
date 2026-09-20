@@ -437,11 +437,22 @@ impl WebPlayer {
     /// Playback rate: forward `0.25…8`.
     /// Non-1× → wall clock, audio off ([`crate::is_wall_clock_rate`]).
     /// Live change snaps clock origins.
+    ///
+    /// On rate **decrease**, snap to the displayed/committed playhead — shuttle
+    /// disables underrun hold so `media_time` can run ahead of decode; keeping
+    /// that raced time makes J (8→4→2→1) keep skip-catching for seconds.
+    /// `mediabunny: no equivalent` (no rate API).
     pub fn set_playback_rate(&self, rate: f64) {
         let rate = crate::normalize_playback_rate(rate);
         let wall = crate::is_wall_clock_rate(rate);
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
-        let t = self.media_time().max(0.0);
+        let old_rate = self.shared.clock.borrow().playback_rate();
+        let clock_t = self.media_time().max(0.0);
+        let t = if rate < old_rate - 1e-9 {
+            self.rate_decrease_snap_time(clock_t)
+        } else {
+            clock_t
+        };
         let was_playing = self.shared.clock.borrow().is_playing()
             || audio.as_ref().is_some_and(|a| a.is_playing());
 
@@ -491,7 +502,19 @@ impl WebPlayer {
                 }
             }
         }
+    }
 
+    /// Visual playhead time for rate-down snaps (canvas, else committed).
+    fn rate_decrease_snap_time(&self, clock_t: f64) -> f64 {
+        let head = self
+            .shared
+            .displayed
+            .borrow()
+            .as_ref()
+            .and_then(|q| self.frame_timestamp_seconds(q.frame).ok())
+            .unwrap_or_else(|| self.state().timestamp.seconds)
+            .max(0.0);
+        head.min(clock_t)
     }
 
     /// Media timeline seconds (audio `AudioContext` when present, else wall).

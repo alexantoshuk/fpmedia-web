@@ -93,10 +93,15 @@ impl OpQueue {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
         if settle {
-            st.pending.retain(|(_, o)| {
-                matches!(o, HostOp::Open { .. } | HostOp::PlayPrime)
-            });
-            let scrub = (id, HostOp::Scrub { frame, settle: true });
+            st.pending
+                .retain(|(_, o)| matches!(o, HostOp::Open { .. } | HostOp::PlayPrime));
+            let scrub = (
+                id,
+                HostOp::Scrub {
+                    frame,
+                    settle: true,
+                },
+            );
             if let Some(pos) = st
                 .pending
                 .iter()
@@ -108,8 +113,13 @@ impl OpQueue {
             }
         } else {
             st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
-            st.pending
-                .push_back((id, HostOp::Scrub { frame, settle: false }));
+            st.pending.push_back((
+                id,
+                HostOp::Scrub {
+                    frame,
+                    settle: false,
+                },
+            ));
         }
         self.begin_drain_locked(&mut st)
     }

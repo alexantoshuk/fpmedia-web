@@ -9,6 +9,29 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 
+/// Forward shuttle ladder for demo J/L keys (K → 1× + play/pause).
+const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
+
+fn jkl_nearest_index(rate: f64) -> usize {
+    let mut best = 0;
+    let mut best_dist = f64::INFINITY;
+    for (i, &step) in JKL_STEPS.iter().enumerate() {
+        let d = (rate - step).abs();
+        if d < best_dist {
+            best_dist = d;
+            best = i;
+        }
+    }
+    best
+}
+
+/// `dir`: −1 = J (slower), +1 = L (faster).
+fn jkl_step(rate: f64, dir: i32) -> f64 {
+    let i = jkl_nearest_index(rate);
+    let next = (i as i32 + dir).clamp(0, (JKL_STEPS.len() - 1) as i32) as usize;
+    JKL_STEPS[next]
+}
+
 /// Coalesce scrub engine work after the Leptos/tachys event callback releases its
 /// `RefCell`. Duplicate targets (left-edge clamp spams `frame=0`) collapse to one
 /// pending sample so microtasks do not pile up and re-enter cache inserts.
@@ -124,7 +147,7 @@ pub fn DemoPlayer() -> impl IntoView {
         }
     });
 
-    // ← / → step when paused; J/K/L shuttle. Skip when typing.
+    // ← / → step when paused (pause if playing); Space play/pause; J/K/L rate.
     let _transport_keys = use_event_listener(window(), ev::keydown, move |ev| {
         let Some(target) = ev.target() else {
             return;
@@ -156,16 +179,32 @@ pub fn DemoPlayer() -> impl IntoView {
                 }
             }
             " " | "Spacebar" => {
-                // Ignore when typing in inputs (frame, rate, etc.).
-                if let Some(t) = ev.target()
-                    && let Ok(el) = t.dyn_into::<Element>()
-                {
-                    let tag = el.tag_name().to_ascii_lowercase();
-                    if tag == "input" || tag == "textarea" || tag == "select" {
-                        return;
-                    }
-                }
                 ev.prevent_default();
+                if video.playing.get_untracked() {
+                    video.pause();
+                } else {
+                    video.play();
+                }
+            }
+            "l" | "L" => {
+                ev.prevent_default();
+                let next = jkl_step(video.playback_rate.get_untracked(), 1);
+                video.set_playback_rate(next);
+                if !video.playing.get_untracked() {
+                    video.play();
+                }
+            }
+            "j" | "J" => {
+                ev.prevent_default();
+                let next = jkl_step(video.playback_rate.get_untracked(), -1);
+                video.set_playback_rate(next);
+                if !video.playing.get_untracked() {
+                    video.play();
+                }
+            }
+            "k" | "K" => {
+                ev.prevent_default();
+                video.set_playback_rate(1.0);
                 if video.playing.get_untracked() {
                     video.pause();
                 } else {
@@ -391,7 +430,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     <label
                         class="wm-rate"
                         data-testid="playback-rate"
-                        title="Playback rate (0.25–1.75 review; API allows up to 8×)"
+                        title="Playback rate (0.25–1.75 review; JKL 1/2/4/8; API up to 8×)"
                     >
                         <span class="wm-rate-label">
                             {move || format!("{:.2}x", video.playback_rate.get())}
@@ -593,7 +632,7 @@ fn cache_strip_gradient(
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
-    /// Scrub began while playing → resume after pointer-up settle.
+    // Scrub began while playing → resume after pointer-up settle.
     let resume_after_scrub = RwSignal::new(false);
 
     let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
