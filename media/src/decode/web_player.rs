@@ -48,6 +48,13 @@ const PLAY_EXACT_VRAM_VF_SLACK: usize = 4;
 const PLAY_PRIME_FRAMES: usize = 2;
 /// Start-of-clip frames prepared into `loop_prime` before EOF (one decoder).
 const LOOP_PRIME_FRAMES: usize = 8;
+/// Wall-time budget for `fill_loop_prime` while the end still drains.
+/// Near EOF the presentation cap grows to ≈ `budget * fps * rate` so review
+/// rates (1.1–1.75) keep enough queued frames; default cap=4 is only ~0.1s.
+/// `mediabunny: no equivalent` (no loop/rate API).
+const LOOP_PRIME_BUDGET_SECS: f64 = 0.4;
+/// Ceiling on near-EOF presentation growth (live VF VRAM).
+const LOOP_NEAR_END_PRESENTATION_CAP_MAX: usize = 64;
 /// Wall-clock lag above this → skip to nearest keyframe instead of exact frame.
 const BIG_LAG_SECONDS: f64 = 0.5;
 /// Stop prefetching this many ms before the present deadline.
@@ -422,6 +429,9 @@ impl WebPlayer {
     }
 
     fn play_presentation_cap(&self) -> usize {
+        if self.is_looping() && self.is_playing() && self.near_loop_prepare_zone() {
+            return self.loop_drain_frames_for_rate();
+        }
         if self.is_shuttle() {
             SHUTTLE_PRESENTATION_QUEUE_CAP
         } else {
@@ -429,9 +439,35 @@ impl WebPlayer {
         }
     }
 
+    /// Frames to keep queued near EOF so `fill_loop_prime` finishes before drain.
+    fn loop_drain_frames_for_rate(&self) -> usize {
+        let rate = self.playback_rate().max(crate::PLAYBACK_RATE_MIN);
+        let fps = self
+            .metadata()
+            .fps
+            .filter(|f| f.is_finite() && *f > 0.0)
+            .unwrap_or(24.0);
+        let needed = (LOOP_PRIME_BUDGET_SECS * fps * rate).ceil() as usize;
+        needed.clamp(PRESENTATION_QUEUE_CAP, LOOP_NEAR_END_PRESENTATION_CAP_MAX)
+    }
+
+    /// Playhead is within the rate-scaled loop-prepare lead of EOF.
+    fn near_loop_prepare_zone(&self) -> bool {
+        let count = self.state().frame_count;
+        if count == 0 {
+            return false;
+        }
+        let lead = self.loop_drain_frames_for_rate() as FrameId;
+        // Playhead only — must not borrow `presentation` (callers may hold it).
+        count.saturating_sub(self.state().frame) <= lead
+    }
+
     /// True when the play prefetch loop should decode another ahead/behind frame.
     pub fn wants_play_prefetch(&self) -> bool {
-        self.is_playing() && self.presentation_len() < self.play_presentation_cap()
+        self.is_playing()
+            && !self.shared.restarting.get()
+            && !self.shared.preparing_loop.get()
+            && self.presentation_len() < self.play_presentation_cap()
     }
 
     /// Playback rate: forward `0.25…8`.
@@ -1577,6 +1613,10 @@ impl WebPlayer {
     /// When the end of the clip is already in the presentation queue, reuse the
     /// main decoder to decode the start into `loop_prime` while presents drain
     /// the tail — no second `VideoDecoder`.
+    ///
+    /// Do **not** set `restarting` here — that freezes underrun hold and is for
+    /// seek/cold restart only. Prefetch is gated by `preparing_loop` via
+    /// [`Self::wants_play_prefetch`] / [`Self::prefetch_one`].
     pub async fn prepare_loop_if_needed(&self) -> Result<(), MediaError> {
         if !self.is_looping() || !self.is_playing() {
             return Ok(());
@@ -1589,10 +1629,8 @@ impl WebPlayer {
         }
 
         self.shared.preparing_loop.set(true);
-        self.shared.restarting.set(true);
         let epoch = self.shared.op_epoch.get();
         let result = self.fill_loop_prime(epoch).await;
-        self.shared.restarting.set(false);
         self.shared.preparing_loop.set(false);
         result
     }
@@ -1687,10 +1725,10 @@ impl WebPlayer {
 
     /// Decode one frame into the queue. May run concurrently with [`Self::present_due`].
     ///
-    /// No-ops while [`Self::is_restarting`] — the restart/prepare path owns the decoder and
-    /// fills via [`Self::prime_presentation`] / [`Self::fill_loop_prime`].
+    /// No-ops while restarting or preparing a loop prime — those paths own the
+    /// decoder (`prime_presentation` / `fill_loop_prime`).
     pub async fn prefetch_one(&self) -> Result<bool, MediaError> {
-        if !self.is_playing() || self.shared.restarting.get() {
+        if !self.is_playing() || self.shared.restarting.get() || self.shared.preparing_loop.get() {
             return Ok(false);
         }
         let epoch = self.shared.op_epoch.get();
@@ -1879,11 +1917,7 @@ impl WebPlayer {
         let mut presentation = self.shared.presentation.borrow_mut();
         presentation.retain(|x| x.frame != q.frame);
         presentation.push_front(q);
-        let cap = if self.is_shuttle() {
-            SHUTTLE_PRESENTATION_QUEUE_CAP
-        } else {
-            PRESENTATION_QUEUE_CAP
-        };
+        let cap = self.play_presentation_cap();
         while presentation.len() > cap {
             if let Some(drop_q) = presentation.pop_back() {
                 drop(drop_q.video);
