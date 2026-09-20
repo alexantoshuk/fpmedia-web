@@ -70,8 +70,8 @@ export class DemoPlayer {
     this.scrubberProgress = page.getByTestId("scrubber-progress");
     this.frameInput = page.getByTestId("frame-input");
     this.fileInput = page.getByTestId("file-input");
-    this.play = page.getByTestId("btn-play");
-    this.pause = page.getByTestId("btn-pause");
+    this.play = page.getByTestId("btn-play-pause");
+    this.pause = page.getByTestId("btn-play-pause");
     this.loop = page.getByTestId("btn-loop");
     this.prev = page.getByTestId("btn-prev");
     this.next = page.getByTestId("btn-next");

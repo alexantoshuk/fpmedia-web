@@ -21,7 +21,7 @@ body {
 }
 
 .wm-page {
-  width: min(720px, 100%);
+  width: min(1100px, 100%);
   margin: 0 auto;
   padding: 1.5rem;
 }
@@ -282,10 +282,6 @@ body {
   margin-top: 0.5rem;
 }
 
-.wm-controls.wm-audio {
-  margin-top: 0.5rem;
-}
-
 .wm-btn,
 .wm-file {
   appearance: none;
@@ -317,6 +313,58 @@ body {
   background: var(--wm-accent);
   border-color: var(--wm-accent);
   color: #fff;
+}
+
+.wm-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.4rem;
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+}
+
+.wm-btn-icon .wm-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  fill: currentColor;
+  display: block;
+}
+
+.wm-btn-icon .wm-icon-pause {
+  display: none;
+}
+
+.wm-btn-icon.is-playing .wm-icon-play {
+  display: none;
+}
+
+.wm-btn-icon.is-playing .wm-icon-pause {
+  display: block;
+}
+
+.wm-btn-icon .wm-icon-fullscreen-exit {
+  display: none;
+}
+
+.wm-btn-icon.is-fullscreen .wm-icon-fullscreen {
+  display: none;
+}
+
+.wm-btn-icon.is-fullscreen .wm-icon-fullscreen-exit {
+  display: block;
+}
+
+.wm-btn-icon .wm-icon-volume-mute {
+  display: none;
+}
+
+.wm-btn-icon.is-muted .wm-icon-volume {
+  display: none;
+}
+
+.wm-btn-icon.is-muted .wm-icon-volume-mute {
+  display: block;
 }
 
 .wm-btn-toggle.is-on {
@@ -379,10 +427,6 @@ body {
   gap: 0.35rem;
   color: var(--wm-muted);
   font-size: 0.9em;
-}
-
-.wm-volume-label {
-  user-select: none;
 }
 
 .wm-volume-input {

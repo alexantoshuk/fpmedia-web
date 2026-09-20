@@ -93,7 +93,7 @@ test.describe("demo player smoke", () => {
 
     await mute.click();
     await expect(mute).toHaveClass(/is-on/);
-    await expect(mute).toHaveText("Unmute");
+    await expect(mute).toHaveAttribute("aria-label", "Unmute");
 
     await volume.fill("0.25");
     await expect(volume).toHaveValue("0.25");
