@@ -33,6 +33,7 @@ Long-lived chrome lives **outside** matched routes when routes are added. **Reso
 webmedia/
 ├── media/                 ← crate name `webmedia`: demux + FrameIndex + Player + VideoPlayer
 ├── media_components/      ← crate name `media_components`: Leptos <Video> (+ later <Audio>)
+├── timecode/              ← crate name `timecode`: SMPTE frames ↔ HH:MM:SS:FF (DF/NDF)
 ├── app/                   ← demo host UI + shell()
 ├── frontend/              ← wasm mount (hydrate)
 ├── server/                ← Axum static site
@@ -48,7 +49,8 @@ webmedia/
 
 | Layer | Can import from |
 | ----- | --------------- |
-| `media/` (`webmedia`) | nothing in `media_components` / `app` / Leptos (leaf engine) |
+| `timecode/` | nothing else in the workspace (leaf math) |
+| `media/` (`webmedia`) | `timecode`; nothing in `media_components` / `app` / Leptos |
 | `media_components/` | `webmedia` (with `webcodecs`), Leptos, `leptos-use` |
 | `app/` | `media_components` (csr), Leptos — not `webmedia` directly |
 | `frontend/` | `app` |
