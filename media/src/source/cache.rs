@@ -307,6 +307,23 @@ impl<S> CachedSource<S> {
         self.shared.budget
     }
 
+    /// Insert ranges already fetched outside this cache (progressive open demux).
+    ///
+    /// Skips tiny ISOBMFF header peeks (≤[`NO_PREFETCH_MAX`]) — same rule as miss fill —
+    /// then syncs [`FetchMap`] so the gray scrubber strip covers `ftyp`/`moov` at open.
+    pub fn seed_windows(&self, windows: impl IntoIterator<Item = (u64, Vec<u8>)>) {
+        let Ok(mut state) = self.shared.state.lock() else {
+            return;
+        };
+        for (offset, bytes) in windows {
+            if bytes.len() <= NO_PREFETCH_MAX {
+                continue;
+            }
+            state.insert(Window { offset, bytes }, self.shared.budget);
+        }
+        sync_fetch_map(&self.shared.fetch_map, &state);
+    }
+
     #[cfg(test)]
     fn debug_windows(&self) -> Vec<(u64, u64)> {
         self.shared
@@ -563,6 +580,41 @@ mod tests {
         let _ = poll_ready(&cached, 0, 20).unwrap();
         let _ = poll_ready(&cached, 64, 20).unwrap();
         assert_eq!(map.file_fractions(128).len(), 2);
+    }
+
+    #[test]
+    fn seed_windows_fills_fetch_map_from_open_ranges() {
+        let data: Vec<u8> = (0u8..128).collect();
+        let map = Arc::new(FetchMap::new());
+        let cached = CachedSource::with_budget(
+            MemorySource::from_vec(data.clone()),
+            32,
+            256,
+            Some(Arc::clone(&map)),
+        );
+
+        // Progressive demux already read ftyp+moov-sized head; seed before sample I/O.
+        cached.seed_windows([(0, data[0..48].to_vec())]);
+        let fracs = map.file_fractions(128);
+        assert_eq!(fracs.len(), 1);
+        assert_eq!(fracs[0].0, 0.0);
+        assert!((fracs[0].1 - (48.0 / 128.0) as f32).abs() < 1e-5);
+
+        // Seeded bytes are cache hits (no inner read).
+        let counting = CountingSource {
+            inner: MemorySource::from_vec(data),
+            reads: Arc::new(AtomicUsize::new(0)),
+            bytes_fetched: Arc::new(AtomicUsize::new(0)),
+        };
+        let map2 = Arc::new(FetchMap::new());
+        let cached2 = CachedSource::with_budget(counting.clone(), 32, 256, Some(Arc::clone(&map2)));
+        let head: Vec<u8> = (0u8..48).collect();
+        cached2.seed_windows([(0, head)]);
+        let hit = poll_ready(&cached2, 0, 20).unwrap();
+        assert_eq!(hit.len(), 20);
+        assert_eq!(counting.reads.load(Ordering::SeqCst), 0);
+        assert!(!map2.file_fractions(128).is_empty());
+        assert_eq!(map2.file_fractions(128)[0].0, 0.0);
     }
 
     #[test]

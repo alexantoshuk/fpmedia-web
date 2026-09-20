@@ -131,6 +131,10 @@ pub struct FragmentBackfillPlan {
 pub struct ProgressiveParse {
     pub mp4: re_mp4::Mp4,
     pub backfill: Option<FragmentBackfillPlan>,
+    /// Byte ranges already fetched during open (ftyp/moov/moof/…). Seed into
+    /// [`crate::CachedSource`] so the gray [`crate::FetchMap`] strip is not a
+    /// permanent hole at the file head (demux ran on the raw source).
+    pub cache_seed: Vec<(u64, Vec<u8>)>,
 }
 
 /// Moofs fetched before UI ready (≈ first GOP). Rest via [`complete_mfra_backfill`].
@@ -1202,12 +1206,23 @@ pub async fn parse_mp4_progressive_with_backfill(
     crate::util::yield_now().await;
     crate::util::yield_now().await;
 
+    // Keep substantive ranges for CachedSource seed (header-only peeks ≤16 B stay out).
+    let cache_seed: Vec<(u64, Vec<u8>)> = loaded
+        .iter()
+        .filter(|b| b.bytes.len() > 16)
+        .map(|b| (b.info.offset, b.bytes.clone()))
+        .collect();
+
     let mp4 = parse_loaded_boxes(file_size, loaded).map_err(|e| {
         MediaError::Mp4(format!(
             "{e} (progressive: file_size={file_size}, {ftyp_note}, moov@{moov_offset} size={moov_size}, moofs={moof_count}, loaded={loaded_bytes}B)"
         ))
     })?;
-    Ok(ProgressiveParse { mp4, backfill })
+    Ok(ProgressiveParse {
+        mp4,
+        backfill,
+        cache_seed,
+    })
 }
 
 fn parse_loaded_boxes(file_size: u64, loaded: Vec<LoadedBox>) -> Result<re_mp4::Mp4, MediaError> {

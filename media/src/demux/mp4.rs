@@ -665,8 +665,9 @@ pub async fn open_mp4_source_with_progress(
 /// Open via progressive parse, then attach an 8 MiB [`CachedSource`] for sample I/O.
 ///
 /// Demux/scan/verify run on the **raw** source so header reads do not prefetch
-/// multi‑MiB windows. The scrubber gray strip follows the **resident** cache
-/// window only ([`CachedSource`] + [`FetchMap`]), not historical Range unions.
+/// multi‑MiB windows. Ranges already loaded during open are **seeded** into the
+/// cache so [`FetchMap`] (gray strip) covers `ftyp`/`moov` instead of a permanent
+/// hole at the file head. Further sample I/O still uses the resident LRU.
 pub async fn open_mp4_source_cached(
     source: Arc<dyn MediaSource>,
     options: OpenMp4Options,
@@ -702,7 +703,7 @@ pub async fn open_mp4_source_cached_with_progress(
         }
     }
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
-    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::with_fetch_map(source, fetch_map));
+    let cached = wrap_cached_playback(source, fetch_map, parsed.cache_seed);
     if let Some(v) = opened.video.as_mut() {
         v.set_playback_source(Arc::clone(&cached));
     }
@@ -747,7 +748,7 @@ pub async fn open_mp4_media_source_cached_with_progress(
         }
     }
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
-    let cached: Arc<dyn MediaSource> = Arc::new(CachedSource::with_fetch_map(source, fetch_map));
+    let cached = wrap_cached_playback(source, fetch_map, parsed.cache_seed);
     if let Some(v) = opened.video.as_mut() {
         v.set_playback_source(Arc::clone(&cached));
     }
@@ -755,6 +756,17 @@ pub async fn open_mp4_media_source_cached_with_progress(
         a.set_source(cached);
     }
     opened.require_av()
+}
+
+/// Attach [`CachedSource`] for playback and seed ranges already read during demux.
+fn wrap_cached_playback(
+    source: Arc<dyn MediaSource>,
+    fetch_map: Arc<FetchMap>,
+    cache_seed: Vec<(u64, Vec<u8>)>,
+) -> Arc<dyn MediaSource> {
+    let cached = CachedSource::with_fetch_map(source, fetch_map);
+    cached.seed_windows(cache_seed);
+    Arc::new(cached)
 }
 
 /// Open an MP4 from a filesystem path (native / tests).

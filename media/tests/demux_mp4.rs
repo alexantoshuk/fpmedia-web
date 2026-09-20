@@ -8,7 +8,8 @@ use std::time::Instant;
 use webmedia::{
     GopProfile, MediaSource, MemorySource, OpenMp4Options, PacketType, Player, ReadFuture,
     VideoCodec, avc_nal_length_size, determine_avc_packet_type, determine_hevc_packet_type,
-    hevc_nal_length_size, open_mp4_bytes, open_mp4_path, open_mp4_source,
+    hevc_nal_length_size, open_mp4_bytes, open_mp4_media_source_cached, open_mp4_path,
+    open_mp4_source,
 };
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -185,6 +186,37 @@ fn progressive_source_open_matches_bytes_offsets() {
     let sample_full = block_on(full.encoded_sample(12)).expect("full sample");
     let sample_prog = block_on(progressive.encoded_sample(12)).expect("prog sample");
     assert_eq!(sample_full.data, sample_prog.data);
+}
+
+#[test]
+fn progressive_cached_open_seeds_fetch_map_at_file_head() {
+    let path = fixture("short_gop.mp4");
+    if !path.exists() {
+        eprintln!("skip: missing fixture {}", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read");
+    let file_size = bytes.len() as u64;
+    let source: Arc<dyn webmedia::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
+    let opened = block_on(open_mp4_media_source_cached(
+        source,
+        OpenMp4Options {
+            verify_avc_sync: false,
+            defer_avc_sync: false,
+        },
+    ))
+    .expect("cached progressive open");
+
+    let fracs = opened.fetch_map.file_fractions(file_size);
+    assert!(
+        !fracs.is_empty(),
+        "FetchMap must cover progressive-open ranges at open"
+    );
+    assert_eq!(
+        fracs[0].0, 0.0,
+        "gray strip must not leave a permanent hole at file start; got {fracs:?}"
+    );
+    assert!(fracs[0].1 > 0.0);
 }
 
 #[test]
