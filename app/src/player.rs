@@ -638,6 +638,23 @@ fn cache_strip_gradient(
     stops
 }
 
+/// File-byte fetch coverage → scrubber % (approximate; not sample-accurate).
+fn fetch_strip_gradient(ranges: &[(f32, f32)], color: &str) -> String {
+    if ranges.is_empty() {
+        return "none".into();
+    }
+    let mut stops = String::from("linear-gradient(90deg, transparent 0%");
+    for &(a, b) in ranges {
+        let start = (a as f64 * 100.0).clamp(0.0, 100.0);
+        let end = (b as f64 * 100.0).clamp(0.0, 100.0).max(start);
+        stops.push_str(&format!(
+            ", transparent {start:.3}%, {color} {start:.3}%, {color} {end:.3}%, transparent {end:.3}%"
+        ));
+    }
+    stops.push_str(", transparent 100%)");
+    stops
+}
+
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
@@ -715,6 +732,20 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
         >
             <div class="wm-scrubber-track">
                 <div
+                    class="wm-scrubber-fetched"
+                    data-testid="scrubber-fetched"
+                    aria-hidden="true"
+                    title="Fetched file bytes (approx. by file offset — not decode cache)"
+                    style:background-image=move || {
+                        let ranges = video
+                            .pipeline
+                            .get()
+                            .map(|s| s.fetch_file_ranges)
+                            .unwrap_or_default();
+                        fetch_strip_gradient(&ranges, "#6b7280")
+                    }
+                />
+                <div
                     class="wm-scrubber-progress"
                     data-testid="scrubber-progress"
                     style:width=move || {
@@ -727,7 +758,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
             <div
                 class="wm-scrubber-ready"
                 aria-hidden="true"
-                title="Cache strips: dim=markers (kept on Play), bright=blit ImageBitmap"
+                title="Decode densify: dim=markers (kept on Play), bright=blit ImageBitmap"
             >
                 {move || {
                     let marks = video

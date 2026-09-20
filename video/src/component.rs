@@ -1510,7 +1510,7 @@ async fn open_source_staged(
         video.frame_count(),
         if audio.is_some() { " + audio" } else { "" }
     ));
-    WebPlayer::from_tracks(video, audio, canvas)
+    WebPlayer::from_tracks_with_fetch(video, audio, canvas, opened.fetch_map)
         .await
         .map_err(|e| e.to_string())
 }

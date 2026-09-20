@@ -181,11 +181,20 @@ body {
   flex: 0 0 auto;
 }
 
+/* File-byte fetch coverage (behind playhead). Not densify — see .wm-scrubber-ready. */
+.wm-scrubber-fetched {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-repeat: no-repeat;
+}
+
 .wm-scrubber-progress {
   position: absolute;
   inset: 0 auto 0 0;
   background: #e11d48;
   pointer-events: none;
+  z-index: 1;
 }
 
 /* Cache / ahead readiness under the progress bar (frame ticks). */

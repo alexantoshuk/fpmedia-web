@@ -136,6 +136,9 @@ struct Shared {
     clock: RefCell<MediaClock>,
     /// Wall `performance.now()/1000` origin while playing without audio.
     wall_origin: Cell<Option<f64>>,
+    /// File-byte fetch coverage (demo scrubber gray strip).
+    fetch_map: std::sync::Arc<crate::FetchMap>,
+    file_size: u64,
 }
 
 /// Why a frame is marked ready on the demo timeline strip.
@@ -203,6 +206,9 @@ pub struct PipelineStats {
     pub ready_frames: Vec<ReadyFrameMark>,
     /// Keyframe spacing class (scrub budget / fill policy).
     pub gop_profile: GopProfile,
+    /// Fetched **file** byte ranges as fractions of file size (`0..1`), for the
+    /// demo gray buffer strip (not decode densify — see `ready_frames`).
+    pub fetch_file_ranges: Vec<(f32, f32)>,
 }
 
 impl Default for PipelineStats {
@@ -227,6 +233,7 @@ impl Default for PipelineStats {
             scrub_window_to: None,
             ready_frames: Vec::new(),
             gop_profile: GopProfile::Long { median: 0, max: 0 },
+            fetch_file_ranges: Vec::new(),
         }
     }
 }
@@ -253,7 +260,7 @@ impl WebPlayer {
     ) -> Result<Self, MediaError> {
         let opened = crate::open_mp4_media_bytes(bytes)?;
         let video = opened.video.ok_or(MediaError::NoVideoTrack)?;
-        Self::from_tracks(video, opened.audio, canvas).await
+        Self::from_tracks_with_fetch(video, opened.audio, canvas, opened.fetch_map).await
     }
 
     /// Progressive open from a ranged [`crate::MediaSource`] (Blob / memory).
@@ -269,7 +276,7 @@ impl WebPlayer {
         )
         .await?;
         let video = opened.video.ok_or(MediaError::NoVideoTrack)?;
-        Self::from_tracks(video, opened.audio, canvas).await
+        Self::from_tracks_with_fetch(video, opened.audio, canvas, opened.fetch_map).await
     }
 
     /// Progressive open from a browser [`web_sys::Blob`] / `File`.
@@ -296,14 +303,33 @@ impl WebPlayer {
         audio: Option<crate::demux::Mp4AudioTrack>,
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
+        Self::from_tracks_with_fetch(
+            track,
+            audio,
+            canvas,
+            std::sync::Arc::new(crate::FetchMap::new()),
+        )
+        .await
+    }
+
+    /// Like [`Self::from_tracks`], with a shared file-byte [`crate::FetchMap`].
+    pub async fn from_tracks_with_fetch(
+        track: crate::demux::Mp4VideoTrack,
+        audio: Option<crate::demux::Mp4AudioTrack>,
+        canvas: HtmlCanvasElement,
+        fetch_map: std::sync::Arc<crate::FetchMap>,
+    ) -> Result<Self, MediaError> {
+        let file_size = track.source().size();
         let player = Player::from_track(track)?;
-        Self::from_player(player, audio, canvas).await
+        Self::from_player(player, audio, canvas, fetch_map, file_size).await
     }
 
     async fn from_player(
         player: Player,
         audio_track: Option<crate::demux::Mp4AudioTrack>,
         canvas: HtmlCanvasElement,
+        fetch_map: std::sync::Arc<crate::FetchMap>,
+        file_size: u64,
     ) -> Result<Self, MediaError> {
         let meta = player.metadata().clone();
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
@@ -367,6 +393,8 @@ impl WebPlayer {
             audio: RefCell::new(audio),
             clock: RefCell::new(MediaClock::new()),
             wall_origin: Cell::new(None),
+            fetch_map,
+            file_size,
         });
         apply_clip_budgets(&shared);
         // Do not seek here — first-frame decode can be slow; let the host show
@@ -1126,6 +1154,7 @@ impl WebPlayer {
             scrub_window_to: win_to,
             ready_frames,
             gop_profile: self.shared.player.borrow().metadata().gop_profile,
+            fetch_file_ranges: self.shared.fetch_map.file_fractions(self.shared.file_size),
         }
     }
 
