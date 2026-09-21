@@ -32,6 +32,11 @@ use tower_http::services::ServeDir;
 /// How long to reuse a resolved redirect target (GitHub signed asset URLs ≈1h).
 const REDIRECT_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 
+/// Buffer upstream body when ≤ this (Range windows / probes). Larger GETs stream
+/// **without** forwarding `Content-Length` (chunked) so a truncated CDN body cannot
+/// surface as Chrome `ERR_CONTENT_LENGTH_MISMATCH`.
+const PROXY_BUFFER_MAX: u64 = 16 * 1024 * 1024;
+
 #[tokio::main]
 async fn main() {
     simple_logger::init_with_level(log::Level::Info).expect("failed to init logger");
@@ -127,6 +132,12 @@ fn store_redirect(state: &AppState, original: &str, final_url: &str) {
     }
 }
 
+fn clear_redirect(state: &AppState, original: &str) {
+    if let Ok(mut map) = state.redirects.lock() {
+        map.remove(original);
+    }
+}
+
 async fn media_proxy(
     State(state): State<AppState>,
     Query(q): Query<ProxyQuery>,
@@ -135,25 +146,46 @@ async fn media_proxy(
 ) -> Result<Response<Body>, (StatusCode, String)> {
     let original = validate_proxy_target(&q.url).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let original_s = original.to_string();
+    let range = headers.get(RANGE).cloned();
+
+    let used_cache = cached_redirect(&state, &original_s).is_some();
     let target = cached_redirect(&state, &original_s)
         .and_then(|s| reqwest::Url::parse(&s).ok())
-        .unwrap_or(original);
+        .unwrap_or_else(|| original.clone());
 
-    let mut upstream = state.http.request(method.clone(), target);
-    if let Some(range) = headers.get(RANGE) {
-        upstream = upstream.header(RANGE, range);
-    }
-
-    let resp = upstream.send().await.map_err(|e| {
-        if let Ok(mut map) = state.redirects.lock() {
-            map.remove(&original_s);
+    let mut resp = match proxy_fetch(&state, method.clone(), target, range.as_ref()).await {
+        Ok(r) => r,
+        Err(_e) if used_cache => {
+            clear_redirect(&state, &original_s);
+            proxy_fetch(&state, method.clone(), original.clone(), range.as_ref()).await?
         }
-        (StatusCode::BAD_GATEWAY, format!("proxy fetch failed: {e}"))
-    })?;
+        Err(e) => return Err(e),
+    };
+
+    // Signed CDN URLs expire; cached redirect → 401/403/404. Drop cache + retry once.
+    if used_cache && matches!(resp.status().as_u16(), 401 | 403 | 404) {
+        clear_redirect(&state, &original_s);
+        resp = proxy_fetch(&state, method.clone(), original.clone(), range.as_ref()).await?;
+    }
 
     store_redirect(&state, &original_s, resp.url().as_str());
 
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    if matches!(status.as_u16(), 401 | 403 | 404) {
+        clear_redirect(&state, &original_s);
+    }
+
+    let upstream_cl = resp
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+    let range_span = resp
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(content_range_span_len);
+    let buffer_hint = upstream_cl.or(range_span).unwrap_or(u64::MAX);
 
     let mut out = Response::builder().status(status);
     let out_headers = out.headers_mut().ok_or((
@@ -169,7 +201,6 @@ async fn media_proxy(
 
     for name in [
         CONTENT_TYPE,
-        CONTENT_LENGTH,
         CONTENT_RANGE,
         ACCEPT_RANGES,
         HeaderName::from_static("etag"),
@@ -184,11 +215,39 @@ async fn media_proxy(
     }
 
     if method == Method::HEAD {
+        if let Some(v) = resp.headers().get(CONTENT_LENGTH) {
+            out_headers.insert(CONTENT_LENGTH, v.clone());
+        }
         return out
             .body(Body::empty())
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
     }
 
+    // Small / Range bodies: buffer so Content-Length always matches bytes sent.
+    if buffer_hint <= PROXY_BUFFER_MAX {
+        let bytes = resp.bytes().await.map_err(|e| {
+            clear_redirect(&state, &original_s);
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("proxy body read failed: {e}"),
+            )
+        })?;
+        out_headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(&bytes.len().to_string()).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("content-length: {e}"),
+                )
+            })?,
+        );
+        return out
+            .body(Body::from(bytes))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+    }
+
+    // Large body: stream chunked — do **not** forward upstream Content-Length
+    // (truncated CDN / reset mid-stream → Chrome ERR_CONTENT_LENGTH_MISMATCH).
     let stream = resp.bytes_stream().map(|chunk| {
         chunk
             .map(Bytes::from)
@@ -196,6 +255,34 @@ async fn media_proxy(
     });
     out.body(Body::from_stream(stream))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn proxy_fetch(
+    state: &AppState,
+    method: Method,
+    target: reqwest::Url,
+    range: Option<&HeaderValue>,
+) -> Result<reqwest::Response, (StatusCode, String)> {
+    let mut upstream = state.http.request(method, target);
+    if let Some(range) = range {
+        upstream = upstream.header(RANGE, range);
+    }
+    upstream.send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("proxy fetch failed: {e}"),
+        )
+    })
+}
+
+/// `Content-Range: bytes start-end/total` → `end - start + 1`.
+fn content_range_span_len(cr: &str) -> Option<u64> {
+    let bytes = cr.strip_prefix("bytes ")?;
+    let (span, _) = bytes.split_once('/')?;
+    let (start, end) = span.split_once('-')?;
+    let start: u64 = start.parse().ok()?;
+    let end: u64 = end.parse().ok()?;
+    end.checked_sub(start).map(|n| n + 1)
 }
 
 fn add_cors_headers(headers: &mut HeaderMap) {

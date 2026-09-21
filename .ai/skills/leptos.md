@@ -16,6 +16,7 @@
 | EOF with `loop` off — host never notified | `VideoRef::ended`; clear on open/close/seek/play |
 | Decoder/cache leak after leaving a clip | `VideoRef::close()` (also on unmount) |
 | URL open hangs / CORS / slow full download | `VideoRef::open_url` → same-origin `/proxy?url=` (demo server) then `UrlSource` (Range) or blob fallback; status shows `No HTTP Range — downloading full file…` |
+| `/proxy` `ERR_CONTENT_LENGTH_MISMATCH` 206 | Demo proxy buffers ≤16 MiB Ranges (exact CL); large bodies chunked without CL; stale signed redirect → clear+retry |
 | Gray scrubber bar vs green densify strips | Gray = `FetchMap` → `helpers::fetch_strip_gradient`; green = densify via `helpers::cache_strip_gradient` |
 | Hover thumb during Play / scrub | Demo `Scrubber` gates `!playing && !scrubbing`; engine `cancel_hover_thumb` on play/scrub |
 | `RefCell already borrowed` in Loop / sync_ui / tachys | No borrow across `.await`; defer scrub work off `on:pointer*`; engine: `skills/media.md` RefCell / WASM re-entry |
