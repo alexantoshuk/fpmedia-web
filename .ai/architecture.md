@@ -73,6 +73,7 @@ webmedia/
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
 | Progressive open via `MediaSource` | Ranged reads (`BlobSource` / `UrlSource` / `MemorySource` + `CachedSource`); parse `moov` (+ `moof` for single-file fMP4), fetch samples by offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline, **`GopProfile`**: `.ai/skills/media.md`. |
+| Optional hover thumbs (`thumbs`) | **Agreed, not shipped.** Compile: cargo feature `thumbs` **default on**. Runtime: `ThumbPolicy::Off \| On` (`On` = play+pause; hide only while scrubbing). Isolated `ThumbPreview` (ThumbCache + future small decoder) — never drives densify Covered/Exact; mediabunny separate `CanvasSink`. Backlog steps: `.ai/state.md` Hover thumbs. |
 | Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA live in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` only volume/mute **API**. Keyboard/chrome stay in demo `app`. Future `<Audio>` shares `audio/` (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
 | Component API like HTML media | Element crates expose open/play/seek/rate/volume — not host keybindings. Scrubber strip math: `media_components::helpers`. Demo owns JKL/Space/arrows. |
 
