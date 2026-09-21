@@ -12,6 +12,7 @@ pub use webmedia::{PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoMetadata}
 use std::rc::Rc;
 
 use leptos::prelude::*;
+use web_sys::HtmlCanvasElement;
 
 /// Cloneable handle to a mounted [`Video`] — like a ref to an HTMLMediaElement.
 #[derive(Clone, Copy)]
@@ -69,6 +70,9 @@ pub(crate) struct VideoOps {
     pub set_volume: Rc<dyn Fn(f64)>,
     pub set_muted: Rc<dyn Fn(bool)>,
     pub set_playback_rate: Rc<dyn Fn(f64)>,
+    /// Hover timeline thumb → paint into `dest` (idle only; nearest sync).
+    pub paint_hover_thumb: Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32)>,
+    pub cancel_hover_thumb: Rc<dyn Fn()>,
 }
 
 impl VideoRef {
@@ -339,6 +343,33 @@ impl VideoRef {
             .flatten()
         {
             set_rate(r);
+        }
+    }
+
+    /// Paint a Frame.io-style hover thumb into `dest` (paused, not scrubbing).
+    ///
+    /// Nearest sync; does not move playhead/canvas. Host must gate on
+    /// `!playing && !scrubbing` and call [`Self::cancel_hover_thumb`] on leave/play/scrub.
+    pub fn paint_hover_thumb(&self, frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32) {
+        let max = self.frame_count.get_untracked().saturating_sub(1);
+        let frame = frame.min(max);
+        if let Some(paint) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.paint_hover_thumb)))
+            .flatten()
+        {
+            paint(frame, dest, max_w, max_h);
+        }
+    }
+
+    /// Abort in-flight hover thumb decode / hide race with play or scrub.
+    pub fn cancel_hover_thumb(&self) {
+        if let Some(cancel) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.cancel_hover_thumb)))
+            .flatten()
+        {
+            cancel();
         }
     }
 }

@@ -144,7 +144,7 @@ Rust/WASM friction (Closures, `JsFuture`, `RefCell`) is adaptation of the same c
 - **Chromium first AVC packet** — strip NALs before AUD and reserved types 20–31 (`VideoDecoderWrapper` / Chromium issues 470109459, #396). Race `flush()` with a timeout as a safety net.
 - **Chromium first HEVC packet** — `sanitize_hevc_packet_for_chromium` NAL-order filter (`hevc.cc` too strict; issue 507611247). After CRA/open-GOP key, drop RASL_N/RASL_R until past (`rasl_skipped`; mediabunny `hasHevcRaslPicture`) — avoids “key frame required after configure/flush” on scrub.
 
-UI host patterns (spawn_local, OpQueue, `playing` ownership, wall-clock play loop): `skills/leptos.md`. Backlog (audio clock, sinks, filmstrip): `.ai/state.md`.
+UI host patterns (spawn_local, OpQueue, `playing` ownership, wall-clock play loop): `skills/leptos.md`. Backlog (sinks): `.ai/state.md`.
 
 ## Frame and decode caches
 
@@ -168,7 +168,7 @@ Decoded Exact residency is **`ImageBitmap` blit + resident markers**. Dual `Vide
 | **Step behind ring** | Prev hits (live VF) | `displayed` + `step_behind`; `STEP_BEHIND_CAP` (8); **Play uses cap 0** |
 | **`ScrubChunkStore`** | Gap geometry | **markers only**; densify inserts resident |
 | **`ScrubBlitLru`** | Scrub/step canvas present + Exact strip | densify `ImageBitmap`; cap from [`scrub_blit_frame_budget`] (`ScrubPolicy::blit_mib` × canvas buffer) |
-| **`ThumbCache`** | Filmstrip bitmaps (shell; not wired) | Separate from Exact markers |
+| **`ThumbCache`** | Hover filmstrip bitmaps (caller-sized; separate from Exact) | `VideoPlayer::paint_hover_thumb`; idle only |
 
 Densify `on_frame`: VF → `transferToImageBitmap` + marker. `mediabunny:` CanvasSink canvas pool — same idea.
 
@@ -311,6 +311,7 @@ Model: [Frame and decode caches](#frame-and-decode-caches).
 - **Periodic Play freeze ~0.5s every GOP** — was Long-GOP recreate on key change + long `finish_gop` drain → underrun hold. Soft sequential next-key when idle; scrub non-adjacent still hard. **Do not** hard-recreate on `busy` alone when soft-OK; await idle then soft switch. **Packet pump must cross GOPs** (`samples_after_decode` + `DECODE_WARM_AHEAD`) — in-GOP-only stop → finish_gop every key → ~1 hold/GOP (~0.93× realtime). Early `take_held` respawns **warm_only** pump (saw_target=true) — otherwise feeds to EOF (held≈3200). `mediabunny: src/media-sink.ts` mediaSamplesInRange continuous.
 - **Play after scrub:** host must not `seek_frame` from `VideoRef::play` while settle targets the same playhead (restarts key→N). Settle success arms densify via `arm_scrub_densify_after_exact` only when no pending PlayPrime; cancelled settle must not densify/invalidate. `prime_playback` re-decodes into the presentation queue (no VF lift from scrub store).
 - Timeline drag: async `scrub_to` — canvas via warm `ImageBitmap` only (`present_from_cache` = blit LRU). Store markers are strip/geometry only — **never** canvas. Miss → soft preview (key/neighbor); **soft-drag** (Short/AllIntra) stops there — no `goto_frame` until settle. **Exact-drag** (Long) may decode VF. Never `commit_frame` **or densify** the uncommitted preview alone without present path.
+- **Hover thumbs (Frame.io):** only while `!playing && !scrubbing`. `VideoPlayer::paint_hover_thumb` → nearest sync into caller canvas; `ThumbCache` separate from Exact `blit_mib`. Prefer Exact downscale; else scrub decoder (ephemeral soft if densify busy) — **never** main play decoder. Cancel via `cancel_hover_thumb` / play / scrub. `mediabunny: src/media-sink.ts` `mediaSamplesAtTimestamps` / `CanvasSink.canvasesAtTimestamps`.
 - **Predictive densify:** drag updates `scrub_dir` (`note_scrub_direction`); `next_gap` hard-prefers along `dir` (`nearer_gap_with_dir`); settle/play `clear_scrub_direction` (neutral). Do **not** cancel an in-flight GOP densify when aim jumps (was: ≥8 frames / other key → constant cancel on rapid scrub, dense stayed empty). Aim only picks the next gap after the GOP completes; budget eviction still drops farthest-from-aim.
 - **False Long on short-IP:** scene-cut GOPs shrink `min` → large spread while `max ≤ 30`. Classify Short on **max only** (not spread ≤ 2). scene-cut proxy was `Long ~27 (max 30)` under the old gate. `mediabunny: no equivalent`.
 - Pointer-up → `prepare_scrub_settle` (abort scrub epoch, reset scrub decoder, invalidate main decoder, set hold, clear dir) then **always** `goto_frame_with_interim(target)` — do **not** commit/blit target (or key/preview) via soft still. Canvas keeps last drag frame until decode VF. Prune salvages PTS `< target` into scrub store only (no canvas blit). Exact commits when ready; densify after is cheap on that GOP.

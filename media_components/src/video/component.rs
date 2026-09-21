@@ -876,6 +876,36 @@ pub fn Video(
         }) as Rc<dyn Fn(f64)>
     };
 
+    let paint_hover_thumb_fn = {
+        let player = Rc::clone(&player);
+        Rc::new(
+            move |frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32| {
+                let Some(p) = player.borrow().as_ref().cloned() else {
+                    return;
+                };
+                if p.is_playing() {
+                    return;
+                }
+                spawn_local(async move {
+                    let _ = p
+                        .paint_hover_thumb(u64::from(frame), &dest, max_w, max_h)
+                        .await;
+                });
+            },
+        ) as Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32)>
+    };
+
+    let cancel_hover_thumb_fn = {
+        let player = Rc::clone(&player);
+        Rc::new(move || {
+            if let Ok(borrow) = player.try_borrow()
+                && let Some(p) = borrow.as_ref()
+            {
+                p.cancel_hover_thumb();
+            }
+        }) as Rc<dyn Fn()>
+    };
+
     let close_fn = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
@@ -921,6 +951,8 @@ pub fn Video(
         set_volume: set_volume_fn,
         set_muted: set_muted_fn,
         set_playback_rate: set_playback_rate_fn,
+        paint_hover_thumb: paint_hover_thumb_fn,
+        cancel_hover_thumb: cancel_hover_thumb_fn,
     }));
 
     on_cleanup({

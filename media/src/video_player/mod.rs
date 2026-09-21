@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageBitmap};
 
 use crate::MediaClock;
 use crate::audio::AudioOutput;
@@ -93,8 +93,10 @@ struct Shared {
     scrub_blit: RefCell<ScrubBlitLru>,
     /// Reusable OffscreenCanvas for VideoFrame → ImageBitmap.
     encode_canvas: BlitCanvasSlot,
-    /// Filmstrip thumbs (caller-sized); separate budget from scrub chunks.
+    /// Filmstrip / hover thumbs (caller-sized); separate budget from scrub chunks.
     thumb_cache: RefCell<ThumbCache>,
+    /// Bumped to cancel in-flight hover thumb decode (play / scrub / leave).
+    thumb_gen: Cell<u64>,
     /// Second decoder for background gap fill (does not steal main playback).
     scrub_decoder: RefCell<Option<WebCodecsDecoder>>,
     scrub_epoch: Cell<u64>,
@@ -372,6 +374,7 @@ impl VideoPlayer {
             scrub_blit: RefCell::new(ScrubBlitLru::new(1)),
             encode_canvas: BlitCanvasSlot::default(),
             thumb_cache: RefCell::new(ThumbCache::new(DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS)),
+            thumb_gen: Cell::new(0),
             scrub_decoder: RefCell::new(None),
             scrub_epoch: Cell::new(0),
             scrub_busy: Cell::new(false),
@@ -937,6 +940,7 @@ impl VideoPlayer {
         // Play VF VRAM estimate — evict farthest from playhead, do not wipe all
         // (was: full clear → cold Exact on every Pause).
         self.cancel_ops();
+        self.cancel_hover_thumb();
         self.abort_scrub_fill(false);
         self.clear_scrub_direction();
         self.trim_exact_for_play();
@@ -948,6 +952,165 @@ impl VideoPlayer {
         self.shared.underrun_holds.set(0);
         self.shared.underrun_hold_ms.set(0.0);
         self.shared.underrun_hold_since_ms.set(None);
+    }
+
+    /// Abort in-flight hover thumb decode (Frame.io: hide while playing / scrubbing).
+    pub fn cancel_hover_thumb(&self) {
+        let epoch = self.shared.thumb_gen.get().wrapping_add(1);
+        self.shared.thumb_gen.set(epoch);
+    }
+
+    /// Paint a hover preview into `dest` (nearest sync; separate from Exact budget).
+    ///
+    /// Call only while paused and not scrubbing. Uses scrub/soft decoder — never
+    /// the main play decoder. `mediabunny:` `CanvasSink.canvasesAtTimestamps` /
+    /// `mediaSamplesAtTimestamps` sparse path.
+    pub async fn paint_hover_thumb(
+        &self,
+        frame: FrameId,
+        dest: &HtmlCanvasElement,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<FrameId, MediaError> {
+        if self.is_playing() {
+            return Err(MediaError::Cancelled);
+        }
+        let count = self.state().frame_count;
+        if count == 0 {
+            return Err(MediaError::FrameOutOfRange(frame, count));
+        }
+        let frame = frame.min(count.saturating_sub(1));
+        let key = self.key_for(frame).unwrap_or(frame);
+        let meta = self.shared.player.borrow().metadata().clone();
+        let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
+        let epoch = self.shared.thumb_gen.get();
+        let cancelled = || self.shared.thumb_gen.get() != epoch || self.is_playing();
+
+        if cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+
+        // Cache hit — draw without decode.
+        if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut()
+            && let Some(bmp) = thumbs.get(key, key, tw, th)
+        {
+            paint_thumb_canvas(dest, bmp, tw, th)?;
+            return Ok(key);
+        }
+
+        // Exact blit downscale (free — no decode, still not charged to Exact cap).
+        let thumb_from_blit = if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+            let src_frame = if blit.get(key).is_some() {
+                Some(key)
+            } else if blit.get(frame).is_some() {
+                Some(frame)
+            } else {
+                None
+            };
+            if let Some(id) = src_frame {
+                let src = blit.get(id).expect("just checked");
+                Some(
+                    self.shared
+                        .encode_canvas
+                        .with_blit(|enc| enc.bitmap_to_sized(src, tw, th))?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(thumb) = thumb_from_blit {
+            if cancelled() {
+                thumb.close();
+                return Err(MediaError::Cancelled);
+            }
+            paint_thumb_canvas(dest, &thumb, tw, th)?;
+            if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut() {
+                thumbs.put_ready(key, key, thumb, tw, th);
+            } else {
+                thumb.close();
+            }
+            return Ok(key);
+        }
+
+        // Sparse key decode via scrub decoder (or ephemeral soft when densify busy).
+        let video = self.decode_hover_key(key, epoch).await?;
+        if cancelled() {
+            drop(video);
+            return Err(MediaError::Cancelled);
+        }
+        let (thumb, _, _) = self
+            .shared
+            .encode_canvas
+            .with_blit(|enc| enc.frame_to_bitmap(video.as_web_sys(), tw, th))?;
+        drop(video);
+        if cancelled() {
+            thumb.close();
+            return Err(MediaError::Cancelled);
+        }
+        paint_thumb_canvas(dest, &thumb, tw, th)?;
+        if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut() {
+            thumbs.put_ready(key, key, thumb, tw, th);
+        } else {
+            thumb.close();
+        }
+        Ok(key)
+    }
+
+    /// Nearest-sync decode for hover — scrub slot when idle; ephemeral soft if densify busy.
+    async fn decode_hover_key(
+        &self,
+        key: FrameId,
+        epoch: u64,
+    ) -> Result<OwnedVideoFrame, MediaError> {
+        let cancelled = || self.shared.thumb_gen.get() != epoch || self.is_playing();
+        if cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+        let meta = self.shared.player.borrow().metadata().clone();
+        let track = self.shared.player.borrow().track_rc();
+        let _ = track.ensure_key_verified(key).await?;
+        if cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+
+        // Densify holds the scrub decoder across await — do not steal; spin a soft one.
+        let densify_busy = self.shared.scrub_busy.get();
+        let (mut decoder, return_slot) = if densify_busy {
+            (WebCodecsDecoder::create_scrub(&meta).await?, false)
+        } else {
+            // Short borrow — never hold `scrub_decoder` RefMut across await.
+            let taken = self.shared.scrub_decoder.borrow_mut().take();
+            match taken {
+                Some(d) => (d, true),
+                None => (WebCodecsDecoder::create_scrub(&meta).await?, true),
+            }
+        };
+        if cancelled() {
+            if return_slot {
+                *self.shared.scrub_decoder.borrow_mut() = Some(decoder);
+            }
+            return Err(MediaError::Cancelled);
+        }
+
+        let result = decoder.decode_frame(&track, key, &cancelled).await;
+        if return_slot {
+            // Prefer not to clobber a densify put-back that raced in.
+            let mut slot = self.shared.scrub_decoder.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(decoder);
+            }
+            // else drop our copy — densify owns the slot again
+        }
+        // else ephemeral soft decoder drops here
+        if cancelled() {
+            if let Ok(v) = result {
+                drop(v);
+            }
+            return Err(MediaError::Cancelled);
+        }
+        result
     }
 
     /// Shrink Exact to leave GPU headroom for Play VF pool; keep near-playhead bitmaps.
@@ -1113,6 +1276,7 @@ impl VideoPlayer {
     /// Must not call [`Self::note_scrub_frame`] / densify kick: that starved exact
     /// on long-GOP long GOPs (playhead far, `eng` stuck at 0, `decodeQ≈10`).
     pub fn prepare_scrub_settle(&self, frame: FrameId) {
+        self.cancel_hover_thumb();
         self.abort_scrub_fill(true);
         self.shared.hold_densify_for_exact.set(true);
         self.clear_scrub_direction();
@@ -1300,6 +1464,7 @@ impl VideoPlayer {
 
     /// Scrub pointer sample (drag / hold). Same cache pipeline as pause + release.
     pub fn note_scrub_frame(&self, frame: FrameId) {
+        self.cancel_hover_thumb();
         self.note_scrub_direction(frame);
         self.enter_scrub_cache_pipeline(frame);
     }
@@ -3034,6 +3199,39 @@ async fn yield_event_loop() {
         &wasm_bindgen::JsValue::UNDEFINED,
     ))
     .await;
+}
+
+/// Caller-sized hover thumb (contain into max box, source aspect).
+fn hover_thumb_dims(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    let src_w = src_w.max(1) as f64;
+    let src_h = src_h.max(1) as f64;
+    let max_w = max_w.max(1) as f64;
+    let max_h = max_h.max(1) as f64;
+    let scale = (max_w / src_w).min(max_h / src_h);
+    let w = (src_w * scale).round().max(1.0) as u32;
+    let h = (src_h * scale).round().max(1.0) as u32;
+    (w, h)
+}
+
+fn paint_thumb_canvas(
+    dest: &HtmlCanvasElement,
+    bitmap: &ImageBitmap,
+    width: u32,
+    height: u32,
+) -> Result<(), MediaError> {
+    let width = width.max(1);
+    let height = height.max(1);
+    if dest.width() != width {
+        dest.set_width(width);
+    }
+    if dest.height() != height {
+        dest.set_height(height);
+    }
+    let ctx = canvas_2d(dest)?;
+    ctx.set_image_smoothing_enabled(true);
+    ctx.draw_image_with_image_bitmap_and_dw_and_dh(bitmap, 0.0, 0.0, width as f64, height as f64)
+        .map_err(MediaError::from)?;
+    Ok(())
 }
 
 /// Await one animation frame with a dedicated Closure (not Promise.resolve).

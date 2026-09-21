@@ -725,25 +725,60 @@ impl Drop for ScrubBlitLru {
     }
 }
 
-/// One GOP of scrub previews at **caller-requested** bitmap size (UI owns scale).
-#[allow(dead_code)]
+/// One GOP of hover / filmstrip thumbs at **caller-requested** bitmap size.
 pub struct ThumbGop {
+    #[allow(dead_code)] // GOP identity for filmstrip follow-ups
     pub key_frame: FrameId,
     pub by_time: HashMap<i64, ThumbBitmap>,
 }
 
-#[allow(dead_code)]
-pub enum ThumbBitmap {
-    Reserved { width: u32, height: u32 },
+impl ThumbGop {
+    fn close_all(&mut self) {
+        for (_, thumb) in self.by_time.drain() {
+            thumb.close();
+        }
+    }
 }
 
-#[allow(dead_code)]
+/// Hover thumb plane — separate budget from Exact blit (`AGENTS.md` / product).
+pub enum ThumbBitmap {
+    Ready {
+        bitmap: ImageBitmap,
+        width: u32,
+        height: u32,
+    },
+}
+
+impl ThumbBitmap {
+    fn close(self) {
+        match self {
+            Self::Ready { bitmap, .. } => bitmap.close(),
+        }
+    }
+
+    fn matches_size(&self, width: u32, height: u32) -> bool {
+        match self {
+            Self::Ready {
+                width: w,
+                height: h,
+                ..
+            } => *w == width && *h == height,
+        }
+    }
+
+    fn bitmap(&self) -> &ImageBitmap {
+        match self {
+            Self::Ready { bitmap, .. } => bitmap,
+        }
+    }
+}
+
+/// Filmstrip / hover thumbs — **not** charged to Exact `blit_mib`.
 pub struct ThumbCache {
     gops: LruCache<FrameId, ThumbGop>,
     max_thumbs: usize,
 }
 
-#[allow(dead_code)]
 impl ThumbCache {
     pub fn new(max_key_gops: usize, max_thumbs: usize) -> Self {
         let cap = NonZeroUsize::new(max_key_gops.max(1)).expect("max_key_gops >= 1");
@@ -754,22 +789,41 @@ impl ThumbCache {
     }
 
     pub fn clear(&mut self) {
-        self.gops.clear();
-    }
-
-    pub fn gop_count(&self) -> usize {
-        self.gops.len()
+        while let Some((_, mut gop)) = self.gops.pop_lru() {
+            gop.close_all();
+        }
     }
 
     pub fn thumb_count(&self) -> usize {
         self.gops.iter().map(|(_, g)| g.by_time.len()).sum()
     }
 
-    pub fn get_gop_mut(&mut self, key: FrameId) -> Option<&mut ThumbGop> {
-        self.gops.get_mut(&key)
+    /// Lookup a ready thumb for `frame` under GOP `key` at the requested size.
+    pub fn get(
+        &mut self,
+        key: FrameId,
+        frame: FrameId,
+        width: u32,
+        height: u32,
+    ) -> Option<&ImageBitmap> {
+        let gop = self.gops.get_mut(&key)?;
+        let thumb = gop.by_time.get(&(frame as i64))?;
+        if thumb.matches_size(width, height) {
+            Some(thumb.bitmap())
+        } else {
+            None
+        }
     }
 
-    pub fn ensure_gop(&mut self, key: FrameId) -> &mut ThumbGop {
+    /// Insert or replace a ready thumb. Closes any previous plane for the same frame.
+    pub fn put_ready(
+        &mut self,
+        key: FrameId,
+        frame: FrameId,
+        bitmap: ImageBitmap,
+        width: u32,
+        height: u32,
+    ) {
         if !self.gops.contains(&key) {
             self.gops.put(
                 key,
@@ -779,19 +833,37 @@ impl ThumbCache {
                 },
             );
         }
+        let gop = self.gops.get_mut(&key).expect("just ensured");
+        if let Some(old) = gop.by_time.insert(
+            frame as i64,
+            ThumbBitmap::Ready {
+                bitmap,
+                width,
+                height,
+            },
+        ) {
+            old.close();
+        }
         self.enforce_thumb_budget();
-        self.gops.get_mut(&key).expect("just inserted")
     }
 
     fn enforce_thumb_budget(&mut self) {
         while self.thumb_count() > self.max_thumbs && self.gops.len() > 1 {
             let victim = self.gops.iter().rev().map(|(k, _)| *k).next();
             if let Some(k) = victim {
-                let _ = self.gops.pop(&k);
+                if let Some(mut gop) = self.gops.pop(&k) {
+                    gop.close_all();
+                }
             } else {
                 break;
             }
         }
+    }
+}
+
+impl Drop for ThumbCache {
+    fn drop(&mut self) {
+        self.clear();
     }
 }
 

@@ -1,7 +1,7 @@
 //! Demo controls over [`media_components::Video`] — not production chrome.
 
 use leptos::ev;
-use leptos::html::{Div, Input};
+use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
 use media_components::helpers::{
@@ -11,7 +11,11 @@ use media_components::helpers::{
 use media_components::{ReadyFrameKind, Video, VideoRef};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
+use web_sys::{Blob, Element, HtmlCanvasElement, HtmlElement, HtmlInputElement, window};
+
+/// Hover thumb max box (CSS also sizes `.wm-thumb-preview`).
+const HOVER_THUMB_MAX_W: u32 = 160;
+const HOVER_THUMB_MAX_H: u32 = 90;
 
 /// Forward shuttle ladder for demo J/L keys (K → 1× + play/pause).
 const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
@@ -749,11 +753,16 @@ pub fn DemoPlayer() -> impl IntoView {
 ///
 /// Scrub updates playhead immediately and decodes async without latching `busy`.
 /// Prev/Next/Seek/Play/Pause also drive `playhead` and commit via sync ops.
+/// Hover thumbs (Frame.io): only while paused and not scrubbing.
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
     // Scrub began while playing → resume after pointer-up settle.
     let resume_after_scrub = RwSignal::new(false);
+    let hover_visible = RwSignal::new(false);
+    let hover_left_css = RwSignal::new(String::from("0px"));
+    let thumb_ref = NodeRef::<Canvas>::new();
+    let hover_epoch = StoredValue::new_local(0u64);
 
     let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
         if !video.ready.get_untracked() {
@@ -767,6 +776,20 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
             video.frame_count.get_untracked(),
         )
     };
+
+    let hide_hover = move || {
+        hover_visible.set(false);
+        let epoch = hover_epoch.get_value().wrapping_add(1);
+        hover_epoch.set_value(epoch);
+        video.cancel_hover_thumb();
+    };
+
+    // Play starts → hide thumb (engine also cancels via `VideoPlayer::play`).
+    Effect::new(move |_| {
+        if video.playing.get() {
+            hide_hover();
+        }
+    });
 
     let finish_scrub = move || {
         scrubbing.set(false);
@@ -790,6 +813,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 if !video.ready.get_untracked() {
                     return;
                 }
+                hide_hover();
                 let Ok(el) = ev.current_target().unwrap().dyn_into::<Element>() else {
                     return;
                 };
@@ -808,14 +832,53 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 }
             }
             on:pointermove=move |ev| {
-                if !scrubbing.get_untracked() {
-                    return;
-                }
                 let Ok(el) = ev.current_target().unwrap().dyn_into::<Element>() else {
                     return;
                 };
-                if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
-                    defer_scrub(video, frame, false);
+                if scrubbing.get_untracked() {
+                    if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
+                        defer_scrub(video, frame, false);
+                    }
+                    return;
+                }
+                // Hover preview — idle only (Frame.io).
+                if video.playing.get_untracked() || !video.ready.get_untracked() {
+                    hide_hover();
+                    return;
+                }
+                let Some(frame) = frame_from_client_x(&el, ev.client_x()) else {
+                    hide_hover();
+                    return;
+                };
+                let rect = el.get_bounding_client_rect();
+                let x = ev.client_x() - rect.left();
+                let thumb_w = HOVER_THUMB_MAX_W as f64;
+                let left = (x - thumb_w / 2.0)
+                    .clamp(0.0, (rect.width() - thumb_w).max(0.0));
+                hover_left_css.set(format!("{left}px"));
+                hover_visible.set(true);
+                let epoch = hover_epoch.get_value().wrapping_add(1);
+                hover_epoch.set_value(epoch);
+                let Some(canvas) = thumb_ref.get_untracked() else {
+                    return;
+                };
+                let dest: HtmlCanvasElement = canvas;
+                // Defer off the Leptos pointer handler (tachys RefCell).
+                spawn_local(async move {
+                    // Yield so tachys releases before engine work.
+                    let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+                        &wasm_bindgen::JsValue::UNDEFINED,
+                    ))
+                    .await;
+                    if hover_epoch.get_value() != epoch {
+                        return;
+                    }
+                    video.paint_hover_thumb(frame, dest, HOVER_THUMB_MAX_W, HOVER_THUMB_MAX_H);
+                });
+            }
+            on:pointerleave=move |_| {
+                if !scrubbing.get_untracked() {
+                    hide_hover();
                 }
             }
             on:pointerup=move |_| {
@@ -825,6 +888,21 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 finish_scrub();
             }
         >
+            <canvas
+                node_ref=thumb_ref
+                class=move || {
+                    if hover_visible.get() {
+                        "wm-thumb-preview is-visible"
+                    } else {
+                        "wm-thumb-preview"
+                    }
+                }
+                data-testid="scrubber-thumb"
+                style:left=move || hover_left_css.get()
+                width=HOVER_THUMB_MAX_W.to_string()
+                height=HOVER_THUMB_MAX_H.to_string()
+                aria-hidden="true"
+            />
             <div class="wm-scrubber-track">
                 <div
                     class="wm-scrubber-fetched"

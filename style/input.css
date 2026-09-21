@@ -159,6 +159,7 @@ body {
 
 /* Timeline scrubber — sits on the bottom edge of the video stage. */
 .wm-scrubber {
+  position: relative;
   height: 22px;
   background: #1c1c1c;
   cursor: pointer;
@@ -171,6 +172,28 @@ body {
 .wm-scrubber[aria-disabled="true"] {
   cursor: default;
   opacity: 0.55;
+}
+
+/* Frame.io-style hover thumb — only while paused and not scrubbing. */
+.wm-thumb-preview {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 160px;
+  height: 90px;
+  max-width: 40%;
+  object-fit: contain;
+  background: #0a0a0a;
+  border: 1px solid #404040;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 5;
+  display: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+}
+
+.wm-thumb-preview.is-visible {
+  display: block;
 }
 
 .wm-scrubber-track {

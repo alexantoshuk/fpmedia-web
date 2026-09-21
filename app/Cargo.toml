@@ -22,6 +22,7 @@ js-sys = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
     "HtmlInputElement",
     "HtmlElement",
+    "HtmlCanvasElement",
     "HtmlDivElement",
     "Element",
     "Document",

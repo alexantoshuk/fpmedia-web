@@ -54,12 +54,7 @@ impl BlitCanvas {
         let (width, height) = crate::decode::canvas::clamp_buffer_to_source_and_monitor(
             src_w, src_h, target_w, target_h,
         );
-        if self.offscreen.width() != width {
-            self.offscreen.set_width(width);
-        }
-        if self.offscreen.height() != height {
-            self.offscreen.set_height(height);
-        }
+        self.resize(width, height)?;
         self.off_ctx
             .draw_image_with_video_frame_and_dw_and_dh(frame, 0.0, 0.0, width as f64, height as f64)
             .map_err(MediaError::from)?;
@@ -68,6 +63,34 @@ impl BlitCanvas {
             .transfer_to_image_bitmap()
             .map_err(MediaError::from)?;
         Ok((bitmap, width, height))
+    }
+
+    /// Exact blit / any `ImageBitmap` → smaller thumb bitmap (hover filmstrip).
+    pub fn bitmap_to_sized(
+        &self,
+        src: &ImageBitmap,
+        width: u32,
+        height: u32,
+    ) -> Result<ImageBitmap, MediaError> {
+        let width = width.max(1);
+        let height = height.max(1);
+        self.resize(width, height)?;
+        self.off_ctx
+            .draw_image_with_image_bitmap_and_dw_and_dh(src, 0.0, 0.0, width as f64, height as f64)
+            .map_err(MediaError::from)?;
+        self.offscreen
+            .transfer_to_image_bitmap()
+            .map_err(MediaError::from)
+    }
+
+    fn resize(&self, width: u32, height: u32) -> Result<(), MediaError> {
+        if self.offscreen.width() != width {
+            self.offscreen.set_width(width);
+        }
+        if self.offscreen.height() != height {
+            self.offscreen.set_height(height);
+        }
+        Ok(())
     }
 }
 
