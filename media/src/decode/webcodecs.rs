@@ -711,7 +711,10 @@ impl WebCodecsDecoder {
         // on sustained play/deep key→N (`backpressure q≈41` / `flush/idle`).
         // mediabunny leaves this optional; we set false for VOD scrub+play.
         let optimize_for_latency = false;
-        // Open gate: never require prefer-hardware (FHD-safe).
+        // Open gate: probe without prefer-hardware first (AVC software OK). HEVC on
+        // Chrome is often HW-only — if no-preference says unsupported, retry with
+        // prefer-hardware before failing open. Do not *require* HW on the first probe
+        // (that falsely fails AVC on some hosts). mediabunny: decoderOptions.hardwareAcceleration.
         let probe = config.to_web_config(optimize_for_latency, false);
         web_sys::console::log_1(
             &format!(
@@ -726,16 +729,35 @@ impl WebCodecsDecoder {
         let support = JsFuture::from(VideoDecoder::is_config_supported(&probe))
             .await
             .map_err(MediaError::from)?;
-        let supported = js_sys::Reflect::get(&support, &"supported".into())
+        let mut supported = js_sys::Reflect::get(&support, &"supported".into())
             .ok()
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+
+        let mut prefer_hardware = false;
+        if !supported {
+            let hw_probe = config.to_web_config(optimize_for_latency, true);
+            let hw_support = JsFuture::from(VideoDecoder::is_config_supported(&hw_probe))
+                .await
+                .map_err(MediaError::from)?;
+            let hw_ok = js_sys::Reflect::get(&hw_support, &"supported".into())
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if hw_ok {
+                web_sys::console::log_1(
+                    &"webmedia: no-preference unsupported; prefer-hardware ok (HEVC/HW-only)"
+                        .into(),
+                );
+                supported = true;
+                prefer_hardware = true;
+            }
+        }
         if !supported {
             return Err(MediaError::CodecUnsupported(config.codec.clone()));
         }
 
-        let mut prefer_hardware = false;
-        if policy.prefer_hardware {
+        if !prefer_hardware && policy.prefer_hardware {
             let hw_probe = config.to_web_config(optimize_for_latency, true);
             let hw_support = JsFuture::from(VideoDecoder::is_config_supported(&hw_probe))
                 .await
