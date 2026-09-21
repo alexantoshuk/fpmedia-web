@@ -26,6 +26,7 @@ use crate::player::{Player, PlayerState};
 use crate::types::{
     AudioMetadata, FrameId, GopProfile, ScrubPolicy, VideoMetadata, coalesce_frame_runs,
     exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play, scrub_blit_frame_budget,
+    scrub_preview_choice,
 };
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
@@ -960,11 +961,12 @@ impl VideoPlayer {
         self.shared.thumb_gen.set(epoch);
     }
 
-    /// Paint a hover preview into `dest` (nearest sync; separate from Exact budget).
+    /// Paint a hover preview into `dest` (Exact blit first, else nearest sync).
     ///
-    /// Call only while paused and not scrubbing. Uses scrub/soft decoder — never
-    /// the main play decoder. `mediabunny:` `CanvasSink.canvasesAtTimestamps` /
-    /// `mediaSamplesAtTimestamps` sparse path.
+    /// Call only while paused and not scrubbing. Never touches main play decoder,
+    /// Exact budget, or densify's scrub slot (ephemeral soft if densify busy).
+    /// Soft-drag localization: [`scrub_preview_choice`]. Sparse key path:
+    /// `mediabunny:` `CanvasSink.canvasesAtTimestamps` / `mediaSamplesAtTimestamps`.
     pub async fn paint_hover_thumb(
         &self,
         frame: FrameId,
@@ -980,7 +982,15 @@ impl VideoPlayer {
             return Err(MediaError::FrameOutOfRange(frame, count));
         }
         let frame = frame.min(count.saturating_sub(1));
-        let key = self.key_for(frame).unwrap_or(frame);
+        let key = self.key_for(frame);
+        let cached_exact = self
+            .shared
+            .scrub_blit
+            .try_borrow()
+            .ok()
+            .and_then(|b| b.nearest_frame(frame));
+        let preview = scrub_preview_choice(frame, key, cached_exact).unwrap_or(frame);
+        let store_key = self.key_for(preview).unwrap_or(preview);
         let meta = self.shared.player.borrow().metadata().clone();
         let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
         let epoch = self.shared.thumb_gen.get();
@@ -990,52 +1000,54 @@ impl VideoPlayer {
             return Err(MediaError::Cancelled);
         }
 
-        // Cache hit — draw without decode.
+        // ThumbCache hit for the resolved preview frame.
         if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut()
-            && let Some(bmp) = thumbs.get(key, key, tw, th)
+            && let Some(bmp) = thumbs.get(store_key, preview, tw, th)
         {
             paint_thumb_canvas(dest, bmp, tw, th)?;
-            return Ok(key);
+            return Ok(preview);
         }
 
-        // Exact blit downscale (free — no decode, still not charged to Exact cap).
-        let thumb_from_blit = if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
-            let src_frame = if blit.get(key).is_some() {
-                Some(key)
-            } else if blit.get(frame).is_some() {
-                Some(frame)
+        // Exact blit downscale — read-only; never evict / never charge blit_mib.
+        let exact_has_preview = cached_exact == Some(preview)
+            || self
+                .shared
+                .scrub_blit
+                .try_borrow()
+                .ok()
+                .is_some_and(|b| b.contains(preview));
+        if exact_has_preview {
+            let thumb_from_blit = if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+                if let Some(src) = blit.get(preview) {
+                    Some(
+                        self.shared
+                            .encode_canvas
+                            .with_blit(|enc| enc.bitmap_to_sized(src, tw, th))?,
+                    )
+                } else {
+                    None
+                }
             } else {
                 None
             };
-            if let Some(id) = src_frame {
-                let src = blit.get(id).expect("just checked");
-                Some(
-                    self.shared
-                        .encode_canvas
-                        .with_blit(|enc| enc.bitmap_to_sized(src, tw, th))?,
-                )
-            } else {
-                None
+            if let Some(thumb) = thumb_from_blit {
+                if cancelled() {
+                    thumb.close();
+                    return Err(MediaError::Cancelled);
+                }
+                paint_thumb_canvas(dest, &thumb, tw, th)?;
+                if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut() {
+                    thumbs.put_ready(store_key, preview, thumb, tw, th);
+                } else {
+                    thumb.close();
+                }
+                return Ok(preview);
             }
-        } else {
-            None
-        };
-        if let Some(thumb) = thumb_from_blit {
-            if cancelled() {
-                thumb.close();
-                return Err(MediaError::Cancelled);
-            }
-            paint_thumb_canvas(dest, &thumb, tw, th)?;
-            if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut() {
-                thumbs.put_ready(key, key, thumb, tw, th);
-            } else {
-                thumb.close();
-            }
-            return Ok(key);
         }
 
-        // Sparse key decode via scrub decoder (or ephemeral soft when densify busy).
-        let video = self.decode_hover_key(key, epoch).await?;
+        // No Exact — keyframe only (never decode a non-key hover aim).
+        let decode_key = key.unwrap_or(preview);
+        let video = self.decode_hover_key(decode_key, epoch).await?;
         if cancelled() {
             drop(video);
             return Err(MediaError::Cancelled);
@@ -1050,12 +1062,13 @@ impl VideoPlayer {
             return Err(MediaError::Cancelled);
         }
         paint_thumb_canvas(dest, &thumb, tw, th)?;
+        let key_store = self.key_for(decode_key).unwrap_or(decode_key);
         if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut() {
-            thumbs.put_ready(key, key, thumb, tw, th);
+            thumbs.put_ready(key_store, decode_key, thumb, tw, th);
         } else {
             thumb.close();
         }
-        Ok(key)
+        Ok(decode_key)
     }
 
     /// Nearest-sync decode for hover — scrub slot when idle; ephemeral soft if densify busy.

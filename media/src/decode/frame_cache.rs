@@ -562,6 +562,23 @@ impl ScrubBlitLru {
         self.bitmaps.contains_key(&frame)
     }
 
+    /// Closest live Exact blit to `target` (floor/ceil by `|id − target|`).
+    pub fn nearest_frame(&self, target: FrameId) -> Option<FrameId> {
+        let floor = self.bitmaps.range(..=target).next_back().map(|(id, _)| *id);
+        let ceil = self.bitmaps.range(target..).next().map(|(id, _)| *id);
+        match (floor, ceil) {
+            (Some(a), Some(b)) if a != b => {
+                if a.abs_diff(target) <= b.abs_diff(target) {
+                    Some(a)
+                } else {
+                    Some(b)
+                }
+            }
+            (Some(a), _) | (_, Some(a)) => Some(a),
+            (None, None) => None,
+        }
+    }
+
     /// Next frame missing a live bitmap near `playhead` (biased by `dir`).
     ///
     /// Used after Play wipes blit while scrub markers stay — densify must see
