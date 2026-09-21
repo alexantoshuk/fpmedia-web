@@ -1,7 +1,7 @@
 //! Leptos media elements over [`webmedia`] — HTML `<video>` / `<audio>` analogs.
 //!
 //! - [`video`] — frame-accurate `<Video>` + [`VideoRef`]
-//! - [`helpers`] — scrubber / cache-strip CSS math + metadata formatters
+//! - [`helpers`] — scrubber / cache-strip CSS math, hover-thumb geometry, metadata formatters
 //! - `audio` — planned pure-audio host (`AudioRef`)
 //!
 //! Host chrome (keyboard, transport buttons) stays in the demo `app` crate.

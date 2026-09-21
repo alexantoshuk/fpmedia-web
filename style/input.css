@@ -174,7 +174,8 @@ body {
   opacity: 0.55;
 }
 
-/* Frame.io-style hover thumb — only while paused and not scrubbing. */
+/* Frame.io-style hover thumb — only while paused and not scrubbing.
+   Position via compositor `transform` (set from pointermove); pixels update when paint is ready. */
 .wm-thumb-preview {
   position: absolute;
   bottom: calc(100% + 8px);
@@ -190,6 +191,8 @@ body {
   z-index: 5;
   display: none;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
 }
 
 .wm-thumb-preview.is-visible {

@@ -6,7 +6,7 @@ use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
 use media_components::helpers::{
     cache_strip_gradient, fetch_strip_gradient, format_metadata, format_timecode_at,
-    playhead_width_css, scrub_frame_from_x,
+    hover_thumb_left, hover_thumb_transform_css, playhead_width_css, scrub_frame_from_x,
 };
 use media_components::{ReadyFrameKind, Video, VideoRef};
 use wasm_bindgen::JsCast;
@@ -87,6 +87,43 @@ fn defer_scrub_inner(video: VideoRef, frame: u32, settle: bool, resume_play: boo
         }
         if let Some((frame, settle)) = PENDING.with(|p| p.get()) {
             defer_scrub_inner(video, frame, settle, false);
+        }
+    });
+}
+
+/// Coalesce hover Exact downscales: debounce then one aim. Do **not** cancel on
+/// every pointermove. Cancel only via [`VideoRef::cancel_hover_thumb`] on
+/// leave/play/scrub. Hover is read-only (ThumbCache / Exact) — never densify.
+fn defer_hover_paint(video: VideoRef, frame: u32, dest: HtmlCanvasElement) {
+    thread_local! {
+        static PENDING: std::cell::RefCell<Option<(u32, HtmlCanvasElement)>> =
+            const { std::cell::RefCell::new(None) };
+        static SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    PENDING.with(|p| {
+        *p.borrow_mut() = Some((frame, dest));
+    });
+    if SCHEDULED.with(|s| s.get()) {
+        return;
+    }
+    SCHEDULED.with(|s| s.set(true));
+    spawn_local(async move {
+        // Collapse pointermoves before Exact downscale (read-only).
+        let _ =
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(&mut |resolve, _reject| {
+                if let Some(w) = window() {
+                    let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 80);
+                } else {
+                    let _ = resolve.call0(&wasm_bindgen::JsValue::UNDEFINED);
+                }
+            }))
+            .await;
+        if let Some((frame, dest)) = PENDING.with(|p| p.borrow_mut().take()) {
+            video.paint_hover_thumb(frame, dest, HOVER_THUMB_MAX_W, HOVER_THUMB_MAX_H);
+        }
+        SCHEDULED.with(|s| s.set(false));
+        if let Some((frame, dest)) = PENDING.with(|p| p.borrow().clone()) {
+            defer_hover_paint(video, frame, dest);
         }
     });
 }
@@ -760,7 +797,6 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
     // Scrub began while playing → resume after pointer-up settle.
     let resume_after_scrub = RwSignal::new(false);
     let hover_visible = RwSignal::new(false);
-    let hover_left_css = RwSignal::new(String::from("0px"));
     let thumb_ref = NodeRef::<Canvas>::new();
     let hover_epoch = StoredValue::new_local(0u64);
 
@@ -828,6 +864,10 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 }
                 scrubbing.set(true);
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
+                    // Playhead must track the pointer immediately — `defer_scrub`
+                    // only enqueues engine work (microtask); waiting for it made
+                    // the bar lag the cursor while densify/URL held the thread.
+                    video.playhead.set(frame);
                     defer_scrub(video, frame, false);
                 }
             }
@@ -837,11 +877,13 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 };
                 if scrubbing.get_untracked() {
                     if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
+                        video.playhead.set(frame);
                         defer_scrub(video, frame, false);
                     }
                     return;
                 }
-                // Hover preview — idle only (Frame.io).
+                // Hover preview — idle only (Frame.io). Read-only: transform,
+                // ThumbCache, else coalesce Exact downscale (never decode/fill).
                 if video.playing.get_untracked() || !video.ready.get_untracked() {
                     hide_hover();
                     return;
@@ -852,29 +894,27 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 };
                 let rect = el.get_bounding_client_rect();
                 let x = ev.client_x() - rect.left();
-                let thumb_w = HOVER_THUMB_MAX_W as f64;
-                let left = (x - thumb_w / 2.0)
-                    .clamp(0.0, (rect.width() - thumb_w).max(0.0));
-                hover_left_css.set(format!("{left}px"));
-                hover_visible.set(true);
-                let epoch = hover_epoch.get_value().wrapping_add(1);
-                hover_epoch.set_value(epoch);
+                let left = hover_thumb_left(x, rect.width(), HOVER_THUMB_MAX_W as f64);
                 let Some(canvas) = thumb_ref.get_untracked() else {
                     return;
                 };
-                let dest: HtmlCanvasElement = canvas;
-                // Defer off the Leptos pointer handler (tachys RefCell).
-                spawn_local(async move {
-                    // Yield so tachys releases before engine work.
-                    let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
-                        &wasm_bindgen::JsValue::UNDEFINED,
-                    ))
-                    .await;
-                    if hover_epoch.get_value() != epoch {
-                        return;
-                    }
-                    video.paint_hover_thumb(frame, dest, HOVER_THUMB_MAX_W, HOVER_THUMB_MAX_H);
-                });
+                // Prefer web_sys style setter — Leptos `ElementExt::style` shadows it.
+                let html: &HtmlElement = canvas.unchecked_ref();
+                let _ = html
+                    .style()
+                    .set_property("transform", &hover_thumb_transform_css(left));
+                if !hover_visible.get_untracked() {
+                    hover_visible.set(true);
+                }
+                if video.try_paint_hover_thumb(
+                    frame,
+                    canvas.clone(),
+                    HOVER_THUMB_MAX_W,
+                    HOVER_THUMB_MAX_H,
+                ) {
+                    return;
+                }
+                defer_hover_paint(video, frame, canvas);
             }
             on:pointerleave=move |_| {
                 if !scrubbing.get_untracked() {
@@ -898,7 +938,6 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     }
                 }
                 data-testid="scrubber-thumb"
-                style:left=move || hover_left_css.get()
                 width=HOVER_THUMB_MAX_W.to_string()
                 height=HOVER_THUMB_MAX_H.to_string()
                 aria-hidden="true"

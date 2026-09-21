@@ -79,6 +79,19 @@ pub fn scrub_frame_from_x(
     Some(frame.min(max_frame))
 }
 
+/// Clamp hover-thumb left so the preview stays inside the scrubber track.
+///
+/// `x` = pointer X relative to track left; `thumb_w` = preview CSS width.
+pub fn hover_thumb_left(x: f64, track_width: f64, thumb_w: f64) -> f64 {
+    let thumb_w = thumb_w.max(0.0);
+    (x - thumb_w / 2.0).clamp(0.0, (track_width - thumb_w).max(0.0))
+}
+
+/// CSS `transform` for compositor-side hover-thumb tracking (not `left`).
+pub fn hover_thumb_transform_css(left: f64) -> String {
+    format!("translate3d({left}px, 0, 0)")
+}
+
 /// Compact source line for demo / host status (`320×240 · 24 fps · …`).
 pub fn format_metadata(meta: &VideoMetadata) -> String {
     let fps = meta
@@ -130,5 +143,13 @@ mod tests {
     fn scrub_x_maps_ends() {
         assert_eq!(scrub_frame_from_x(0.0, 0.0, 100.0, 11), Some(0));
         assert_eq!(scrub_frame_from_x(100.0, 0.0, 100.0, 11), Some(10));
+    }
+
+    #[test]
+    fn hover_thumb_clamps_to_track() {
+        assert!((hover_thumb_left(0.0, 400.0, 160.0) - 0.0).abs() < 1e-9);
+        assert!((hover_thumb_left(200.0, 400.0, 160.0) - 120.0).abs() < 1e-9);
+        assert!((hover_thumb_left(400.0, 400.0, 160.0) - 240.0).abs() < 1e-9);
+        assert_eq!(hover_thumb_transform_css(120.0), "translate3d(120px, 0, 0)");
     }
 }

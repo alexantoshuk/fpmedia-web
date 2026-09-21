@@ -958,25 +958,26 @@ impl VideoPlayer {
         self.shared.underrun_hold_since_ms.set(None);
     }
 
-    /// Abort in-flight hover thumb decode (Frame.io: hide while playing / scrubbing).
+    /// Abort in-flight hover Exact downscale (Frame.io: hide while playing / scrubbing).
     pub fn cancel_hover_thumb(&self) {
         let epoch = self.shared.thumb_gen.get().wrapping_add(1);
         self.shared.thumb_gen.set(epoch);
     }
 
-    /// Paint a hover preview into `dest` (Exact blit first, else nearest sync).
+    /// Sync hover paint from [`ThumbCache`] only (no Exact downscale).
     ///
-    /// Call only while paused and not scrubbing. Never touches main play decoder,
-    /// Exact budget, or densify's scrub slot (ephemeral soft if densify busy).
-    /// Soft-drag localization: [`scrub_preview_choice`]. Sparse key path:
-    /// `mediabunny:` `CanvasSink.canvasesAtTimestamps` / `mediaSamplesAtTimestamps`.
-    pub async fn paint_hover_thumb(
+    /// Returns `Ok(Some(preview))` if `dest` was painted, `Ok(None)` if async
+    /// [`Self::paint_hover_thumb`] should try Exact downscale. Hover never
+    /// decodes and never drives densify / byte cache.
+    /// Soft-drag localization: [`scrub_preview_choice`] over Exact blit ids only.
+    /// `mediabunny:` CanvasSink pool hit — no per-timestamp decoder.
+    pub fn try_paint_hover_thumb_cached(
         &self,
         frame: FrameId,
         dest: &HtmlCanvasElement,
         max_w: u32,
         max_h: u32,
-    ) -> Result<FrameId, MediaError> {
+    ) -> Result<Option<FrameId>, MediaError> {
         if self.is_playing() {
             return Err(MediaError::Cancelled);
         }
@@ -985,14 +986,62 @@ impl VideoPlayer {
             return Err(MediaError::FrameOutOfRange(frame, count));
         }
         let frame = frame.min(count.saturating_sub(1));
-        let key = self.key_for(frame);
         let cached_exact = self
             .shared
             .scrub_blit
             .try_borrow()
             .ok()
             .and_then(|b| b.nearest_frame(frame));
-        let preview = scrub_preview_choice(frame, key, cached_exact).unwrap_or(frame);
+        // Read-only: never fall back to a bare key id (no bitmap → no ThumbCache).
+        let preview = scrub_preview_choice(frame, None, cached_exact).unwrap_or(frame);
+        let store_key = self.key_for(preview).unwrap_or(preview);
+        let meta = self.shared.player.borrow().metadata().clone();
+        let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
+
+        if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut()
+            && let Some(bmp) = thumbs.get(store_key, preview, tw, th)
+        {
+            paint_thumb_canvas(dest, bmp, tw, th)?;
+            return Ok(Some(preview));
+        }
+        Ok(None)
+    }
+
+    /// Paint a hover preview into `dest` — **read-only**.
+    ///
+    /// [`ThumbCache`] hit, else Exact blit downscale into ThumbCache. Never
+    /// decodes, never borrows the scrub decoder, never reads samples (byte
+    /// cache / Covered / Exact fill stay densify-only). Miss → [`MediaError::Cancelled`]
+    /// (host keeps prior pixels). Call only while paused and not scrubbing.
+    /// `mediabunny:` CanvasSink pool present — no `getCanvas` decode path on hover.
+    pub async fn paint_hover_thumb(
+        &self,
+        frame: FrameId,
+        dest: &HtmlCanvasElement,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<FrameId, MediaError> {
+        if let Some(preview) = self.try_paint_hover_thumb_cached(frame, dest, max_w, max_h)? {
+            return Ok(preview);
+        }
+        if self.is_playing() {
+            return Err(MediaError::Cancelled);
+        }
+        let count = self.state().frame_count;
+        if count == 0 {
+            return Err(MediaError::FrameOutOfRange(frame, count));
+        }
+        let frame = frame.min(count.saturating_sub(1));
+        let cached_exact = self
+            .shared
+            .scrub_blit
+            .try_borrow()
+            .ok()
+            .and_then(|b| b.nearest_frame(frame));
+        let Some(preview) = scrub_preview_choice(frame, None, cached_exact) else {
+            // No Exact resident near aim — leave prior thumb; densify fills on its own.
+            return Err(MediaError::Cancelled);
+        };
         let store_key = self.key_for(preview).unwrap_or(preview);
         let meta = self.shared.player.borrow().metadata().clone();
         let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
@@ -1003,130 +1052,34 @@ impl VideoPlayer {
             return Err(MediaError::Cancelled);
         }
 
-        // ThumbCache hit for the resolved preview frame.
-        if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut()
-            && let Some(bmp) = thumbs.get(store_key, preview, tw, th)
-        {
-            paint_thumb_canvas(dest, bmp, tw, th)?;
-            return Ok(preview);
-        }
-
         // Exact blit downscale — read-only; never evict / never charge blit_mib.
-        let exact_has_preview = cached_exact == Some(preview)
-            || self
-                .shared
-                .scrub_blit
-                .try_borrow()
-                .ok()
-                .is_some_and(|b| b.contains(preview));
-        if exact_has_preview {
-            let thumb_from_blit = if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
-                if let Some(src) = blit.get(preview) {
-                    Some(
-                        self.shared
-                            .encode_canvas
-                            .with_blit(|enc| enc.bitmap_to_sized(src, tw, th))?,
-                    )
-                } else {
-                    None
-                }
+        let thumb_from_blit = if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+            if let Some(src) = blit.get(preview) {
+                Some(
+                    self.shared
+                        .encode_canvas
+                        .with_blit(|enc| enc.bitmap_to_sized(src, tw, th))?,
+                )
             } else {
                 None
-            };
-            if let Some(thumb) = thumb_from_blit {
-                if cancelled() {
-                    thumb.close();
-                    return Err(MediaError::Cancelled);
-                }
-                paint_thumb_canvas(dest, &thumb, tw, th)?;
-                if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut() {
-                    thumbs.put_ready(store_key, preview, thumb, tw, th);
-                } else {
-                    thumb.close();
-                }
-                return Ok(preview);
             }
-        }
-
-        // No Exact — keyframe only (never decode a non-key hover aim).
-        let decode_key = key.unwrap_or(preview);
-        let video = self.decode_hover_key(decode_key, epoch).await?;
-        if cancelled() {
-            drop(video);
+        } else {
+            None
+        };
+        let Some(thumb) = thumb_from_blit else {
             return Err(MediaError::Cancelled);
-        }
-        let (thumb, _, _) = self
-            .shared
-            .encode_canvas
-            .with_blit(|enc| enc.frame_to_bitmap(video.as_web_sys(), tw, th))?;
-        drop(video);
+        };
         if cancelled() {
             thumb.close();
             return Err(MediaError::Cancelled);
         }
         paint_thumb_canvas(dest, &thumb, tw, th)?;
-        let key_store = self.key_for(decode_key).unwrap_or(decode_key);
         if let Ok(mut thumbs) = self.shared.thumb_cache.try_borrow_mut() {
-            thumbs.put_ready(key_store, decode_key, thumb, tw, th);
+            thumbs.put_ready(store_key, preview, thumb, tw, th);
         } else {
             thumb.close();
         }
-        Ok(decode_key)
-    }
-
-    /// Nearest-sync decode for hover — scrub slot when idle; ephemeral soft if densify busy.
-    async fn decode_hover_key(
-        &self,
-        key: FrameId,
-        epoch: u64,
-    ) -> Result<OwnedVideoFrame, MediaError> {
-        let cancelled = || self.shared.thumb_gen.get() != epoch || self.is_playing();
-        if cancelled() {
-            return Err(MediaError::Cancelled);
-        }
-        let meta = self.shared.player.borrow().metadata().clone();
-        let track = self.shared.player.borrow().track_rc();
-        let _ = track.ensure_key_verified(key).await?;
-        if cancelled() {
-            return Err(MediaError::Cancelled);
-        }
-
-        // Densify holds the scrub decoder across await — do not steal; spin a soft one.
-        let densify_busy = self.shared.scrub_busy.get();
-        let (mut decoder, return_slot) = if densify_busy {
-            (WebCodecsDecoder::create_scrub(&meta).await?, false)
-        } else {
-            // Short borrow — never hold `scrub_decoder` RefMut across await.
-            let taken = self.shared.scrub_decoder.borrow_mut().take();
-            match taken {
-                Some(d) => (d, true),
-                None => (WebCodecsDecoder::create_scrub(&meta).await?, true),
-            }
-        };
-        if cancelled() {
-            if return_slot {
-                *self.shared.scrub_decoder.borrow_mut() = Some(decoder);
-            }
-            return Err(MediaError::Cancelled);
-        }
-
-        let result = decoder.decode_frame(&track, key, &cancelled).await;
-        if return_slot {
-            // Prefer not to clobber a densify put-back that raced in.
-            let mut slot = self.shared.scrub_decoder.borrow_mut();
-            if slot.is_none() {
-                *slot = Some(decoder);
-            }
-            // else drop our copy — densify owns the slot again
-        }
-        // else ephemeral soft decoder drops here
-        if cancelled() {
-            if let Ok(v) = result {
-                drop(v);
-            }
-            return Err(MediaError::Cancelled);
-        }
-        result
+        Ok(preview)
     }
 
     /// Shrink Exact to leave GPU headroom for Play VF pool; keep near-playhead bitmaps.
@@ -1488,8 +1441,8 @@ impl VideoPlayer {
     /// Async timeline scrub (local scrub policy; settle always exact VF).
     ///
     /// - **Drag** (`settle=false`): densify while moving. [`ScrubDragMode::Soft`]
-    ///   (short-IP / All-Intra) paints blit/preview only — no key→N. Exact drag
-    ///   (Long) may `goto_frame`. Gap pick follows scrub direction (predictive densify).
+    ///   (short-IP / All-Intra) paints warm blit only — no decode on the OpQueue.
+    ///   Exact drag (Long) may soft-decode preview then `goto_frame`.
     /// - **Settle** (`settle=true`, pointer up): abort densify, then one key→exact
     ///   cascade (`goto_frame_with_interim`) so canvas gets decode `VideoFrame`
     ///   (not a soft still). Interim preview may blit cache; pruned frames fill
@@ -1534,7 +1487,19 @@ impl VideoPlayer {
                     return Ok(());
                 }
 
-                // Drag: may paint key/neighbor for interim soft preview.
+                if soft_drag {
+                    // Soft-drag: warm blit only (aim or nearer preview). Never
+                    // `decode_frame` here — that blocked OpQueue on URL (HEVC
+                    // key→N per pointer sample) while densify already fills Exact.
+                    // Settle does exact VF. mediabunny: CanvasSink pool present;
+                    // cascade on settle / samplesAtTimestamps, not every drag tick.
+                    if let Some(preview) = self.scrub_preview_frame(frame) {
+                        let _ = self.try_present_warm_blit(preview)?;
+                    }
+                    return Ok(());
+                }
+
+                // Exact-drag (Long): may paint key/neighbor via decode, then goto.
                 if let Some(preview) = self.scrub_preview_frame(frame)
                     && preview != frame
                 {
@@ -1546,11 +1511,6 @@ impl VideoPlayer {
                         self.shared.player.borrow_mut().commit_frame(frame)?;
                         return Ok(());
                     }
-                }
-                if soft_drag {
-                    // Soft-drag: leave exact for settle; densify keeps warming.
-                    // Canvas stays on blit/preview; eng commits only on blit hit.
-                    return Ok(());
                 }
                 self.goto_frame(frame, epoch).await
             }
