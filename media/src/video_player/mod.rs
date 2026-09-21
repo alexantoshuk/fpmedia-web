@@ -100,6 +100,9 @@ struct Shared {
     thumb_gen: Cell<u64>,
     /// Second decoder for background gap fill (does not steal main playback).
     scrub_decoder: RefCell<Option<WebCodecsDecoder>>,
+    /// Densify create failed permanently this clip (e.g. HEVC HW-only — no SW
+    /// second decoder). Stops retry storms that would call `prefer-hardware`.
+    scrub_densify_blocked: Cell<bool>,
     scrub_epoch: Cell<u64>,
     scrub_busy: Cell<bool>,
     /// Set while a fill is running so `schedule_scrub_cache_fill` can request another
@@ -377,6 +380,7 @@ impl VideoPlayer {
             thumb_cache: RefCell::new(ThumbCache::new(DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS)),
             thumb_gen: Cell::new(0),
             scrub_decoder: RefCell::new(None),
+            scrub_densify_blocked: Cell::new(false),
             scrub_epoch: Cell::new(0),
             scrub_busy: Cell::new(false),
             scrub_pending: Cell::new(false),
@@ -2771,6 +2775,7 @@ impl VideoPlayer {
         if self.shared.fill_mode.get() == CacheFillMode::Play
             || self.is_playing()
             || !self.scrub_policy().densify
+            || self.shared.scrub_densify_blocked.get()
         {
             return;
         }
@@ -2785,6 +2790,7 @@ impl VideoPlayer {
         if self.shared.fill_mode.get() == CacheFillMode::Play
             || self.is_playing()
             || !self.scrub_policy().densify
+            || self.shared.scrub_densify_blocked.get()
             || self.shared.hold_densify_for_exact.get()
         {
             if self.shared.hold_densify_for_exact.get() {
@@ -2822,6 +2828,7 @@ async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
             if shared.fill_mode.get() == CacheFillMode::Play
                 || shared.player.borrow().state().playing
                 || !shared.player.borrow().metadata().scrub_policy().densify
+                || shared.scrub_densify_blocked.get()
             {
                 return Ok(());
             }
@@ -3119,7 +3126,17 @@ async fn fill_one_gap(
     let taken = shared.scrub_decoder.borrow_mut().take();
     let mut decoder = match taken {
         Some(d) => d,
-        None => WebCodecsDecoder::create_scrub(&meta).await?,
+        None => match WebCodecsDecoder::create_scrub(&meta).await {
+            Ok(d) => d,
+            // HEVC HW-only: second prefer-hardware would dual-HW stall / poison
+            // the main decoder (`Unsupported configuration`). Skip densify for
+            // this clip; Exact settle / Play keep the sole HW session.
+            Err(MediaError::CodecUnsupported(_)) => {
+                shared.scrub_densify_blocked.set(true);
+                return Ok(false);
+            }
+            Err(e) => return Err(e),
+        },
     };
     if cancelled() {
         *shared.scrub_decoder.borrow_mut() = Some(decoder);

@@ -692,18 +692,25 @@ pub struct WebCodecsDecoder {
 impl WebCodecsDecoder {
     /// Main play/seek decoder — knobs from [`VideoMetadata::play_policy`].
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
-        Self::create_with_policy(meta, meta.play_policy()).await
+        // HEVC on Chrome is often HW-only — allow prefer-hardware fallback.
+        Self::create_with_policy(meta, meta.play_policy(), true).await
     }
 
-    /// Scrub densify decoder — always [`PlayPolicy::hd`] knobs (no prefer-hardware)
-    /// so Uhd play can keep the sole HW session (mediabunny dual-HW stall).
+    /// Scrub densify decoder — always [`PlayPolicy::hd`] knobs and **never**
+    /// `prefer-hardware` so the main session keeps the sole HW decoder
+    /// (mediabunny: `decoderOptions.hardwareAcceleration`, dual-HW stall /
+    /// `Unsupported configuration` when a second HEVC HW decoder configures).
     pub async fn create_scrub(meta: &VideoMetadata) -> Result<Self, MediaError> {
-        Self::create_with_policy(meta, PlayPolicy::hd()).await
+        Self::create_with_policy(meta, PlayPolicy::hd(), false).await
     }
 
+    /// `allow_hw_only_fallback` — when no-preference `isConfigSupported` is false,
+    /// retry with `prefer-hardware` (main open for HEVC). Scrub densify must
+    /// pass `false` so it never steals the HW session.
     async fn create_with_policy(
         meta: &VideoMetadata,
         policy: PlayPolicy,
+        allow_hw_only_fallback: bool,
     ) -> Result<Self, MediaError> {
         ensure_webcodecs_available()?;
         let config = DecoderConfig::from_meta(meta)?;
@@ -713,12 +720,13 @@ impl WebCodecsDecoder {
         let optimize_for_latency = false;
         // Open gate: probe without prefer-hardware first (AVC software OK). HEVC on
         // Chrome is often HW-only — if no-preference says unsupported, retry with
-        // prefer-hardware before failing open. Do not *require* HW on the first probe
-        // (that falsely fails AVC on some hosts). mediabunny: decoderOptions.hardwareAcceleration.
+        // prefer-hardware **only when allowed** (main). Do not *require* HW on the
+        // first probe (that falsely fails AVC on some hosts).
+        // mediabunny: decoderOptions.hardwareAcceleration.
         let probe = config.to_web_config(optimize_for_latency, false);
         web_sys::console::log_1(
             &format!(
-                "webmedia: VideoDecoder isConfigSupported ({}, {}x{}, play={})…",
+                "webmedia: VideoDecoder isConfigSupported ({}, {}x{}, play={}, hw_fallback={allow_hw_only_fallback})…",
                 config.codec,
                 config.width,
                 config.height,
@@ -735,7 +743,7 @@ impl WebCodecsDecoder {
             .unwrap_or(false);
 
         let mut prefer_hardware = false;
-        if !supported {
+        if !supported && allow_hw_only_fallback {
             let hw_probe = config.to_web_config(optimize_for_latency, true);
             let hw_support = JsFuture::from(VideoDecoder::is_config_supported(&hw_probe))
                 .await
@@ -754,6 +762,12 @@ impl WebCodecsDecoder {
             }
         }
         if !supported {
+            if !allow_hw_only_fallback {
+                web_sys::console::log_1(
+                    &"webmedia: scrub densify skipped (codec HW-only; refuse second HW decoder)"
+                        .into(),
+                );
+            }
             return Err(MediaError::CodecUnsupported(config.codec.clone()));
         }
 
