@@ -575,6 +575,7 @@ pub fn Video(
 
     let open_blob = {
         let queue = queue.clone();
+        let player = Rc::clone(&player);
         let stop_playback = Rc::clone(&stop_playback);
         let fps_meter = Rc::clone(&fps_meter);
         let kick_drain = Rc::clone(&kick_drain);
@@ -587,6 +588,13 @@ pub fn Video(
             let canvas: HtmlCanvasElement = canvas_el;
             // Always supersede in-flight work (mediabunny asyncId++ on new file).
             stop_playback();
+            // Drop the old player *before* zeroing frame_count. Paused rAF still
+            // calls sync_ui; with the old engine alive, count 0→N looks like a new
+            // clip and restores the previous playhead on the progress bar.
+            let retiring = player.borrow_mut().take();
+            if let Some(p) = retiring {
+                p.pause();
+            }
             ready.set(false);
             ended.set(false);
             error.set(None);
@@ -613,6 +621,7 @@ pub fn Video(
 
     let open_url = {
         let queue = queue.clone();
+        let player = Rc::clone(&player);
         let stop_playback = Rc::clone(&stop_playback);
         let fps_meter = Rc::clone(&fps_meter);
         let kick_drain = Rc::clone(&kick_drain);
@@ -632,6 +641,11 @@ pub fn Video(
             stop_playback();
             queue.cancel_all();
             let fetch_id = queue.current_id();
+            // Same race as open_blob — drop engine before zeroing UI count/playhead.
+            let retiring = player.borrow_mut().take();
+            if let Some(p) = retiring {
+                p.pause();
+            }
             ready.set(false);
             ended.set(false);
             error.set(None);
