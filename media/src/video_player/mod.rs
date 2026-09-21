@@ -448,7 +448,8 @@ impl VideoPlayer {
     }
 
     /// Background bitstream sync verify (deferred open). mediabunny verifies on
-    /// packet retrieve; we also walk remaining candidates so scrub settle is safe.
+    /// packet retrieve; bg walk finishes the table for scrub geometry without
+    /// blocking settle (settle uses [`Mp4VideoTrack::ensure_key_verified`] only).
     fn kick_deferred_sync_verify(shared: &Rc<Shared>) {
         let track = shared.player.borrow().track_rc();
         if track.sync_verify_complete() {
@@ -464,11 +465,13 @@ impl VideoPlayer {
                 let Some(shared) = weak.upgrade() else {
                     break;
                 };
-                // Yield to play/IO when the clock is underrunning, or while scrub
-                // densify owns the network (avoid GitHub/proxy 502 storms).
+                // Yield to play/IO when the clock is underrunning, while scrub
+                // densify / settle / seek owns the network (avoid GitHub/proxy
+                // 502 storms and sample-sized Range storms on URL).
                 if shared.underrun_hold_since_ms.get().is_some()
                     || shared.scrub_busy.get()
                     || shared.hold_densify_for_exact.get()
+                    || shared.restarting.get()
                 {
                     crate::util::yield_now().await;
                     continue;
@@ -1513,13 +1516,11 @@ impl VideoPlayer {
             self.clear_loop_prime();
 
             if settle {
-                // v1: exact scrub needs a fully verified sync table.
-                {
-                    let track = self.shared.player.borrow().track_rc();
-                    if !track.sync_verify_complete() {
-                        track.await_sync_verify_complete().await?;
-                    }
-                }
+                // Exact needs the nearest key verified — not the whole table.
+                // Full `await_sync_verify_complete` on URL walks every sync via
+                // raw sample-sized Ranges (minutes of stall; gray strip already
+                // warm from CachedSource). Decode cascade calls
+                // `ensure_key_verified` on retrieve (mediabunny verifyKeyPackets).
                 // Keep the last drag frame on canvas until exact decode VF paints.
                 // Do **not** blit key/preview from store — key is often far from
                 // target and flashes a wrong frame; store is low-q drag trail only.

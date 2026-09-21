@@ -512,12 +512,20 @@ impl AudioOutput {
         self.pump(epoch, start_sample).await
     }
 
-    /// Convenience when the caller already holds `Rc<Self>`: begin + spawn pump.
+    /// Convenience when the caller already holds `Rc<Self>`: begin, prime the
+    /// first buffers, then spawn the background pump.
+    ///
+    /// Must await [`Self::prime_schedule`] before returning — otherwise video
+    /// presents on a running `AudioContext` clock while AAC is still Range-
+    /// fetching (URL: seconds of silent play). Same gate as [`Self::restart_warm`].
+    /// `mediabunny: examples/media-player/media-player.ts` `play` → `runAudioIterator`.
     pub async fn start_spawned(self: &Rc<Self>, media_time_secs: f64) -> Result<(), MediaError> {
         let epoch = self.begin(media_time_secs).await?;
+        let start_sample = self.track.sample_at_or_after(media_time_secs).unwrap_or(0);
+        let next = self.prime_schedule(epoch, start_sample).await?;
         let this = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = this.run_pump(epoch, media_time_secs).await
+            if let Err(e) = this.pump(epoch, next).await
                 && !e.is_cancelled()
             {
                 web_sys::console::warn_1(&format!("webmedia: audio pump error: {e}").into());
