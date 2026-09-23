@@ -5,22 +5,30 @@
 //! + a long-lived 3rd [`WebCodecsDecoder`] (`create_thumb` = scrub isolation).
 //!
 //! Sparse keyframe fill uses the same decoder (hover aim wins over bg).
+//! Player owns Exact→thumb bridge and when to call [`run_sparse_key_fill`].
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
-use web_sys::ImageBitmap;
+use web_sys::{HtmlCanvasElement, ImageBitmap};
 
+use super::canvas::canvas_2d;
 use super::frame_cache::{DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, ThumbCache};
+use super::owned_video_frame::AsVideoFrame;
 use super::scrub_blit::{BlitCanvas, BlitCanvasSlot};
 use super::webcodecs::WebCodecsDecoder;
+use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
-use crate::types::FrameId;
+use crate::types::{FrameId, VideoMetadata, hover_thumb_dims, next_missing_sync_key};
 
 /// Default hover box (matches `media_components` / `.wm-thumb-preview`).
 pub const DEFAULT_THUMB_MAX_W: u32 = 160;
 pub const DEFAULT_THUMB_MAX_H: u32 = 90;
 
-/// Lazy thumb plane: cache + cancel epoch + dedicated decoder (Phase 3).
+/// Mediabunny-style name for the thumb [`CanvasSink`](https://mediabunny.dev/api/CanvasSink) port.
+pub type ThumbSink = ThumbPreview;
+
+/// Lazy thumb plane: cache + cancel epoch + dedicated decoder.
 pub struct ThumbPreview {
     cache: RefCell<ThumbCache>,
     /// Bumped to cancel in-flight Exact downscale / thumb decode.
@@ -121,6 +129,24 @@ impl ThumbPreview {
         cache.contains(key, frame, width, height)
     }
 
+    /// Sized thumb box for current [`Self::last_size`] and source display size.
+    pub fn thumb_dims(&self, src_w: u32, src_h: u32) -> (u32, u32) {
+        let (max_w, max_h) = self.last_size();
+        hover_thumb_dims(src_w, src_h, max_w, max_h)
+    }
+
+    /// Nearest sync key missing from the cache at the current thumb size.
+    pub fn next_missing_key(
+        &self,
+        keys: &[FrameId],
+        focus: FrameId,
+        src_w: u32,
+        src_h: u32,
+    ) -> Option<FrameId> {
+        let (tw, th) = self.thumb_dims(src_w, src_h);
+        next_missing_sync_key(keys, focus, |k| self.contains(k, k, tw, th))
+    }
+
     /// Lookup + paint while the cache borrow is held (`ImageBitmap` is not `Clone`).
     pub fn with_bitmap<R>(
         &self,
@@ -209,7 +235,7 @@ impl ThumbPreview {
         true
     }
 
-    /// Bg fill: claim worker without stomping [`Self::hover_aim`] unless empty pending.
+    /// Bg fill: claim worker without stomping [`Self::hover_aim`].
     pub fn claim_fill_key(&self, key: FrameId) -> bool {
         if self.busy.get() {
             self.fill_pending.set(true);
@@ -241,5 +267,126 @@ impl ThumbPreview {
 impl Default for ThumbPreview {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Draw a sized thumb bitmap into `dest` (hover chrome canvas).
+pub fn paint_thumb_canvas(
+    dest: &HtmlCanvasElement,
+    bitmap: &ImageBitmap,
+    width: u32,
+    height: u32,
+) -> Result<(), MediaError> {
+    let width = width.max(1);
+    let height = height.max(1);
+    if dest.width() != width {
+        dest.set_width(width);
+    }
+    if dest.height() != height {
+        dest.set_height(height);
+    }
+    let ctx = canvas_2d(dest)?;
+    ctx.set_image_smoothing_enabled(true);
+    ctx.draw_image_with_image_bitmap_and_dw_and_dh(bitmap, 0.0, 0.0, width as f64, height as f64)
+        .map_err(MediaError::from)?;
+    Ok(())
+}
+
+/// Sparse keyframe → ThumbCache (`mediabunny:` `canvasesAtTimestamps`).
+///
+/// `next_gap` returns the next missing sync id (caller supplies focus / index).
+/// Releases the worker if hover queues a pending aim mid-fill.
+pub async fn run_sparse_key_fill(
+    sink: Rc<ThumbPreview>,
+    track: Rc<Mp4VideoTrack>,
+    meta: VideoMetadata,
+    mut next_gap: impl FnMut() -> Option<FrameId>,
+) -> Result<(), MediaError> {
+    let end = || sink.end_decode();
+
+    loop {
+        if sink.decode_blocked() {
+            end();
+            return Ok(());
+        }
+        let Some(key) = sink.take_pending_aim() else {
+            end();
+            return Ok(());
+        };
+
+        let (tw, th) = sink.thumb_dims(meta.width, meta.height);
+        if !sink.contains(key, key, tw, th) {
+            let taken = sink.take_decoder();
+            let mut decoder = match taken {
+                Some(d) => d,
+                None => match WebCodecsDecoder::create_thumb(&meta).await {
+                    Ok(d) => d,
+                    Err(MediaError::CodecUnsupported(_)) => {
+                        sink.set_decode_blocked(true);
+                        end();
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        end();
+                        return Err(e);
+                    }
+                },
+            };
+            let cancelled = || sink.decode_blocked() || sink.has_pending_aim();
+            if cancelled() {
+                sink.put_decoder(decoder);
+                end();
+                return Ok(());
+            }
+            let decoded = decoder.decode_frame(&track, key, &cancelled).await;
+            match decoded {
+                Ok(video) => {
+                    sink.put_decoder(decoder);
+                    // Cache even if hover preempted — key still warms ThumbCache.
+                    if !sink.decode_blocked()
+                        && let Ok(bmp) = sink.with_blit(|enc| {
+                            enc.frame_to_bitmap(video.as_video_frame(), tw, th)
+                                .map(|(bmp, _, _)| bmp)
+                        })
+                    {
+                        sink.put_ready(key, key, bmp, tw, th);
+                    }
+                    drop(video);
+                }
+                Err(MediaError::Cancelled) => {
+                    let _ = decoder.reset();
+                    sink.put_decoder(decoder);
+                    end();
+                    return Ok(());
+                }
+                Err(e) => {
+                    let _ = decoder.reset();
+                    sink.put_decoder(decoder);
+                    end();
+                    return Err(e);
+                }
+            }
+        }
+
+        // Hover queued mid-fill — release so paint_hover can claim.
+        if sink.has_pending_aim() {
+            end();
+            return Ok(());
+        }
+
+        if let Some(k) = next_gap() {
+            sink.queue_fill_key(k);
+            continue;
+        }
+
+        let want_again = sink.take_fill_pending();
+        end();
+        if want_again
+            && let Some(k) = next_gap()
+            && sink.claim_fill_key(k)
+        {
+            continue;
+        }
+        return Ok(());
     }
 }

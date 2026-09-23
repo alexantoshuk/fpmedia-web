@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageBitmap};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::MediaClock;
 use crate::audio::AudioOutput;
@@ -19,14 +19,14 @@ use crate::decode::frame_cache::{ScrubBlitLru, ScrubChunkStore};
 use crate::decode::owned_video_frame::{AsVideoFrame, OwnedVideoFrame};
 use crate::decode::scrub_blit::{BlitCanvasSlot, ScrubChunk, draw_image_bitmap};
 #[cfg(feature = "thumbs")]
-use crate::decode::thumb_preview::ThumbPreview;
+use crate::decode::thumb_preview::{ThumbPreview, paint_thumb_canvas, run_sparse_key_fill};
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
 use crate::types::{
     AudioMetadata, FrameId, GopProfile, ScrubPolicy, ThumbPolicy, VideoMetadata,
-    coalesce_frame_runs, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
-    scrub_blit_frame_budget, scrub_preview_choice,
+    coalesce_frame_runs, exact_frames_to_free_for_play_vram, hover_thumb_dims,
+    scrub_blit_cap_during_play, scrub_blit_frame_budget, scrub_preview_choice,
 };
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
@@ -95,8 +95,9 @@ struct Shared {
     /// Reusable OffscreenCanvas for VideoFrame → ImageBitmap.
     encode_canvas: BlitCanvasSlot,
     /// Hover / filmstrip sink (`ThumbPolicy::On` → lazy create). Feature `thumbs`.
+    /// `Rc` so sparse fill can hold the sink across `.await` without `RefCell` borrow.
     #[cfg(feature = "thumbs")]
-    thumb: RefCell<Option<ThumbPreview>>,
+    thumb: RefCell<Option<Rc<ThumbPreview>>>,
     #[cfg(feature = "thumbs")]
     thumb_policy: Cell<ThumbPolicy>,
     /// Second decoder for background gap fill (does not steal main playback).
@@ -1014,7 +1015,7 @@ impl VideoPlayer {
             return false;
         };
         if slot.is_none() {
-            *slot = Some(ThumbPreview::new());
+            *slot = Some(Rc::new(ThumbPreview::new()));
         }
         true
     }
@@ -1568,32 +1569,22 @@ impl VideoPlayer {
         if !self.ensure_thumb_preview() {
             return;
         }
-        let blocked = self
-            .shared
-            .thumb
-            .try_borrow()
-            .ok()
-            .and_then(|s| s.as_ref().map(|t| t.decode_blocked()))
-            .unwrap_or(true);
-        if blocked {
+        let Some(thumbs) = self.thumb_sink() else {
+            return;
+        };
+        if thumbs.decode_blocked() {
             return;
         }
-        let busy = self
-            .shared
-            .thumb
-            .try_borrow()
-            .ok()
-            .and_then(|s| s.as_ref().map(|t| t.is_busy()))
-            .unwrap_or(true);
-        if busy {
-            if let Ok(slot) = self.shared.thumb.try_borrow()
-                && let Some(thumbs) = slot.as_ref()
-            {
-                thumbs.set_fill_pending(true);
-            }
+        if thumbs.is_busy() {
+            thumbs.set_fill_pending(true);
             return;
         }
         self.kick_thumb_key_fill();
+    }
+
+    #[cfg(feature = "thumbs")]
+    fn thumb_sink(&self) -> Option<Rc<ThumbPreview>> {
+        self.shared.thumb.try_borrow().ok().and_then(|s| s.clone())
     }
 
     #[cfg(feature = "thumbs")]
@@ -1601,53 +1592,26 @@ impl VideoPlayer {
         let Some(key) = self.next_thumb_key_gap() else {
             return;
         };
-        let claim = {
-            let Ok(slot) = self.shared.thumb.try_borrow() else {
-                return;
-            };
-            let Some(thumbs) = slot.as_ref() else {
-                return;
-            };
-            thumbs.claim_fill_key(key)
+        let Some(thumbs) = self.thumb_sink() else {
+            return;
         };
-        if !claim {
+        if !thumbs.claim_fill_key(key) {
             return;
         }
         let shared = Rc::clone(&self.shared);
+        let sink = Rc::clone(&thumbs);
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = thumb_key_fill_task(shared).await;
+            let track = shared.player.borrow().track_rc();
+            let meta = shared.player.borrow().metadata().clone();
+            let next_gap = || next_thumb_key_gap_shared(&shared);
+            let _ = run_sparse_key_fill(sink, track, meta, next_gap).await;
         });
     }
 
     /// Next sync frame missing from ThumbCache, nearest to hover aim / playhead.
     #[cfg(feature = "thumbs")]
     fn next_thumb_key_gap(&self) -> Option<FrameId> {
-        let (max_w, max_h) = self
-            .shared
-            .thumb
-            .try_borrow()
-            .ok()
-            .and_then(|s| s.as_ref().map(|t| t.last_size()))?;
-        let meta = self.shared.player.borrow().metadata().clone();
-        let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
-        let focus = self
-            .shared
-            .thumb
-            .try_borrow()
-            .ok()
-            .and_then(|s| s.as_ref().map(|t| t.hover_aim()))
-            .unwrap_or_else(|| self.state().frame);
-        let keys = self.shared.player.borrow().track().index().sync_frame_ids();
-        if keys.is_empty() {
-            return None;
-        }
-        let Ok(slot) = self.shared.thumb.try_borrow() else {
-            return None;
-        };
-        let thumbs = slot.as_ref()?;
-        keys.into_iter()
-            .filter(|&k| !thumbs.contains(k, k, tw, th))
-            .min_by_key(|k| k.abs_diff(focus))
+        next_thumb_key_gap_shared(&self.shared)
     }
 
     /// Soft stub when feature `thumbs` is off.
@@ -3393,211 +3357,14 @@ impl Drop for VideoPlayer {
     }
 }
 
-/// Sparse keyframe → [`ThumbPreview`] cache (no Covered/Exact ingest).
-/// Releases the worker if hover queues a pending aim mid-fill.
-#[cfg(feature = "thumbs")]
-async fn thumb_key_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
-    let end = || {
-        if let Ok(slot) = shared.thumb.try_borrow()
-            && let Some(thumbs) = slot.as_ref()
-        {
-            thumbs.end_decode();
-        }
-    };
-
-    loop {
-        let key = {
-            let Ok(slot) = shared.thumb.try_borrow() else {
-                end();
-                return Ok(());
-            };
-            let Some(thumbs) = slot.as_ref() else {
-                end();
-                return Ok(());
-            };
-            if thumbs.decode_blocked() {
-                end();
-                return Ok(());
-            }
-            match thumbs.take_pending_aim() {
-                Some(k) => k,
-                None => {
-                    end();
-                    return Ok(());
-                }
-            }
-        };
-
-        let (max_w, max_h) = shared
-            .thumb
-            .try_borrow()
-            .ok()
-            .and_then(|s| s.as_ref().map(|t| t.last_size()))
-            .unwrap_or((
-                crate::decode::thumb_preview::DEFAULT_THUMB_MAX_W,
-                crate::decode::thumb_preview::DEFAULT_THUMB_MAX_H,
-            ));
-        let meta = shared.player.borrow().metadata().clone();
-        let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
-
-        let already = shared
-            .thumb
-            .try_borrow()
-            .ok()
-            .and_then(|s| s.as_ref().map(|t| t.contains(key, key, tw, th)))
-            .unwrap_or(true);
-        if !already {
-            let track = shared.player.borrow().track_rc();
-            let taken = shared
-                .thumb
-                .try_borrow()
-                .ok()
-                .and_then(|s| s.as_ref().map(|t| t.take_decoder()))
-                .flatten();
-            let mut decoder = match taken {
-                Some(d) => d,
-                None => match WebCodecsDecoder::create_thumb(&meta).await {
-                    Ok(d) => d,
-                    Err(MediaError::CodecUnsupported(_)) => {
-                        if let Ok(slot) = shared.thumb.try_borrow()
-                            && let Some(thumbs) = slot.as_ref()
-                        {
-                            thumbs.set_decode_blocked(true);
-                        }
-                        end();
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        end();
-                        return Err(e);
-                    }
-                },
-            };
-            let cancelled = || {
-                shared
-                    .thumb
-                    .try_borrow()
-                    .ok()
-                    .and_then(|s| {
-                        s.as_ref()
-                            .map(|t| t.decode_blocked() || t.has_pending_aim())
-                    })
-                    .unwrap_or(true)
-            };
-            // If hover queued while we created the decoder, yield immediately.
-            if cancelled() {
-                if let Ok(slot) = shared.thumb.try_borrow()
-                    && let Some(thumbs) = slot.as_ref()
-                {
-                    thumbs.put_decoder(decoder);
-                }
-                end();
-                return Ok(());
-            }
-            let decoded = decoder.decode_frame(&track, key, &cancelled).await;
-            match decoded {
-                Ok(video) => {
-                    if let Ok(slot) = shared.thumb.try_borrow()
-                        && let Some(thumbs) = slot.as_ref()
-                    {
-                        thumbs.put_decoder(decoder);
-                        // Cache even if hover preempted — key still warms ThumbCache.
-                        if !thumbs.decode_blocked()
-                            && let Ok(bmp) = thumbs.with_blit(|enc| {
-                                enc.frame_to_bitmap(video.as_video_frame(), tw, th)
-                                    .map(|(bmp, _, _)| bmp)
-                            })
-                        {
-                            thumbs.put_ready(key, key, bmp, tw, th);
-                        }
-                    }
-                    drop(video);
-                }
-                Err(MediaError::Cancelled) => {
-                    let _ = decoder.reset();
-                    if let Ok(slot) = shared.thumb.try_borrow()
-                        && let Some(thumbs) = slot.as_ref()
-                    {
-                        thumbs.put_decoder(decoder);
-                    }
-                    end();
-                    return Ok(());
-                }
-                Err(e) => {
-                    let _ = decoder.reset();
-                    if let Ok(slot) = shared.thumb.try_borrow()
-                        && let Some(thumbs) = slot.as_ref()
-                    {
-                        thumbs.put_decoder(decoder);
-                    }
-                    end();
-                    return Err(e);
-                }
-            }
-        }
-
-        // Hover queued mid-fill — release so paint_hover can claim.
-        let hover_waiting = shared
-            .thumb
-            .try_borrow()
-            .ok()
-            .and_then(|s| s.as_ref().map(|t| t.has_pending_aim()))
-            .unwrap_or(false);
-        if hover_waiting {
-            end();
-            return Ok(());
-        }
-
-        if let Some(k) = next_thumb_key_gap_shared(&shared)
-            && let Ok(slot) = shared.thumb.try_borrow()
-            && let Some(thumbs) = slot.as_ref()
-        {
-            thumbs.queue_fill_key(k);
-            continue;
-        }
-
-        let want_again = shared
-            .thumb
-            .try_borrow()
-            .ok()
-            .and_then(|s| s.as_ref().map(|t| t.take_fill_pending()))
-            .unwrap_or(false);
-        end();
-        if want_again
-            && let Some(k) = next_thumb_key_gap_shared(&shared)
-            && let Ok(slot) = shared.thumb.try_borrow()
-            && let Some(thumbs) = slot.as_ref()
-            && thumbs.claim_fill_key(k)
-        {
-            continue;
-        }
-        return Ok(());
-    }
-}
-
+/// Next missing sync key for sparse thumb fill (focus = hover aim).
 #[cfg(feature = "thumbs")]
 fn next_thumb_key_gap_shared(shared: &Shared) -> Option<FrameId> {
-    let (max_w, max_h) = shared
-        .thumb
-        .try_borrow()
-        .ok()
-        .and_then(|s| s.as_ref().map(|t| t.last_size()))?;
+    let thumbs = shared.thumb.try_borrow().ok().and_then(|s| s.clone())?;
     let meta = shared.player.borrow().metadata().clone();
-    let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
-    let focus = shared
-        .thumb
-        .try_borrow()
-        .ok()
-        .and_then(|s| s.as_ref().map(|t| t.hover_aim()))
-        .unwrap_or_else(|| shared.player.borrow().state().frame);
+    let focus = thumbs.hover_aim();
     let keys = shared.player.borrow().track().index().sync_frame_ids();
-    let Ok(slot) = shared.thumb.try_borrow() else {
-        return None;
-    };
-    let thumbs = slot.as_ref()?;
-    keys.into_iter()
-        .filter(|&k| !thumbs.contains(k, k, tw, th))
-        .min_by_key(|k| k.abs_diff(focus))
+    thumbs.next_missing_key(&keys, focus, meta.width, meta.height)
 }
 
 async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
@@ -3970,39 +3737,6 @@ async fn yield_event_loop() {
         &wasm_bindgen::JsValue::UNDEFINED,
     ))
     .await;
-}
-
-/// Caller-sized hover thumb (contain into max box, source aspect).
-fn hover_thumb_dims(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
-    let src_w = src_w.max(1) as f64;
-    let src_h = src_h.max(1) as f64;
-    let max_w = max_w.max(1) as f64;
-    let max_h = max_h.max(1) as f64;
-    let scale = (max_w / src_w).min(max_h / src_h);
-    let w = (src_w * scale).round().max(1.0) as u32;
-    let h = (src_h * scale).round().max(1.0) as u32;
-    (w, h)
-}
-
-fn paint_thumb_canvas(
-    dest: &HtmlCanvasElement,
-    bitmap: &ImageBitmap,
-    width: u32,
-    height: u32,
-) -> Result<(), MediaError> {
-    let width = width.max(1);
-    let height = height.max(1);
-    if dest.width() != width {
-        dest.set_width(width);
-    }
-    if dest.height() != height {
-        dest.set_height(height);
-    }
-    let ctx = canvas_2d(dest)?;
-    ctx.set_image_smoothing_enabled(true);
-    ctx.draw_image_with_image_bitmap_and_dw_and_dh(bitmap, 0.0, 0.0, width as f64, height as f64)
-        .map_err(MediaError::from)?;
-    Ok(())
 }
 
 /// Await one animation frame with a dedicated Closure (not Promise.resolve).

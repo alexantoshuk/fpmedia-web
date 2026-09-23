@@ -15,5 +15,5 @@ pub use canvas::{
 };
 pub use owned_video_frame::{AsVideoFrame, OwnedVideoFrame};
 #[cfg(feature = "thumbs")]
-pub use thumb_preview::ThumbPreview;
+pub use thumb_preview::{ThumbPreview, ThumbSink};
 pub use webcodecs::WebCodecsDecoder;

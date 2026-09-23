@@ -67,18 +67,18 @@ pub use types::{
     PLAY_WARM_AHEAD_HD, PLAY_WARM_AHEAD_UHD, PlayPolicy, ResolutionClass, SCRUB_BLIT_LRU,
     SHORT_GOP_MAX_LEN, ScrubDragMode, ScrubPolicy, ThumbPolicy, Timestamp, UHD_MIN_HEIGHT,
     VideoCodec, VideoMetadata, build_aac_asc, coalesce_frame_runs, estimated_decoded_frame_bytes,
-    exact_frames_to_free_for_play_vram, nearer_gap_with_dir, scrub_blit_cap_during_play,
-    scrub_blit_frame_budget, scrub_cache_frame_budget, scrub_edge_margins, scrub_gap_fill_armed,
-    scrub_preview_choice,
+    exact_frames_to_free_for_play_vram, hover_thumb_dims, nearer_gap_with_dir,
+    next_missing_sync_key, scrub_blit_cap_during_play, scrub_blit_frame_budget,
+    scrub_cache_frame_budget, scrub_edge_margins, scrub_gap_fill_armed, scrub_preview_choice,
 };
 
-#[cfg(all(target_arch = "wasm32", feature = "webcodecs", feature = "thumbs"))]
-pub use decode::ThumbPreview;
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use decode::{
     AsVideoFrame, OwnedVideoFrame, WebCodecsDecoder, canvas_2d, configure_canvas_for_video,
     draw_frame_to_canvas, draw_frame_with_context,
 };
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs", feature = "thumbs"))]
+pub use decode::{ThumbPreview, ThumbSink};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use video_player::{
     DuePresent, PRESENTATION_QUEUE_CAP, PipelineStats, ReadyFrameKind, ReadyFrameMark,

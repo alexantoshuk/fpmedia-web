@@ -133,6 +133,33 @@ pub fn scrub_preview_choice(
     }
 }
 
+/// Contain `src` into a max box (hover / filmstrip thumb size).
+pub fn hover_thumb_dims(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    let src_w = src_w.max(1) as f64;
+    let src_h = src_h.max(1) as f64;
+    let max_w = max_w.max(1) as f64;
+    let max_h = max_h.max(1) as f64;
+    let scale = (max_w / src_w).min(max_h / src_h);
+    let w = (src_w * scale).round().max(1.0) as u32;
+    let h = (src_h * scale).round().max(1.0) as u32;
+    (w, h)
+}
+
+/// Nearest sync id in `keys` that is not yet `ready`, by `|id − focus|`.
+///
+/// Used by sparse thumb key fill (`mediabunny:` `canvasesAtTimestamps` pick order
+/// is caller-defined; we bias to hover/playhead focus).
+pub fn next_missing_sync_key(
+    keys: &[FrameId],
+    focus: FrameId,
+    ready: impl Fn(FrameId) -> bool,
+) -> Option<FrameId> {
+    keys.iter()
+        .copied()
+        .filter(|&k| !ready(k))
+        .min_by_key(|k| k.abs_diff(focus))
+}
+
 /// Dense-cache gap pick for scrub densify.
 ///
 /// - `dir > 0` — hard prefer `ahead` (scrub right); fallback `behind`.
@@ -702,6 +729,24 @@ mod tests {
         assert_eq!(scrub_preview_choice(50, Some(40), Some(60)), Some(60));
         assert_eq!(scrub_preview_choice(50, Some(0), None), Some(0));
         assert_eq!(scrub_preview_choice(50, None, Some(44)), Some(44));
+    }
+
+    #[test]
+    fn hover_thumb_dims_contain_into_box() {
+        assert_eq!(hover_thumb_dims(1920, 1080, 160, 90), (160, 90));
+        assert_eq!(hover_thumb_dims(1080, 1920, 160, 90), (51, 90));
+        assert_eq!(hover_thumb_dims(100, 100, 160, 90), (90, 90));
+    }
+
+    #[test]
+    fn next_missing_sync_key_nearest_unready() {
+        let keys = [0u64, 48, 96, 144];
+        assert_eq!(
+            next_missing_sync_key(&keys, 100, |k| k == 96 || k == 48),
+            Some(144)
+        );
+        assert_eq!(next_missing_sync_key(&keys, 50, |_| true), None);
+        assert_eq!(next_missing_sync_key(&keys, 10, |_| false), Some(0));
     }
 
     #[test]
