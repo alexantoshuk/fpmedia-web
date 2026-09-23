@@ -21,8 +21,8 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Settle eng stuck / `q=41` or `flush/idle` | Scrub cache + `begin_key_cascade` | windowed salvage; recreate on key change; one cascade |
 | Dense empty while scrubbing | Predictive densify, Scrub cache | finish in-flight GOP; don’t cancel mid-GOP on aim move |
 | Whole Chrome window black flash while densify fills (cold scrub) | Densify blit + `scrub_cache_fill_task` | VF→`transferToImageBitmap` burst; pace **one rAF between GOPs** (keep Exact full viewport; do not shrink window / half-res) |
-| Hover thumb: CPU spike / black flash / `Unsupported configuration` | Hover read-only | ThumbCache + Exact downscale only — **never** decode / borrow scrub / sample Range |
-| Hover updates cold / ignores Exact keys | Hover vs densify | hover must not drive fill; thumb follows Exact when densify has it |
+| Hover thumb: CPU spike / black flash / `Unsupported configuration` | Thumb decode isolation | 3rd `create_thumb` decoder (no HW fallback); never densify/scrub decoder; HEVC block → Exact-only |
+| Hover updates cold / ignores Exact keys | Hover nearest | ThumbCache∪Exact via `scrub_preview_choice`; paint nearest after decode (not stale aim) |
 | Play freezes / low fps / mid-GOP `flush/idle` | presentation cap, warm held drain | Hd: small `PRESENTATION_QUEUE_CAP` (4); Uhd: `PlayPolicy` |
 | Periodic ~0.5s Play freeze every N frames (1080p short/medium GOP) | GOP boundary cascade / `finish_gop` | soft sequential next-key (no recreate); short pre-flush drain |
 | Chrome `flush/idle` at GOP end (`fed=N,q>0`) | `finish_gop_for_target` | wall-clock drain before flush; long-GOP mid-GOP end (fed=N,q>0) |
@@ -96,7 +96,7 @@ media/src/                 ← package name: webmedia
     ├── webcodecs.rs       ← DecoderCore + dual-async decode_frame; decode_gop
     ├── frame_cache.rs     ← ScrubChunkStore + FrameRunIndex + ThumbCache shell
     ├── scrub_blit.rs      ← VideoFrame → ImageBitmap (densify blit); stays in decode/
-    ├── thumb_preview.rs   ← cfg(thumbs): ThumbPreview sink (lazy; Phase 3 decoder)
+    ├── thumb_preview.rs   ← cfg(thumbs): ThumbPreview (ThumbCache + 3rd decoder + blit)
     ├── owned_video_frame.rs ← OwnedVideoFrame (close on drop)
     └── canvas.rs          ← draw VideoFrame
 ```
@@ -176,7 +176,7 @@ Decoded Exact residency is **`ImageBitmap` blit + resident markers**. Dual `Vide
 | **Step behind ring** | Prev hits (live VF) | `displayed` + `step_behind`; `STEP_BEHIND_CAP` (8); **Play uses cap 0** |
 | **`ScrubChunkStore`** | Gap geometry | **markers only**; densify inserts resident |
 | **`ScrubBlitLru`** | Scrub/step canvas present + Exact strip | densify `ImageBitmap`; cap from [`scrub_blit_frame_budget`] (`ScrubPolicy::blit_mib` × canvas buffer) |
-| **`ThumbCache`** / **`ThumbPreview`** | Hover filmstrip bitmaps (caller-sized; separate from Exact) | `paint_hover_thumb` via lazy sink; Play+Pause; Exact trim on Play → often empty until Phase 3 (`.ai/state.md`) |
+| **`ThumbCache`** / **`ThumbPreview`** | Hover filmstrip bitmaps + 3rd decoder | cache hit → Exact downscale → `create_thumb` decode → ThumbCache only; latest-wins; no Covered/Exact ingest |
 
 Densify `on_frame`: VF → `transferToImageBitmap` + marker. `mediabunny:` CanvasSink canvas pool — same idea.
 
@@ -319,7 +319,7 @@ Model: [Frame and decode caches](#frame-and-decode-caches).
 - **Periodic Play freeze ~0.5s every GOP** — was Long-GOP recreate on key change + long `finish_gop` drain → underrun hold. Soft sequential next-key when idle; scrub non-adjacent still hard. **Do not** hard-recreate on `busy` alone when soft-OK; await idle then soft switch. **Packet pump must cross GOPs** (`samples_after_decode` + `DECODE_WARM_AHEAD`) — in-GOP-only stop → finish_gop every key → ~1 hold/GOP (~0.93× realtime). Early `take_held` respawns **warm_only** pump (saw_target=true) — otherwise feeds to EOF (held≈3200). `mediabunny: src/media-sink.ts` mediaSamplesInRange continuous.
 - **Play after scrub:** host must not `seek_frame` from `VideoRef::play` while settle targets the same playhead (restarts key→N). Settle success arms densify via `arm_scrub_densify_after_exact` only when no pending PlayPrime; cancelled settle must not densify/invalidate. `prime_playback` re-decodes into the presentation queue (no VF lift from scrub store).
 - Timeline drag: async `scrub_to` — canvas via warm `ImageBitmap` only (`present_from_cache` = blit LRU). Store markers are strip/geometry only — **never** canvas. **Soft-drag** (Short/AllIntra): blit hit or warm blit of nearer preview only — **no** `decode_frame` / `draw_frame_unccommitted` (that serialized OpQueue on URL while densify already owns Exact fill). Exact on settle. **Exact-drag** (Long) may decode preview then `goto_frame`. Never `commit_frame` **or densify** the uncommitted preview alone without present path. Host: sync `playhead` on pointermove before deferred engine scrub (`skills/leptos.md`).
-- **Hover thumbs (Frame.io):** feature `thumbs` + `ThumbPolicy` + lazy `ThumbPreview`; UI `HoverThumbPreview` (not inside `<Video>`); **Play+Pause** hover (cancel scrub/leave only); Exact/ThumbCache read-only — never decode, never borrow scrub, never sample Range. Host: DOM `transform` first; try-paint; miss → coalesce Exact downscale. Play trims Exact → thumbs often blank until dedicated decoder. **Next:** 3rd decoder → ThumbCache only (`.ai/state.md`). `mediabunny: src/media-sink.ts` CanvasSink / `canvasesAtTimestamps`; quick-start thumb `CanvasSink({ width: 320 })`.
+- **Hover thumbs (Frame.io):** feature `thumbs` + `ThumbPolicy` + lazy `ThumbPreview`; UI `HoverThumbPreview` (not inside `<Video>`); **Play+Pause** (cancel scrub/leave only). Paint: nearest of ThumbCache∪Exact via `scrub_preview_choice` (soft-drag same as scrubber); miss → Exact downscale → `create_thumb` decode → ThumbCache; after decode paint nearest-to-**current** `hover_aim` (not stale decode id). Never ingest Covered/Exact / never borrow scrub decoder; latest-wins coalesce. HEVC HW-only → latch blocked, Exact-only. Own blit surface. `mediabunny: src/media-sink.ts` CanvasSink / `getCanvas` / `canvasesAtTimestamps`; quick-start `CanvasSink({ width: 320 })`.
 - **Predictive densify:** drag updates `scrub_dir` (`note_scrub_direction`); `next_gap` hard-prefers along `dir` (`nearer_gap_with_dir`); settle/play `clear_scrub_direction` (neutral). Do **not** cancel an in-flight GOP densify when aim jumps (was: ≥8 frames / other key → constant cancel on rapid scrub, dense stayed empty). Aim only picks the next gap after the GOP completes; budget eviction still drops farthest-from-aim.
 - **False Long on short-IP:** scene-cut GOPs shrink `min` → large spread while `max ≤ 30`. Classify Short on **max only** (not spread ≤ 2). scene-cut proxy was `Long ~27 (max 30)` under the old gate. `mediabunny: no equivalent`.
 - Pointer-up → `prepare_scrub_settle` (abort scrub epoch, reset scrub decoder, invalidate main decoder, set hold, clear dir) then **always** `goto_frame_with_interim(target)` — do **not** commit/blit target (or key/preview) via soft still. Canvas keeps last drag frame until decode VF. Prune salvages PTS `< target` into scrub store only (no canvas blit). Exact commits when ready; densify after is cheap on that GOP.

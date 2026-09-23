@@ -16,7 +16,7 @@ use crate::MediaClock;
 use crate::audio::AudioOutput;
 use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, draw_frame_with_context};
 use crate::decode::frame_cache::{ScrubBlitLru, ScrubChunkStore};
-use crate::decode::owned_video_frame::OwnedVideoFrame;
+use crate::decode::owned_video_frame::{AsVideoFrame, OwnedVideoFrame};
 use crate::decode::scrub_blit::{BlitCanvasSlot, ScrubChunk, draw_image_bitmap};
 #[cfg(feature = "thumbs")]
 use crate::decode::thumb_preview::ThumbPreview;
@@ -1017,13 +1017,12 @@ impl VideoPlayer {
         true
     }
 
-    /// Sync hover paint from [`ThumbPreview`] cache only (no Exact downscale).
+    /// Sync hover paint from [`ThumbPreview`] / nearest available preview.
     ///
-    /// Returns `Ok(Some(preview))` if `dest` was painted, `Ok(None)` if async
-    /// [`Self::paint_hover_thumb`] should try Exact downscale. Hover never
-    /// decodes and never drives densify / byte cache. Allowed while playing.
-    /// Soft-drag localization: [`scrub_preview_choice`] over Exact blit ids only.
-    /// `mediabunny:` CanvasSink pool hit — no per-timestamp decoder.
+    /// Picks the closer of ThumbCache-nearest and Exact-nearest via
+    /// [`scrub_preview_choice`] (same soft-drag rule as the scrubber). If the
+    /// winner is only on Exact (not yet in ThumbCache), returns `Ok(None)` so
+    /// async Exact downscale can run. Allowed while playing.
     pub fn try_paint_hover_thumb_cached(
         &self,
         frame: FrameId,
@@ -1046,43 +1045,72 @@ impl VideoPlayer {
                 return Err(MediaError::FrameOutOfRange(frame, count));
             }
             let frame = frame.min(count.saturating_sub(1));
+            if let Ok(slot) = self.shared.thumb.try_borrow()
+                && let Some(thumbs) = slot.as_ref()
+            {
+                thumbs.set_hover_aim(frame);
+            }
+            let meta = self.shared.player.borrow().metadata().clone();
+            let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
+
             let cached_exact = self
                 .shared
                 .scrub_blit
                 .try_borrow()
                 .ok()
                 .and_then(|b| b.nearest_frame(frame));
-            // Read-only: never fall back to a bare key id (no bitmap → no ThumbCache).
-            let preview = scrub_preview_choice(frame, None, cached_exact).unwrap_or(frame);
-            let store_key = self.key_for(preview).unwrap_or(preview);
-            let meta = self.shared.player.borrow().metadata().clone();
-            let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
+            let cached_thumb = {
+                let Ok(slot) = self.shared.thumb.try_borrow() else {
+                    return Ok(None);
+                };
+                let Some(thumbs) = slot.as_ref() else {
+                    return Ok(None);
+                };
+                thumbs.nearest_frame(frame, tw, th)
+            };
+            let Some(preview) = scrub_preview_choice(frame, cached_thumb, cached_exact) else {
+                return Ok(None);
+            };
 
+            // Prefer already-sized ThumbCache when it holds the winner.
             let Ok(slot) = self.shared.thumb.try_borrow() else {
                 return Ok(None);
             };
             let Some(thumbs) = slot.as_ref() else {
                 return Ok(None);
             };
+            let store_key = self.key_for(preview).unwrap_or(preview);
             let painted = thumbs.with_bitmap(store_key, preview, tw, th, |bmp| {
                 paint_thumb_canvas(dest, bmp, tw, th)
             });
             match painted {
                 Some(Ok(())) => Ok(Some(preview)),
                 Some(Err(e)) => Err(e),
-                None => Ok(None),
+                None => {
+                    // Winner is Exact-only (or size miss) — async downscale path.
+                    if cached_exact == Some(preview) {
+                        Ok(None)
+                    } else {
+                        // ThumbCache reported nearest but get missed (race) — try scan paint.
+                        match thumbs.with_nearest_bitmap(frame, tw, th, |bmp| {
+                            paint_thumb_canvas(dest, bmp, tw, th)
+                        }) {
+                            Some((id, Ok(()))) => Ok(Some(id)),
+                            Some((_, Err(e))) => Err(e),
+                            None => Ok(None),
+                        }
+                    }
+                }
             }
         }
     }
 
-    /// Paint a hover preview into `dest` — **read-only**.
+    /// Paint a hover preview into `dest`.
     ///
-    /// [`ThumbPreview`] cache hit, else Exact blit downscale into ThumbCache. Never
-    /// decodes, never borrows the scrub decoder, never reads samples (byte
-    /// cache / Covered / Exact fill stay densify-only). Miss → [`MediaError::Cancelled`]
-    /// (host keeps prior pixels). Allowed while playing; host hides only while scrubbing.
-    /// Play trims Exact → often empty until dedicated thumb decode (Phase 3).
-    /// `mediabunny:` separate thumb `CanvasSink` — no `getCanvas` decode path on hover yet.
+    /// Order: ThumbCache → Exact blit downscale → dedicated thumb decode
+    /// (`create_thumb` 3rd decoder → ThumbCache only). Never ingests Covered/Exact
+    /// or borrows the scrub densify decoder. Allowed while playing; host hides
+    /// while scrubbing. `mediabunny:` `CanvasSink.getCanvas` / `canvasesAtTimestamps`.
     pub async fn paint_hover_thumb(
         &self,
         frame: FrameId,
@@ -1108,70 +1136,341 @@ impl VideoPlayer {
                 return Err(MediaError::FrameOutOfRange(frame, count));
             }
             let frame = frame.min(count.saturating_sub(1));
-            let cached_exact = self
-                .shared
-                .scrub_blit
+
+            // Fast path: Exact blit downscale when densify has a neighbor.
+            if let Some(preview) = self.try_hover_thumb_from_exact(frame, dest, max_w, max_h)? {
+                return Ok(preview);
+            }
+
+            self.decode_hover_thumb(frame, dest, max_w, max_h).await
+        }
+    }
+
+    /// Exact blit → sized thumb into [`ThumbPreview`] (read-only densify plane).
+    ///
+    /// Only runs when Exact is the [`scrub_preview_choice`] winner vs ThumbCache
+    /// (caller already tried cache). Still localizes to Exact-nearest of aim.
+    #[cfg(feature = "thumbs")]
+    fn try_hover_thumb_from_exact(
+        &self,
+        frame: FrameId,
+        dest: &HtmlCanvasElement,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<Option<FrameId>, MediaError> {
+        let cached_exact = self
+            .shared
+            .scrub_blit
+            .try_borrow()
+            .ok()
+            .and_then(|b| b.nearest_frame(frame));
+        let Some(preview) = scrub_preview_choice(frame, None, cached_exact) else {
+            return Ok(None);
+        };
+        let store_key = self.key_for(preview).unwrap_or(preview);
+        let meta = self.shared.player.borrow().metadata().clone();
+        let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
+        let epoch = {
+            let Ok(slot) = self.shared.thumb.try_borrow() else {
+                return Ok(None);
+            };
+            slot.as_ref()
+                .map(|t| t.generation())
+                .ok_or(MediaError::Cancelled)?
+        };
+        let cancelled = || {
+            self.shared
+                .thumb
                 .try_borrow()
                 .ok()
-                .and_then(|b| b.nearest_frame(frame));
-            let Some(preview) = scrub_preview_choice(frame, None, cached_exact) else {
-                // No Exact resident near aim — leave prior thumb; densify fills on its own.
-                return Err(MediaError::Cancelled);
-            };
-            let store_key = self.key_for(preview).unwrap_or(preview);
-            let meta = self.shared.player.borrow().metadata().clone();
-            let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
-            let epoch = {
-                let Ok(slot) = self.shared.thumb.try_borrow() else {
-                    return Err(MediaError::Cancelled);
-                };
-                slot.as_ref()
-                    .map(|t| t.generation())
-                    .ok_or(MediaError::Cancelled)?
-            };
-            let cancelled = || {
-                self.shared
-                    .thumb
-                    .try_borrow()
-                    .ok()
-                    .and_then(|s| s.as_ref().map(|t| t.generation() != epoch))
-                    .unwrap_or(true)
-            };
+                .and_then(|s| s.as_ref().map(|t| t.generation() != epoch))
+                .unwrap_or(true)
+        };
+        if cancelled() {
+            return Err(MediaError::Cancelled);
+        }
 
-            if cancelled() {
-                return Err(MediaError::Cancelled);
-            }
+        let thumb_from_blit = if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+            blit.get(preview).is_some()
+        } else {
+            false
+        };
+        if !thumb_from_blit {
+            return Ok(None);
+        }
+        let thumb = {
+            let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() else {
+                return Ok(None);
+            };
+            let Some(src) = blit.get(preview) else {
+                return Ok(None);
+            };
+            let Ok(slot) = self.shared.thumb.try_borrow() else {
+                return Ok(None);
+            };
+            let Some(thumbs) = slot.as_ref() else {
+                return Ok(None);
+            };
+            thumbs.with_blit(|enc| enc.bitmap_to_sized(src, tw, th))?
+        };
+        if cancelled() {
+            thumb.close();
+            return Err(MediaError::Cancelled);
+        }
+        paint_thumb_canvas(dest, &thumb, tw, th)?;
+        if let Ok(slot) = self.shared.thumb.try_borrow()
+            && let Some(thumbs) = slot.as_ref()
+        {
+            thumbs.put_ready(store_key, preview, thumb, tw, th);
+        } else {
+            thumb.close();
+        }
+        Ok(Some(preview))
+    }
 
-            // Exact blit downscale — read-only; never evict / never charge blit_mib.
-            let thumb_from_blit = if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
-                if let Some(src) = blit.get(preview) {
-                    Some(
-                        self.shared
-                            .encode_canvas
-                            .with_blit(|enc| enc.bitmap_to_sized(src, tw, th))?,
-                    )
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let Some(thumb) = thumb_from_blit else {
+    /// Dedicated 3rd decoder → ThumbCache only (latest-wins coalesce).
+    #[cfg(feature = "thumbs")]
+    async fn decode_hover_thumb(
+        &self,
+        frame: FrameId,
+        dest: &HtmlCanvasElement,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<FrameId, MediaError> {
+        let blocked = {
+            let Ok(slot) = self.shared.thumb.try_borrow() else {
                 return Err(MediaError::Cancelled);
             };
-            if cancelled() {
-                thumb.close();
+            slot.as_ref().map(|t| t.decode_blocked()).unwrap_or(true)
+        };
+        if blocked {
+            return Err(MediaError::Cancelled);
+        }
+
+        let claim = {
+            let Ok(slot) = self.shared.thumb.try_borrow() else {
                 return Err(MediaError::Cancelled);
-            }
-            paint_thumb_canvas(dest, &thumb, tw, th)?;
+            };
+            let Some(thumbs) = slot.as_ref() else {
+                return Err(MediaError::Cancelled);
+            };
+            thumbs.claim_decode(frame)
+        };
+        if !claim {
+            // Another worker will decode the pending aim into the same dest canvas.
+            return Err(MediaError::Cancelled);
+        }
+
+        let end_decode = || {
             if let Ok(slot) = self.shared.thumb.try_borrow()
                 && let Some(thumbs) = slot.as_ref()
             {
-                thumbs.put_ready(store_key, preview, thumb, tw, th);
-            } else {
-                thumb.close();
+                thumbs.end_decode();
             }
-            Ok(preview)
+        };
+
+        let epoch = {
+            let Ok(slot) = self.shared.thumb.try_borrow() else {
+                end_decode();
+                return Err(MediaError::Cancelled);
+            };
+            let Some(thumbs) = slot.as_ref() else {
+                end_decode();
+                return Err(MediaError::Cancelled);
+            };
+            thumbs.generation()
+        };
+        let cancelled = || {
+            self.shared
+                .thumb
+                .try_borrow()
+                .ok()
+                .and_then(|s| s.as_ref().map(|t| t.generation() != epoch))
+                .unwrap_or(true)
+        };
+
+        let mut last_ok: Option<FrameId> = None;
+        loop {
+            let aim = {
+                let Ok(slot) = self.shared.thumb.try_borrow() else {
+                    break;
+                };
+                let Some(thumbs) = slot.as_ref() else {
+                    break;
+                };
+                thumbs.take_pending_aim().unwrap_or(frame)
+            };
+            if cancelled() {
+                break;
+            }
+            match self
+                .decode_one_hover_thumb(aim, dest, max_w, max_h, &cancelled)
+                .await
+            {
+                Ok(id) => last_ok = Some(id),
+                Err(MediaError::Cancelled) => {
+                    if cancelled() {
+                        break;
+                    }
+                }
+                Err(MediaError::CodecUnsupported(_)) => {
+                    if let Ok(slot) = self.shared.thumb.try_borrow()
+                        && let Some(thumbs) = slot.as_ref()
+                    {
+                        thumbs.set_decode_blocked(true);
+                    }
+                    break;
+                }
+                Err(_) => {
+                    // Keep prior pixels; still drain pending aims.
+                }
+            }
+            let more = self
+                .shared
+                .thumb
+                .try_borrow()
+                .ok()
+                .and_then(|s| s.as_ref().map(|t| t.has_pending_aim()))
+                .unwrap_or(false);
+            if !more {
+                break;
+            }
+        }
+
+        end_decode();
+        last_ok.ok_or(MediaError::Cancelled)
+    }
+
+    #[cfg(feature = "thumbs")]
+    async fn decode_one_hover_thumb(
+        &self,
+        frame: FrameId,
+        dest: &HtmlCanvasElement,
+        max_w: u32,
+        max_h: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<FrameId, MediaError> {
+        if cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+        // Cache may have been filled by Exact while we waited.
+        if let Some(hit) = self.try_paint_hover_thumb_cached(frame, dest, max_w, max_h)? {
+            return Ok(hit);
+        }
+        if let Some(preview) = self.try_hover_thumb_from_exact(frame, dest, max_w, max_h)? {
+            return Ok(preview);
+        }
+        if cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+
+        let meta = self.shared.player.borrow().metadata().clone();
+        let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
+        let track = self.shared.player.borrow().track_rc();
+        let store_key = self.key_for(frame).unwrap_or(frame);
+
+        let taken = {
+            let Ok(slot) = self.shared.thumb.try_borrow() else {
+                return Err(MediaError::Cancelled);
+            };
+            let Some(thumbs) = slot.as_ref() else {
+                return Err(MediaError::Cancelled);
+            };
+            thumbs.take_decoder()
+        };
+        let mut decoder = match taken {
+            Some(d) => d,
+            None => match WebCodecsDecoder::create_thumb(&meta).await {
+                Ok(d) => d,
+                Err(MediaError::CodecUnsupported(c)) => {
+                    return Err(MediaError::CodecUnsupported(c));
+                }
+                Err(e) => return Err(e),
+            },
+        };
+        if cancelled() {
+            if let Ok(slot) = self.shared.thumb.try_borrow()
+                && let Some(thumbs) = slot.as_ref()
+            {
+                thumbs.put_decoder(decoder);
+            }
+            return Err(MediaError::Cancelled);
+        }
+
+        let decoded = decoder.decode_frame(&track, frame, cancelled).await;
+        let video = match decoded {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = decoder.reset();
+                if let Ok(slot) = self.shared.thumb.try_borrow()
+                    && let Some(thumbs) = slot.as_ref()
+                {
+                    thumbs.put_decoder(decoder);
+                }
+                return Err(e);
+            }
+        };
+        if let Ok(slot) = self.shared.thumb.try_borrow()
+            && let Some(thumbs) = slot.as_ref()
+        {
+            thumbs.put_decoder(decoder);
+        }
+
+        if cancelled() {
+            drop(video);
+            return Err(MediaError::Cancelled);
+        }
+
+        let thumb = {
+            let Ok(slot) = self.shared.thumb.try_borrow() else {
+                drop(video);
+                return Err(MediaError::Cancelled);
+            };
+            let Some(thumbs) = slot.as_ref() else {
+                drop(video);
+                return Err(MediaError::Cancelled);
+            };
+            thumbs.with_blit(|enc| {
+                enc.frame_to_bitmap(video.as_video_frame(), tw, th)
+                    .map(|(bmp, _, _)| bmp)
+            })?
+        };
+        drop(video);
+        if cancelled() {
+            thumb.close();
+            return Err(MediaError::Cancelled);
+        }
+        // Insert first, then paint **nearest to current cursor aim** (not this
+        // decode id — aim may have moved during key→N). Same soft rule as scrubber.
+        let paint_aim = {
+            let Ok(slot) = self.shared.thumb.try_borrow() else {
+                thumb.close();
+                return Err(MediaError::Cancelled);
+            };
+            let Some(thumbs) = slot.as_ref() else {
+                thumb.close();
+                return Err(MediaError::Cancelled);
+            };
+            thumbs.put_ready(store_key, frame, thumb, tw, th);
+            thumbs.hover_aim()
+        };
+        if cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+        match self.try_paint_hover_thumb_cached(paint_aim, dest, max_w, max_h)? {
+            Some(id) => Ok(id),
+            None => {
+                // Exact may still win for paint_aim — try downscale; else show
+                // whatever we just decoded if it's still the nearest thumb.
+                if let Some(preview) =
+                    self.try_hover_thumb_from_exact(paint_aim, dest, max_w, max_h)?
+                {
+                    Ok(preview)
+                } else {
+                    self.try_paint_hover_thumb_cached(paint_aim, dest, max_w, max_h)?
+                        .ok_or(MediaError::Cancelled)
+                }
+            }
         }
     }
 

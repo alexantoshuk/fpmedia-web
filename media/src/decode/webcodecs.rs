@@ -704,6 +704,13 @@ impl WebCodecsDecoder {
         Self::create_with_policy(meta, PlayPolicy::hd(), false).await
     }
 
+    /// Hover / filmstrip thumb decoder — same isolation as [`Self::create_scrub`]
+    /// (Hd knobs, no HW fallback). Separate long-lived sink from play + densify.
+    /// `mediabunny:` `CanvasSink` + own `VideoSampleSink` / `getCanvas`.
+    pub async fn create_thumb(meta: &VideoMetadata) -> Result<Self, MediaError> {
+        Self::create_scrub(meta).await
+    }
+
     /// `allow_hw_only_fallback` — when no-preference `isConfigSupported` is false,
     /// retry with `prefer-hardware` (main open for HEVC). Scrub densify must
     /// pass `false` so it never steals the HW session.

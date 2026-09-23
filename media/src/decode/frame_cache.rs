@@ -832,6 +832,40 @@ impl ThumbCache {
         }
     }
 
+    /// Closest ready thumb to `target` at `width`×`height` (any GOP).
+    ///
+    /// Same soft-drag idea as Exact [`ScrubBlitLru::nearest_frame`] — hover should
+    /// show the nearest available preview, not only an exact aim hit.
+    pub fn nearest_frame(
+        &self,
+        target: FrameId,
+        width: u32,
+        height: u32,
+    ) -> Option<(FrameId, FrameId)> {
+        let mut best: Option<(FrameId, FrameId, u64)> = None;
+        for (&key, gop) in self.gops.iter() {
+            for (&ts, thumb) in &gop.by_time {
+                if !thumb.matches_size(width, height) {
+                    continue;
+                }
+                let frame = ts as FrameId;
+                let dist = frame.abs_diff(target);
+                let replace = match best {
+                    None => true,
+                    Some((_, _, d)) if dist < d => true,
+                    Some((bk, bf, d)) if dist == d && (frame < bf || (frame == bf && key < bk)) => {
+                        true
+                    }
+                    _ => false,
+                };
+                if replace {
+                    best = Some((key, frame, dist));
+                }
+            }
+        }
+        best.map(|(k, f, _)| (k, f))
+    }
+
     /// Insert or replace a ready thumb. Closes any previous plane for the same frame.
     pub fn put_ready(
         &mut self,

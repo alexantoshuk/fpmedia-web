@@ -41,7 +41,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - **Component vs demo:** media element crates expose **API only** (like HTML `<video>` / `<audio>`). Keyboard shortcuts,
   progress-bar chrome math for caches live in **`media_components::helpers`**; demo transport /
   keyboard stay in **`app`**.
-- **Hover thumbs:** Frame.io-style timeline preview. **Agreed UX:** Play **and** Pause, not while scrubbing; must not drive densify (buffer / Covered / Exact). **Shipped:** feature/`ThumbPolicy`/lazy `ThumbPreview` + `HoverThumbPreview`; Play+Pause hover (see `.ai/state.md` for 3rd-decoder).
+- **Hover thumbs:** Frame.io-style timeline preview. **Agreed UX:** Play **and** Pause, not while scrubbing; must not drive densify (buffer / Covered / Exact). **Shipped:** feature/`ThumbPolicy`/lazy `ThumbPreview` (3rd decoder → ThumbCache) + `HoverThumbPreview`.
 - **Play first, scrub second:** smooth **1× play with audio** must work for any supported clip (incl. 4K via
   `PlayPolicy`). Scrub/densify yields while playing (`CacheFillMode::Play`). Full-HD play+scrub knobs stay on
   the historical Hd defaults — do not retune them when adding Uhd play ahead/HW.
