@@ -94,6 +94,10 @@ media/src/                 ← package name: webmedia
 │   └── timecode.rs        ← QT `tmcd` start TC (moov walk; mediabunny: no equivalent)
 ├── player.rs              ← play/pause/seek_frame/step → DecodeWindow
 ├── video_player/          ← cfg(wasm32 + webcodecs) — VideoPlayer façade (A+V orchestration)
+│   ├── mod.rs             ← open / clock / shared present+decode helpers
+│   ├── play.rs            ← present_due / prefetch / loop / underrun
+│   ├── scrub.rs           ← densify schedule + hover thumbs (`scrub_blit` stays in decode/)
+│   └── seek.rs            ← seek_frame / next-prev step
 └── decode/                ← cfg(wasm32 + webcodecs) — WebCodecs + canvas + scrub blit
     ├── webcodecs.rs       ← DecoderCore + dual-async decode_frame; decode_gop
     ├── frame_cache.rs     ← ScrubChunkStore + FrameRunIndex + ThumbCache shell
