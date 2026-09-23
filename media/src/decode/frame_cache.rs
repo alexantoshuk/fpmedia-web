@@ -832,6 +832,16 @@ impl ThumbCache {
         }
     }
 
+    /// Whether a ready thumb exists for `frame` under `key` at size (no LRU touch).
+    pub fn contains(&self, key: FrameId, frame: FrameId, width: u32, height: u32) -> bool {
+        let Some(gop) = self.gops.peek(&key) else {
+            return false;
+        };
+        gop.by_time
+            .get(&(frame as i64))
+            .is_some_and(|t| t.matches_size(width, height))
+    }
+
     /// Closest ready thumb to `target` at `width`×`height` (any GOP).
     ///
     /// Same soft-drag idea as Exact [`ScrubBlitLru::nearest_frame`] — hover should
