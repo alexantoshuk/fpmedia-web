@@ -6,7 +6,9 @@ description = "Frame-accurate media engine (demux + player API)"
 publish = false
 
 [features]
-default = []
+default = ["thumbs"]
+# Hover / filmstrip thumbs (ThumbPreview + ThumbCache). Soft stubs when off.
+thumbs = []
 webcodecs = [
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",

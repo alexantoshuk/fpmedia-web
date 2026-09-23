@@ -281,6 +281,20 @@ pub enum ScrubDragMode {
     Exact,
 }
 
+/// Runtime gate for hover / filmstrip thumbs (`ThumbPreview` sink).
+///
+/// Compile feature `thumbs` (default on) must also be enabled; `Off` drops the
+/// lazy sink. Agreed UX: `On` = play **and** pause (host hides only while
+/// scrubbing). `mediabunny:` separate small `CanvasSink` — not the play/scrub sink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ThumbPolicy {
+    /// No thumb sink (drop ThumbCache / future thumb decoder).
+    Off,
+    /// Enable lazy thumb sink (play+pause; host gates scrub).
+    #[default]
+    On,
+}
+
 /// Per-clip scrub knobs derived from [`GopProfile`] (not global constants).
 ///
 /// Local invention (mediabunny: no equivalent). Tune fields per profile; do not

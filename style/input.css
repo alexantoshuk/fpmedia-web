@@ -174,7 +174,7 @@ body {
   opacity: 0.55;
 }
 
-/* Frame.io-style hover thumb — only while paused and not scrubbing.
+/* Frame.io-style hover thumb — Play+Pause; hide while scrubbing.
    Position via compositor `transform` (set from pointermove); pixels update when paint is ready. */
 .wm-thumb-preview {
   position: absolute;

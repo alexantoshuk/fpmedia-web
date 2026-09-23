@@ -8,6 +8,10 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["thumbs"]
+thumbs = ["webmedia/thumbs"]
+
 [dependencies]
 leptos = { workspace = true }
 leptos-use = { workspace = true }
@@ -17,7 +21,9 @@ js-sys = { workspace = true }
 web-sys = { workspace = true, features = [
     "Window",
     "Document",
+    "HtmlElement",
     "HtmlCanvasElement",
+    "CssStyleDeclaration",
     "AudioContext",
     "BaseAudioContext",
     "Performance",

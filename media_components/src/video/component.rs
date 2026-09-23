@@ -897,9 +897,6 @@ pub fn Video(
                 let Some(p) = player.borrow().as_ref().cloned() else {
                     return;
                 };
-                if p.is_playing() {
-                    return;
-                }
                 spawn_local(async move {
                     let _ = p
                         .paint_hover_thumb(u64::from(frame), &dest, max_w, max_h)
@@ -919,9 +916,6 @@ pub fn Video(
                 let Some(p) = borrow.as_ref() else {
                     return false;
                 };
-                if p.is_playing() {
-                    return false;
-                }
                 matches!(
                     p.try_paint_hover_thumb_cached(u64::from(frame), &dest, max_w, max_h),
                     Ok(Some(_))
@@ -939,6 +933,17 @@ pub fn Video(
                 p.cancel_hover_thumb();
             }
         }) as Rc<dyn Fn()>
+    };
+
+    let set_thumb_policy_fn = {
+        let player = Rc::clone(&player);
+        Rc::new(move |policy: webmedia::ThumbPolicy| {
+            if let Ok(borrow) = player.try_borrow()
+                && let Some(p) = borrow.as_ref()
+            {
+                p.set_thumb_policy(policy);
+            }
+        }) as Rc<dyn Fn(webmedia::ThumbPolicy)>
     };
 
     let close_fn = {
@@ -989,6 +994,7 @@ pub fn Video(
         paint_hover_thumb: paint_hover_thumb_fn,
         try_paint_hover_thumb: try_paint_hover_thumb_fn,
         cancel_hover_thumb: cancel_hover_thumb_fn,
+        set_thumb_policy: set_thumb_policy_fn,
     }));
 
     on_cleanup({

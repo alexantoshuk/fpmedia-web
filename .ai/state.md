@@ -12,12 +12,12 @@ _(empty)_
 
 ### Hover thumbs (priority)
 
-Shipped: soft-drag Exact-blit only + sync playhead; hover **read-only** (ThumbCache / Exact downscale — no densify decode). Demo/engine still gate hover with `!playing && !scrubbing`. Outside Exact, hover stays blank.
+Phase 1–2 shipped: feature `thumbs` + `ThumbPolicy` + lazy `ThumbPreview` + `HoverThumbPreview`; Play+Pause hover (cancel only scrub/leave). Still Exact/ThumbCache read-only — Play Exact trim → often empty until (3).
 
 Ordered plan:
 
-1. **Compile + runtime gates** — cargo feature `thumbs` (**default on**) on `webmedia` / `media_components` / demo; runtime `ThumbPolicy::Off | On` (`On` = play **and** pause; host hides only while scrubbing). Lazy `Option<ThumbPreview>`; `Off` drops sink. Soft stubs when feature off so hosts keep compiling.
-2. **Hover while playing** — drop engine/demo `!playing` gates; cancel hover only on scrub start / leave (not on Play). Exact still trimmed on Play → often empty until (3).
+1. ~~**Compile + runtime gates**~~ — done.
+2. ~~**Hover while playing**~~ — done.
 3. **Dedicated thumb decode** (mediabunny: separate small `CanvasSink` / `canvasesAtTimestamps`) — long-lived **3rd** decoder → **ThumbCache only**; never ingest Covered/Exact; do not steal scrub densify slot. Prefer software / small config for HEVC (avoid dual-HW stall). Coalesce latest-wins; no create-per-move.
 4. **Optional later** — Web Worker + OffscreenCanvas if Play+thumb janks main-thread present; not required for MVP.
 

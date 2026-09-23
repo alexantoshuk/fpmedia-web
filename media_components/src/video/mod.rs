@@ -7,7 +7,7 @@ mod component;
 mod op_queue;
 
 pub use component::Video;
-pub use webmedia::{PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoMetadata};
+pub use webmedia::{PipelineStats, ReadyFrameKind, ReadyFrameMark, ThumbPolicy, VideoMetadata};
 
 use std::rc::Rc;
 
@@ -70,10 +70,11 @@ pub(crate) struct VideoOps {
     pub set_volume: Rc<dyn Fn(f64)>,
     pub set_muted: Rc<dyn Fn(bool)>,
     pub set_playback_rate: Rc<dyn Fn(f64)>,
-    /// Hover timeline thumb → paint into `dest` (idle only; ThumbCache / Exact read-only).
+    /// Hover timeline thumb → paint into `dest` (ThumbPreview / Exact read-only).
     pub paint_hover_thumb: Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32)>,
     pub try_paint_hover_thumb: Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32) -> bool>,
     pub cancel_hover_thumb: Rc<dyn Fn()>,
+    pub set_thumb_policy: Rc<dyn Fn(ThumbPolicy)>,
 }
 
 impl VideoRef {
@@ -347,12 +348,12 @@ impl VideoRef {
         }
     }
 
-    /// Paint a Frame.io-style hover thumb into `dest` (paused, not scrubbing).
+    /// Paint a Frame.io-style hover thumb into `dest`.
     ///
-    /// Read-only: ThumbCache / Exact downscale — does not decode or move
-    /// playhead/canvas. Host must gate on `!playing && !scrubbing` and call
-    /// [`Self::cancel_hover_thumb`] on leave/play/scrub.
-    /// Prefer [`Self::try_paint_hover_thumb`] on pointermove for cache hits.
+    /// Read-only: ThumbPreview cache / Exact downscale — does not decode or move
+    /// playhead/canvas. Prefer [`crate::HoverThumbPreview`] chrome; call
+    /// [`Self::cancel_hover_thumb`] on leave/scrub. Prefer
+    /// [`Self::try_paint_hover_thumb`] on pointermove for cache hits.
     pub fn paint_hover_thumb(&self, frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
@@ -384,7 +385,7 @@ impl VideoRef {
             .unwrap_or(false)
     }
 
-    /// Abort in-flight hover thumb decode / hide race with play or scrub.
+    /// Abort in-flight hover thumb Exact downscale / hide race with scrub.
     pub fn cancel_hover_thumb(&self) {
         if let Some(cancel) = self
             .ops
@@ -392,6 +393,17 @@ impl VideoRef {
             .flatten()
         {
             cancel();
+        }
+    }
+
+    /// Runtime thumb sink gate (`Off` drops [`webmedia::ThumbPreview`]).
+    pub fn set_thumb_policy(&self, policy: ThumbPolicy) {
+        if let Some(set) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.set_thumb_policy)))
+            .flatten()
+        {
+            set(policy);
         }
     }
 }

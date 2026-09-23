@@ -267,12 +267,10 @@ async fn proxy_fetch(
     if let Some(range) = range {
         upstream = upstream.header(RANGE, range);
     }
-    upstream.send().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("proxy fetch failed: {e}"),
-        )
-    })
+    upstream
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("proxy fetch failed: {e}")))
 }
 
 /// `Content-Range: bytes start-end/total` → `end - start + 1`.

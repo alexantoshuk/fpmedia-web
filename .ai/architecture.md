@@ -14,7 +14,7 @@
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — demo host (controls) + thin SSR shell |
-| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `helpers` (scrubber CSS math). Modules: `video`, `helpers` (+ planned `audio`) |
+| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `helpers` (scrubber CSS math) + `HoverThumbPreview` chrome. Modules: `video`, `helpers`, `hover_thumb` (+ planned `audio`) |
 | Media engine | `webmedia` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `media_components/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
@@ -73,7 +73,7 @@ webmedia/
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
 | Progressive open via `MediaSource` | Ranged reads (`BlobSource` / `UrlSource` / `MemorySource` + `CachedSource`); parse `moov` (+ `moof` for single-file fMP4), fetch samples by offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline, **`GopProfile`**: `.ai/skills/media.md`. |
-| Optional hover thumbs (`thumbs`) | **Agreed, not shipped.** Compile: cargo feature `thumbs` **default on**. Runtime: `ThumbPolicy::Off \| On` (`On` = play+pause; hide only while scrubbing). Isolated `ThumbPreview` (ThumbCache + future small decoder) — never drives densify Covered/Exact; mediabunny separate `CanvasSink`. Backlog steps: `.ai/state.md` Hover thumbs. |
+| Optional hover thumbs (`thumbs`) | Compile: cargo feature `thumbs` **default on**. Runtime: `ThumbPolicy::Off \| On` (`On` = play+pause; host hides while scrubbing). Lazy `Option<ThumbPreview>` (ThumbCache + Exact downscale; Phase 3 = dedicated decoder). UI chrome: `media_components::HoverThumbPreview` (not inside `<Video>`). Phase 1–2 shipped; 3rd decoder: `.ai/state.md`. `mediabunny:` separate small `CanvasSink` / `canvasesAtTimestamps`. |
 | Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA live in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` only volume/mute **API**. Keyboard/chrome stay in demo `app`. Future `<Audio>` shares `audio/` (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
 | Component API like HTML media | Element crates expose open/play/seek/rate/volume — not host keybindings. Scrubber strip math: `media_components::helpers`. Demo owns JKL/Space/arrows. |
 
