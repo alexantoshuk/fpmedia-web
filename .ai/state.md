@@ -8,8 +8,10 @@
 
 ### Media engine
 
+- **Gray URL buffer (main pain):** port `ReadOrchestrator` (`mediabunny: src/source.ts`) — hole-merge, queued reads, `maxWorkerCount`; then open-ended stream **inside** workers. Closed Range + `UrlFetchGate` + coalesce stay until then. No global async priority OS — domain layers + shared `WorkloadMode` knobs (see `architecture.md` ADR).
+- Thin `WorkloadMode` / policy (Play > Seek > Open > Bg) so verify / densify / large prefetch yield correctly without one mega-queue.
 - Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
-- Progressive-open follow-ups: UrlSource open-ended Range streaming + mid-file sequential abandon (mediabunny `_runWorker` / `ReadableStreamSource` — gate shipped; sample-span coalesce shipped; cache chain-to-budget rejected — starves A/V).
+- Progressive-open follow-ups: no-Range → `ReadableStreamSource` (host full-download stays for now).
 - Temporary deps: workspace pins `rerun-io/re_mp4` @ `aa5be9b` ([#35](https://github.com/rerun-io/re_mp4/pull/35) merged; not on crates.io yet).
 - Upstream/re_mp4: nested `skip_box(0)` livelock on QT size-0 padding (we work around in `SparseBoxReader`).
 - Drop `re_mp4` git pin when the next crates.io release includes #35.
