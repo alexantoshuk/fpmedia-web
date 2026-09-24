@@ -4,17 +4,32 @@
 
 ---
 
+## Handoff (2026-09-24)
+
+**Stable baseline (use this):** closed-Range `UrlSource` + `UrlFetchGate` + `CachedSource` + sample-span coalesce. Play/decode OK after fMP4 lag fix. **Do not** re-land UrlSource half-ports without a full mediabunny cite.
+
+**Failed experiments (skills gotchas — read before touching byte IO):**
+
+1. Open-ended stream + abort/replace workers (no queue) → FetchMap holes / soft gray edges, cold-seek ~5 s, open hangs.
+2. Closed-Range `ReadOrchestrator` (queue/merge/attach, no stream, no orch byte cache) → open warm ~10 s, holes/blur again, scrub-to-cold lag.
+
+**Cite for next real port:** `mediabunny: src/source.ts` `ReadOrchestrator` + `_runWorker` — `queuedReads`, open-ended body, inner-slice resolve when bytes arrive. `CachedSource` alone ≠ that hole model.
+
+**Commits to know:** `81d6829` fMP4 frame-130 lag; `e814ffd` coalesce; `8a7d6c6` / `b988918` docs (domain orch ADR + half-port reverts). Working tree should be clean on `main` after `b988918`.
+
+**Symptom still open:** gray scrubber strip on URL — slow / jumpy buffer (large blocks early, small near EOF is expected from quantum+`available`; holes/blur were from half-ports). Open status may show `Warming media bytes…` after deferred verify (progress only).
+
+---
+
 ## Next up
 
-### Media engine
+### Media engine (priority)
 
-- **Gray URL buffer:** full mediabunny `ReadOrchestrator` deferred (closed-Range half-port + stream-without-queue both reverted — holes/blur/slow open). Today: closed Range + `UrlFetchGate` + coalesce. Later: stream inside workers + hole queue + inner-slice resolve; no-Range → `ReadableStreamSource`. Thin `WorkloadMode` (Play > Seek > Open > Bg).
-- Thin `WorkloadMode` / policy (Play > Seek > Open > Bg) so verify / densify / large prefetch yield correctly without one mega-queue.
-- Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
-- Progressive-open follow-ups: no-Range → `ReadableStreamSource` (host full-download stays for now).
-- Temporary deps: workspace pins `rerun-io/re_mp4` @ `aa5be9b` ([#35](https://github.com/rerun-io/re_mp4/pull/35) merged; not on crates.io yet).
-- Upstream/re_mp4: nested `skip_box(0)` livelock on QT size-0 padding (we work around in `SparseBoxReader`).
-- Drop `re_mp4` git pin when the next crates.io release includes #35.
+1. **Gray URL buffer** — only with **full** `ReadOrchestrator` port (`mediabunny: src/source.ts`): hole queue, max workers, open-ended stream **inside** workers, resolve inner read when bytes arrive. Until then keep gate + closed Range. Pre-edit gate in `AGENTS.md` (cite + path match) mandatory.
+2. **`WorkloadMode` knobs** (Play > Seek > Open > Bg) — thin policy across verify / densify / large prefetch; **not** a global async priority OS (`architecture.md` ADR).
+3. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
+4. no-Range → `ReadableStreamSource` (host full-download stays for now).
+5. Drop `re_mp4` git pin `@aa5be9b` when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35); QT `skip_box(0)` still worked around in `SparseBoxReader`.
 
 ### Later
 
