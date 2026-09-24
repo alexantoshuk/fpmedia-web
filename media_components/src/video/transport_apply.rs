@@ -36,6 +36,7 @@ pub(super) fn new_transport() -> TransportHandle {
 
 /// Run reduce + queue engine cmds. Playhead updates sync; engine work is serialized
 /// on one microtask drain (same race class as the old demo `defer_scrub` TLS).
+#[allow(clippy::too_many_arguments)] // host wiring: transport + queue + UI signals
 pub(super) fn dispatch_transport(
     transport: &TransportHandle,
     event: TransportEvent,
@@ -170,16 +171,11 @@ fn apply_engine_cmd(
         }
         TransportCmd::EnqueueScrubRelease {
             frame,
-            then_play, settle_gen,
+            then_play,
+            settle_gen,
         } => {
             enqueue_scrub_release(
-                queue,
-                kick_drain,
-                player,
-                session,
-                playing,
-                frame,
-                then_play, settle_gen,
+                queue, kick_drain, player, session, playing, frame, then_play, settle_gen,
             );
         }
         TransportCmd::EnqueuePlayPrime => {
@@ -219,6 +215,7 @@ fn enqueue_scrub_drag(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // host wiring: queue + session + play UI
 pub(super) fn enqueue_scrub_release(
     queue: &OpQueue,
     kick_drain: &Rc<dyn Fn()>,

@@ -1,13 +1,14 @@
 //! Pure host OpQueue coalesce rules (CallSerializer / asyncId).
 //!
-//! Spec / unit tests for the retain+insert rules used by
-//! `media_components::video::op_queue`. The live queue mutates `HostOp` in place
-//! so each entry keeps its enqueue epoch — do **not** rematerialize pending ops
-//! with the current `async_id` (that revives scrub left stale after Pause bump).
+//! Single entry: [`apply_enqueue`]. Live queue in `media_components` maps
+//! `(epoch, HostOp)` ↔ [`HostOpKind`], applies this matrix, then rebuilds pending
+//! **keeping epochs** on survivors (Open / in-flight scrub release) — never
+//! rematerialize survivors with the current `async_id` (that revives scrub after
+//! Pause bump and can block Play).
 //!
 //! mediabunny: `CallSerializer` + demo `asyncId` — latest seek/scrub wins.
-//! Prefer [`apply_scrub_release`] (atomic settle±play) over settle+PlayPrime pairs
-//! so drag cannot land between them (`architecture.md` § State machines over flags).
+//! Canonical pointer-up: [`EnqueueKind::ScrubRelease`] (atomic settle±play).
+//! See `.ai/architecture.md` § State machines over flags.
 
 use std::collections::VecDeque;
 
@@ -17,8 +18,10 @@ pub enum HostOpKind {
     Open,
     Seek(u32),
     SeekKeyframe(u32),
-    /// Drag only (`settle=false`). Prefer [`HostOpKind::ScrubRelease`] for pointer-up.
-    Scrub { frame: u32, settle: bool },
+    /// Drag only. Pointer-up uses [`HostOpKind::ScrubRelease`].
+    ScrubDrag {
+        frame: u32,
+    },
     /// Atomic pointer-up: exact settle, then optional play-prime in the same op.
     ScrubRelease {
         frame: u32,
@@ -29,97 +32,118 @@ pub enum HostOpKind {
     PlayPrime,
 }
 
-/// Pointer-up (and transport scrub-release): drop pending seek/step/scrub/play/
-/// prior release; keep Open; append one [`HostOpKind::ScrubRelease`].
+/// What the host wants to put on the queue (one row of the coalesce matrix).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnqueueKind {
+    /// Keep Open only; append drag scrub.
+    ScrubDrag {
+        frame: u32,
+    },
+    /// Keep Open only; append/replace release (atomic settle ± play).
+    ScrubRelease {
+        frame: u32,
+        then_play: bool,
+        settle_gen: u64,
+    },
+    Seek(u32),
+    SeekKeyframe(u32),
+    Step(bool),
+    /// Append PlayPrime unless a `ScrubRelease { then_play: true }` already owns play.
+    PlayPrime,
+}
+
+/// Coalesce matrix: mutate `pending` for the incoming [`EnqueueKind`].
+///
+/// | Incoming | Keep | Drop / merge |
+/// | -------- | ---- | ------------ |
+/// | ScrubDrag | Open | everything else; append drag |
+/// | ScrubRelease | Open | everything else; append release |
+/// | Seek / SeekKeyframe / Step | Open | everything else; append |
+/// | PlayPrime | Open + transport ops; skip if `ScrubRelease{then_play}` | other PlayPrimes; append PlayPrime |
+pub fn apply_enqueue(pending: &mut VecDeque<HostOpKind>, op: EnqueueKind) {
+    match op {
+        EnqueueKind::ScrubDrag { frame } => {
+            pending.retain(|o| matches!(o, HostOpKind::Open));
+            pending.push_back(HostOpKind::ScrubDrag { frame });
+        }
+        EnqueueKind::ScrubRelease {
+            frame,
+            then_play,
+            settle_gen,
+        } => {
+            pending.retain(|o| matches!(o, HostOpKind::Open));
+            pending.push_back(HostOpKind::ScrubRelease {
+                frame,
+                then_play,
+                settle_gen,
+            });
+        }
+        EnqueueKind::Seek(t) => {
+            pending.retain(|o| matches!(o, HostOpKind::Open));
+            pending.push_back(HostOpKind::Seek(t));
+        }
+        EnqueueKind::SeekKeyframe(t) => {
+            pending.retain(|o| matches!(o, HostOpKind::Open));
+            pending.push_back(HostOpKind::SeekKeyframe(t));
+        }
+        EnqueueKind::Step(forward) => {
+            pending.retain(|o| matches!(o, HostOpKind::Open));
+            pending.push_back(HostOpKind::Step(forward));
+        }
+        EnqueueKind::PlayPrime => {
+            if pending.iter().any(|o| {
+                matches!(
+                    o,
+                    HostOpKind::ScrubRelease {
+                        then_play: true,
+                        ..
+                    }
+                )
+            }) {
+                return;
+            }
+            pending.retain(|o| !matches!(o, HostOpKind::PlayPrime));
+            pending.push_back(HostOpKind::PlayPrime);
+        }
+    }
+}
+
+/// Pointer-up / transport scrub-release.
 pub fn apply_scrub_release(
     pending: &mut VecDeque<HostOpKind>,
     frame: u32,
     then_play: bool,
     settle_gen: u64,
 ) {
-    pending.retain(|o| matches!(o, HostOpKind::Open));
-    pending.push_back(HostOpKind::ScrubRelease {
-        frame,
-        then_play, settle_gen,
-    });
+    apply_enqueue(
+        pending,
+        EnqueueKind::ScrubRelease {
+            frame,
+            then_play,
+            settle_gen,
+        },
+    );
 }
 
-/// Apply scrub enqueue rules to a pending kind queue (mutates in place).
-///
-/// **Settle (`settle=true`):** legacy path — keep Open + PlayPrime; insert scrub
-/// before PlayPrime. Prefer [`apply_scrub_release`] for new code.
-/// **Drag:** keep Open only; append scrub (drops pending PlayPrime / ScrubRelease).
-pub fn apply_scrub(pending: &mut VecDeque<HostOpKind>, frame: u32, settle: bool) {
-    if settle {
-        pending.retain(|o| {
-            matches!(
-                o,
-                HostOpKind::Open | HostOpKind::PlayPrime | HostOpKind::ScrubRelease { .. }
-            )
-        });
-        // Prefer collapsing into ScrubRelease when a release with then_play is pending.
-        if let Some(pos) = pending.iter().position(|o| {
-            matches!(
-                o,
-                HostOpKind::ScrubRelease {
-                    then_play: true,
-                    ..
-                }
-            )
-        }) {
-            let settle_gen = match pending[pos] {
-                HostOpKind::ScrubRelease { settle_gen, .. } => settle_gen,
-                _ => 0,
-            };
-            pending[pos] = HostOpKind::ScrubRelease {
-                frame,
-                then_play: true, settle_gen,
-            };
-            return;
-        }
-        let scrub = HostOpKind::Scrub {
-            frame,
-            settle: true,
-        };
-        if let Some(pos) = pending
-            .iter()
-            .position(|o| matches!(o, HostOpKind::PlayPrime))
-        {
-            pending.insert(pos, scrub);
-        } else {
-            pending.push_back(scrub);
-        }
-    } else {
-        pending.retain(|o| matches!(o, HostOpKind::Open));
-        pending.push_back(HostOpKind::Scrub {
-            frame,
-            settle: false,
-        });
-    }
+/// Scrub drag only.
+pub fn apply_scrub_drag(pending: &mut VecDeque<HostOpKind>, frame: u32) {
+    apply_enqueue(pending, EnqueueKind::ScrubDrag { frame });
 }
 
 /// Seek/step: keep Open only; append op.
 pub fn apply_seek_or_step(pending: &mut VecDeque<HostOpKind>, op: HostOpKind) {
-    debug_assert!(matches!(
-        op,
-        HostOpKind::Seek(_) | HostOpKind::SeekKeyframe(_) | HostOpKind::Step(_)
-    ));
-    pending.retain(|o| matches!(o, HostOpKind::Open));
-    pending.push_back(op);
+    let kind = match op {
+        HostOpKind::Seek(t) => EnqueueKind::Seek(t),
+        HostOpKind::SeekKeyframe(t) => EnqueueKind::SeekKeyframe(t),
+        HostOpKind::Step(f) => EnqueueKind::Step(f),
+        other => panic!("apply_seek_or_step: not a seek/step: {other:?}"),
+    };
+    apply_enqueue(pending, kind);
 }
 
-/// Play-prime: drop other PlayPrimes; append (keeps scrub settle / open /
-/// ScrubRelease). Does not strip `ScrubRelease { then_play: true }` — that op
-/// already owns play.
+/// Play-prime coalesce.
 pub fn apply_play(pending: &mut VecDeque<HostOpKind>) {
-    if pending
-        .iter()
-        .any(|o| matches!(o, HostOpKind::ScrubRelease { then_play: true, .. }))
-    {
-        return;
-    }
-    pending.retain(|o| !matches!(o, HostOpKind::PlayPrime));
-    pending.push_back(HostOpKind::PlayPrime);
+    apply_enqueue(pending, EnqueueKind::PlayPrime);
 }
 
 #[cfg(test)]
@@ -127,42 +151,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn drag_scrub_drops_play_keeps_open() {
+    fn scrub_drag_drops_play_keeps_open() {
         let mut q = VecDeque::from([HostOpKind::Open, HostOpKind::PlayPrime, HostOpKind::Seek(3)]);
-        apply_scrub(&mut q, 10, false);
+        apply_enqueue(&mut q, EnqueueKind::ScrubDrag { frame: 10 });
         assert_eq!(
             q.iter().copied().collect::<Vec<_>>(),
-            vec![
-                HostOpKind::Open,
-                HostOpKind::Scrub {
-                    frame: 10,
-                    settle: false
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn settle_inserts_before_play_prime() {
-        let mut q = VecDeque::from([HostOpKind::Open, HostOpKind::PlayPrime]);
-        apply_scrub(&mut q, 7, true);
-        assert_eq!(
-            q.iter().copied().collect::<Vec<_>>(),
-            vec![
-                HostOpKind::Open,
-                HostOpKind::Scrub {
-                    frame: 7,
-                    settle: true
-                },
-                HostOpKind::PlayPrime
-            ]
+            vec![HostOpKind::Open, HostOpKind::ScrubDrag { frame: 10 }]
         );
     }
 
     #[test]
     fn scrub_release_replaces_pending_atomically() {
         let mut q = VecDeque::from([HostOpKind::Open, HostOpKind::PlayPrime]);
-        apply_scrub_release(&mut q, 11, true, 1);
+        apply_enqueue(
+            &mut q,
+            EnqueueKind::ScrubRelease {
+                frame: 11,
+                then_play: true,
+                settle_gen: 1,
+            },
+        );
         assert_eq!(
             q.iter().copied().collect::<Vec<_>>(),
             vec![
@@ -174,7 +182,14 @@ mod tests {
                 }
             ]
         );
-        apply_scrub_release(&mut q, 22, true, 2);
+        apply_enqueue(
+            &mut q,
+            EnqueueKind::ScrubRelease {
+                frame: 22,
+                then_play: true,
+                settle_gen: 2,
+            },
+        );
         assert_eq!(
             q.iter().copied().collect::<Vec<_>>(),
             vec![
@@ -195,7 +210,7 @@ mod tests {
             then_play: true,
             settle_gen: 1,
         }]);
-        apply_play(&mut q);
+        apply_enqueue(&mut q, EnqueueKind::PlayPrime);
         assert_eq!(
             q.iter().copied().collect::<Vec<_>>(),
             vec![HostOpKind::ScrubRelease {
@@ -207,17 +222,26 @@ mod tests {
     }
 
     #[test]
-    fn settle_without_play_appends() {
-        let mut q = VecDeque::from([HostOpKind::Open]);
-        apply_scrub(&mut q, 2, true);
+    fn play_appends_when_release_is_settle_only() {
+        let mut q = VecDeque::from([
+            HostOpKind::Open,
+            HostOpKind::ScrubRelease {
+                frame: 4,
+                then_play: false,
+                settle_gen: 1,
+            },
+        ]);
+        apply_enqueue(&mut q, EnqueueKind::PlayPrime);
         assert_eq!(
             q.iter().copied().collect::<Vec<_>>(),
             vec![
                 HostOpKind::Open,
-                HostOpKind::Scrub {
-                    frame: 2,
-                    settle: true
-                }
+                HostOpKind::ScrubRelease {
+                    frame: 4,
+                    then_play: false,
+                    settle_gen: 1
+                },
+                HostOpKind::PlayPrime
             ]
         );
     }
@@ -226,13 +250,14 @@ mod tests {
     fn seek_drops_scrub_and_play() {
         let mut q = VecDeque::from([
             HostOpKind::Open,
-            HostOpKind::Scrub {
+            HostOpKind::ScrubRelease {
                 frame: 1,
-                settle: true,
+                then_play: true,
+                settle_gen: 1,
             },
             HostOpKind::PlayPrime,
         ]);
-        apply_seek_or_step(&mut q, HostOpKind::Seek(9));
+        apply_enqueue(&mut q, EnqueueKind::Seek(9));
         assert_eq!(
             q.iter().copied().collect::<Vec<_>>(),
             vec![HostOpKind::Open, HostOpKind::Seek(9)]
@@ -240,42 +265,48 @@ mod tests {
     }
 
     #[test]
-    fn play_replaces_pending_play_keeps_settle() {
-        let mut q = VecDeque::from([
-            HostOpKind::Open,
-            HostOpKind::Scrub {
-                frame: 4,
-                settle: true,
-            },
-            HostOpKind::PlayPrime,
-        ]);
-        apply_play(&mut q);
+    fn step_and_seek_key_keep_only_open() {
+        let mut q = VecDeque::from([HostOpKind::Open, HostOpKind::PlayPrime]);
+        apply_enqueue(&mut q, EnqueueKind::Step(true));
         assert_eq!(
             q.iter().copied().collect::<Vec<_>>(),
-            vec![
-                HostOpKind::Open,
-                HostOpKind::Scrub {
-                    frame: 4,
-                    settle: true
-                },
-                HostOpKind::PlayPrime
-            ]
+            vec![HostOpKind::Open, HostOpKind::Step(true)]
+        );
+        apply_enqueue(&mut q, EnqueueKind::SeekKeyframe(3));
+        assert_eq!(
+            q.iter().copied().collect::<Vec<_>>(),
+            vec![HostOpKind::Open, HostOpKind::SeekKeyframe(3)]
         );
     }
 
     /// Documented hazard: after `bump`, a pending scrub must stay on its old id
-    /// so drain skips it — rematerializing with the new epoch revives it and can
-    /// block Play (fMP4 scrub→Pause→Play / play-after-scrub).
+    /// so drain skips it — rematerializing with the new epoch revives it.
+    /// Kind-only coalesce does not assign epochs (OpQueue's job).
     #[test]
     fn coalesce_does_not_assign_epochs() {
-        // host_op_coalesce is kind-only; epoch preservation is OpQueue's job.
-        let mut q = VecDeque::from([HostOpKind::Scrub {
+        let mut q = VecDeque::from([HostOpKind::ScrubRelease {
             frame: 10,
-            settle: true,
+            then_play: false,
+            settle_gen: 1,
         }]);
-        apply_play(&mut q);
+        apply_enqueue(&mut q, EnqueueKind::PlayPrime);
         assert_eq!(q.len(), 2);
-        assert!(matches!(q[0], HostOpKind::Scrub { settle: true, .. }));
+        assert!(matches!(
+            q[0],
+            HostOpKind::ScrubRelease {
+                then_play: false,
+                ..
+            }
+        ));
         assert_eq!(q[1], HostOpKind::PlayPrime);
+    }
+
+    #[test]
+    fn wrappers_match_apply_enqueue() {
+        let mut a = VecDeque::from([HostOpKind::Open, HostOpKind::PlayPrime]);
+        let mut b = a.clone();
+        apply_scrub_drag(&mut a, 5);
+        apply_enqueue(&mut b, EnqueueKind::ScrubDrag { frame: 5 });
+        assert_eq!(a, b);
     }
 }

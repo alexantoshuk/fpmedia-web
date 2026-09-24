@@ -5,22 +5,21 @@
 //! Here: one FIFO queue + a single `async_id` epoch. Bumping the epoch aborts the
 //! in-flight command after its next `.await`; coalescing drops stale pending seeks.
 //!
-//! Coalesce *rules* are unit-tested in [`webmedia::host_op_coalesce`] (keep in sync).
-//! This queue mutates `HostOp` in place so each entry keeps its enqueue `async_id`
-//! — rematerializing with the current id would revive ops left stale after
-//! [`Self::bump`] (e.g. pending scrub after Pause → blocks Play).
+//! Coalesce *rules*: [`webmedia::apply_enqueue`] (keep in sync). This queue maps
+//! to [`webmedia::HostOpKind`], applies the matrix, then rebuilds pending while
+//! **preserving enqueue epochs** on survivors (Open / same-`settle_gen` release).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
-
 use std::sync::Arc;
 
 use leptos::prelude::*;
 use web_sys::HtmlCanvasElement;
-use webmedia::MediaSource;
+use webmedia::{EnqueueKind, HostOpKind, MediaSource, apply_enqueue};
 
 /// Commands that must not overlap on the shared [`webmedia::VideoPlayer`].
+#[derive(Clone)]
 pub(crate) enum HostOp {
     Open {
         source: Arc<dyn MediaSource>,
@@ -36,8 +35,7 @@ pub(crate) enum HostOp {
         frame: u32,
         settle: bool,
     },
-    /// Atomic pointer-up: exact settle, then optional play-prime in the same op
-    /// (`architecture.md` § State machines — no drag between settle and play).
+    /// Atomic pointer-up: exact settle, then optional play-prime in the same op.
     ScrubRelease {
         frame: u32,
         then_play: bool,
@@ -47,6 +45,28 @@ pub(crate) enum HostOp {
     Step(bool),
     /// Prime presentation queue then start the play session / rAF.
     PlayPrime,
+}
+
+impl HostOp {
+    fn to_kind(&self) -> HostOpKind {
+        match self {
+            Self::Open { .. } => HostOpKind::Open,
+            Self::Seek(t) => HostOpKind::Seek(*t),
+            Self::SeekKeyframe(t) => HostOpKind::SeekKeyframe(*t),
+            Self::Scrub { frame, .. } => HostOpKind::ScrubDrag { frame: *frame },
+            Self::ScrubRelease {
+                frame,
+                then_play,
+                settle_gen,
+            } => HostOpKind::ScrubRelease {
+                frame: *frame,
+                then_play: *then_play,
+                settle_gen: *settle_gen,
+            },
+            Self::Step(f) => HostOpKind::Step(*f),
+            Self::PlayPrime => HostOpKind::PlayPrime,
+        }
+    }
 }
 
 struct QueueState {
@@ -101,35 +121,27 @@ impl OpQueue {
         self.begin_drain_locked(&mut st)
     }
 
-    /// Async scrub drag: drop pending seek/step/scrub/release/play (keep open).
-    /// Rule mirror: [`webmedia::apply_scrub`] (`settle=false`).
+    /// Async scrub drag. Rule: [`EnqueueKind::ScrubDrag`].
     pub fn enqueue_scrub_drag(&self, frame: u32) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
-        st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
-        st.pending.push_back((
-            id,
-            HostOp::Scrub {
-                frame,
-                settle: false,
-            },
-        ));
+        coalesce_pending(&mut st.pending, id, EnqueueKind::ScrubDrag { frame });
         self.begin_drain_locked(&mut st)
     }
 
-    /// Atomic scrub release (settle ± play). Drops pending transport ops; keeps Open.
-    /// Rule mirror: [`webmedia::apply_scrub_release`].
+    /// Atomic scrub release (settle ± play). Rule: [`EnqueueKind::ScrubRelease`].
     pub fn enqueue_scrub_release(&self, frame: u32, then_play: bool, settle_gen: u64) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
-        st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
-        st.pending.push_back((
+        coalesce_pending(
+            &mut st.pending,
             id,
-            HostOp::ScrubRelease {
+            EnqueueKind::ScrubRelease {
                 frame,
-                then_play, settle_gen,
+                then_play,
+                settle_gen,
             },
-        ));
+        );
         self.busy.set(true);
         self.begin_drain_locked(&mut st)
     }
@@ -145,28 +157,21 @@ impl OpQueue {
         self.sync_busy();
     }
 
-    /// Seek/step: drop pending seek/step/scrub/play (keep open), enqueue latest.
-    /// Does **not** bump the epoch — that would cancel an in-flight open
-    /// (mediabunny seeks await the prior iterator; open uses asyncId++).
-    /// In-flight scrub is preempted by the caller via `cancel_ops` when
-    /// [`Self::scrub_inflight`] is set. Sync step/seek wait for each other.
-    /// Returns `true` to start drain.
-    ///
-    /// Rule mirror: [`webmedia::apply_seek_or_step`].
+    /// Seek/step. Does **not** bump the epoch (open may still be in flight).
     pub fn enqueue_seek_or_step(&self, op: HostOp) -> bool {
-        debug_assert!(matches!(
-            op,
-            HostOp::Seek(_) | HostOp::SeekKeyframe(_) | HostOp::Step(_)
-        ));
+        let kind = match &op {
+            HostOp::Seek(t) => EnqueueKind::Seek(*t),
+            HostOp::SeekKeyframe(t) => EnqueueKind::SeekKeyframe(*t),
+            HostOp::Step(f) => EnqueueKind::Step(*f),
+            _ => panic!("enqueue_seek_or_step: expected Seek/SeekKeyframe/Step"),
+        };
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
-        st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
-        st.pending.push_back((id, op));
+        coalesce_pending(&mut st.pending, id, kind);
         self.busy.set(true);
         self.begin_drain_locked(&mut st)
     }
 
-    /// True when the drain loop is inside a scrub op (sync step should cancel it).
     pub fn scrub_inflight(&self) -> bool {
         self.inner.borrow().scrub_inflight
     }
@@ -175,35 +180,16 @@ impl OpQueue {
         self.inner.borrow_mut().scrub_inflight = on;
     }
 
-    /// Play-prime: replace a pending PlayPrime; do not cancel an in-flight open/seek.
-    /// Pending scrub settle / ScrubRelease is kept — Play waits (or no-ops when
-    /// `ScrubRelease { then_play }` already owns play).
-    /// Returns `true` to start drain.
-    ///
-    /// Rule mirror: [`webmedia::apply_play`]. Surviving scrub entries keep their
-    /// enqueue id (must not be refreshed to the current epoch).
+    /// Play-prime. Rule: [`EnqueueKind::PlayPrime`].
     pub fn enqueue_play(&self) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
-        if st.pending.iter().any(|(_, o)| {
-            matches!(
-                o,
-                HostOp::ScrubRelease {
-                    then_play: true,
-                    ..
-                }
-            )
-        }) {
-            return self.begin_drain_locked(&mut st);
-        }
-        st.pending.retain(|(_, o)| !matches!(o, HostOp::PlayPrime));
-        st.pending.push_back((id, HostOp::PlayPrime));
+        coalesce_pending(&mut st.pending, id, EnqueueKind::PlayPrime);
         self.busy.set(true);
         self.begin_drain_locked(&mut st)
     }
 
-    /// True when a PlayPrime or `ScrubRelease { then_play }` is waiting
-    /// (settle should skip densify arm).
+    /// True when a PlayPrime or `ScrubRelease { then_play }` is waiting.
     pub fn has_pending_play(&self) -> bool {
         self.inner.borrow().pending.iter().any(|(_, o)| {
             matches!(o, HostOp::PlayPrime)
@@ -228,17 +214,14 @@ impl OpQueue {
         }
     }
 
-    /// Current invalidation epoch (`asyncId`).
     pub fn current_id(&self) -> u64 {
         self.async_id.get()
     }
 
-    /// Pop the next command for the drain loop.
     pub fn pop_next(&self) -> Option<(u64, HostOp)> {
         self.inner.borrow_mut().pending.pop_front()
     }
 
-    /// End the drain loop when the queue is empty. Returns `true` if drain ended.
     pub fn try_end_drain(&self) -> bool {
         let mut st = self.inner.borrow_mut();
         if !st.pending.is_empty() {
@@ -261,6 +244,66 @@ impl OpQueue {
         let st = self.inner.borrow();
         if !st.draining && st.pending.is_empty() {
             self.busy.set(false);
+        }
+    }
+}
+
+/// Apply [`apply_enqueue`] while preserving epochs on Open and same-`settle_gen`
+/// ScrubRelease survivors.
+fn coalesce_pending(pending: &mut VecDeque<(u64, HostOp)>, id: u64, kind: EnqueueKind) {
+    let snapshot: Vec<(u64, HostOp)> = pending.iter().cloned().collect();
+    let open = snapshot
+        .iter()
+        .find(|(_, o)| matches!(o, HostOp::Open { .. }))
+        .cloned();
+    let mut kinds: VecDeque<HostOpKind> = snapshot.iter().map(|(_, o)| o.to_kind()).collect();
+    apply_enqueue(&mut kinds, kind);
+    pending.clear();
+    for k in kinds {
+        match k {
+            HostOpKind::Open => {
+                if let Some(entry) = open.clone() {
+                    pending.push_back(entry);
+                }
+            }
+            HostOpKind::ScrubDrag { frame } => {
+                pending.push_back((
+                    id,
+                    HostOp::Scrub {
+                        frame,
+                        settle: false,
+                    },
+                ));
+            }
+            HostOpKind::ScrubRelease {
+                frame,
+                then_play,
+                settle_gen,
+            } => {
+                let eid = snapshot
+                    .iter()
+                    .find_map(|(e, o)| match o {
+                        HostOp::ScrubRelease {
+                            settle_gen: g,
+                            then_play: tp,
+                            ..
+                        } if *g == settle_gen && *tp == then_play => Some(*e),
+                        _ => None,
+                    })
+                    .unwrap_or(id);
+                pending.push_back((
+                    eid,
+                    HostOp::ScrubRelease {
+                        frame,
+                        then_play,
+                        settle_gen,
+                    },
+                ));
+            }
+            HostOpKind::Seek(t) => pending.push_back((id, HostOp::Seek(t))),
+            HostOpKind::SeekKeyframe(t) => pending.push_back((id, HostOp::SeekKeyframe(t))),
+            HostOpKind::Step(f) => pending.push_back((id, HostOp::Step(f))),
+            HostOpKind::PlayPrime => pending.push_back((id, HostOp::PlayPrime)),
         }
     }
 }
