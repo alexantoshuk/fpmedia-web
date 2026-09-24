@@ -14,6 +14,7 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::MediaClock;
 use crate::audio::AudioOutput;
+use crate::clock_state::{ClockCmd, ClockEvent, ClockState, reduce as clock_reduce};
 use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, draw_frame_with_context};
 use crate::decode::frame_cache::{ScrubBlitLru, ScrubChunkStore};
 use crate::decode::owned_video_frame::OwnedVideoFrame;
@@ -131,6 +132,8 @@ struct Shared {
     underrun_hold_ms: Cell<f64>,
     /// `performance.now` when the current underrun hold started (`None` = not holding).
     underrun_hold_since_ms: Cell<Option<f64>>,
+    /// Timeline phase ([`ClockState`]) — run / stop / underrun / scrub hold.
+    clock_state: Cell<ClockState>,
     /// Prefetch must idle while seek/loop prepare owns the decoder.
     restarting: Cell<bool>,
     preparing_loop: Cell<bool>,
@@ -159,7 +162,7 @@ impl Shared {
         WorkloadHints::new(
             self.engine.get().mode,
             self.restarting.get(),
-            self.underrun_hold_since_ms.get().is_some(),
+            self.clock_state.get().underrun_holding(),
             self.scrub_busy.get(),
         )
     }
@@ -412,6 +415,7 @@ impl VideoPlayer {
             underrun_holds: Cell::new(0),
             underrun_hold_ms: Cell::new(0.0),
             underrun_hold_since_ms: Cell::new(None),
+            clock_state: Cell::new(ClockState::Stopped),
             restarting: Cell::new(false),
             preparing_loop: Cell::new(false),
             op_epoch: Cell::new(0),
@@ -749,7 +753,7 @@ impl VideoPlayer {
     /// `runAudioIterator`; non-1× adds WSOLA stretch). Above 4× / no audio
     /// → wall `performance`.
     pub async fn start_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
-        self.finish_underrun_hold_timer();
+        self.apply_clock_event(ClockEvent::Start);
         self.shared.clock.borrow_mut().start(media_time_secs);
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
         if crate::is_wall_clock_rate(self.playback_rate()) {
@@ -773,6 +777,7 @@ impl VideoPlayer {
 
     /// Snap the media clock (pause / seek). Stops audio nodes if attached.
     pub fn stop_media_clock(&self) -> f64 {
+        self.apply_clock_event(ClockEvent::Stop);
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.stop()
         } else {
@@ -793,6 +798,7 @@ impl VideoPlayer {
     /// [`Self::stop_media_clock`].
     /// `mediabunny: examples/media-player/media-player.ts` `pause`.
     pub fn hold_media_clock_for_scrub(&self) -> f64 {
+        self.apply_clock_event(ClockEvent::HoldScrub);
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.hold_underrun()
         } else {
@@ -829,7 +835,7 @@ impl VideoPlayer {
     /// Soft-holds audio ([`AudioOutput::hold_underrun`]) — silence without
     /// `AudioDecoder` reset — so resume is not a cold reconfigure gap.
     pub fn hold_media_clock_for_underrun(&self) -> f64 {
-        self.note_underrun_hold_start();
+        self.apply_clock_event(ClockEvent::HoldUnderrun);
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.hold_underrun()
         } else {
@@ -847,7 +853,7 @@ impl VideoPlayer {
     /// ([`AudioOutput::restart_warm`]). Fresh Play after hard pause still uses
     /// [`Self::start_media_clock`] (cold `begin`).
     pub async fn resume_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
-        self.finish_underrun_hold_timer();
+        self.apply_clock_event(ClockEvent::Resume);
         self.shared.clock.borrow_mut().start(media_time_secs);
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
         if crate::is_wall_clock_rate(self.playback_rate()) {
@@ -867,6 +873,20 @@ impl VideoPlayer {
             self.shared.wall_origin.set(Some(now / 1000.0));
         }
         Ok(())
+    }
+
+    fn apply_clock_event(&self, event: ClockEvent) {
+        let (next, cmds) = clock_reduce(self.shared.clock_state.get(), event);
+        self.shared.clock_state.set(next);
+        for cmd in cmds {
+            match cmd {
+                ClockCmd::NoteUnderrunHoldStart => self.note_underrun_hold_start(),
+                ClockCmd::FinishUnderrunTimer => self.finish_underrun_hold_timer(),
+                ClockCmd::AbandonUnderrunTimer => {
+                    let _ = self.shared.underrun_hold_since_ms.take();
+                }
+            }
+        }
     }
 
     fn note_underrun_hold_start(&self) {
@@ -995,9 +1015,9 @@ impl VideoPlayer {
         self.shared.player.borrow_mut().play();
         self.shared.frames_skipped.set(0);
         self.shared.last_behind_ms.set(None);
+        self.apply_clock_event(ClockEvent::ResetForPlay);
         self.shared.underrun_holds.set(0);
         self.shared.underrun_hold_ms.set(0.0);
-        self.shared.underrun_hold_since_ms.set(None);
         #[cfg(feature = "thumbs")]
         self.schedule_thumb_key_fill();
     }
@@ -1031,7 +1051,6 @@ impl VideoPlayer {
             } else {
                 let _ = self.stop_media_clock();
             }
-            self.finish_underrun_hold_timer();
         }
         self.shared.player.borrow_mut().pause();
         self.clear_loop_prime();

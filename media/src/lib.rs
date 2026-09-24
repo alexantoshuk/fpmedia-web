@@ -11,6 +11,7 @@
 mod audio;
 mod bitstream;
 mod clock;
+mod clock_state;
 mod decoder_slot;
 mod demux;
 mod engine_mode;
@@ -45,6 +46,7 @@ pub use clock::{
     PLAYBACK_RATE_REVIEW_MAX, PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_STEP, is_shuttle_rate,
     is_wall_clock_rate, normalize_playback_rate,
 };
+pub use clock_state::{ClockCmd, ClockEvent, ClockState, reduce as clock_state_reduce};
 pub use decoder_slot::{
     DecoderSlotCmd, DecoderSlotEvent, DecoderSlotModel, DecoderSlotPhase,
     reduce as decoder_slot_reduce,

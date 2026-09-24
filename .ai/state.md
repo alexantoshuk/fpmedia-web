@@ -17,7 +17,7 @@
 
 **Commits to know:** `81d6829` fMP4 frame-130 lag; `e814ffd` coalesce; `8a7d6c6` / `b988918` docs (domain orch ADR + half-port reverts). Working tree should be clean on `main` after `b988918`.
 
-**Symptom still open:** gray scrubber strip on URL — slow / jumpy buffer (large blocks early, small near EOF is expected from quantum+`available`; holes/blur were from half-ports). Open UI status uses `OpenPhase` (e.g. WarmingMediaBytes) — progress only, not a hang.
+**Symptom still open:** gray scrubber strip on URL — slow / jumpy buffer (large blocks early, small near EOF is expected from quantum+`available`; holes/blur were from half-ports). Open UI status uses `OpenPhase`; media timeline phase uses `ClockState` (HoldUnderrun ≠ hang).
 
 ---
 
