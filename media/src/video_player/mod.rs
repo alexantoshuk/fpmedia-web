@@ -21,6 +21,9 @@ use crate::decode::scrub_blit::BlitCanvasSlot;
 #[cfg(feature = "thumbs")]
 use crate::decode::thumb_preview::ThumbPreview;
 use crate::decode::webcodecs::WebCodecsDecoder;
+use crate::decoder_slot::{
+    DecoderSlotCmd, DecoderSlotEvent, DecoderSlotModel, reduce as decoder_slot_reduce,
+};
 use crate::engine_mode::{EngineEvent, EngineModel, reduce as engine_reduce};
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
@@ -129,9 +132,8 @@ struct Shared {
     preparing_loop: Cell<bool>,
     /// Bumped to cancel in-flight decode (mediabunny dispose / asyncId).
     op_epoch: Cell<u64>,
-    /// Set when invalidate runs while the decoder slot is empty (checked out).
-    /// Honored on the next `take_decoder` put-back / decode start.
-    decoder_reset: Cell<bool>,
+    /// Exclusive main-decoder checkout + reset-pending ([`DecoderSlotModel`]).
+    decoder_slot: Cell<DecoderSlotModel>,
     /// After fill stalls (no progress), skip restart until aim leaves this frame.
     fill_stalled_aim: Cell<Option<FrameId>>,
     /// Scrub drag direction for predictive densify: `+1` ahead, `-1` behind, `0` neutral.
@@ -398,7 +400,7 @@ impl VideoPlayer {
             restarting: Cell::new(false),
             preparing_loop: Cell::new(false),
             op_epoch: Cell::new(0),
-            decoder_reset: Cell::new(false),
+            decoder_slot: Cell::new(DecoderSlotModel::new()),
             fill_stalled_aim: Cell::new(None),
             scrub_dir: Cell::new(0),
             prev_scrub_aim: Cell::new(None),
@@ -1394,18 +1396,32 @@ impl VideoPlayer {
         }
     }
 
+    fn apply_decoder_slot(&self, event: DecoderSlotEvent) -> Vec<DecoderSlotCmd> {
+        let (next, cmds) = decoder_slot_reduce(self.shared.decoder_slot.get(), event);
+        self.shared.decoder_slot.set(next);
+        cmds
+    }
+
     fn invalidate_decoder(&self) {
         // Soft clear is not enough: clearing `input_timestamps` while the browser
         // still holds in-flight chunks desyncs PTS remap → rare
         // `flush/idle without pts=… (held=0)` on rapid PREV.
-        self.shared.decoder_reset.set(true);
-        // Take out so `reset()` does not hold the RefCell (JS re-entry / Drop).
-        let taken = self.decoder.borrow_mut().take();
-        if let Some(mut decoder) = taken {
-            if decoder.reset().is_ok() {
-                self.shared.decoder_reset.set(false);
+        // mediabunny: terminate iterator → close decoder; next range creates fresh.
+        let cmds = self.apply_decoder_slot(DecoderSlotEvent::Invalidate);
+        for cmd in cmds {
+            match cmd {
+                DecoderSlotCmd::ResetNow => {
+                    // Take out so `reset()` does not hold the RefCell (JS re-entry / Drop).
+                    let taken = self.decoder.borrow_mut().take();
+                    if let Some(mut decoder) = taken {
+                        if decoder.reset().is_ok() {
+                            let _ = self.apply_decoder_slot(DecoderSlotEvent::ClearReset);
+                        }
+                        *self.decoder.borrow_mut() = Some(decoder);
+                    }
+                }
+                DecoderSlotCmd::ApplyReset => {}
             }
-            *self.decoder.borrow_mut() = Some(decoder);
         }
     }
 
@@ -1444,10 +1460,6 @@ impl VideoPlayer {
         on_interim: Option<Box<dyn FnMut(FrameId, OwnedVideoFrame)>>,
     ) -> Result<OwnedVideoFrame, MediaError> {
         let mut decoder = self.take_decoder(epoch).await?;
-        if self.shared.decoder_reset.get() {
-            decoder.reset()?;
-            self.shared.decoder_reset.set(false);
-        }
         let cancelled = || !self.is_current(epoch);
         let result = match on_interim {
             Some(cb) => {
@@ -1476,14 +1488,20 @@ impl VideoPlayer {
         };
         if cancelled() {
             let _ = decoder.reset();
-            *self.decoder.borrow_mut() = Some(decoder);
+            let _ = self.apply_decoder_slot(DecoderSlotEvent::ClearReset);
+            self.put_decoder(decoder);
             if let Ok(video) = result {
                 drop(video);
             }
             return Err(MediaError::Cancelled);
         }
-        *self.decoder.borrow_mut() = Some(decoder);
+        self.put_decoder(decoder);
         result
+    }
+
+    fn put_decoder(&self, decoder: WebCodecsDecoder) {
+        let _ = self.apply_decoder_slot(DecoderSlotEvent::PutBack);
+        *self.decoder.borrow_mut() = Some(decoder);
     }
 
     async fn take_decoder(&self, epoch: u64) -> Result<WebCodecsDecoder, MediaError> {
@@ -1502,7 +1520,14 @@ impl VideoPlayer {
                 return Err(MediaError::Cancelled);
             }
             let taken = self.decoder.borrow_mut().take();
-            if let Some(decoder) = taken {
+            if let Some(mut decoder) = taken {
+                let cmds = self.apply_decoder_slot(DecoderSlotEvent::Checkout);
+                for cmd in cmds {
+                    if matches!(cmd, DecoderSlotCmd::ApplyReset) {
+                        decoder.reset()?;
+                        let _ = self.apply_decoder_slot(DecoderSlotEvent::ClearReset);
+                    }
+                }
                 return Ok(decoder);
             }
             let now = performance_now_ms().unwrap_or(start);

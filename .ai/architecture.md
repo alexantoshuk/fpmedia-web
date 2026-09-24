@@ -101,7 +101,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | Host transport | play / scrub / settle / prime / ended | **`webmedia::transport`** + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*` (demo chrome only maps pointers) |
 | OpQueue | merge/drop pending ops | **`webmedia::apply_enqueue` / `EnqueueKind`** matrix; `OpQueue` preserves epochs on survivors |
 | Engine mode | play vs scrub densify / soft-hold audio | **`webmedia::engine_mode`** (`Play` / `Scrub` / `ExactHold` + `AudioResume`) |
-| Decoder slot | configure / feed / drain / reset | ad-hoc busy / flush rules → slot lifecycle |
+| Decoder slot | configure / feed / drain / reset | **`webmedia::decoder_slot`** (`Idle` / `CheckedOut` + `reset_pending`) |
 | WorkloadMode | Play > Seek > Open > Bg knobs | ad-hoc “pause verify while Play” → shared policy only |
 | Byte IO | hole queue / workers / inner-slice | half-ports → full mediabunny `ReadOrchestrator` |
 | Open / backfill | probe → warm index → ready | status strings → `OpenPhase` |

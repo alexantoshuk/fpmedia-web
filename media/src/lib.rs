@@ -11,6 +11,7 @@
 mod audio;
 mod bitstream;
 mod clock;
+mod decoder_slot;
 mod demux;
 mod engine_mode;
 mod error;
@@ -41,6 +42,10 @@ pub use clock::{
     MediaClock, PLAYBACK_RATE_AUDIO_MAX, PLAYBACK_RATE_MAX, PLAYBACK_RATE_MIN,
     PLAYBACK_RATE_REVIEW_MAX, PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_STEP, is_shuttle_rate,
     is_wall_clock_rate, normalize_playback_rate,
+};
+pub use decoder_slot::{
+    DecoderSlotCmd, DecoderSlotEvent, DecoderSlotModel, DecoderSlotPhase,
+    reduce as decoder_slot_reduce,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use demux::open_mp4_path;
