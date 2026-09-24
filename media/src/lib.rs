@@ -23,6 +23,7 @@ mod source;
 mod transport;
 mod types;
 mod util;
+mod workload;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod decode;
@@ -92,6 +93,10 @@ pub use types::{
     exact_frames_to_free_for_play_vram, hover_thumb_dims, nearer_gap_with_dir,
     next_missing_sync_key, scrub_blit_cap_during_play, scrub_blit_frame_budget,
     scrub_cache_frame_budget, scrub_edge_margins, scrub_gap_fill_armed, scrub_preview_choice,
+};
+pub use workload::{
+    FRAGMENT_BACKFILL_IDLE_AHEAD, WorkloadHints, WorkloadMode, allows_bg_sync_verify, classify,
+    fragment_backfill_should_idle_yield,
 };
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]

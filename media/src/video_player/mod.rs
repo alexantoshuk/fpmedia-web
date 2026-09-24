@@ -30,6 +30,10 @@ use crate::player::{Player, PlayerState};
 use crate::types::{
     AudioMetadata, FrameId, GopProfile, ThumbPolicy, VideoMetadata, coalesce_frame_runs,
 };
+use crate::workload::{
+    FRAGMENT_BACKFILL_IDLE_AHEAD, WorkloadHints, allows_bg_sync_verify, classify,
+    fragment_backfill_should_idle_yield,
+};
 
 mod play;
 mod scrub;
@@ -148,6 +152,17 @@ struct Shared {
     /// File-byte fetch coverage (demo scrubber gray strip).
     fetch_map: std::sync::Arc<crate::FetchMap>,
     file_size: u64,
+}
+
+impl Shared {
+    fn workload_hints(&self) -> WorkloadHints {
+        WorkloadHints::new(
+            self.engine.get().mode,
+            self.restarting.get(),
+            self.underrun_hold_since_ms.get().is_some(),
+            self.scrub_busy.get(),
+        )
+    }
 }
 
 /// Why a frame is marked ready on the demo timeline strip.
@@ -484,11 +499,16 @@ impl VideoPlayer {
                         );
                         // Keep index well ahead of the playhead; only idle-yield when
                         // paused/scrubbing with ≥240 frames of lead.
-                        let playing = shared.engine.get().is_play();
+                        let mode = classify(shared.workload_hints());
                         let playhead = shared.player.borrow().state().frame;
                         let indexed = track.indexed_frame_count();
                         let ahead = indexed.saturating_sub(playhead);
-                        if playing || track.fragment_backfill_urgent() || ahead < 240 {
+                        if !fragment_backfill_should_idle_yield(
+                            mode,
+                            ahead,
+                            track.fragment_backfill_urgent(),
+                            FRAGMENT_BACKFILL_IDLE_AHEAD,
+                        ) {
                             continue;
                         }
                         crate::util::yield_now().await;
@@ -525,17 +545,11 @@ impl VideoPlayer {
                 let Some(shared) = weak.upgrade() else {
                     break;
                 };
-                // Yield while Play owns the network, on underrun, or while scrub
-                // densify / settle / seek is busy (avoid GitHub/proxy 502 storms
-                // and sample-sized Range storms on URL).
+                // Yield while Play / Seek own the network, on underrun, or while
+                // densify is busy (avoid GitHub/proxy 502 + sample-sized Range storms).
                 // mediabunny: verifyKeyPackets on retrieve — no bg full-file walk
-                // during playback (`EngineMode::Play`).
-                if shared.engine.get().is_play()
-                    || shared.underrun_hold_since_ms.get().is_some()
-                    || shared.scrub_busy.get()
-                    || shared.engine.get().holds_exact()
-                    || shared.restarting.get()
-                {
+                // during playback (`WorkloadMode` / `allows_bg_sync_verify`).
+                if !allows_bg_sync_verify(shared.workload_hints()) {
                     crate::util::yield_now().await;
                     continue;
                 }

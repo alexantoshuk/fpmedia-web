@@ -26,10 +26,9 @@
 ### Media engine (priority)
 
 1. **Gray URL buffer** — only with **full** `ReadOrchestrator` port (`mediabunny: src/source.ts`): hole queue, max workers, open-ended stream **inside** workers, resolve inner read when bytes arrive. Until then keep gate + closed Range. Pre-edit gate in `AGENTS.md` (cite + path match) mandatory.
-2. **`WorkloadMode` knobs** (Play > Seek > Open > Bg) — thin policy across verify / densify / large prefetch; **not** a global async priority OS (`architecture.md` ADR).
-3. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
-4. no-Range → `ReadableStreamSource` (host full-download stays for now).
-5. Drop `re_mp4` git pin `@aa5be9b` when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35); QT `skip_box(0)` still worked around in `SparseBoxReader`.
+2. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
+3. no-Range → `ReadableStreamSource` (host full-download stays for now).
+4. Drop `re_mp4` git pin `@aa5be9b` when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35); QT `skip_box(0)` still worked around in `SparseBoxReader`.
 
 ### Later
 
