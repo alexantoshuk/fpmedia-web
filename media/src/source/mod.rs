@@ -44,6 +44,13 @@ pub trait MediaSource: Send + Sync {
     /// Returns fewer bytes than `len` when hitting EOF. Returns an error when
     /// `offset > size`.
     fn read(&self, offset: u64, len: usize) -> ReadFuture<'_>;
+
+    /// Best-effort background fill of `[offset, offset+len)` (no-op default).
+    ///
+    /// [`CachedSource`] uses this so fMP4 moof backfill can warm the next `mdat`
+    /// before play hits the fragment seam (`mediabunny: URLSource` min-load /
+    /// on-demand fragment reads still go through the cache).
+    fn prefetch(&self, _offset: u64, _len: usize) {}
 }
 
 impl<T: MediaSource + ?Sized> MediaSource for &T {
@@ -54,6 +61,10 @@ impl<T: MediaSource + ?Sized> MediaSource for &T {
     fn read(&self, offset: u64, len: usize) -> ReadFuture<'_> {
         (**self).read(offset, len)
     }
+
+    fn prefetch(&self, offset: u64, len: usize) {
+        (**self).prefetch(offset, len)
+    }
 }
 
 impl<T: MediaSource + ?Sized> MediaSource for std::sync::Arc<T> {
@@ -63,5 +74,9 @@ impl<T: MediaSource + ?Sized> MediaSource for std::sync::Arc<T> {
 
     fn read(&self, offset: u64, len: usize) -> ReadFuture<'_> {
         (**self).read(offset, len)
+    }
+
+    fn prefetch(&self, offset: u64, len: usize) {
+        (**self).prefetch(offset, len)
     }
 }

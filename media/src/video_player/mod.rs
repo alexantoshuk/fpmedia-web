@@ -425,6 +425,13 @@ impl VideoPlayer {
             file_size,
         });
         apply_clip_budgets(&shared);
+        if let Some(a) = shared.audio.borrow().as_ref() {
+            shared
+                .player
+                .borrow()
+                .track_rc()
+                .set_backfill_audio_sink(std::rc::Rc::downgrade(a));
+        }
         Self::kick_deferred_sync_verify(&shared);
         Self::kick_fragment_backfill(&shared);
         // Do not seek here — first-frame decode can be slow; let the host show
@@ -444,6 +451,11 @@ impl VideoPlayer {
         if !track.begin_fragment_backfill_worker() {
             return;
         }
+        // Race index ahead of a quick Play click (ready ≠ indexed lead).
+        track.request_index_through(160);
+        if let Some(a) = shared.audio.borrow().as_ref() {
+            a.set_expect_more_samples(true);
+        }
         web_sys::console::log_1(
             &format!(
                 "webmedia: fragment backfill bg (indexed={}/{})",
@@ -453,10 +465,29 @@ impl VideoPlayer {
             .into(),
         );
         let track = track.clone();
+        let shared = Rc::clone(shared);
         wasm_bindgen_futures::spawn_local(async move {
             loop {
                 match track.run_fragment_backfill_step().await {
-                    Ok(true) => {
+                    Ok((more, audio)) => {
+                        if let Some(fresh) = audio.as_ref()
+                            && let Some(out) = shared.audio.borrow().as_ref()
+                        {
+                            out.adopt_fragment_samples(fresh);
+                        }
+                        if !more {
+                            if let Some(out) = shared.audio.borrow().as_ref() {
+                                out.set_expect_more_samples(false);
+                            }
+                            web_sys::console::log_1(
+                                &format!(
+                                    "webmedia: fragment backfill done ({} frames)",
+                                    track.frame_count()
+                                )
+                                .into(),
+                            );
+                            break;
+                        }
                         web_sys::console::log_1(
                             &format!(
                                 "webmedia: fragment backfill chunk (indexed={}/{})",
@@ -465,19 +496,21 @@ impl VideoPlayer {
                             )
                             .into(),
                         );
+                        // Keep index well ahead of the playhead; only idle-yield when
+                        // paused/scrubbing with ≥240 frames of lead.
+                        let playing = shared.fill_mode.get() == CacheFillMode::Play;
+                        let playhead = shared.player.borrow().state().frame;
+                        let indexed = track.indexed_frame_count();
+                        let ahead = indexed.saturating_sub(playhead);
+                        if playing || track.fragment_backfill_urgent() || ahead < 240 {
+                            continue;
+                        }
                         crate::util::yield_now().await;
                     }
-                    Ok(false) => {
-                        web_sys::console::log_1(
-                            &format!(
-                                "webmedia: fragment backfill done ({} frames)",
-                                track.frame_count()
-                            )
-                            .into(),
-                        );
-                        break;
-                    }
                     Err(e) => {
+                        if let Some(out) = shared.audio.borrow().as_ref() {
+                            out.set_expect_more_samples(false);
+                        }
                         web_sys::console::error_1(
                             &format!("webmedia: fragment backfill failed: {e}").into(),
                         );
@@ -506,10 +539,13 @@ impl VideoPlayer {
                 let Some(shared) = weak.upgrade() else {
                     break;
                 };
-                // Yield to play/IO when the clock is underrunning, while scrub
-                // densify / settle / seek owns the network (avoid GitHub/proxy
-                // 502 storms and sample-sized Range storms on URL).
-                if shared.underrun_hold_since_ms.get().is_some()
+                // Yield while Play owns the network, on underrun, or while scrub
+                // densify / settle / seek is busy (avoid GitHub/proxy 502 storms
+                // and sample-sized Range storms on URL).
+                // mediabunny: verifyKeyPackets on retrieve — no bg full-file walk
+                // during playback (`CacheFillMode::Play`).
+                if shared.fill_mode.get() == CacheFillMode::Play
+                    || shared.underrun_hold_since_ms.get().is_some()
                     || shared.scrub_busy.get()
                     || shared.hold_densify_for_exact.get()
                     || shared.restarting.get()
@@ -543,11 +579,7 @@ impl VideoPlayer {
     }
 
     pub fn audio_metadata(&self) -> Option<AudioMetadata> {
-        self.shared
-            .audio
-            .borrow()
-            .as_ref()
-            .map(|a| a.metadata().clone())
+        self.shared.audio.borrow().as_ref().map(|a| a.metadata())
     }
 
     pub fn has_audio(&self) -> bool {
@@ -941,6 +973,19 @@ impl VideoPlayer {
         self.trim_exact_for_play();
         // Free Chromium VideoFrame pool for prefetch — step ring is Pause/Prev only.
         self.clear_step_behind_ring();
+        {
+            let player = self.shared.player.borrow();
+            let head = player.state().frame;
+            let track = player.track_rc();
+            if !track.fragments_complete() {
+                // Pump mfra index well ahead of play so we never stall at the
+                // warm+chunk seam (was solid lag on frame 119 / indexed 120).
+                track.request_index_through(head.saturating_add(240));
+            }
+            // Warm `mdat` for the next ~5s even when the index is already ahead
+            // (mfra backfill does not fetch sample bytes).
+            track.prefetch_samples_ahead(head, 120);
+        }
         self.shared.player.borrow_mut().play();
         self.shared.frames_skipped.set(0);
         self.shared.last_behind_ms.set(None);

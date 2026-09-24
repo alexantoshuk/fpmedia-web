@@ -73,6 +73,11 @@ struct FragmentBackfillState {
     /// Bg wasm worker already spawned (avoid double-loop).
     worker_running: bool,
     error: Option<String>,
+    /// Play/decode needs at least this frame — use small urgent chunks, no idle yield.
+    urgent_through: Option<FrameId>,
+    /// Live audio sink so ensure-driven steps can extend AAC (Weak → AudioOutput).
+    #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+    audio_sink: Option<std::rc::Weak<crate::audio::AudioOutput>>,
 }
 
 impl fmt::Debug for Mp4VideoTrack {
@@ -149,7 +154,250 @@ impl Mp4VideoTrack {
             started: false,
             worker_running: false,
             error: None,
+            urgent_through: None,
+            #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+            audio_sink: None,
         });
+    }
+
+    /// Wire live [`crate::audio::AudioOutput`] so ensure/bg backfill can grow AAC.
+    #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+    pub fn set_backfill_audio_sink(&self, sink: std::rc::Weak<crate::audio::AudioOutput>) {
+        if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
+            state.audio_sink = Some(sink);
+        }
+    }
+
+    fn adopt_backfill_audio(&self, fresh: Option<crate::audio::Mp4AudioTrack>) {
+        #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+        {
+            let Some(fresh) = fresh else {
+                return;
+            };
+            let sink = self
+                .fragment_backfill
+                .borrow()
+                .as_ref()
+                .and_then(|s| s.audio_sink.clone());
+            let Some(weak) = sink else {
+                return;
+            };
+            if let Some(out) = weak.upgrade() {
+                out.adopt_fragment_samples(&fresh);
+            }
+        }
+        #[cfg(not(all(target_arch = "wasm32", feature = "webcodecs")))]
+        {
+            let _ = fresh;
+        }
+    }
+
+    /// Play/decode is blocked on a frame past the warm index — backfill faster.
+    pub fn request_index_through(&self, frame: FrameId) {
+        let mut slot = self.fragment_backfill.borrow_mut();
+        let Some(state) = slot.as_mut() else {
+            return;
+        };
+        if state.complete {
+            return;
+        }
+        state.urgent_through = Some(match state.urgent_through {
+            Some(prev) => prev.max(frame),
+            None => frame,
+        });
+    }
+
+    /// Background-warm sample bytes for presentation frames `[from, to)`.
+    ///
+    /// mfra backfill only loads `moof` tables; `mdat` stays cold until
+    /// `encoded_sample`. A single 8 MiB tile left the tail cold (~frame 108 on
+    /// long warm spans). Tile ≤1 MiB chunks (under [`crate::source::url_gate::GATE_LARGE_BYTES`])
+    /// so fills bypass the URL gate and cover the whole ahead window.
+    /// `mediabunny: URLSource` min-load + cache / on-demand packet `requestSlice`.
+    pub fn kick_prefetch_samples(&self, from: usize, to: usize) {
+        if from >= to {
+            return;
+        }
+        let spans = {
+            let index = self.index.borrow();
+            let to = to.min(index.len());
+            if from >= to {
+                return;
+            }
+            // Split on file gaps (moof between mdats) so each fragment body is
+            // its own fill — one fat min..max span wasted the first tile on
+            // early bytes and left the next `mdat` cold.
+            const GAP_SLACK: u64 = 4 * 1024;
+            let mut spans: Vec<(u64, u64)> = Vec::new();
+            let mut run_start = u64::MAX;
+            let mut run_end = 0u64;
+            let mut prev_end = None::<u64>;
+            for i in from..to {
+                let Some(e) = index.get(i as u64) else {
+                    continue;
+                };
+                let e_end = e.offset.saturating_add(e.size);
+                match prev_end {
+                    Some(pe) if e.offset > pe.saturating_add(GAP_SLACK) => {
+                        if run_start != u64::MAX && run_end > run_start {
+                            spans.push((run_start, run_end));
+                        }
+                        run_start = e.offset;
+                        run_end = e_end;
+                    }
+                    Some(_) => {
+                        run_end = run_end.max(e_end);
+                    }
+                    None => {
+                        run_start = e.offset;
+                        run_end = e_end;
+                    }
+                }
+                prev_end = Some(e_end);
+            }
+            if run_start != u64::MAX && run_end > run_start {
+                spans.push((run_start, run_end));
+            }
+            spans
+        };
+        // Stay under GATE_LARGE_BYTES so play sample Ranges are not queued
+        // behind multi-MiB cache fills (`url_gate` / AAC starve lesson).
+        const TILE: u64 = 1024 * 1024;
+        const MAX_TILES: usize = 12;
+        let mut tiles = 0usize;
+        for (start, end) in spans {
+            let mut off = start;
+            while off < end && tiles < MAX_TILES {
+                let chunk = (end - off).min(TILE);
+                self.source.prefetch(off, chunk as usize);
+                off += chunk;
+                tiles += 1;
+            }
+            if tiles >= MAX_TILES {
+                break;
+            }
+        }
+    }
+
+    /// If a nearby presentation frame jumps file offset (next `mdat`), warm it.
+    ///
+    /// Called from the decode path so the Range is in flight ~0.5–1 s before
+    /// the seam — not only at `play()` when the first 8 MiB tile was still cold.
+    fn kick_prefetch_if_fragment_seam(&self, frame: FrameId) {
+        const LOOKAHEAD: u64 = 32;
+        const GAP_SLACK: u64 = 4 * 1024;
+        const TILE: usize = 1024 * 1024;
+        let index = self.index.borrow();
+        let Some(cur) = index.get(frame) else {
+            return;
+        };
+        let mut end = cur.offset.saturating_add(cur.size);
+        let last = (frame.saturating_add(LOOKAHEAD)).min(index.len() as u64);
+        for f in frame.saturating_add(1)..last {
+            let Some(n) = index.get(f) else {
+                break;
+            };
+            if n.offset > end.saturating_add(GAP_SLACK) {
+                self.source.prefetch(n.offset, TILE);
+                return;
+            }
+            end = end.max(n.offset.saturating_add(n.size));
+        }
+    }
+
+    /// Prefetch sample bytes from `from` through the lesser of indexed end /
+    /// `from + lead` (Play entry / warm-ahead).
+    pub fn prefetch_samples_ahead(&self, from: FrameId, lead: u64) {
+        let indexed = self.index.borrow().len() as u64;
+        let to = indexed.min(from.saturating_add(lead)) as usize;
+        self.kick_prefetch_samples(from as usize, to);
+    }
+
+    /// Block until sample bytes for `[from, from+lead)` are in the playback
+    /// cache (or EOF). Used by PlayPrime so quick Play does not stall on the
+    /// first cold `mdat` inside the warm index (`mediabunny: URLSource` min-load
+    /// / worker fill before the sink runs dry).
+    pub async fn warm_sample_bytes(&self, from: FrameId, lead: u64) -> Result<(), MediaError> {
+        const GAP_SLACK: u64 = 4 * 1024;
+        const TILE: usize = 512 * 1024; // mediabunny URL_SOURCE_MIN_LOAD_AMOUNT
+        // ~12 warm moofs × 1080p can be tens of MiB; under-fill left cold seams.
+        const MAX_BYTES: usize = 48 * 1024 * 1024;
+        let indexed = self.index.borrow().len() as u64;
+        let to = indexed.min(from.saturating_add(lead)) as usize;
+        let from = from as usize;
+        if from >= to {
+            return Ok(());
+        }
+        let spans = {
+            let index = self.index.borrow();
+            let mut spans: Vec<(u64, u64)> = Vec::new();
+            let mut run_start = u64::MAX;
+            let mut run_end = 0u64;
+            let mut prev_end = None::<u64>;
+            for i in from..to {
+                let Some(e) = index.get(i as u64) else {
+                    continue;
+                };
+                let e_end = e.offset.saturating_add(e.size);
+                match prev_end {
+                    Some(pe) if e.offset > pe.saturating_add(GAP_SLACK) => {
+                        if run_start != u64::MAX && run_end > run_start {
+                            spans.push((run_start, run_end));
+                        }
+                        run_start = e.offset;
+                        run_end = e_end;
+                    }
+                    Some(_) => {
+                        run_end = run_end.max(e_end);
+                    }
+                    None => {
+                        run_start = e.offset;
+                        run_end = e_end;
+                    }
+                }
+                prev_end = Some(e_end);
+            }
+            if run_start != u64::MAX && run_end > run_start {
+                spans.push((run_start, run_end));
+            }
+            spans
+        };
+        let mut filled = 0usize;
+        for (start, end) in spans {
+            let mut off = start;
+            while off < end && filled < MAX_BYTES {
+                let chunk = ((end - off) as usize).min(TILE).min(MAX_BYTES - filled);
+                let _ = self.source.read(off, chunk).await?;
+                off += chunk as u64;
+                filled += chunk;
+                crate::util::yield_now().await;
+            }
+            if filled >= MAX_BYTES {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Ensure the frame index covers through `frame` (drives mfra backfill).
+    ///
+    /// Used by PlayPrime so the media clock does not start on a warm-only index
+    /// (`mediabunny: startVideoIterator` / first samples before `play`).
+    pub async fn ensure_indexed_through(&self, frame: FrameId) -> Result<(), MediaError> {
+        self.request_index_through(frame);
+        self.ensure_frame_indexed(frame).await
+    }
+
+    /// True when play is waiting on moofs (skip idle yields between chunks).
+    pub fn fragment_backfill_urgent(&self) -> bool {
+        let slot = self.fragment_backfill.borrow();
+        let Some(state) = slot.as_ref() else {
+            return false;
+        };
+        let Some(need) = state.urgent_through else {
+            return false;
+        };
+        !state.complete && (self.index.borrow().len() as u64) <= need
     }
 
     /// Scrubber length before remaining moofs load (`mediabunny: tfra` lookup times).
@@ -217,82 +465,107 @@ impl Mp4VideoTrack {
 
     /// Load the next moof chunk and extend the frame index.
     ///
-    /// Returns `true` when more moofs remain. Play awaits only the needed frame via
+    /// Returns `(more_remaining, rebuilt_audio)`. Play awaits only the needed frame via
     /// [`Self::ensure_frame_indexed`] — not the full file.
-    /// `mediabunny: isobmff-demuxer.ts` `readFragment`.
-    pub async fn run_fragment_backfill_step(&self) -> Result<bool, MediaError> {
-        let (mut plan, source) = {
+    /// `mediabunny: isobmff-demuxer.ts` `readFragment` (audio grows with fragments too).
+    pub async fn run_fragment_backfill_step(
+        &self,
+    ) -> Result<(bool, Option<crate::audio::Mp4AudioTrack>), MediaError> {
+        let (mut plan, source, moof_batch) = {
             let mut slot = self.fragment_backfill.borrow_mut();
             let Some(state) = slot.as_mut() else {
-                return Ok(false);
+                return Ok((false, None));
             };
             if state.complete {
-                return Ok(false);
+                return Ok((false, None));
             }
+            let indexed = self.index.borrow().len() as u64;
+            let urgent = state.urgent_through.is_some_and(|need| indexed <= need);
+            // Play blocked past warm index (~frame 120 after first ×8 chunk): smaller
+            // batches cross the playhead sooner (mediabunny: on-demand readFragment).
+            let moof_batch = if urgent {
+                crate::demux::boxes::MFRA_BACKFILL_URGENT_CHUNK
+            } else {
+                crate::demux::boxes::MFRA_BACKFILL_CHUNK
+            };
             let Some(plan) = state.plan.take() else {
                 // Another step holds the plan across await — more work pending.
-                return Ok(true);
+                return Ok((true, None));
             };
             state.started = true;
-            (plan, Arc::clone(&state.source))
+            (plan, Arc::clone(&state.source), moof_batch)
         };
 
-        match crate::demux::advance_mfra_backfill_chunk(source.as_ref(), &mut plan, |_| {}).await {
+        match crate::demux::advance_mfra_backfill_n(source.as_ref(), &mut plan, moof_batch, |_| {})
+            .await
+        {
             Ok((mp4, complete)) => {
-                let provisional = if complete {
-                    None
-                } else {
-                    let meta = self.metadata.borrow();
-                    Some((meta.frame_count, meta.duration_ticks, meta.fps))
-                };
-                let timecode_start = self.metadata.borrow().timecode_start;
-                let rebuilt = build_video_track(
-                    &mp4,
-                    Arc::clone(&self.sync_source),
-                    OpenMp4Options {
-                        verify_avc_sync: false,
-                        defer_avc_sync: false,
-                    },
-                    timecode_start,
-                );
-                match rebuilt {
-                    Ok(Some(fresh)) => {
-                        *self.index.borrow_mut() = fresh.index.borrow().clone();
-                        if let Some((fc, dur, fps)) = provisional {
-                            let mut meta = self.metadata.borrow_mut();
-                            *meta = fresh.metadata.borrow().clone();
-                            // Keep scrubber length from tfra until the last chunk.
-                            meta.frame_count = fc.max(self.index.borrow().len() as u64);
-                            meta.duration_ticks = dur;
-                            meta.fps = fps;
-                        } else {
-                            *self.metadata.borrow_mut() = fresh.metadata.borrow().clone();
-                        }
-                        if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
-                            state.plan = if complete { None } else { Some(plan) };
-                            state.complete = complete;
-                            state.error = None;
-                        }
-                        self.sync_gen.set(self.sync_gen.get().saturating_add(1));
-                        Ok(!complete)
+                let prev_indexed = self.index.borrow().len();
+                // Delta Mp4: samples from the new moof(s) only — append, do not
+                // replace (`mediabunny: readFragment` grows the table).
+                let audio = build_audio_track(&mp4, Arc::clone(&self.sync_source))?;
+                let new_entries = frame_entries_from_mp4(&mp4);
+                if new_entries.is_empty()
+                    && audio
+                        .as_ref()
+                        .map(|a| a.sample_count() == 0)
+                        .unwrap_or(true)
+                {
+                    if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
+                        state.plan = if complete { None } else { Some(plan) };
+                        state.complete = complete;
+                        state.error = None;
                     }
-                    Ok(None) => {
-                        if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
-                            state.plan = Some(plan);
-                            state.error = Some("mfra backfill: no video track".into());
-                            state.complete = true;
-                        }
-                        Err(MediaError::Mp4("mfra backfill: no video track".into()))
+                    return Ok((!complete, audio));
+                }
+                if !new_entries.is_empty() {
+                    self.index.borrow_mut().append_entries(new_entries);
+                }
+                if complete {
+                    let (fc, gop, duration_ticks, fps) = {
+                        let indexed = self.index.borrow();
+                        let fc = indexed.len() as u64;
+                        let gop = indexed.gop_profile();
+                        let (duration_ticks, fps) = indexed
+                            .get(fc.saturating_sub(1))
+                            .map(|last| {
+                                let dur = (last.composition_timestamp_ticks.max(0) as u64)
+                                    .saturating_add(last.duration_ticks);
+                                let fps = if dur > 0 && fc > 0 {
+                                    Some(fc as f64 * last.timescale as f64 / dur as f64)
+                                } else {
+                                    None
+                                };
+                                (dur, fps)
+                            })
+                            .unwrap_or((0, None));
+                        (fc, gop, duration_ticks, fps)
+                    };
+                    let mut meta = self.metadata.borrow_mut();
+                    meta.frame_count = fc;
+                    meta.gop_profile = gop;
+                    if duration_ticks > 0 {
+                        meta.duration_ticks = duration_ticks;
                     }
-                    Err(e) => {
-                        if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
-                            state.plan = Some(plan);
-                            state.error = Some(e.to_string());
-                            state.complete = true;
-                        }
-                        Err(e)
+                    if fps.is_some() {
+                        meta.fps = fps;
                     }
                 }
+                if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
+                    state.plan = if complete { None } else { Some(plan) };
+                    state.complete = complete;
+                    state.error = None;
+                    if let Some(need) = state.urgent_through
+                        && (self.index.borrow().len() as u64) > need
+                    {
+                        state.urgent_through = None;
+                    }
+                }
+                self.sync_gen.set(self.sync_gen.get().saturating_add(1));
+                // Async `mdat` warm — do not await here (would stall ensure/PlayPrime
+                // on the plan lock while multi-MiB Ranges run).
+                self.kick_prefetch_samples(prev_indexed, self.index.borrow().len());
+                Ok((!complete, audio))
             }
             Err(e) => {
                 if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
@@ -315,7 +588,7 @@ impl Mp4VideoTrack {
         #[cfg(not(target_arch = "wasm32"))]
         {
             while !self.fragments_complete() {
-                let more = self.run_fragment_backfill_step().await?;
+                let (more, _) = self.run_fragment_backfill_step().await?;
                 if !more {
                     break;
                 }
@@ -352,7 +625,8 @@ impl Mp4VideoTrack {
         #[cfg(not(target_arch = "wasm32"))]
         {
             while (frame as usize) >= self.index.borrow().len() && !self.fragments_complete() {
-                let more = self.run_fragment_backfill_step().await?;
+                let (more, audio) = self.run_fragment_backfill_step().await?;
+                self.adopt_backfill_audio(audio);
                 if !more {
                     break;
                 }
@@ -365,6 +639,11 @@ impl Mp4VideoTrack {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            // Drive steps here (native parity) — only yielding when another task
+            // holds the plan. Passive waiting on bg alone stalled at indexed≈120
+            // (frame 119 on screen) while the next moof batch + re_mp4 rebuild
+            // ran off the play path. mediabunny: readFragment on demand.
+            self.request_index_through(frame);
             self.kick_fragment_backfill();
             while (frame as usize) >= self.index.borrow().len() && !self.fragments_complete() {
                 if let Some(err) = self
@@ -375,7 +654,17 @@ impl Mp4VideoTrack {
                 {
                     return Err(MediaError::Mp4(err));
                 }
-                crate::util::yield_now().await;
+                let before = self.index.borrow().len();
+                let (more, audio) = self.run_fragment_backfill_step().await?;
+                self.adopt_backfill_audio(audio);
+                if (frame as usize) < self.index.borrow().len() {
+                    break;
+                }
+                if !more || self.index.borrow().len() == before {
+                    // complete, plan held by bg, or empty delta — let the other
+                    // task finish / avoid a tight spin.
+                    crate::util::yield_now().await;
+                }
             }
             if (frame as usize) < self.index.borrow().len() {
                 Ok(())
@@ -497,7 +786,10 @@ impl Mp4VideoTrack {
                 .ok_or(MediaError::FrameOutOfRange(frame, self.frame_count()))?;
             (entry.offset, entry.size)
         };
-        let sample = self.sync_source.read(offset, size as usize).await?;
+        // Prefer playback `CachedSource` so warm-open keys are hits; fall back
+        // to raw `sync_source` only when playback I/O is still unset.
+        // mediabunny: `requestSlice` / verify goes through the source cache.
+        let sample = self.source.read(offset, size as usize).await?;
         let keep = sample.len() == size as usize
             && matches!(
                 match codec {
@@ -534,6 +826,8 @@ impl Mp4VideoTrack {
 
     pub async fn encoded_sample(&self, frame: FrameId) -> Result<EncodedSample, MediaError> {
         self.ensure_frame_indexed(frame).await?;
+        // Start next-fragment `mdat` before the presentation seam.
+        self.kick_prefetch_if_fragment_seam(frame);
         let entry = {
             let index = self.index.borrow();
             index
@@ -759,9 +1053,15 @@ pub async fn open_mp4_source_with_progress(
     )?;
     if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
         v.arm_fragment_backfill(plan, Arc::clone(&v.sync_source));
+        if let Some(a) = opened.audio.as_ref() {
+            a.set_expect_more_samples(true);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             v.await_fragment_backfill().await?;
+            if let Some(a) = opened.audio.as_ref() {
+                a.set_expect_more_samples(false);
+            }
         }
     }
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
@@ -806,17 +1106,34 @@ pub async fn open_mp4_source_cached_with_progress(
     )?;
     if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
         v.arm_fragment_backfill(plan, Arc::clone(&source));
+        if let Some(a) = opened.audio.as_ref() {
+            a.set_expect_more_samples(true);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             v.await_fragment_backfill().await?;
+            if let Some(a) = opened.audio.as_ref() {
+                a.set_expect_more_samples(false);
+            }
         }
     }
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
     let cached = wrap_cached_playback(source, fetch_map, parsed.cache_seed);
     if let Some(v) = opened.video.as_mut() {
         v.set_playback_source(Arc::clone(&cached));
-    }
-    if let Some(a) = opened.audio.as_mut() {
+        // Ready ⇒ warm fragments' video+audio `mdat` cached past ~frame 130.
+        let n = v.indexed_frame_count();
+        let warm_secs = v
+            .index()
+            .get(n.saturating_sub(1))
+            .map(|e| e.composition_timestamp().seconds)
+            .unwrap_or(6.0);
+        v.warm_sample_bytes(0, n).await?;
+        if let Some(a) = opened.audio.as_mut() {
+            a.set_source(Arc::clone(&cached));
+            a.warm_bytes_through(warm_secs).await?;
+        }
+    } else if let Some(a) = opened.audio.as_mut() {
         a.set_source(Arc::clone(&cached));
     }
     opened.require_video()
@@ -853,18 +1170,34 @@ pub async fn open_mp4_media_source_cached_with_progress(
     )?;
     if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
         v.arm_fragment_backfill(plan, Arc::clone(&source));
+        if let Some(a) = opened.audio.as_ref() {
+            a.set_expect_more_samples(true);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             progress("Indexing remaining fragments…");
             v.await_fragment_backfill().await?;
+            if let Some(a) = opened.audio.as_ref() {
+                a.set_expect_more_samples(false);
+            }
         }
     }
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
     let cached = wrap_cached_playback(source, fetch_map, parsed.cache_seed);
     if let Some(v) = opened.video.as_mut() {
         v.set_playback_source(Arc::clone(&cached));
-    }
-    if let Some(a) = opened.audio.as_mut() {
+        let n = v.indexed_frame_count();
+        let warm_secs = v
+            .index()
+            .get(n.saturating_sub(1))
+            .map(|e| e.composition_timestamp().seconds)
+            .unwrap_or(6.0);
+        v.warm_sample_bytes(0, n).await?;
+        if let Some(a) = opened.audio.as_mut() {
+            a.set_source(Arc::clone(&cached));
+            a.warm_bytes_through(warm_secs).await?;
+        }
+    } else if let Some(a) = opened.audio.as_mut() {
         a.set_source(cached);
     }
     opened.require_av()
@@ -915,6 +1248,32 @@ fn build_opened(
         audio,
         fetch_map,
     })
+}
+
+fn frame_entries_from_mp4(mp4: &Mp4) -> Vec<FrameEntry> {
+    let Some(track) = mp4
+        .tracks()
+        .values()
+        .find(|t| t.kind == Some(TrackKind::Video))
+    else {
+        return Vec::new();
+    };
+    track
+        .samples
+        .iter()
+        .enumerate()
+        .map(|(decode_order, sample)| FrameEntry {
+            frame: 0,
+            decode_order,
+            is_sync: sample.is_sync,
+            decode_timestamp_ticks: sample.decode_timestamp,
+            composition_timestamp_ticks: sample.composition_timestamp,
+            duration_ticks: sample.duration,
+            timescale: sample.timescale,
+            offset: sample.offset,
+            size: sample.size,
+        })
+        .collect()
 }
 
 fn build_video_track(

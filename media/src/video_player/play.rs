@@ -221,6 +221,55 @@ impl VideoPlayer {
             return Ok(());
         }
         let epoch = self.shared.op_epoch.get();
+        // fMP4: arm a long index lead in bg, but only *await* one urgent batch
+        // past the current index so Play click / PlayPrime cannot stall for
+        // many RTTs (`mediabunny: first samples before play` — not the whole
+        // warm→lead gap on the click turn).
+        const PLAY_INDEX_LEAD: u64 = 96;
+        const PLAY_INDEX_AWAIT_BATCH: u64 = 48; // ≈ urgent chunk × GOP12
+        let head = self.state().frame;
+        {
+            let track = self.shared.player.borrow().track_rc();
+            if !track.fragments_complete() {
+                let want = head.saturating_add(PLAY_INDEX_LEAD);
+                track.request_index_through(want);
+                let indexed = track.indexed_frame_count();
+                let await_through = want.min(indexed.saturating_add(PLAY_INDEX_AWAIT_BATCH));
+                if await_through > indexed {
+                    track.ensure_indexed_through(await_through).await?;
+                    if !self.is_current(epoch) || !self.is_playing() {
+                        return Err(MediaError::Cancelled);
+                    }
+                }
+            }
+        }
+        // Block until lead `mdat` is cached — fire-and-forget prefetch alone left
+        // cold seams while bg sync-verify / backfill stampeded Ranges.
+        // mediabunny: URLSource min-load / first samples before the sink runs.
+        let warm_secs = {
+            let track = self.shared.player.borrow().track_rc();
+            track.warm_sample_bytes(head, PLAY_INDEX_LEAD).await?;
+            let last = head
+                .saturating_add(PLAY_INDEX_LEAD)
+                .min(track.indexed_frame_count().saturating_sub(1));
+            track
+                .index()
+                .get(last)
+                .map(|e| e.composition_timestamp().seconds)
+                .unwrap_or(0.0)
+        };
+        if !self.is_current(epoch) || !self.is_playing() {
+            return Err(MediaError::Cancelled);
+        }
+        if warm_secs > 0.0 {
+            let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+            if let Some(a) = audio {
+                a.warm_bytes_through(warm_secs).await?;
+                if !self.is_current(epoch) || !self.is_playing() {
+                    return Err(MediaError::Cancelled);
+                }
+            }
+        }
         // Scrub store is markers + blit — play re-decodes into the presentation
         // queue. Do **not** trim scrub residency on Play — eviction is budget /
         // farthest-from-aim only (Pause densify paid for that trail).
@@ -615,7 +664,19 @@ impl VideoPlayer {
             if next >= count {
                 return Ok(false);
             }
-            (player.track_rc(), next)
+            let track = player.track_rc();
+            // Stay ahead of mfra index so play never stalls at a chunk seam
+            // (warm+batch ≈ every ~24 frames with chunk=2; was ~120 with chunk=8).
+            // Stay ahead of mfra index so play never stalls at a chunk seam.
+            if !track.fragments_complete() {
+                let indexed = track.indexed_frame_count();
+                let lead = 96u64;
+                if next.saturating_add(lead) >= indexed {
+                    track.request_index_through(next.saturating_add(lead.saturating_mul(2)));
+                }
+                track.prefetch_samples_ahead(next, lead);
+            }
+            (track, next)
         };
         let video = match self.decode_frame(&track, next, epoch).await {
             Ok(v) => v,

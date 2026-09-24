@@ -1,5 +1,6 @@
 //! MP4 audio track demux (`mp4a` / AAC via `re_mp4`).
 
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::sync::Arc;
 
@@ -34,66 +35,135 @@ impl AudioSampleEntry {
 }
 
 /// Demuxed AAC (etc.) audio track — sample bytes fetched on demand from [`MediaSource`].
-#[derive(Clone)]
+///
+/// Sample table is interior-mutable so fMP4 mfra backfill can extend it after warm
+/// open (`mediabunny: readFragment` grows tracks; we previously left audio at the
+/// warm-moof sample count → silence near frame ~24).
 pub struct Mp4AudioTrack {
-    source: Arc<dyn MediaSource>,
-    metadata: AudioMetadata,
-    samples: Vec<AudioSampleEntry>,
+    source: RefCell<Arc<dyn MediaSource>>,
+    metadata: RefCell<AudioMetadata>,
+    samples: RefCell<Vec<AudioSampleEntry>>,
+    /// More moof audio may still arrive (warm open + bg backfill).
+    expect_more: Cell<bool>,
+}
+
+impl Clone for Mp4AudioTrack {
+    fn clone(&self) -> Self {
+        Self {
+            source: RefCell::new(Arc::clone(&self.source.borrow())),
+            metadata: RefCell::new(self.metadata.borrow().clone()),
+            samples: RefCell::new(self.samples.borrow().clone()),
+            expect_more: Cell::new(self.expect_more.get()),
+        }
+    }
 }
 
 impl fmt::Debug for Mp4AudioTrack {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Mp4AudioTrack")
-            .field("metadata", &self.metadata)
-            .field("samples", &self.samples.len())
+            .field("metadata", &*self.metadata.borrow())
+            .field("samples", &self.samples.borrow().len())
+            .field("expect_more", &self.expect_more.get())
             .finish()
     }
 }
 
 impl Mp4AudioTrack {
-    pub fn metadata(&self) -> &AudioMetadata {
-        &self.metadata
+    pub fn metadata(&self) -> AudioMetadata {
+        self.metadata.borrow().clone()
     }
 
     pub fn sample_count(&self) -> u64 {
-        self.samples.len() as u64
+        self.samples.borrow().len() as u64
     }
 
-    pub fn samples(&self) -> &[AudioSampleEntry] {
-        &self.samples
+    pub fn source(&self) -> Arc<dyn MediaSource> {
+        Arc::clone(&self.source.borrow())
     }
 
-    pub fn source(&self) -> &Arc<dyn MediaSource> {
-        &self.source
+    pub(crate) fn set_source(&self, source: Arc<dyn MediaSource>) {
+        *self.source.borrow_mut() = source;
     }
 
-    pub(crate) fn set_source(&mut self, source: Arc<dyn MediaSource>) {
-        self.source = source;
+    /// Warm fMP4: pump must wait at EOF of the current table until backfill
+    /// adopts a longer sample list (or clears this flag when complete).
+    pub fn set_expect_more_samples(&self, more: bool) {
+        self.expect_more.set(more);
+    }
+
+    pub fn expect_more_samples(&self) -> bool {
+        self.expect_more.get()
+    }
+
+    /// Replace the sample table from a longer mfra parse (same codec config).
+    pub fn adopt_fragment_samples(&self, fresh: &Mp4AudioTrack) {
+        let new_len = fresh.samples.borrow().len();
+        let old_len = self.samples.borrow().len();
+        if new_len < old_len {
+            return;
+        }
+        *self.samples.borrow_mut() = fresh.samples.borrow().clone();
+        let mut meta = self.metadata.borrow_mut();
+        let fresh_meta = fresh.metadata.borrow();
+        meta.sample_count = fresh_meta.sample_count;
+        meta.duration_ticks = fresh_meta.duration_ticks;
+        meta.timescale = fresh_meta.timescale;
+    }
+
+    /// Append samples from a **delta** fragment parse (`readFragment` style).
+    ///
+    /// Unlike [`Self::adopt_fragment_samples`], `fresh` holds only the new moof's
+    /// samples — not a full-file rebuild.
+    pub fn append_fragment_samples(&self, fresh: &Mp4AudioTrack) {
+        let mut add = fresh.samples.borrow().clone();
+        if add.is_empty() {
+            return;
+        }
+        let mut samples = self.samples.borrow_mut();
+        let start_id = samples.len() as u64;
+        for (i, s) in add.iter_mut().enumerate() {
+            s.sample = start_id + i as u64;
+        }
+        samples.extend(add);
+        let count = samples.len() as u64;
+        let duration_ticks = samples.iter().map(|s| s.duration_ticks).sum();
+        let timescale = samples
+            .last()
+            .map(|s| s.timescale)
+            .unwrap_or_else(|| self.metadata.borrow().timescale);
+        drop(samples);
+        let mut meta = self.metadata.borrow_mut();
+        meta.sample_count = count;
+        meta.duration_ticks = duration_ticks;
+        meta.timescale = timescale;
     }
 
     /// First sample whose composition time is ≥ `time_secs`, or the last sample.
     pub fn sample_at_or_after(&self, time_secs: f64) -> Option<AudioSampleId> {
-        if self.samples.is_empty() {
+        let samples = self.samples.borrow();
+        if samples.is_empty() {
             return None;
         }
-        let idx = self
-            .samples
-            .partition_point(|e| e.composition_timestamp().seconds < time_secs);
-        Some(idx.min(self.samples.len().saturating_sub(1)) as AudioSampleId)
+        let idx = samples.partition_point(|e| e.composition_timestamp().seconds < time_secs);
+        Some(idx.min(samples.len().saturating_sub(1)) as AudioSampleId)
     }
 
     pub async fn encoded_sample(
         &self,
         sample: AudioSampleId,
     ) -> Result<EncodedAudioSample, MediaError> {
-        let entry = self
-            .samples
-            .get(sample as usize)
-            .ok_or(MediaError::AudioSampleOutOfRange(
-                sample,
-                self.sample_count(),
-            ))?;
-        let data = self.source.read(entry.offset, entry.size as usize).await?;
+        let entry = {
+            let samples = self.samples.borrow();
+            samples
+                .get(sample as usize)
+                .cloned()
+                .ok_or(MediaError::AudioSampleOutOfRange(
+                    sample,
+                    samples.len() as u64,
+                ))?
+        };
+        let source = Arc::clone(&self.source.borrow());
+        let data = source.read(entry.offset, entry.size as usize).await?;
         if data.len() != entry.size as usize {
             return Err(MediaError::Mp4(format!(
                 "short audio sample read at {}: got {} want {}",
@@ -111,6 +181,68 @@ impl Mp4AudioTrack {
             timescale: entry.timescale,
             data,
         })
+    }
+
+    /// Block until AAC (etc.) bytes through `time_secs` are in the playback cache.
+    ///
+    /// Same role as video [`crate::demux::Mp4VideoTrack::warm_sample_bytes`] —
+    /// A/V lag together when only video `mdat` was warmed.
+    pub async fn warm_bytes_through(&self, time_secs: f64) -> Result<(), MediaError> {
+        const GAP_SLACK: u64 = 4 * 1024;
+        const TILE: usize = 512 * 1024;
+        const MAX_BYTES: usize = 8 * 1024 * 1024;
+        let spans = {
+            let samples = self.samples.borrow();
+            if samples.is_empty() {
+                return Ok(());
+            }
+            let end = samples.partition_point(|e| e.composition_timestamp().seconds <= time_secs);
+            let end = end.max(1).min(samples.len());
+            let mut spans: Vec<(u64, u64)> = Vec::new();
+            let mut run_start = u64::MAX;
+            let mut run_end = 0u64;
+            let mut prev_end = None::<u64>;
+            for e in samples.iter().take(end) {
+                let e_end = e.offset.saturating_add(e.size);
+                match prev_end {
+                    Some(pe) if e.offset > pe.saturating_add(GAP_SLACK) => {
+                        if run_start != u64::MAX && run_end > run_start {
+                            spans.push((run_start, run_end));
+                        }
+                        run_start = e.offset;
+                        run_end = e_end;
+                    }
+                    Some(_) => {
+                        run_end = run_end.max(e_end);
+                    }
+                    None => {
+                        run_start = e.offset;
+                        run_end = e_end;
+                    }
+                }
+                prev_end = Some(e_end);
+            }
+            if run_start != u64::MAX && run_end > run_start {
+                spans.push((run_start, run_end));
+            }
+            spans
+        };
+        let source = Arc::clone(&self.source.borrow());
+        let mut filled = 0usize;
+        for (start, end) in spans {
+            let mut off = start;
+            while off < end && filled < MAX_BYTES {
+                let chunk = ((end - off) as usize).min(TILE).min(MAX_BYTES - filled);
+                let _ = source.read(off, chunk).await?;
+                off += chunk as u64;
+                filled += chunk;
+                crate::util::yield_now().await;
+            }
+            if filled >= MAX_BYTES {
+                break;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -189,9 +321,10 @@ pub(crate) fn build_audio_track(
     };
 
     Ok(Some(Mp4AudioTrack {
-        source,
-        metadata,
-        samples,
+        source: RefCell::new(source),
+        metadata: RefCell::new(metadata),
+        samples: RefCell::new(samples),
+        expect_more: Cell::new(false),
     }))
 }
 

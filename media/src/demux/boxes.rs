@@ -142,11 +142,16 @@ pub struct ProgressiveParse {
     pub moov_bytes: Option<Vec<u8>>,
 }
 
-/// Moofs fetched before UI ready (≈ first GOP). Rest via chunked backfill.
-const MFRA_WARM_MOOFS: usize = 2;
-/// Moofs per backfill step so play can resume past warm without waiting for
-/// every fragment (`mediabunny: isobmff-demuxer.ts` `readFragment` on demand).
-pub(crate) const MFRA_BACKFILL_CHUNK: usize = 8;
+/// Moofs fetched before UI ready + `mdat` warm. User hitch ~frame 130 needs
+/// ≥11×GOP12 indexed+cached before ready; 12 ≈ 6 s @24 fps.
+/// (`mediabunny: readMetadata` then on-demand `readFragment` — we densify warm
+/// because Play uses a full [`FrameIndex`] and cold `mdat` stalls A+V together.)
+const MFRA_WARM_MOOFS: usize = 12;
+/// Moofs per idle backfill step (`mediabunny: readFragment` — one at a time).
+pub(crate) const MFRA_BACKFILL_CHUNK: usize = 1;
+/// Play/decode blocked: fetch several moofs per step so index jumps ahead of the
+/// playhead in one RTT (still delta-append, not a full rebuild).
+pub(crate) const MFRA_BACKFILL_URGENT_CHUNK: usize = 4;
 
 /// EOF `mfra` / `tfra` probe only (mediabunny: `lookForMfraBox`) — no fragment walk.
 async fn probe_mfra(source: &dyn MediaSource) -> Result<Option<MfraIndex>, MediaError> {
@@ -192,7 +197,7 @@ const MFRA_MOOF_FETCH_PARALLEL: usize = 4;
 ///
 /// **Warm path** (mediabunny: `readMetadata` then `readFragment`): load only the
 /// first [`MFRA_WARM_MOOFS`] moof tables so open can paint frame 0; remaining
-/// moofs are fetched by [`advance_mfra_backfill_chunk`]. Never bulk-`read(0, mfra)`.
+/// moofs are fetched by [`advance_mfra_backfill_n`]. Never bulk-`read(0, mfra)`.
 async fn load_via_mfra(
     source: &dyn MediaSource,
     idx: MfraIndex,
@@ -406,22 +411,31 @@ async fn load_via_mfra_per_moof(
     Ok(loaded)
 }
 
-/// Fetch the next [`MFRA_BACKFILL_CHUNK`] (or fewer) moofs and rebuild `re_mp4`.
+/// Fetch the next `moof_count` (or fewer) moofs and parse **only those** as a
+/// delta (`mediabunny: isobmff-demuxer.ts` `readFragment`).
 ///
-/// Returns `(mp4, complete)`. Mutates `plan.warm_loaded` / `next_moof` in place.
-/// `mediabunny: isobmff-demuxer.ts` `readFragment` — one (or a few) moofs at a time.
-pub async fn advance_mfra_backfill_chunk(
+/// Prior moofs stay in [`FragmentBackfillPlan::warm_loaded`] as full bodies for
+/// future steps, but the sparse parse set strips them to **headers only** so
+/// `re_mp4` `skip_box`es past them — the returned [`re_mp4::Mp4`] contains
+/// samples from the new moofs alone. Caller **appends** into the live index
+/// (do not replace with a full rebuild).
+///
+/// Returns `(delta_mp4, complete)`. Mutates `plan.warm_loaded` / `next_moof`.
+pub async fn advance_mfra_backfill_n(
     source: &dyn MediaSource,
     plan: &mut FragmentBackfillPlan,
+    moof_count: usize,
     mut progress: impl FnMut(&str),
 ) -> Result<(re_mp4::Mp4, bool), MediaError> {
     let file_size = source.size();
     let n = plan.idx.moof_offsets.len();
     let start = plan.next_moof;
+    let batch = moof_count.max(1);
+    let mut new_boxes: Vec<LoadedBox> = Vec::new();
     if start < n {
-        let end = (start + MFRA_BACKFILL_CHUNK).min(n);
+        let end = (start + batch).min(n);
         progress(&format!("Indexing fragments ({end}/{n})…"));
-        let rest =
+        new_boxes =
             load_via_mfra_per_moof(source, plan.idx.clone(), start, end, false, &mut progress)
                 .await?;
         let mfra = plan
@@ -429,7 +443,7 @@ pub async fn advance_mfra_backfill_chunk(
             .pop()
             .filter(|b| b.info.is_mfra())
             .ok_or_else(|| MediaError::Mp4("mfra backfill: warm load missing mfra".into()))?;
-        plan.warm_loaded.extend(rest);
+        plan.warm_loaded.extend(new_boxes.iter().cloned());
         plan.warm_loaded.push(mfra);
         plan.next_moof = end;
     }
@@ -437,8 +451,35 @@ pub async fn advance_mfra_backfill_chunk(
     if complete {
         progress("Rebuilding frame index…");
     }
+
+    // Delta parse set: init + prior moofs disguised as `free` (same size) so
+    // `re_mp4` skip_boxes them — it always *parses* real `moof` bodies, so
+    // header-only moofs → `mfhd not found`. New moofs stay full.
+    // `mediabunny: readFragment` only materializes the fragment being read.
+    let mut delta: Vec<LoadedBox> = Vec::with_capacity(plan.warm_loaded.len());
+    let new_moof_offsets: std::collections::HashSet<u64> = new_boxes
+        .iter()
+        .filter(|b| b.info.is_moof())
+        .map(|b| b.info.offset)
+        .collect();
+    for b in &plan.warm_loaded {
+        if b.info.is_mfra() {
+            continue;
+        }
+        if b.info.is_moof() && !new_moof_offsets.contains(&b.info.offset) {
+            let mut free = b.info;
+            free.typ = *b"free";
+            delta.push(LoadedBox {
+                info: free,
+                bytes: synthesize_box_header(&free),
+            });
+        } else {
+            delta.push(b.clone());
+        }
+    }
+
     crate::util::yield_now().await;
-    let mp4 = parse_loaded_boxes(file_size, plan.warm_loaded.clone())?;
+    let mp4 = parse_loaded_boxes(file_size, delta)?;
     Ok((mp4, complete))
 }
 

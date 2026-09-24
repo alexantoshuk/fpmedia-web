@@ -73,7 +73,7 @@ pub struct AudioOutput {
 
 impl AudioOutput {
     pub async fn create(track: Mp4AudioTrack) -> Result<Self, MediaError> {
-        let meta = track.metadata().clone();
+        let meta = track.metadata();
         let codec = meta
             .codec
             .codec_string
@@ -145,8 +145,31 @@ impl AudioOutput {
         })
     }
 
-    pub fn metadata(&self) -> &AudioMetadata {
+    pub fn metadata(&self) -> AudioMetadata {
         self.track.metadata()
+    }
+
+    /// fMP4 mfra backfill grew the sample table — keep the pump alive past warm EOF.
+    ///
+    /// `fresh` is a **delta** fragment (`readFragment`); samples are appended.
+    pub fn adopt_fragment_samples(&self, fresh: &Mp4AudioTrack) {
+        let before = self.track.sample_count();
+        self.track.append_fragment_samples(fresh);
+        let after = self.track.sample_count();
+        if after > before {
+            web_sys::console::log_1(
+                &format!("webmedia: audio samples {before}→{after} (mfra backfill)").into(),
+            );
+        }
+    }
+
+    /// Block until AAC bytes through `time_secs` are in the playback cache.
+    pub async fn warm_bytes_through(&self, time_secs: f64) -> Result<(), MediaError> {
+        self.track.warm_bytes_through(time_secs).await
+    }
+
+    pub fn set_expect_more_samples(&self, more: bool) {
+        self.track.set_expect_more_samples(more);
     }
 
     pub fn set_volume(&self, volume: f64) {
@@ -225,7 +248,7 @@ impl AudioOutput {
                         return;
                     }
                 };
-                if let Err(e) = configure_decoder(&dec, meta, codec).await {
+                if let Err(e) = configure_decoder(&dec, &meta, codec).await {
                     web_sys::console::warn_1(
                         &format!("webmedia: audio rate-rearm configure: {e}").into(),
                     );
@@ -383,7 +406,7 @@ impl AudioOutput {
                 .codec_string
                 .as_deref()
                 .ok_or(MediaError::UnsupportedCodec)?;
-            configure_decoder(&dec, meta, codec).await?;
+            configure_decoder(&dec, &meta, codec).await?;
             *self.decoder.borrow_mut() = Some(dec);
         }
         web_sys::console::log_1(
@@ -427,7 +450,7 @@ impl AudioOutput {
                 .as_deref()
                 .ok_or(MediaError::UnsupportedCodec)?;
             let _ = dec.reset();
-            reconfigure_decoder_fast(&dec, meta, codec)?;
+            reconfigure_decoder_fast(&dec, &meta, codec)?;
             *self.decoder.borrow_mut() = Some(dec);
         } else {
             return Err(MediaError::WebCodecs("audio decoder missing".into()));
@@ -458,9 +481,19 @@ impl AudioOutput {
     /// Decode + schedule until ~[`WARM_PRIME_SECS`] of audio is queued (or EOF).
     /// Returns the next sample index for the background pump.
     async fn prime_schedule(&self, epoch: u64, mut sample_idx: u64) -> Result<u64, MediaError> {
-        let count = self.track.sample_count();
         let prime_until = self.media_at_start.get() + WARM_PRIME_SECS;
-        while sample_idx < count {
+        loop {
+            let count = self.track.sample_count();
+            if sample_idx >= count {
+                if self.track.expect_more_samples() {
+                    crate::util::yield_now().await;
+                    if self.epoch.get() != epoch {
+                        return Ok(sample_idx);
+                    }
+                    continue;
+                }
+                break;
+            }
             if self.epoch.get() != epoch {
                 return Ok(sample_idx);
             }
@@ -538,8 +571,19 @@ impl AudioOutput {
     }
 
     async fn pump(&self, epoch: u64, mut sample_idx: u64) -> Result<(), MediaError> {
-        let count = self.track.sample_count();
-        while sample_idx < count {
+        loop {
+            let count = self.track.sample_count();
+            if sample_idx >= count {
+                if self.track.expect_more_samples() {
+                    // Warm fMP4: AAC table still short — wait for mfra backfill adopt.
+                    crate::util::yield_now().await;
+                    if self.epoch.get() != epoch {
+                        return Ok(());
+                    }
+                    continue;
+                }
+                break;
+            }
             if self.epoch.get() != epoch {
                 return Ok(());
             }

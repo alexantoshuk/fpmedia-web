@@ -6,7 +6,7 @@ mod mp4;
 mod timecode;
 
 pub use boxes::{
-    FragmentBackfillPlan, TopLevelBox, advance_mfra_backfill_chunk, load_ftyp_moov,
+    FragmentBackfillPlan, TopLevelBox, advance_mfra_backfill_n, load_ftyp_moov,
     parse_mp4_progressive, parse_mp4_progressive_with_backfill,
     parse_mp4_progressive_with_progress, read_ftyp_moov_stub, scan_top_level,
 };

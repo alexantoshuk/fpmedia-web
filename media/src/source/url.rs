@@ -14,7 +14,7 @@ use web_sys::{Headers, Request, RequestInit, Response};
 
 use crate::error::MediaError;
 
-use super::url_gate::{DEFAULT_URL_PARALLELISM, UrlFetchGate};
+use super::url_gate::{DEFAULT_URL_PARALLELISM, GATE_LARGE_BYTES, UrlFetchGate};
 use super::{MediaSource, ReadFuture};
 
 /// Options for [`UrlSource::connect_with`].
@@ -129,8 +129,14 @@ impl MediaSource for UrlSource {
                 &format!("webmedia: UrlSource Range bytes={offset}-{end}").into(),
             );
 
-            gate.with_slot(async { range_read_bytes(&url, offset, end, want).await })
-                .await
+            // Sample-sized A/V reads bypass the gate — large CachedSource fills
+            // must not starve AAC (~1 s ahead → silence near frame ~30).
+            if want >= GATE_LARGE_BYTES {
+                gate.with_slot(async { range_read_bytes(&url, offset, end, want).await })
+                    .await
+            } else {
+                range_read_bytes(&url, offset, end, want).await
+            }
         })
     }
 }

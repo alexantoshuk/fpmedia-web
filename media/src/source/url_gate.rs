@@ -20,6 +20,13 @@ pub const DEFAULT_URL_PARALLELISM: usize = 2;
 /// are not serialized behind the play-time default of 2.
 pub const OPEN_URL_PARALLELISM: usize = 4;
 
+/// Only Range GETs this large take a gate slot. Sample-sized A/V reads must
+/// bypass — otherwise an 8 MiB `CachedSource` fill holds the semaphore and the
+/// ~1 s audio ahead buffer runs dry (~frame 30 @30 fps) → permanent silence
+/// when the pump then errors/waits. mediabunny workers multiplex small reads
+/// through the orchestrator cache; our closed-Range gate is too coarse for that.
+pub const GATE_LARGE_BYTES: usize = 2 * 1024 * 1024;
+
 /// Shared slot limiter — clones of [`super::UrlSource`] share one gate.
 #[derive(Clone, Debug)]
 pub struct UrlFetchGate {

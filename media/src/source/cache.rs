@@ -9,7 +9,12 @@
 //! Local: **512 MiB** resident budget (RAM, not VRAM); fill quantum 8 MiB;
 //! sequential misses extend like `PREFETCH_PROFILES.network`; **hit-path**
 //! margin prefetch (same 8 MiB threshold) loads the next extent without
-//! blocking the consumer. `FetchMap` mirrors resident windows for the gray strip.
+//! blocking the consumer. **Sample-sized misses** fetch only `want` on the
+//! critical path and kick the quantum fill in the background — awaiting a full
+//! 8 MiB Range before returning AAC/NAL bytes underran first-play A/V (replay
+//! was fine = cache hit). `mediabunny: ReadOrchestrator` resolves pending slices
+//! when their bytes arrive, not when the outer prefetch hole completes.
+//! Do **not** chain fills to budget. `FetchMap` mirrors resident windows.
 
 use std::sync::{Arc, Mutex};
 
@@ -345,7 +350,7 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
             if let Ok(mut state) = shared.state.lock() {
                 state.prefetch_inflight = false;
                 match result {
-                    Ok(bytes) if bytes.len() > NO_PREFETCH_MAX => {
+                    Ok(bytes) if !bytes.is_empty() => {
                         state.insert(
                             Window {
                                 offset: start,
@@ -368,6 +373,48 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
         {
             // MemorySource / test doubles complete on poll; loop in case of nested
             // Pending→Ready (CountingSource wraps another future).
+            let waker = std::task::Waker::noop();
+            let mut cx = std::task::Context::from_waker(waker);
+            let mut fut = Box::pin(run);
+            for _ in 0..16 {
+                if fut.as_mut().poll(&mut cx).is_ready() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Explicit range warm (fMP4 next-fragment `mdat`) — does not take the
+    /// single margin `prefetch_inflight` slot.
+    fn kick_prefetch_explicit(&self, start: u64, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let inner = Arc::clone(&self.inner);
+        let shared = Arc::clone(&self.shared);
+        let run = async move {
+            let result = inner.read(start, len).await;
+            if let Ok(mut state) = shared.state.lock()
+                && let Ok(bytes) = result
+                && !bytes.is_empty()
+            {
+                state.insert(
+                    Window {
+                        offset: start,
+                        bytes,
+                    },
+                    shared.budget,
+                );
+                sync_fetch_map(&shared.fetch_map, &state);
+            }
+        };
+
+        #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+        {
+            wasm_bindgen_futures::spawn_local(run);
+        }
+        #[cfg(not(all(target_arch = "wasm32", feature = "webcodecs")))]
+        {
             let waker = std::task::Waker::noop();
             let mut cx = std::task::Context::from_waker(waker);
             let mut fut = Box::pin(run);
@@ -435,7 +482,21 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
                     .map_err(|_| MediaError::Source("cache lock poisoned".into()))?;
                 plan_fill_len(&state, offset, want, available, self.shared.quantum)
             };
-            let filled = self.inner.read(offset, fill_len).await?;
+            // Sample / small media reads: do **not** await the full 8 MiB quantum.
+            // Bare `want` caused a Range-per-sample RTT storm on cold gray (lag
+            // ~frame 118); full quantum underran A/V on first play. Floor at
+            // mediabunny `URL_SOURCE_MIN_LOAD_AMOUNT` (0.5 MiB); rest is bg kick.
+            let blocking = if want > NO_PREFETCH_MAX && want < self.shared.quantum {
+                let floor = if self.shared.quantum >= MIN_LOAD {
+                    MIN_LOAD
+                } else {
+                    want
+                };
+                want.max(floor).min(fill_len).min(available)
+            } else {
+                fill_len
+            };
+            let filled = self.inner.read(offset, blocking).await?;
             let out = filled.get(..want).unwrap_or(&filled).to_vec();
 
             // Tiny ISOBMFF header reads must not occupy budget.
@@ -453,10 +514,42 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
                     self.shared.budget,
                 );
                 sync_fetch_map(&self.shared.fetch_map, &state);
+                // Finish the planned quantum behind the consumer.
+                if fill_len > blocking
+                    && !state.prefetch_inflight
+                    && !state.covers_byte(offset.saturating_add(blocking as u64))
+                {
+                    let rest = fill_len - blocking;
+                    state.prefetch_inflight = true;
+                    drop(state);
+                    self.kick_prefetch(offset.saturating_add(blocking as u64), rest);
+                }
             }
 
             Ok(out)
         })
+    }
+
+    fn prefetch(&self, offset: u64, len: usize) {
+        if len <= NO_PREFETCH_MAX {
+            return;
+        }
+        let size = self.inner.size();
+        if offset >= size {
+            return;
+        }
+        let available = (size - offset) as usize;
+        let len = len.min(available).min(self.shared.quantum);
+        if len == 0 {
+            return;
+        }
+        if let Ok(state) = self.shared.state.lock()
+            && state.covers_byte(offset)
+            && state.covers_byte(offset.saturating_add(len as u64).saturating_sub(1))
+        {
+            return;
+        }
+        self.kick_prefetch_explicit(offset, len);
     }
 }
 
@@ -517,12 +610,24 @@ mod tests {
 
         let a = poll_ready(&cached, 0, 20).unwrap();
         assert_eq!(a, &data[0..20]);
-        assert_eq!(counting.reads.load(Ordering::SeqCst), 1);
-        assert_eq!(counting.bytes_fetched.load(Ordering::SeqCst), 32);
+        // Sample miss: blocking `want` + bg kick of the rest of the quantum.
+        let reads_after_miss = counting.reads.load(Ordering::SeqCst);
+        assert!(
+            (1..=2).contains(&reads_after_miss),
+            "expected 1–2 inner reads on sample miss, got {reads_after_miss}"
+        );
+        assert!(
+            counting.bytes_fetched.load(Ordering::SeqCst) >= 20,
+            "expected at least want bytes fetched"
+        );
 
         let b = poll_ready(&cached, 4, 8).unwrap();
         assert_eq!(b, &data[4..12]);
-        assert_eq!(counting.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            counting.reads.load(Ordering::SeqCst),
+            reads_after_miss,
+            "hit must not re-fetch"
+        );
     }
 
     #[test]
@@ -556,11 +661,11 @@ mod tests {
 
         let _ = poll_ready(&cached, 0, 20).unwrap();
         let _ = poll_ready(&cached, 64, 20).unwrap();
-        assert_eq!(counting.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(counting.reads.load(Ordering::SeqCst), 4);
 
         let _ = poll_ready(&cached, 4, 4).unwrap();
         let _ = poll_ready(&cached, 68, 4).unwrap();
-        assert_eq!(counting.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(counting.reads.load(Ordering::SeqCst), 4);
     }
 
     #[test]
@@ -633,13 +738,15 @@ mod tests {
         let _ = poll_ready(&cached, 0, 20).unwrap();
         let _ = poll_ready(&cached, 16 * 1024, 20).unwrap();
         let _ = poll_ready(&cached, 32 * 1024, 20).unwrap();
-        assert_eq!(counting.reads.load(Ordering::SeqCst), 3);
+        let after_fills = counting.reads.load(Ordering::SeqCst);
+        assert!(after_fills >= 3);
 
         let _ = poll_ready(&cached, 4, 4).unwrap();
-        assert_eq!(counting.reads.load(Ordering::SeqCst), 4);
+        // Evicted head may miss again; trailing windows stay hot.
+        let mid = counting.reads.load(Ordering::SeqCst);
         let _ = poll_ready(&cached, 16 * 1024 + 4, 4).unwrap();
         let _ = poll_ready(&cached, 32 * 1024 + 4, 4).unwrap();
-        assert_eq!(counting.reads.load(Ordering::SeqCst), 4);
+        assert_eq!(counting.reads.load(Ordering::SeqCst), mid);
     }
 
     #[test]
@@ -664,6 +771,28 @@ mod tests {
             fetched >= 64 + 32,
             "expected grow past 64-byte region, got {fetched}"
         );
+    }
+
+    #[test]
+    fn sample_miss_unblocks_before_full_quantum() {
+        // Consumer `want` above header peek size so we split blocking vs bg quantum.
+        let data: Vec<u8> = (0u8..=255).collect();
+        let counting = CountingSource {
+            inner: MemorySource::from_vec(data.clone()),
+            reads: Arc::new(AtomicUsize::new(0)),
+            bytes_fetched: Arc::new(AtomicUsize::new(0)),
+        };
+        let cached = CachedSource::with_budget(counting.clone(), 64, 512, None);
+
+        let out = poll_ready(&cached, 0, 20).unwrap();
+        assert_eq!(out, &data[0..20]);
+        // Blocking read is only `want`; bg kick fills out to the planned quantum.
+        assert!(
+            counting.bytes_fetched.load(Ordering::SeqCst) >= 64,
+            "bg kick should finish the quantum, got {}",
+            counting.bytes_fetched.load(Ordering::SeqCst)
+        );
+        assert!(counting.reads.load(Ordering::SeqCst) >= 2);
     }
 
     #[test]

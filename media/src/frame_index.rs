@@ -60,6 +60,33 @@ impl FrameIndex {
         index
     }
 
+    /// Append fragment samples (`mediabunny: readFragment` grows the sample table).
+    ///
+    /// `new` uses local decode_order `0..`; remapped to continue after the current
+    /// max. Re-sorts by composition time and rebuilds sync/decode maps.
+    pub fn append_entries(&mut self, mut new: Vec<FrameEntry>) {
+        if new.is_empty() {
+            return;
+        }
+        let base_do = self
+            .frames
+            .iter()
+            .map(|e| e.decode_order)
+            .max()
+            .map(|d| d.saturating_add(1))
+            .unwrap_or(0);
+        for e in &mut new {
+            e.decode_order = e.decode_order.saturating_add(base_do);
+        }
+        self.frames.extend(new);
+        self.frames
+            .sort_by_key(|e| (e.composition_timestamp_ticks, e.decode_order));
+        for (i, entry) in self.frames.iter_mut().enumerate() {
+            entry.frame = i as FrameId;
+        }
+        self.rebuild_aux();
+    }
+
     fn rebuild_aux(&mut self) {
         let n = self.frames.len();
         if n == 0 {
@@ -344,6 +371,16 @@ mod tests {
         assert_eq!(index.get(1).unwrap().composition_timestamp_ticks, 1);
         assert_eq!(index.get(2).unwrap().composition_timestamp_ticks, 2);
         assert_eq!(index.get(1).unwrap().decode_order, 2);
+    }
+
+    #[test]
+    fn append_entries_continues_decode_order() {
+        let mut index = FrameIndex::from_entries(vec![entry(0, true, 0, 0), entry(1, false, 1, 1)]);
+        index.append_entries(vec![entry(0, true, 2, 2), entry(1, false, 3, 3)]);
+        assert_eq!(index.len(), 4);
+        assert_eq!(index.get(2).unwrap().decode_order, 2);
+        assert_eq!(index.get(3).unwrap().decode_order, 3);
+        assert!(index.get(2).unwrap().is_sync);
     }
 
     #[test]
