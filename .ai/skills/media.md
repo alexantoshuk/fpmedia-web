@@ -104,7 +104,10 @@ media/src/                 ← package name: webmedia
 │   ├── scrub.rs           ← densify schedule + hover thumbs (`scrub_blit` stays in decode/)
 │   └── seek.rs            ← seek_frame / next-prev step
 └── decode/                ← cfg(wasm32 + webcodecs) — WebCodecs + canvas + scrub blit
-    ├── webcodecs.rs       ← DecoderCore + dual-async decode_frame; decode_gop
+    ├── webcodecs/         ← DecoderCore + pump + WebCodecsDecoder API
+    │   ├── mod.rs         ← public WebCodecsDecoder (create / decode_frame / gop)
+    │   ├── core.rs        ← DecoderCore + config / held / secure-context gate
+    │   └── pump.rs        ← FramePump + feed / finish_gop / capacity waits
     ├── frame_cache.rs     ← ScrubChunkStore + FrameRunIndex + ThumbCache shell
     ├── scrub_blit.rs      ← VideoFrame → ImageBitmap (densify blit); stays in decode/
     ├── thumb_preview.rs   ← cfg(thumbs): ThumbSink/ThumbPreview (cache + decoder + sparse fill)
