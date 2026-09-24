@@ -73,6 +73,8 @@ Only classes that appear **literally** in `.rs` / `.css` are emitted. Do not bui
 
 ## Video element gotchas (`media_components::video`)
 
+Layout: `component.rs` (`<Video>` view + rAF) · `host_ops.rs` (open/seek/play drain) · `open_url.rs` (proxy / Range / blob) · `session.rs` (PlaySession / FpsMeter) · `op_queue.rs`.
+
 1. Open / seek / play-prime are **async** and share `&mut`-equivalent `VideoPlayer` state — serialize them on one local **op queue** (`OpQueue`, mediabunny `CallSerializer` + demo `asyncId`). Do not gate with ad-hoc `if busy { return }` (that drops user input). `busy` means the queue is draining.
 2. Do not call `pause` / `is_playing` on the Rust player while another async method is awaiting (aliasing). Mirror play state in a Leptos signal for the UI. **Never hold `RefCell`/`borrow_mut` across `.await`** — clone the `Rc<VideoPlayer>`, await, then put it back (otherwise Loop/sync_ui panics: `RefCell already borrowed`).
 3. Canvas: pass `HtmlCanvasElement` from `NodeRef` after mount; open player once canvas exists.

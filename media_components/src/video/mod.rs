@@ -4,7 +4,10 @@
 //! Host UI (controls, file picker) lives in the demo `app` crate.
 
 mod component;
+mod host_ops;
 mod op_queue;
+mod open_url;
+mod session;
 
 pub use component::Video;
 pub use webmedia::{PipelineStats, ReadyFrameKind, ReadyFrameMark, ThumbPolicy, VideoMetadata};
