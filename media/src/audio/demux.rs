@@ -188,7 +188,6 @@ impl Mp4AudioTrack {
     /// Same role as video [`crate::demux::Mp4VideoTrack::warm_sample_bytes`] —
     /// A/V lag together when only video `mdat` was warmed.
     pub async fn warm_bytes_through(&self, time_secs: f64) -> Result<(), MediaError> {
-        const GAP_SLACK: u64 = 4 * 1024;
         const TILE: usize = 512 * 1024;
         const MAX_BYTES: usize = 8 * 1024 * 1024;
         let spans = {
@@ -198,34 +197,10 @@ impl Mp4AudioTrack {
             }
             let end = samples.partition_point(|e| e.composition_timestamp().seconds <= time_secs);
             let end = end.max(1).min(samples.len());
-            let mut spans: Vec<(u64, u64)> = Vec::new();
-            let mut run_start = u64::MAX;
-            let mut run_end = 0u64;
-            let mut prev_end = None::<u64>;
-            for e in samples.iter().take(end) {
-                let e_end = e.offset.saturating_add(e.size);
-                match prev_end {
-                    Some(pe) if e.offset > pe.saturating_add(GAP_SLACK) => {
-                        if run_start != u64::MAX && run_end > run_start {
-                            spans.push((run_start, run_end));
-                        }
-                        run_start = e.offset;
-                        run_end = e_end;
-                    }
-                    Some(_) => {
-                        run_end = run_end.max(e_end);
-                    }
-                    None => {
-                        run_start = e.offset;
-                        run_end = e_end;
-                    }
-                }
-                prev_end = Some(e_end);
-            }
-            if run_start != u64::MAX && run_end > run_start {
-                spans.push((run_start, run_end));
-            }
-            spans
+            crate::demux::coalesce::coalesce_sample_spans(
+                samples.iter().take(end).map(|e| (e.offset, e.size)),
+                crate::demux::coalesce::SAMPLE_COALESCE_GAP,
+            )
         };
         let source = Arc::clone(&self.source.borrow());
         let mut filled = 0usize;

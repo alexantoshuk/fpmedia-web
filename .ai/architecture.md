@@ -85,7 +85,7 @@ webmedia/
 
 **Demo `/proxy` policy (fixed):** localhost-only for local tests / e2e. TCP peer must be loopback (`127.0.0.1` / `::1`, incl. IPv4-mapped); otherwise **403**. Keep `site-addr` on loopback. Not a production CORS proxy — no DNS-resolve / allowlist hardening. Host apps that need remote media supply their own same-origin fetch path.
 
-**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; coalesce adjacent sample ranges; UrlSource parallel workers / sequential no-Range stream (mediabunny orchestrator).
+**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; UrlSource parallel workers / sequential no-Range stream (mediabunny orchestrator). Sample-span coalesce for prefetch/warm: `demux/coalesce.rs` `coalesce_sample_spans`.
 
 **Out of scope:** stream-only sources without random access; live / growing fMP4; DASH/HLS segment playlists; MSE remux; production open media proxy.
 

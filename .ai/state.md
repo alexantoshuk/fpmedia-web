@@ -9,7 +9,7 @@
 ### Media engine
 
 - Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
-- Progressive-open follow-ups: coalesce adjacent sample ranges; UrlSource open-ended Range streaming + mid-file sequential abandon (mediabunny `_runWorker` / `ReadableStreamSource` — gate shipped; cache chain-to-budget rejected — starves A/V).
+- Progressive-open follow-ups: UrlSource open-ended Range streaming + mid-file sequential abandon (mediabunny `_runWorker` / `ReadableStreamSource` — gate shipped; sample-span coalesce shipped; cache chain-to-budget rejected — starves A/V).
 - Temporary deps: workspace pins `rerun-io/re_mp4` @ `aa5be9b` ([#35](https://github.com/rerun-io/re_mp4/pull/35) merged; not on crates.io yet).
 - Upstream/re_mp4: nested `skip_box(0)` livelock on QT size-0 padding (we work around in `SparseBoxReader`).
 - Drop `re_mp4` git pin when the next crates.io release includes #35.

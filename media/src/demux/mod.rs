@@ -1,7 +1,7 @@
 //! Container demuxers.
 
 mod boxes;
-mod coalesce;
+pub(crate) mod coalesce;
 mod mp4;
 mod timecode;
 

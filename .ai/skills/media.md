@@ -74,6 +74,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Remote URL open hang on `Downloading N MB…` / frozen UI | Demux mfra moof-only + parallel | Never bulk `0..mfra` into WASM; ≤64 KiB/moof ×4 parallel; progress after wave |
 | Remote URL open very slow / hung at `Fetching moof tables (N/N)` | Demux `load_via_mfra` parallel | adjacent moof Ranges ×4; `OPEN_URL_PARALLELISM=4` gate; scaled UrlSource timeout |
 | URL play / demux stampede many concurrent Ranges | `UrlFetchGate` | only ≥2 MiB fills gated; sample A/V bypass (else AAC starves ~1 s / frame ~30) |
+| URL play many tiny Ranges / cold interleaved A/V | `demux/coalesce` sample spans | `coalesce_sample_spans` + `SAMPLE_COALESCE_GAP` on prefetch/warm (`mediabunny: ReadOrchestrator` hole extend) |
 | URL scrub near EOF → HTTP 502 | Deferred sync verify + `CachedSource` | verify via playback cache when set (warm hits); pause bg walk while Play; UrlSource retries 502/503/429 |
 | UI stuck / controls dead (not decode) | `skills/leptos.md` triage | OpQueue, `playing`, `spawn_local` |
 
@@ -98,7 +99,7 @@ media/src/                 ← package name: webmedia
 │   └── output.rs          ← AudioDecoder → (+WSOLA) → AudioContext (cfg webcodecs)
 ├── demux/
 │   ├── boxes.rs           ← top-level ISOBMFF scan + ftyp/moov/moof stub
-│   ├── coalesce.rs        ← Range GET coalesce (gap / MAX_COALESCE_RUN)
+│   ├── coalesce.rs        ← Range GET coalesce (box loads + sample `mdat` spans)
 │   ├── mp4.rs             ← re_mp4 → Mp4VideoTrack (+ builds audio via audio::); OpenedMp4
 │   └── timecode.rs        ← QT `tmcd` start TC (moov walk; mediabunny: no equivalent)
 ├── player.rs              ← play/pause/seek_frame/step → DecodeWindow

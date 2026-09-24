@@ -227,38 +227,11 @@ impl Mp4VideoTrack {
             // Split on file gaps (moof between mdats) so each fragment body is
             // its own fill — one fat min..max span wasted the first tile on
             // early bytes and left the next `mdat` cold.
-            const GAP_SLACK: u64 = 4 * 1024;
-            let mut spans: Vec<(u64, u64)> = Vec::new();
-            let mut run_start = u64::MAX;
-            let mut run_end = 0u64;
-            let mut prev_end = None::<u64>;
-            for i in from..to {
-                let Some(e) = index.get(i as u64) else {
-                    continue;
-                };
-                let e_end = e.offset.saturating_add(e.size);
-                match prev_end {
-                    Some(pe) if e.offset > pe.saturating_add(GAP_SLACK) => {
-                        if run_start != u64::MAX && run_end > run_start {
-                            spans.push((run_start, run_end));
-                        }
-                        run_start = e.offset;
-                        run_end = e_end;
-                    }
-                    Some(_) => {
-                        run_end = run_end.max(e_end);
-                    }
-                    None => {
-                        run_start = e.offset;
-                        run_end = e_end;
-                    }
-                }
-                prev_end = Some(e_end);
-            }
-            if run_start != u64::MAX && run_end > run_start {
-                spans.push((run_start, run_end));
-            }
-            spans
+            // mediabunny: ReadOrchestrator hole extend (gap) without cross-moof pack.
+            crate::demux::coalesce::coalesce_sample_spans(
+                (from..to).filter_map(|i| index.get(i as u64).map(|e| (e.offset, e.size))),
+                crate::demux::coalesce::SAMPLE_COALESCE_GAP,
+            )
         };
         // Stay under GATE_LARGE_BYTES so play sample Ranges are not queued
         // behind multi-MiB cache fills (`url_gate` / AAC starve lesson).
@@ -285,8 +258,8 @@ impl Mp4VideoTrack {
     /// the seam — not only at `play()` when the first 8 MiB tile was still cold.
     fn kick_prefetch_if_fragment_seam(&self, frame: FrameId) {
         const LOOKAHEAD: u64 = 32;
-        const GAP_SLACK: u64 = 4 * 1024;
         const TILE: usize = 1024 * 1024;
+        let gap = crate::demux::coalesce::SAMPLE_COALESCE_GAP;
         let index = self.index.borrow();
         let Some(cur) = index.get(frame) else {
             return;
@@ -297,7 +270,7 @@ impl Mp4VideoTrack {
             let Some(n) = index.get(f) else {
                 break;
             };
-            if n.offset > end.saturating_add(GAP_SLACK) {
+            if n.offset > end.saturating_add(gap) {
                 self.source.prefetch(n.offset, TILE);
                 return;
             }
@@ -318,7 +291,6 @@ impl Mp4VideoTrack {
     /// first cold `mdat` inside the warm index (`mediabunny: URLSource` min-load
     /// / worker fill before the sink runs dry).
     pub async fn warm_sample_bytes(&self, from: FrameId, lead: u64) -> Result<(), MediaError> {
-        const GAP_SLACK: u64 = 4 * 1024;
         const TILE: usize = 512 * 1024; // mediabunny URL_SOURCE_MIN_LOAD_AMOUNT
         // ~12 warm moofs × 1080p can be tens of MiB; under-fill left cold seams.
         const MAX_BYTES: usize = 48 * 1024 * 1024;
@@ -330,37 +302,10 @@ impl Mp4VideoTrack {
         }
         let spans = {
             let index = self.index.borrow();
-            let mut spans: Vec<(u64, u64)> = Vec::new();
-            let mut run_start = u64::MAX;
-            let mut run_end = 0u64;
-            let mut prev_end = None::<u64>;
-            for i in from..to {
-                let Some(e) = index.get(i as u64) else {
-                    continue;
-                };
-                let e_end = e.offset.saturating_add(e.size);
-                match prev_end {
-                    Some(pe) if e.offset > pe.saturating_add(GAP_SLACK) => {
-                        if run_start != u64::MAX && run_end > run_start {
-                            spans.push((run_start, run_end));
-                        }
-                        run_start = e.offset;
-                        run_end = e_end;
-                    }
-                    Some(_) => {
-                        run_end = run_end.max(e_end);
-                    }
-                    None => {
-                        run_start = e.offset;
-                        run_end = e_end;
-                    }
-                }
-                prev_end = Some(e_end);
-            }
-            if run_start != u64::MAX && run_end > run_start {
-                spans.push((run_start, run_end));
-            }
-            spans
+            crate::demux::coalesce::coalesce_sample_spans(
+                (from..to).filter_map(|i| index.get(i as u64).map(|e| (e.offset, e.size))),
+                crate::demux::coalesce::SAMPLE_COALESCE_GAP,
+            )
         };
         let mut filled = 0usize;
         for (start, end) in spans {
