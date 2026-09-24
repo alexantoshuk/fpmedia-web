@@ -14,6 +14,7 @@
 use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::error::MediaError;
+use crate::open_phase::OpenPhase;
 use crate::source::MediaSource;
 
 use super::coalesce::{CoalesceRun, coalesce_byte_runs, coalesce_byte_runs_adjacent};
@@ -201,16 +202,21 @@ const MFRA_MOOF_FETCH_PARALLEL: usize = 4;
 async fn load_via_mfra(
     source: &dyn MediaSource,
     idx: MfraIndex,
-    progress: &mut impl FnMut(&str),
+    progress: &mut impl FnMut(OpenPhase),
 ) -> Result<(Vec<LoadedBox>, Option<FragmentBackfillPlan>), MediaError> {
     let n = idx.moof_offsets.len();
-    progress(&format!("mfra index: {n} fragments…"));
+    progress(OpenPhase::MfraIndex {
+        fragments: n as u32,
+    });
     let warm = MFRA_WARM_MOOFS.min(n);
     if warm >= n {
         let loaded = load_via_mfra_per_moof(source, idx, 0, n, true, progress).await?;
         return Ok((loaded, None));
     }
-    progress(&format!("Warming first {warm}/{n} fragments for playback…"));
+    progress(OpenPhase::WarmingFragments {
+        warm: warm as u32,
+        total: n as u32,
+    });
     let loaded = load_via_mfra_per_moof(source, idx.clone(), 0, warm, true, progress).await?;
     Ok((
         loaded.clone(),
@@ -230,7 +236,7 @@ async fn load_via_mfra_per_moof(
     start: usize,
     end: usize,
     include_mfra: bool,
-    progress: &mut impl FnMut(&str),
+    progress: &mut impl FnMut(OpenPhase),
 ) -> Result<Vec<LoadedBox>, MediaError> {
     let file_size = source.size();
     let n = idx.moof_offsets.len();
@@ -282,7 +288,10 @@ async fn load_via_mfra_per_moof(
 
     let runs = coalesce_byte_runs_adjacent(&needs);
     let total = runs.len();
-    progress(&format!("Fetching moof tables ({start}/{n})…"));
+    progress(OpenPhase::FetchingMoofTables {
+        start: start as u32,
+        total: n as u32,
+    });
     let _ = total;
 
     let mut fetched: Vec<Option<Vec<u8>>> = vec![None; work.len()];
@@ -425,7 +434,7 @@ pub async fn advance_mfra_backfill_n(
     source: &dyn MediaSource,
     plan: &mut FragmentBackfillPlan,
     moof_count: usize,
-    mut progress: impl FnMut(&str),
+    mut progress: impl FnMut(OpenPhase),
 ) -> Result<(re_mp4::Mp4, bool), MediaError> {
     let file_size = source.size();
     let n = plan.idx.moof_offsets.len();
@@ -434,7 +443,10 @@ pub async fn advance_mfra_backfill_n(
     let mut new_boxes: Vec<LoadedBox> = Vec::new();
     if start < n {
         let end = (start + batch).min(n);
-        progress(&format!("Indexing fragments ({end}/{n})…"));
+        progress(OpenPhase::IndexingFragments {
+            done: end as u32,
+            total: n as u32,
+        });
         new_boxes =
             load_via_mfra_per_moof(source, plan.idx.clone(), start, end, false, &mut progress)
                 .await?;
@@ -449,7 +461,7 @@ pub async fn advance_mfra_backfill_n(
     }
     let complete = plan.next_moof >= n;
     if complete {
-        progress("Rebuilding frame index…");
+        progress(OpenPhase::RebuildingIndex);
     }
 
     // Delta parse set: init + prior moofs disguised as `free` (same size) so
@@ -846,25 +858,25 @@ pub async fn load_ftyp_moov(source: &dyn MediaSource) -> Result<Vec<LoadedBox>, 
 
 async fn load_ftyp_moov_with_progress(
     source: &dyn MediaSource,
-    progress: &mut impl FnMut(&str),
+    progress: &mut impl FnMut(OpenPhase),
 ) -> Result<(Vec<LoadedBox>, Option<FragmentBackfillPlan>), MediaError> {
-    progress("Probing mfra index…");
+    progress(OpenPhase::ProbingMfra);
     if let Some(idx) = probe_mfra(source).await? {
         match load_via_mfra(source, idx, progress).await {
             Ok(pair) => return Ok(pair),
             Err(e) => {
-                progress(&format!("mfra open failed ({e}); scanning file…"));
+                progress(OpenPhase::MfraFallbackScan {
+                    reason: e.to_string(),
+                });
             }
         }
     }
 
-    progress("Scanning top-level boxes…");
+    progress(OpenPhase::ScanningBoxes);
     let boxes = scan_top_level(source).await?;
     let moof_count = boxes.iter().filter(|b| b.is_moof()).count();
     if moof_count > 0 {
-        progress(&format!(
-            "Fragmented MP4: loading {moof_count} moof box(es)…"
-        ));
+        progress(OpenPhase::LoadingFragmentedMoofs { count: moof_count });
     }
 
     // Only Range-fetch boxes that need full bodies. Header-only atoms are
@@ -882,19 +894,18 @@ async fn load_ftyp_moov_with_progress(
         .collect();
 
     if let Some((_, off, need)) = needs.iter().find(|(i, _, _)| boxes[*i].is_moov()) {
-        progress(&format!(
-            "Reading moov @ {off} ({:.1} KB)…",
-            *need as f64 / 1024.0
-        ));
+        progress(OpenPhase::ReadingMoov {
+            offset: *off,
+            kb: *need as f64 / 1024.0,
+        });
     }
 
     let runs = coalesce_byte_runs(&needs);
     if !needs.is_empty() {
-        progress(&format!(
-            "Fetching {} range(s) for {} box body(ies)…",
-            runs.len(),
-            needs.len()
-        ));
+        progress(OpenPhase::FetchingBoxBodies {
+            ranges: runs.len(),
+            boxes: needs.len(),
+        });
     }
 
     let mut loaded_bytes: Vec<Option<Vec<u8>>> = vec![None; boxes.len()];
@@ -964,7 +975,7 @@ async fn fill_from_coalesce_runs(
     source: &dyn MediaSource,
     runs: &[CoalesceRun],
     out: &mut [Option<Vec<u8>>],
-    mut progress: Option<&mut dyn FnMut(&str)>,
+    mut progress: Option<&mut dyn FnMut(OpenPhase)>,
     parallel: usize,
 ) -> Result<(), MediaError> {
     use futures::future::join_all;
@@ -1008,7 +1019,10 @@ async fn fill_from_coalesce_runs(
         // Progress *after* the wave completes — "120/120" while still awaiting
         // the last GETs looked like a hang.
         if let Some(p) = progress.as_mut() {
-            p(&format!("Fetching moof tables ({end}/{total})…"));
+            p(OpenPhase::FetchingMoofTables {
+                start: end as u32,
+                total: total as u32,
+            });
         }
         i = end;
     }
@@ -1152,7 +1166,7 @@ pub async fn parse_mp4_progressive(source: &dyn MediaSource) -> Result<re_mp4::M
 /// Like [`parse_mp4_progressive`], calling `progress` before slow steps.
 pub async fn parse_mp4_progressive_with_progress(
     source: &dyn MediaSource,
-    progress: impl FnMut(&str),
+    progress: impl FnMut(OpenPhase),
 ) -> Result<re_mp4::Mp4, MediaError> {
     Ok(parse_mp4_progressive_with_backfill(source, progress)
         .await?
@@ -1162,16 +1176,15 @@ pub async fn parse_mp4_progressive_with_progress(
 /// Progressive open that may return a [`FragmentBackfillPlan`] for fMP4 warm path.
 pub async fn parse_mp4_progressive_with_backfill(
     source: &dyn MediaSource,
-    mut progress: impl FnMut(&str),
+    mut progress: impl FnMut(OpenPhase),
 ) -> Result<ProgressiveParse, MediaError> {
     let file_size = source.size();
     if file_size == 0 {
         return Err(MediaError::Mp4("empty media source".into()));
     }
-    progress(&format!(
-        "Reading file head (file {} MB)…",
-        file_size / (1024 * 1024)
-    ));
+    progress(OpenPhase::ReadingFileHead {
+        file_mb: file_size / (1024 * 1024),
+    });
     #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
     web_sys::console::log_1(&format!("webmedia: scan start file_size={file_size}").into());
 
@@ -1201,10 +1214,9 @@ pub async fn parse_mp4_progressive_with_backfill(
         .into(),
     );
 
-    progress(&format!(
-        "Parsing moov/moof tables ({:.1} KB, may take a moment)…",
-        moov_size as f64 / 1024.0
-    ));
+    progress(OpenPhase::ParsingMoov {
+        kb: moov_size as f64 / 1024.0,
+    });
     crate::util::yield_now().await;
     crate::util::yield_now().await;
 

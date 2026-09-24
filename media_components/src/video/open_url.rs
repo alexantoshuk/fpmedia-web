@@ -4,8 +4,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{HtmlCanvasElement, Response};
 use webmedia::{
-    BlobSource, MediaError, MediaSource, OPEN_URL_PARALLELISM, OpenMp4Options, UrlSource,
-    UrlSourceOptions, VideoPlayer, is_no_http_range, open_mp4_media_source_cached_with_progress,
+    BlobSource, MediaError, MediaSource, OPEN_URL_PARALLELISM, OpenMp4Options, OpenPhase,
+    OpenSourceKind, UrlSource, UrlSourceOptions, VideoPlayer, is_no_http_range,
+    open_mp4_media_source_cached_with_progress,
 };
 
 /// Resolve `https:` via [`UrlSource`] (HTTP Range); `blob:` / no-Range hosts via
@@ -34,11 +35,11 @@ pub(super) fn same_origin_media_proxy_url(remote: &str) -> Option<String> {
 
 pub(super) async fn resolve_url_source(
     url: &str,
-    on_status: impl Fn(&str),
+    on_status: impl Fn(OpenPhase),
 ) -> Result<std::sync::Arc<dyn MediaSource>, String> {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("blob:") {
-        on_status("Opening blob…");
+        on_status(OpenPhase::ProbingSource(OpenSourceKind::Blob));
         let blob = fetch_url_as_blob(url).await?;
         return Ok(std::sync::Arc::new(BlobSource::new(blob)));
     }
@@ -48,7 +49,7 @@ pub(super) async fn resolve_url_source(
         ));
     }
 
-    on_status("Probing HTTP Range…");
+    on_status(OpenPhase::ProbingHttpRange);
     // mediabunny DEFAULT_PARALLELISM=2; open uses 4 so mfra moof waves aren't gated.
     match UrlSource::connect_with(
         url.to_string(),
@@ -67,7 +68,9 @@ pub(super) async fn resolve_url_source(
                 )
                 .into(),
             );
-            on_status(&format!("Opening (progressive, ~{size_kb} KB)…"));
+            on_status(OpenPhase::ProbingSource(OpenSourceKind::Progressive {
+                size_kb,
+            }));
             Ok(std::sync::Arc::new(src))
         }
         Err(e) if is_no_http_range(&e) => {
@@ -80,16 +83,13 @@ pub(super) async fn resolve_url_source(
                 .map(format_byte_size)
                 .map(|s| format!(" (~{s})"))
                 .unwrap_or_default();
-            on_status(&format!(
-                "No HTTP Range — downloading full file{size_hint}…"
-            ));
+            on_status(OpenPhase::NoHttpRangeDownload { size_hint });
             let blob = fetch_url_as_blob(url).await?;
             let size_kb = (blob.size() as u64) / 1024;
             web_sys::console::log_1(&format!("webmedia: open_url full fetch ~{size_kb} KB").into());
-            on_status(&format!(
-                "Opening (full download, ~{})…",
-                format_byte_size(blob.size() as u64)
-            ));
+            on_status(OpenPhase::ProbingSource(OpenSourceKind::FullDownload {
+                size_label: format_byte_size(blob.size() as u64),
+            }));
             Ok(std::sync::Arc::new(BlobSource::new(blob)))
         }
         Err(e) => Err(e.to_string()),
@@ -149,9 +149,9 @@ fn format_js_error(what: &str, err: &wasm_bindgen::JsValue) -> String {
 pub(super) async fn open_source_staged(
     source: std::sync::Arc<dyn MediaSource>,
     canvas: HtmlCanvasElement,
-    on_status: impl Fn(&str),
+    on_status: impl Fn(OpenPhase),
 ) -> Result<VideoPlayer, String> {
-    on_status("Starting demux…");
+    on_status(OpenPhase::StartingDemux);
     web_sys::console::log_1(&"webmedia: demux start".into());
     let opened = open_mp4_media_source_cached_with_progress(
         source,
@@ -161,7 +161,7 @@ pub(super) async fn open_source_staged(
             verify_avc_sync: true,
             defer_avc_sync: true,
         },
-        |msg| on_status(msg),
+        &on_status,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -175,11 +175,10 @@ pub(super) async fn open_source_staged(
         )
         .into(),
     );
-    on_status(&format!(
-        "moov ok — {} frames{}, creating decoder…",
-        video.frame_count(),
-        if audio.is_some() { " + audio" } else { "" }
-    ));
+    on_status(OpenPhase::CreatingDecoder {
+        frames: video.frame_count(),
+        has_audio: audio.is_some(),
+    });
     VideoPlayer::from_tracks_with_fetch(video, audio, canvas, opened.fetch_map)
         .await
         .map_err(|e| e.to_string())

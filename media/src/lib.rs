@@ -17,6 +17,7 @@ mod engine_mode;
 mod error;
 mod frame_index;
 mod host_op_coalesce;
+mod open_phase;
 mod playback_policy;
 mod player;
 mod source;
@@ -66,6 +67,7 @@ pub use host_op_coalesce::{
     EnqueueKind, HostOpKind, apply_enqueue, apply_play, apply_scrub_drag, apply_scrub_release,
     apply_seek_or_step,
 };
+pub use open_phase::{OpenPhase, OpenSourceKind};
 pub use playback_policy::{
     EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
 };

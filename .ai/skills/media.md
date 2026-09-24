@@ -76,6 +76,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | URL play / demux stampede many concurrent Ranges | `UrlFetchGate` | only ≥2 MiB fills gated; sample A/V bypass (else AAC starves ~1 s / frame ~30) |
 | URL play many tiny Ranges / cold interleaved A/V | `demux/coalesce` sample spans | `coalesce_sample_spans` + `SAMPLE_COALESCE_GAP` on prefetch/warm (`mediabunny: ReadOrchestrator` hole extend) |
 | URL gray strip slow / jumpy / soft edges (play+buffer OK elsewhere) | Byte IO — full `ReadOrchestrator` deferred | closed Range + `UrlFetchGate` today; do **not** re-land half-ports (stream abort or closed-Range orch) — see gotchas |
+| Open status string churn / mistaking `Warming media bytes…` for hang | `webmedia::open_phase` | typed `OpenPhase` + `label()`; Range/warm/sync policy unchanged |
 | Urge to “one global priority scheduler for all routines” | Domain schedulers + `WorkloadMode` | bytes / OpQueue / decode stay separate; shared policy knobs only |
 | URL scrub near EOF → HTTP 502 | Deferred sync verify + `CachedSource` | verify via playback cache when set (warm hits); pause bg walk while Play; UrlSource retries 502/503/429 |
 | UI stuck / controls dead (not decode) | `skills/leptos.md` triage | OpQueue, `playing`, `spawn_local` |
@@ -94,6 +95,7 @@ media/src/                 ← package name: webmedia
 ├── frame_index.rs         ← presentation order; sync_by_decode O(log k) + by_decode GOP map
 ├── playback_policy.rs     ← pure EOF wall / near-EOF / loop-drain math (native unit tests)
 ├── host_op_coalesce.rs    ← OpQueue coalesce kinds (CallSerializer rules; native tests)
+├── open_phase.rs          ← OpenPhase + label() (UI open progress; not byte-IO orch)
 ├── audio/                 ← audio engine (isolated from canvas / video decode)
 │   ├── demux.rs           ← Mp4AudioTrack
 │   ├── stretch.rs         ← WSOLA fixed-pitch (Vanilagy gist; ≤4×)

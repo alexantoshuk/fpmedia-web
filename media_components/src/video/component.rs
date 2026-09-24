@@ -12,7 +12,7 @@ use leptos_use::{
 };
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
-use webmedia::{BlobSource, DuePresent, MediaSource, TransportEvent};
+use webmedia::{BlobSource, DuePresent, MediaSource, OpenPhase, OpenSourceKind, TransportEvent};
 
 use super::host_ops::{
     PlayerHandle, SeekOrStep, enqueue_seek_step, run_open, run_play_prime, run_seek_or_step,
@@ -635,7 +635,7 @@ pub fn Video(
             timestamp.set(0.0);
             has_audio.set(false);
             let size_kb = (blob.size() as u64) / 1024;
-            status.set(format!("Opening (~{size_kb} KB, progressive)…"));
+            status.set(OpenPhase::ProbingSource(OpenSourceKind::Progressive { size_kb }).label());
             fps_meter.borrow_mut().reset();
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("webmedia: open_blob start ~{size_kb} KB").into());
@@ -689,14 +689,14 @@ pub fn Video(
             busy.set(true);
             // Same-origin /proxy bypasses CDN CORS (GitHub Releases, S3, …).
             let url = same_origin_media_proxy_url(&url).unwrap_or(url);
-            status.set(format!("Opening {url}…"));
+            status.set(OpenPhase::OpeningUrl { url: url.clone() }.label());
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("webmedia: open_url start {url}").into());
 
             let queue = queue.clone();
             let kick_drain = Rc::clone(&kick_drain);
             spawn_local(async move {
-                let opened = resolve_url_source(&url, |msg| status.set(msg.to_string())).await;
+                let opened = resolve_url_source(&url, |phase| status.set(phase.label())).await;
                 if !queue.is_current(fetch_id) {
                     return;
                 }

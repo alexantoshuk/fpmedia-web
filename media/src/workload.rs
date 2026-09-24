@@ -21,7 +21,8 @@ pub enum WorkloadMode {
     Play,
     /// Exact settle / seek / restarting — bg verify yields.
     Seek,
-    /// Progressive open / warm (reserved for [`crate`] OpenPhase; unused today).
+    /// Progressive open / warm. UI stages are [`crate::OpenPhase`]; this band is
+    /// not classified yet (open still runs to completion on the host OpQueue).
     Open,
     /// Paused / scrub densify — bg verify may run when densify idle.
     Bg,

@@ -8,7 +8,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
-use webmedia::{MediaSource, VideoPlayer};
+use webmedia::{MediaSource, OpenPhase, VideoPlayer};
 
 use super::op_queue::{HostOp, OpQueue};
 use super::open_url::open_source_staged;
@@ -75,9 +75,10 @@ pub(super) async fn run_open(
         return;
     }
     *player.borrow_mut() = None;
-    let opened = open_source_staged(source, canvas, move |msg: &str| {
+    let opened = open_source_staged(source, canvas, move |phase: OpenPhase| {
+        let msg = phase.label();
         web_sys::console::log_1(&format!("webmedia: status {msg}").into());
-        status.set(msg.to_string());
+        status.set(msg);
     })
     .await;
     if !queue.is_current(id) {
@@ -95,7 +96,7 @@ pub(super) async fn run_open(
             }
             let _ = p.relayout();
             *player.borrow_mut() = Some(Rc::clone(&p));
-            status.set("Decoding frame 0…".into());
+            status.set(OpenPhase::DecodingStart.label());
             let seek = p.seek_frame(0).await;
             if !queue.is_current(id) {
                 return;
@@ -103,19 +104,19 @@ pub(super) async fn run_open(
             match seek {
                 Ok(()) => {
                     ready.set(true);
-                    status.set("Ready.".into());
+                    status.set(OpenPhase::Ready.label());
                     fps_meter.borrow_mut().reset();
                     fps.set(None);
                     pipeline.set(Some(p.pipeline_stats()));
                     sync_ui();
                 }
                 Err(e) if e.is_cancelled() => {
-                    status.set("Open cancelled.".into());
+                    status.set(OpenPhase::Cancelled.label());
                 }
                 Err(e) => {
                     ready.set(false);
                     error.set(Some(e.to_string()));
-                    status.set("Seek 0 failed.".into());
+                    status.set(OpenPhase::SeekStartFailed.label());
                 }
             }
         }
@@ -123,7 +124,7 @@ pub(super) async fn run_open(
             ready.set(false);
             metadata.set(None);
             error.set(Some(e.clone()));
-            status.set("Open failed.".into());
+            status.set(OpenPhase::Failed.label());
             web_sys::console::error_1(&e.clone().into());
         }
     }

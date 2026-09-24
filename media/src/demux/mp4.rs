@@ -15,6 +15,7 @@ use crate::bitstream::{
 };
 use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
+use crate::open_phase::OpenPhase;
 use crate::source::{CachedSource, FetchMap, MediaSource, MemorySource};
 use crate::types::{CodecConfig, EncodedSample, FrameId, VideoCodec, VideoMetadata};
 use crate::util::block_on;
@@ -978,7 +979,7 @@ pub async fn open_mp4_source(
 pub async fn open_mp4_source_with_progress(
     source: Arc<dyn MediaSource>,
     options: OpenMp4Options,
-    mut progress: impl FnMut(&str),
+    mut progress: impl FnMut(OpenPhase),
 ) -> Result<Mp4VideoTrack, MediaError> {
     let fetch_map = Arc::new(FetchMap::new());
     let parsed =
@@ -1030,7 +1031,7 @@ pub async fn open_mp4_source_cached(
 pub async fn open_mp4_source_cached_with_progress(
     source: Arc<dyn MediaSource>,
     options: OpenMp4Options,
-    mut progress: impl FnMut(&str),
+    mut progress: impl FnMut(OpenPhase),
 ) -> Result<Mp4VideoTrack, MediaError> {
     let fetch_map = Arc::new(FetchMap::new());
     let parsed =
@@ -1073,11 +1074,11 @@ pub async fn open_mp4_source_cached_with_progress(
             .get(n.saturating_sub(1))
             .map(|e| e.composition_timestamp().seconds)
             .unwrap_or(6.0);
-        progress("Warming media bytes…");
+        progress(OpenPhase::WarmingMediaBytes);
         v.warm_sample_bytes(0, n).await?;
         if let Some(a) = opened.audio.as_mut() {
             a.set_source(Arc::clone(&cached));
-            progress("Warming audio bytes…");
+            progress(OpenPhase::WarmingAudioBytes);
             a.warm_bytes_through(warm_secs).await?;
         }
     } else if let Some(a) = opened.audio.as_mut() {
@@ -1098,7 +1099,7 @@ pub async fn open_mp4_media_source_cached(
 pub async fn open_mp4_media_source_cached_with_progress(
     source: Arc<dyn MediaSource>,
     options: OpenMp4Options,
-    mut progress: impl FnMut(&str),
+    mut progress: impl FnMut(OpenPhase),
 ) -> Result<OpenedMp4, MediaError> {
     let fetch_map = Arc::new(FetchMap::new());
     let parsed =
@@ -1122,7 +1123,7 @@ pub async fn open_mp4_media_source_cached_with_progress(
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            progress("Indexing remaining fragments…");
+            progress(OpenPhase::IndexingBackfill);
             v.await_fragment_backfill().await?;
             if let Some(a) = opened.audio.as_ref() {
                 a.set_expect_more_samples(false);
@@ -1139,11 +1140,11 @@ pub async fn open_mp4_media_source_cached_with_progress(
             .get(n.saturating_sub(1))
             .map(|e| e.composition_timestamp().seconds)
             .unwrap_or(6.0);
-        progress("Warming media bytes…");
+        progress(OpenPhase::WarmingMediaBytes);
         v.warm_sample_bytes(0, n).await?;
         if let Some(a) = opened.audio.as_mut() {
             a.set_source(Arc::clone(&cached));
-            progress("Warming audio bytes…");
+            progress(OpenPhase::WarmingAudioBytes);
             a.warm_bytes_through(warm_secs).await?;
         }
     } else if let Some(a) = opened.audio.as_mut() {
@@ -1334,7 +1335,7 @@ fn classify_codec(codec_string: Option<&str>) -> VideoCodec {
 async fn apply_avc_sync_option(
     track: Option<&mut Mp4VideoTrack>,
     options: OpenMp4Options,
-    progress: &mut dyn FnMut(&str),
+    progress: &mut dyn FnMut(OpenPhase),
 ) -> Result<(), MediaError> {
     let Some(track) = track else {
         return Ok(());
@@ -1355,20 +1356,18 @@ async fn apply_avc_sync_option(
         track.arm_deferred_sync_verify(length_size, codec);
         let n = track.sync_verify_pending();
         if n > 0 {
-            progress(&format!(
-                "Keyframe verify deferred ({n} candidates, background)…"
-            ));
+            progress(OpenPhase::VerifyingSyncDeferred { candidates: n });
         }
         return Ok(());
     }
     track.arm_deferred_sync_verify(length_size, codec);
     let total = track.sync_verify_pending();
-    progress(&format!("Verifying keyframes (0/{total})…"));
+    progress(OpenPhase::VerifyingSync { done: 0, total });
     let mut i = 0usize;
     while track.verify_next_pending().await? {
         i += 1;
         if i.is_multiple_of(4) {
-            progress(&format!("Verifying keyframes ({i}/{total})…"));
+            progress(OpenPhase::VerifyingSync { done: i, total });
             crate::util::yield_now().await;
         }
     }
