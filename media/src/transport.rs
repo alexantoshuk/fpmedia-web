@@ -171,6 +171,8 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
                 C::ClearEnded,
                 C::SoftPauseForScrub,
                 C::SetPlayhead { frame },
+                // Present soft-blit / Exact-drag while finger moves (same as paused scrub).
+                C::EnqueueDrag { frame },
             ],
         ),
         (S::Ready, E::PointerDown { frame }) => (
@@ -193,31 +195,32 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
             E::PointerDown { frame },
         ) => (
             S::Scrubbing { resume, frame },
-            vec![C::PreemptScrub, C::SetPlayhead { frame }],
+            vec![
+                C::PreemptScrub,
+                C::SetPlayhead { frame },
+                C::EnqueueDrag { frame },
+            ],
         ),
         (S::PlayPriming { .. }, E::PointerDown { frame }) => (
             S::Scrubbing {
                 resume: true,
                 frame,
             },
-            vec![C::HardPause, C::SetPlayhead { frame }],
+            vec![
+                C::HardPause,
+                C::SetPlayhead { frame },
+                C::EnqueueDrag { frame },
+            ],
         ),
         (S::Scrubbing { resume, .. }, E::PointerDown { frame }) => (
             S::Scrubbing { resume, frame },
-            if resume {
-                vec![C::SetPlayhead { frame }]
-            } else {
-                vec![C::SetPlayhead { frame }, C::EnqueueDrag { frame }]
-            },
+            vec![C::SetPlayhead { frame }, C::EnqueueDrag { frame }],
         ),
 
-        (S::Scrubbing { resume, .. }, E::PointerMove { frame }) => {
-            let mut cmds = vec![C::SetPlayhead { frame }];
-            if !resume {
-                cmds.push(C::EnqueueDrag { frame });
-            }
-            (S::Scrubbing { resume, frame }, cmds)
-        }
+        (S::Scrubbing { resume, .. }, E::PointerMove { frame }) => (
+            S::Scrubbing { resume, frame },
+            vec![C::SetPlayhead { frame }, C::EnqueueDrag { frame }],
+        ),
 
         (S::Scrubbing { resume, .. }, E::PointerUp { frame }) => {
             let settle_gen = next_settle_gen;
@@ -340,16 +343,10 @@ mod tests {
             }
         ));
         assert!(c.contains(&TransportCmd::SoftPauseForScrub));
-        assert!(
-            !c.iter()
-                .any(|x| matches!(x, TransportCmd::EnqueueDrag { .. }))
-        );
+        assert!(c.contains(&TransportCmd::EnqueueDrag { frame: 10 }));
 
         let (m, c) = step(m, TransportEvent::PointerMove { frame: 12 });
-        assert!(
-            !c.iter()
-                .any(|x| matches!(x, TransportCmd::EnqueueDrag { .. }))
-        );
+        assert!(c.contains(&TransportCmd::EnqueueDrag { frame: 12 }));
 
         let (m, c) = step(m, TransportEvent::PointerUp { frame: 12 });
         assert_eq!(
