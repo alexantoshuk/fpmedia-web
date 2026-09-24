@@ -9,6 +9,7 @@ use crate::decode::scrub_blit::{ScrubChunk, draw_image_bitmap};
 #[cfg(feature = "thumbs")]
 use crate::decode::thumb_preview::{ThumbPreview, paint_thumb_canvas, run_sparse_key_fill};
 use crate::decode::webcodecs::WebCodecsDecoder;
+use crate::engine_mode::{EngineEvent, reduce as engine_reduce};
 use crate::error::MediaError;
 use crate::types::{
     FrameId, GopProfile, ScrubPolicy, ThumbPolicy, exact_frames_to_free_for_play_vram,
@@ -16,8 +17,7 @@ use crate::types::{
 };
 
 use super::{
-    CacheFillMode, PLAY_EXACT_VRAM_VF_SLACK, Shared, VideoPlayer, sleep_ms, wait_animation_frame,
-    yield_event_loop,
+    PLAY_EXACT_VRAM_VF_SLACK, Shared, VideoPlayer, sleep_ms, wait_animation_frame, yield_event_loop,
 };
 
 impl VideoPlayer {
@@ -674,7 +674,9 @@ impl VideoPlayer {
     /// exact seek/scrub (`restarting`) so the scrub decoder does not compete for
     /// the HW session until the finger frame is on canvas.
     pub(super) fn aim_scrub_cache(&self, focus: FrameId) {
-        self.shared.fill_mode.set(CacheFillMode::Scrub);
+        // Mode is owned by [`EngineEvent`] (EnterScrub / BeginExact / EndExact /
+        // EnterPlay). Aim only moves the eviction/gap focus — do not flip ExactHold
+        // back to Scrub here (that re-enabled densify under settle).
         // Keep the step VF ring (displayed / behind / ahead) across Pause and
         // step — park used to drop ahead VFs and force key→N on Next/Prev hold.
         // Seek / scrub settle call [`Self::clear_step_ring`] explicitly.
@@ -693,7 +695,7 @@ impl VideoPlayer {
     ///    (skipped when [`ScrubPolicy::densify`] is false — All-Intra;
     ///    visited frames still land in dense via `present_and_cache`)
     ///
-    /// While [`Shared::hold_densify_for_exact`] (scrub settle / sync seek), densify
+    /// While [`EngineMode::ExactHold`] (scrub settle / sync seek), densify
     /// is deferred so exact `goto_frame` owns HW; soft-drag scrub keeps densify on.
     pub fn enter_scrub_cache_pipeline(&self, focus: FrameId) {
         self.aim_scrub_cache(focus);
@@ -758,7 +760,8 @@ impl VideoPlayer {
     pub fn prepare_scrub_settle(&self, frame: FrameId) {
         self.cancel_hover_thumb();
         self.abort_scrub_fill(true);
-        self.shared.hold_densify_for_exact.set(true);
+        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
+        self.shared.engine.set(next);
         self.clear_scrub_direction();
         self.cancel_ops();
         // Drop in-flight main-decoder cascade from the preceding drag sample so
@@ -771,15 +774,16 @@ impl VideoPlayer {
         // the cache vanishing even when releasing on a warm region.
     }
 
-    /// Drag sample entry — clear exact-hold so densify can run under the finger.
+    /// Drag sample entry — clear ExactHold so densify can run under the finger.
     ///
     /// `prepare_scrub_settle` may have latched hold; if settle is superseded by a
     /// new drag before `scrub_to` clears it, densify stayed dead until Pause.
     pub fn clear_densify_hold(&self) {
-        if !self.shared.hold_densify_for_exact.get() {
+        if !self.shared.engine.get().holds_exact() {
             return;
         }
-        self.shared.hold_densify_for_exact.set(false);
+        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EndExact);
+        self.shared.engine.set(next);
         self.schedule_scrub_cache_fill();
     }
 
@@ -805,12 +809,16 @@ impl VideoPlayer {
         if settle {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
             self.abort_scrub_fill(true);
-            self.shared.hold_densify_for_exact.set(true);
+            let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
+            self.shared.engine.set(next);
             self.clear_scrub_direction();
             self.shared.restarting.set(true);
             self.aim_scrub_cache(frame);
         } else {
-            self.shared.hold_densify_for_exact.set(false);
+            // Drag: ExactHold → Scrub so densify can run under the finger.
+            let mut engine = self.shared.engine.get();
+            engine.mode = crate::EngineMode::Scrub;
+            self.shared.engine.set(engine);
             self.shared.restarting.set(true);
             self.note_scrub_direction(frame);
             // Drag: kick densify immediately so the strip fills while the finger moves.
@@ -876,7 +884,9 @@ impl VideoPlayer {
         }
         .await;
         self.shared.restarting.set(false);
-        self.shared.hold_densify_for_exact.set(false);
+        // End ExactHold after settle/drag op (densify arm is host-gated on settle).
+        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EndExact);
+        self.shared.engine.set(next);
         // Cancelled (superseded drag / seek): do not kick densify — a following
         // PlayPrime must keep a warm main decoder when possible.
         if !self.is_current(epoch) {
@@ -997,15 +1007,15 @@ impl VideoPlayer {
 
     pub(super) fn schedule_scrub_cache_fill(&self) {
         // Gate on play mode / densify-off policy (All-Intra).
-        // Settle/seek: latch pending while exact owns HW (`hold_densify_for_exact`).
-        if self.shared.fill_mode.get() == CacheFillMode::Play
+        // Settle/seek: latch pending while ExactHold owns HW.
+        if self.shared.engine.get().is_play()
             || self.is_playing()
             || !self.scrub_policy().densify
             || self.shared.scrub_densify_blocked.get()
         {
             return;
         }
-        if self.shared.hold_densify_for_exact.get() || self.shared.scrub_busy.get() {
+        if self.shared.engine.get().holds_exact() || self.shared.scrub_busy.get() {
             self.shared.scrub_pending.set(true);
             return;
         }
@@ -1013,13 +1023,13 @@ impl VideoPlayer {
     }
 
     pub(super) fn kick_scrub_cache_fill(&self) {
-        if self.shared.fill_mode.get() == CacheFillMode::Play
+        if self.shared.engine.get().is_play()
             || self.is_playing()
             || !self.scrub_policy().densify
             || self.shared.scrub_densify_blocked.get()
-            || self.shared.hold_densify_for_exact.get()
+            || self.shared.engine.get().holds_exact()
         {
-            if self.shared.hold_densify_for_exact.get() {
+            if self.shared.engine.get().holds_exact() {
                 self.shared.scrub_pending.set(true);
             }
             return;
@@ -1052,7 +1062,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
     let result = async {
         let mut idle_passes = 0u8;
         loop {
-            if shared.fill_mode.get() == CacheFillMode::Play
+            if shared.engine.get().is_play()
                 || shared.player.borrow().state().playing
                 || !shared.player.borrow().metadata().scrub_policy().densify
                 || shared.scrub_densify_blocked.get()
@@ -1061,15 +1071,13 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             }
             // Settle / sync seek owns HW — exit so `scrub_busy` clears and the scrub
             // decoder is not pinned in a spin-wait (was starving exact on long GOPs).
-            if shared.hold_densify_for_exact.get() {
+            if shared.engine.get().holds_exact() {
                 shared.scrub_pending.set(true);
                 return Ok(());
             }
             // Pause/play bumped the fill epoch — adopt it and keep going if still scrubbing.
             if shared.scrub_epoch.get() != scrub_epoch {
-                if shared.fill_mode.get() != CacheFillMode::Scrub
-                    || shared.player.borrow().state().playing
-                {
+                if !shared.engine.get().allows_densify() || shared.player.borrow().state().playing {
                     return Ok(());
                 }
                 scrub_epoch = shared.scrub_epoch.get();
@@ -1119,7 +1127,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                 Err(MediaError::Cancelled) => {
                     // Settle/seek hold — exit so scrub HW yields immediately
                     // (do not spin/sleep; was competing with exact after long drag).
-                    if shared.hold_densify_for_exact.get() {
+                    if shared.engine.get().holds_exact() {
                         shared.scrub_pending.set(true);
                         return Ok(());
                     }
@@ -1146,12 +1154,12 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
 
     // While exact settle/seek holds densify, leave `scrub_pending` latched and do
     // **not** respawn — a spawn_local spin froze the tab (long-GOP cold scrub).
-    if shared.hold_densify_for_exact.get() {
+    if shared.engine.get().holds_exact() {
         return result;
     }
 
     let want_again = shared.scrub_pending.get()
-        && shared.fill_mode.get() == CacheFillMode::Scrub
+        && shared.engine.get().allows_densify()
         && !shared.player.borrow().state().playing
         && next_gap_target(&shared).is_some();
     shared.scrub_pending.set(false);
@@ -1177,7 +1185,7 @@ pub(super) fn apply_clip_budgets(shared: &Shared) {
     let buf_w = shared.canvas.width().max(1);
     let buf_h = shared.canvas.height().max(1);
     let full = scrub_blit_frame_budget(buf_w, buf_h, policy.blit_mib);
-    let blit_cap = if shared.fill_mode.get() == CacheFillMode::Play {
+    let blit_cap = if shared.engine.get().is_play() {
         let play_vfs = 1 + meta.play_policy().presentation_cap + PLAY_EXACT_VRAM_VF_SLACK;
         let reserve =
             exact_frames_to_free_for_play_vram(play_vfs, meta.width, meta.height, buf_w, buf_h);
@@ -1326,9 +1334,9 @@ pub(super) async fn fill_one_gap(
 
     let cancelled = || {
         shared.scrub_epoch.get() != scrub_epoch
-            || shared.fill_mode.get() == CacheFillMode::Play
+            || shared.engine.get().is_play()
             || shared.player.borrow().state().playing
-            || shared.hold_densify_for_exact.get()
+            || shared.engine.get().holds_exact()
     };
     if cancelled() {
         return Err(MediaError::Cancelled);

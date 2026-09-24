@@ -12,6 +12,7 @@ mod audio;
 mod bitstream;
 mod clock;
 mod demux;
+mod engine_mode;
 mod error;
 mod frame_index;
 mod host_op_coalesce;
@@ -49,6 +50,9 @@ pub use demux::{
     open_mp4_source, open_mp4_source_cached, open_mp4_source_cached_with_progress,
     open_mp4_source_with_progress, parse_mp4_progressive, parse_mp4_progressive_with_progress,
     read_ftyp_moov_stub, scan_top_level,
+};
+pub use engine_mode::{
+    AudioResume, EngineCmd, EngineEvent, EngineMode, EngineModel, reduce as engine_mode_reduce,
 };
 pub use error::MediaError;
 pub use frame_index::{FrameEntry, FrameIndex};

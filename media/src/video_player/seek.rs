@@ -1,5 +1,6 @@
 //! Seek / step orchestration for [`super::VideoPlayer`].
 
+use crate::engine_mode::{EngineEvent, reduce as engine_reduce};
 use crate::error::MediaError;
 use crate::types::FrameId;
 
@@ -13,7 +14,8 @@ impl VideoPlayer {
         // Exact VF — abort densify and hold so scrub HW cannot starve the cascade.
         // Densify blit is for scrub/step warm hits; seek always decodes VF.
         self.abort_scrub_fill(true);
-        self.shared.hold_densify_for_exact.set(true);
+        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
+        self.shared.engine.set(next);
         self.shared.restarting.set(true);
         let result = async {
             self.shared.player.borrow_mut().pause();
@@ -26,7 +28,8 @@ impl VideoPlayer {
         }
         .await;
         self.shared.restarting.set(false);
-        self.shared.hold_densify_for_exact.set(false);
+        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EndExact);
+        self.shared.engine.set(next);
         // Exact seek can leave main decodeQ elevated; idle before densify.
         if !self.is_current(epoch) {
             return Err(MediaError::Cancelled);

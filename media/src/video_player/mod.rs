@@ -21,6 +21,7 @@ use crate::decode::scrub_blit::BlitCanvasSlot;
 #[cfg(feature = "thumbs")]
 use crate::decode::thumb_preview::ThumbPreview;
 use crate::decode::webcodecs::WebCodecsDecoder;
+use crate::engine_mode::{EngineEvent, EngineModel, reduce as engine_reduce};
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
 use crate::types::{
@@ -51,7 +52,7 @@ pub const SHUTTLE_PRESENTATION_QUEUE_CAP: usize = 2;
 /// starves Chromium's pool (underrun hold ≈0.77× realtime on long-GOP). Forward play
 /// uses cap 0; Pause/scrub restores [`STEP_BEHIND_CAP`].
 pub const STEP_BEHIND_CAP: usize = 8;
-/// Behind ring while `CacheFillMode::Play` — drop aged VF immediately.
+/// Behind ring while play mode — drop aged VF immediately.
 const STEP_BEHIND_CAP_PLAY: usize = 0;
 /// Extra in-flight / held VF beyond displayed + presentation queue when sizing
 /// Exact trim on Play (YUV↔RGBA heuristic headroom).
@@ -78,15 +79,7 @@ struct QueuedFrame {
     video: OwnedVideoFrame,
 }
 
-/// Single playhead cache, two fill policies (presentation queue still delivers play).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CacheFillMode {
-    /// Ahead via presentation queue; gap-fill cancelled.
-    Play,
-    /// Paused/scrub: fill gaps near playhead (predictive along scrub dir when set).
-    Scrub,
-}
-
+/// Single playhead cache — fill policy lives in [`EngineModel`].
 struct Shared {
     player: RefCell<Player>,
     /// Ahead of playhead (presentation order). Cap [`PRESENTATION_QUEUE_CAP`].
@@ -117,7 +110,8 @@ struct Shared {
     /// Set while a fill is running so `schedule_scrub_cache_fill` can request another
     /// pass (avoids dropping work when pause/scrub bumps epoch mid-fill).
     scrub_pending: Cell<bool>,
-    fill_mode: Cell<CacheFillMode>,
+    /// Play vs scrub densify / exact hold + soft-hold audio.
+    engine: Cell<EngineModel>,
     /// Start frames decoded ahead of the loop seam (same decoder, while end plays).
     loop_prime: RefCell<Option<VecDeque<QueuedFrame>>>,
     canvas: HtmlCanvasElement,
@@ -132,9 +126,6 @@ struct Shared {
     underrun_hold_since_ms: Cell<Option<f64>>,
     /// Prefetch must idle while seek/loop prepare owns the decoder.
     restarting: Cell<bool>,
-    /// Settle / sync seek: pause densify so exact `goto_frame` owns HW.
-    /// Drag scrub leaves this false so gap-fill can warm the cache under the finger.
-    hold_densify_for_exact: Cell<bool>,
     preparing_loop: Cell<bool>,
     /// Bumped to cancel in-flight decode (mediabunny dispose / asyncId).
     op_epoch: Cell<u64>,
@@ -152,11 +143,6 @@ struct Shared {
     clock: RefCell<MediaClock>,
     /// Wall `performance.now()/1000` origin while playing without audio.
     wall_origin: Cell<Option<f64>>,
-    /// Soft-held audio after scrub-while-play — next arm uses
-    /// [`VideoPlayer::resume_media_clock`] (`restart_warm`), not cold `begin`.
-    /// `mediabunny: examples/media-player/media-player.ts` `pause` stops nodes /
-    /// returns the iterator; no `AudioDecoder` teardown.
-    audio_warm_resume: Cell<bool>,
     /// File-byte fetch coverage (demo scrubber gray strip).
     fetch_map: std::sync::Arc<crate::FetchMap>,
     file_size: u64,
@@ -400,7 +386,7 @@ impl VideoPlayer {
             scrub_epoch: Cell::new(0),
             scrub_busy: Cell::new(false),
             scrub_pending: Cell::new(false),
-            fill_mode: Cell::new(CacheFillMode::Scrub),
+            engine: Cell::new(EngineModel::new()),
             loop_prime: RefCell::new(None),
             canvas,
             ctx,
@@ -410,7 +396,6 @@ impl VideoPlayer {
             underrun_hold_ms: Cell::new(0.0),
             underrun_hold_since_ms: Cell::new(None),
             restarting: Cell::new(false),
-            hold_densify_for_exact: Cell::new(false),
             preparing_loop: Cell::new(false),
             op_epoch: Cell::new(0),
             decoder_reset: Cell::new(false),
@@ -420,7 +405,6 @@ impl VideoPlayer {
             audio: RefCell::new(audio),
             clock: RefCell::new(MediaClock::new()),
             wall_origin: Cell::new(None),
-            audio_warm_resume: Cell::new(false),
             fetch_map,
             file_size,
         });
@@ -498,7 +482,7 @@ impl VideoPlayer {
                         );
                         // Keep index well ahead of the playhead; only idle-yield when
                         // paused/scrubbing with ≥240 frames of lead.
-                        let playing = shared.fill_mode.get() == CacheFillMode::Play;
+                        let playing = shared.engine.get().is_play();
                         let playhead = shared.player.borrow().state().frame;
                         let indexed = track.indexed_frame_count();
                         let ahead = indexed.saturating_sub(playhead);
@@ -543,11 +527,11 @@ impl VideoPlayer {
                 // densify / settle / seek is busy (avoid GitHub/proxy 502 storms
                 // and sample-sized Range storms on URL).
                 // mediabunny: verifyKeyPackets on retrieve — no bg full-file walk
-                // during playback (`CacheFillMode::Play`).
-                if shared.fill_mode.get() == CacheFillMode::Play
+                // during playback (`EngineMode::Play`).
+                if shared.engine.get().is_play()
                     || shared.underrun_hold_since_ms.get().is_some()
                     || shared.scrub_busy.get()
-                    || shared.hold_densify_for_exact.get()
+                    || shared.engine.get().holds_exact()
                     || shared.restarting.get()
                 {
                     crate::util::yield_now().await;
@@ -780,7 +764,9 @@ impl VideoPlayer {
         };
         self.shared.wall_origin.set(None);
         self.shared.clock.borrow_mut().snap(t);
-        self.shared.audio_warm_resume.set(false);
+        let mut engine = self.shared.engine.get();
+        engine.audio = crate::AudioResume::Cold;
+        self.shared.engine.set(engine);
         t
     }
 
@@ -798,20 +784,23 @@ impl VideoPlayer {
         };
         self.shared.wall_origin.set(None);
         self.shared.clock.borrow_mut().snap(t);
-        self.shared.audio_warm_resume.set(true);
+        let mut engine = self.shared.engine.get();
+        engine.audio = crate::AudioResume::Warm;
+        self.shared.engine.set(engine);
         t
     }
 
     /// Consume the scrub soft-hold latch (true → warm audio resume).
     pub fn take_audio_warm_resume(&self) -> bool {
-        let warm = self.shared.audio_warm_resume.get();
-        self.shared.audio_warm_resume.set(false);
+        let mut engine = self.shared.engine.get();
+        let warm = engine.take_warm_audio();
+        self.shared.engine.set(engine);
         warm
     }
 
     /// True while soft-held after scrub-while-play (settle may seed play frames).
     pub(crate) fn audio_warm_resume(&self) -> bool {
-        self.shared.audio_warm_resume.get()
+        self.shared.engine.get().warm_audio()
     }
 
     /// Freeze the media clock while the presentation queue is empty.
@@ -962,7 +951,8 @@ impl VideoPlayer {
     }
 
     pub fn play(&self) {
-        self.shared.fill_mode.set(CacheFillMode::Play);
+        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EnterPlay);
+        self.shared.engine.set(next);
         // Cancel densify hard — do **not** rearm `scrub_pending` (Play must not
         // keep filling gaps). Keep scrub *markers*; trim Exact (ImageBitmap) by
         // Play VF VRAM estimate — evict farthest from playhead, do not wipe all
@@ -1013,6 +1003,11 @@ impl VideoPlayer {
         // Leaving play: cancel decode + scrub fill epoch (pending latch restarts fill).
         // Already paused: do not bump scrub_epoch (UI steps call pause every time).
         let was_playing = self.shared.player.borrow().state().playing;
+        let (next, _) = engine_reduce(
+            self.shared.engine.get(),
+            EngineEvent::EnterScrub { soft_audio },
+        );
+        self.shared.engine.set(next);
         if was_playing {
             self.cancel_ops_and_scrub_fill();
             if soft_audio {
@@ -1024,11 +1019,11 @@ impl VideoPlayer {
         }
         self.shared.player.borrow_mut().pause();
         self.clear_loop_prime();
-        // `prepare_scrub_settle` latches densify hold *before* the async scrub op;
+        // `prepare_scrub_settle` latches ExactHold *before* the async scrub op;
         // `run_seek_or_step` always called `pause()` which used to clear that latch
         // and re-kick densify — exact settle then raced the scrub decoder
         // (`decoder busy` / play-after-scrub resume fail on URL fMP4).
-        if self.shared.hold_densify_for_exact.get() {
+        if self.shared.engine.get().holds_exact() {
             return;
         }
         // Same pipeline as scrub drag / hold / release.
@@ -1041,8 +1036,8 @@ impl VideoPlayer {
             let shared = Rc::clone(&self.shared);
             wasm_bindgen_futures::spawn_local(async move {
                 yield_event_loop().await;
-                if shared.hold_densify_for_exact.get()
-                    || shared.fill_mode.get() == CacheFillMode::Play
+                if shared.engine.get().holds_exact()
+                    || shared.engine.get().is_play()
                     || shared.player.borrow().state().playing
                     || !shared.player.borrow().metadata().scrub_policy().densify
                 {
@@ -1277,7 +1272,7 @@ impl VideoPlayer {
     }
 
     fn step_behind_cap(&self) -> usize {
-        if self.shared.fill_mode.get() == CacheFillMode::Play {
+        if self.shared.engine.get().is_play() {
             STEP_BEHIND_CAP_PLAY
         } else {
             STEP_BEHIND_CAP
@@ -1316,7 +1311,7 @@ impl VideoPlayer {
     fn install_displayed(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
         let prev = self.shared.displayed.borrow_mut().take();
         if let Some(old) = prev {
-            if self.shared.fill_mode.get() == CacheFillMode::Play {
+            if self.shared.engine.get().is_play() {
                 // Play: close immediately — do not pin behind VFs (pool pressure).
                 drop(old.video);
             } else {
@@ -1597,7 +1592,7 @@ impl VideoPlayer {
 
     /// Play mode → draw + Exact ingest (no densify); scrub/seek → `present_and_cache`.
     fn present_for_mode(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
-        if self.is_playing() && self.shared.fill_mode.get() == CacheFillMode::Play {
+        if self.is_playing() && self.shared.engine.get().is_play() {
             self.present_play_frame(frame, video)
         } else {
             self.present_and_cache(frame, video)
