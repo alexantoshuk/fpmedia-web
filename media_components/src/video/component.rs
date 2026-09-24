@@ -496,7 +496,8 @@ pub fn Video(
                         }
                         HostOp::ScrubRelease {
                             frame: target,
-                            then_play, settle_gen,
+                            then_play,
+                            settle_gen,
                         } => {
                             queue.set_scrub_inflight(true);
                             let ok = run_seek_or_step(

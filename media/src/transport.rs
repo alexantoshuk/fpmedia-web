@@ -46,8 +46,12 @@ impl fmt::Display for TransportState {
             }
             Self::Settling {
                 resume,
-                frame, settle_gen,
-            } => write!(f, "Settling(resume={resume}, frame={frame}, settle_gen={settle_gen})"),
+                frame,
+                settle_gen,
+            } => write!(
+                f,
+                "Settling(resume={resume}, frame={frame}, settle_gen={settle_gen})"
+            ),
             Self::PlayPriming { from_scrub } => {
                 write!(f, "PlayPriming(from_scrub={from_scrub})")
             }
@@ -149,9 +153,7 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
         (_, E::OpenReady) => (S::Ready, vec![C::HardPause]),
 
         (S::Ready, E::PlayPressed) => (
-            S::PlayPriming {
-                from_scrub: false,
-            },
+            S::PlayPriming { from_scrub: false },
             vec![C::ClearEnded, C::EnqueuePlayPrime],
         ),
         (S::Playing, E::PausePressed) => (S::Ready, vec![C::HardPause]),
@@ -223,18 +225,21 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
             (
                 S::Settling {
                     resume,
-                    frame, settle_gen,
+                    frame,
+                    settle_gen,
                 },
                 vec![C::EnqueueScrubRelease {
                     frame,
-                    then_play: resume, settle_gen,
+                    then_play: resume,
+                    settle_gen,
                 }],
             )
         }
 
         (
             S::Settling {
-                settle_gen: settling_gen, ..
+                settle_gen: settling_gen,
+                ..
             },
             E::ScrubReleaseDone {
                 settle_gen,
@@ -244,7 +249,8 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
         ) if settle_gen == settling_gen => (S::Playing, vec![]),
         (
             S::Settling {
-                settle_gen: settling_gen, ..
+                settle_gen: settling_gen,
+                ..
             },
             E::ScrubReleaseDone {
                 settle_gen,
@@ -254,9 +260,14 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
         ) if settle_gen == settling_gen => (S::Ready, vec![]),
         (
             S::Settling {
-                settle_gen: settling_gen, ..
+                settle_gen: settling_gen,
+                ..
             },
-            E::ScrubReleaseDone { settle_gen, ok: false, .. },
+            E::ScrubReleaseDone {
+                settle_gen,
+                ok: false,
+                ..
+            },
         ) if settle_gen == settling_gen => (S::Ready, vec![]),
 
         // Stale / preempted release — ignore (keeps Scrubbing/Settling/Playing).
@@ -271,30 +282,32 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
         (S::Scrubbing { resume: true, .. } | S::Settling { resume: true, .. }, E::PlayPressed) => {
             (state, vec![])
         }
-        (S::Scrubbing { resume: false, .. } | S::Settling { resume: false, .. }, E::PlayPressed) => {
-            (
-                S::PlayPriming {
-                    from_scrub: false,
-                },
-                vec![C::PreemptScrub, C::ClearEnded, C::EnqueuePlayPrime],
-            )
-        }
+        (
+            S::Scrubbing { resume: false, .. } | S::Settling { resume: false, .. },
+            E::PlayPressed,
+        ) => (
+            S::PlayPriming { from_scrub: false },
+            vec![C::PreemptScrub, C::ClearEnded, C::EnqueuePlayPrime],
+        ),
         (S::Playing, E::PlayPressed) => (state, vec![]),
 
         (other, _) => (other, vec![]),
     };
 
-    (TransportModel { state, next_settle_gen }, cmds)
+    (
+        TransportModel {
+            state,
+            next_settle_gen,
+        },
+        cmds,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn step(
-        model: TransportModel,
-        event: TransportEvent,
-    ) -> (TransportModel, Vec<TransportCmd>) {
+    fn step(model: TransportModel, event: TransportEvent) -> (TransportModel, Vec<TransportCmd>) {
         reduce(model, event)
     }
 
@@ -312,12 +325,7 @@ mod tests {
             next_settle_gen: 1,
         };
         let (m, c) = step(m, TransportEvent::PlayPressed);
-        assert_eq!(
-            m.state,
-            TransportState::PlayPriming {
-                from_scrub: false
-            }
-        );
+        assert_eq!(m.state, TransportState::PlayPriming { from_scrub: false });
         assert!(c.contains(&TransportCmd::EnqueuePlayPrime));
     }
 
@@ -332,10 +340,16 @@ mod tests {
             }
         ));
         assert!(c.contains(&TransportCmd::SoftPauseForScrub));
-        assert!(!c.iter().any(|x| matches!(x, TransportCmd::EnqueueDrag { .. })));
+        assert!(
+            !c.iter()
+                .any(|x| matches!(x, TransportCmd::EnqueueDrag { .. }))
+        );
 
         let (m, c) = step(m, TransportEvent::PointerMove { frame: 12 });
-        assert!(!c.iter().any(|x| matches!(x, TransportCmd::EnqueueDrag { .. })));
+        assert!(
+            !c.iter()
+                .any(|x| matches!(x, TransportCmd::EnqueueDrag { .. }))
+        );
 
         let (m, c) = step(m, TransportEvent::PointerUp { frame: 12 });
         assert_eq!(
@@ -441,10 +455,7 @@ mod tests {
         );
         assert!(matches!(
             m.state,
-            TransportState::Settling {
-                resume: false,
-                ..
-            }
+            TransportState::Settling { resume: false, .. }
         ));
     }
 

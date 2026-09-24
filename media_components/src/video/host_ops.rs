@@ -202,11 +202,7 @@ pub(super) async fn run_seek_or_step(
         }
         SeekOrStep::ScrubRelease { target, then_play } => {
             let r = p.scrub_to(u64::from(target), true).await;
-            if r.is_ok()
-                && queue.is_current(id)
-                && !then_play
-                && !queue.has_pending_play()
-            {
+            if r.is_ok() && queue.is_current(id) && !then_play && !queue.has_pending_play() {
                 p.arm_scrub_densify_after_exact(u64::from(target));
             }
             r
