@@ -4,9 +4,9 @@
 
 ---
 
-## Handoff (2026-09-24)
+## Handoff (2026-09-25)
 
-**Stable baseline (use this):** closed-Range `UrlSource` + `UrlFetchGate` + `CachedSource` + sample-span coalesce. Play/decode OK after fMP4 lag fix. **Do not** re-land UrlSource half-ports without a full mediabunny cite.
+**Stable baseline:** closed-Range `UrlSource` + `UrlFetchGate` + `CachedSource` + sample-span coalesce. Domain SMs shipped through Session: transport, OpQueue, EngineMode, DecoderSlot, WorkloadMode, OpenPhase, ClockState, SessionModel. **Do not** re-land UrlSource half-ports without a full mediabunny cite.
 
 **Failed experiments (skills gotchas — read before touching byte IO):**
 
@@ -15,9 +15,11 @@
 
 **Cite for next real port:** `mediabunny: src/source.ts` `ReadOrchestrator` + `_runWorker` — `queuedReads`, open-ended body, inner-slice resolve when bytes arrive. `CachedSource` alone ≠ that hole model.
 
-**Commits to know:** `81d6829` fMP4 frame-130 lag; `e814ffd` coalesce; `8a7d6c6` / `b988918` docs (domain orch ADR + half-port reverts). Working tree should be clean on `main` after `b988918`.
+**Commits to know (SM streak):** `7df7d0a` OpenPhase; `c9a64ef` ClockState; `1ba01e0` SessionModel. Earlier: `cad13db` WorkloadMode; `935c176` DecoderSlot; `a029ef4` EngineMode; `fcf4cf0` OpQueue; `238cffc` transport.
 
-**Symptom still open:** gray scrubber strip on URL — slow / jumpy buffer (large blocks early, small near EOF is expected from quantum+`available`; holes/blur were from half-ports). Open UI = `OpenPhase`; timeline = `ClockState`; play-loop gates = `SessionModel` (host `PlaySession` still separate).
+**Symptom still open:** gray scrubber strip on URL — slow / jumpy buffer (large blocks early, small near EOF is expected from quantum+`available`; holes/blur were from half-ports). Engine open/clock/session status typed; host `PlaySession` still separate.
+
+**Paused until tomorrow:** full `ReadOrchestrator` port (pre-edit gate: cite + path match + no half-port).
 
 ---
 
