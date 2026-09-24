@@ -8,7 +8,7 @@
 
 ### Media engine
 
-- **Gray URL buffer (main pain):** port `ReadOrchestrator` (`mediabunny: src/source.ts`) — hole-merge, queued reads, `maxWorkerCount`; then open-ended stream **inside** workers. Closed Range + `UrlFetchGate` + coalesce stay until then. No global async priority OS — domain layers + shared `WorkloadMode` knobs (see `architecture.md` ADR).
+- **Gray URL buffer:** full mediabunny `ReadOrchestrator` deferred (closed-Range half-port + stream-without-queue both reverted — holes/blur/slow open). Today: closed Range + `UrlFetchGate` + coalesce. Later: stream inside workers + hole queue + inner-slice resolve; no-Range → `ReadableStreamSource`. Thin `WorkloadMode` (Play > Seek > Open > Bg).
 - Thin `WorkloadMode` / policy (Play > Seek > Open > Bg) so verify / densify / large prefetch yield correctly without one mega-queue.
 - Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — progressive open for host tests/CLI without loading whole file; replace `open_mp4_path`’s full `fs::read`.
 - Progressive-open follow-ups: no-Range → `ReadableStreamSource` (host full-download stays for now).

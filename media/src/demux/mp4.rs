@@ -1073,9 +1073,11 @@ pub async fn open_mp4_source_cached_with_progress(
             .get(n.saturating_sub(1))
             .map(|e| e.composition_timestamp().seconds)
             .unwrap_or(6.0);
+        progress("Warming media bytes…");
         v.warm_sample_bytes(0, n).await?;
         if let Some(a) = opened.audio.as_mut() {
             a.set_source(Arc::clone(&cached));
+            progress("Warming audio bytes…");
             a.warm_bytes_through(warm_secs).await?;
         }
     } else if let Some(a) = opened.audio.as_mut() {
@@ -1137,9 +1139,11 @@ pub async fn open_mp4_media_source_cached_with_progress(
             .get(n.saturating_sub(1))
             .map(|e| e.composition_timestamp().seconds)
             .unwrap_or(6.0);
+        progress("Warming media bytes…");
         v.warm_sample_bytes(0, n).await?;
         if let Some(a) = opened.audio.as_mut() {
             a.set_source(Arc::clone(&cached));
+            progress("Warming audio bytes…");
             a.warm_bytes_through(warm_secs).await?;
         }
     } else if let Some(a) = opened.audio.as_mut() {

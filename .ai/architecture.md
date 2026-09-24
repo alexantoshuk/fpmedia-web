@@ -76,7 +76,7 @@ webmedia/
 | Optional hover thumbs (`thumbs`) | Compile: cargo feature `thumbs` **default on**. Runtime: `ThumbPolicy::Off \| On`. Lazy `ThumbPreview` / `ThumbSink`: ThumbCache + 3rd decoder + sparse key fill in `decode/`; player Exact bridge. Pure size/gap helpers in `types`. UI: `HoverThumbPreview`. `mediabunny:` separate `CanvasSink` / `getCanvas` / `canvasesAtTimestamps`. |
 | Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA live in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` only volume/mute **API**. Keyboard/chrome stay in demo `app`. Future `<Audio>` shares `audio/` (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
 | Component API like HTML media | Element crates expose open/play/seek/rate/volume — not host keybindings. Scrubber strip math: `media_components::helpers`. Demo owns JKL/Space/arrows. |
-| Domain schedulers, not one global async OS | Byte IO → mediabunny-style `ReadOrchestrator` (queued holes / workers). Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode` / policy knobs** (Play > Seek > Open > Bg) for cross-layer tuning — **not** one priority queue for every `spawn_local` (WebCodecs / rAF / network are different resources). |
+| Domain schedulers, not one global async OS | Byte IO → future full mediabunny `ReadOrchestrator` (not half-ports — see `skills/media.md`). Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode` / policy knobs** (Play > Seek > Open > Bg) — **not** one priority queue for every `spawn_local`. |
 
 ---
 
@@ -86,7 +86,7 @@ webmedia/
 
 **Demo `/proxy` policy (fixed):** localhost-only for local tests / e2e. TCP peer must be loopback (`127.0.0.1` / `::1`, incl. IPv4-mapped); otherwise **403**. Keep `site-addr` on loopback. Not a production CORS proxy — no DNS-resolve / allowlist hardening. Host apps that need remote media supply their own same-origin fetch path.
 
-**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; **gray URL buffer** via full `ReadOrchestrator` hole-merge + open-ended stream inside workers / no-Range → `ReadableStreamSource` (phase‑1 abort-without-queue reverted). Thin `WorkloadMode` gates across verify/densify/prefetch. Sample-span coalesce shipped: `demux/coalesce.rs`.
+**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; gray URL buffer via **full** `ReadOrchestrator` (stream workers + hole queue + inner-slice resolve) / no-Range → `ReadableStreamSource` — closed-Range orch + aborting stream phase‑1 both reverted. Thin `WorkloadMode` gates. Sample-span coalesce shipped: `demux/coalesce.rs`.
 
 **Out of scope:** stream-only sources without random access; live / growing fMP4; DASH/HLS segment playlists; MSE remux; production open media proxy.
 
