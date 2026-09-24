@@ -21,6 +21,7 @@ mod host_op_coalesce;
 mod open_phase;
 mod playback_policy;
 mod player;
+mod session;
 mod source;
 mod transport;
 mod types;
@@ -74,6 +75,7 @@ pub use playback_policy::{
     EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
 };
 pub use player::{DecodeWindow, Player, PlayerState};
+pub use session::{SessionEvent, SessionModel, reduce as session_reduce};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use source::{BlobSource, UrlSource, UrlSourceOptions, is_no_http_range};
 pub use source::{

@@ -812,14 +812,14 @@ impl VideoPlayer {
             let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
             self.shared.engine.set(next);
             self.clear_scrub_direction();
-            self.shared.restarting.set(true);
+            self.apply_session_event(crate::SessionEvent::BeginRestart);
             self.aim_scrub_cache(frame);
         } else {
             // Drag: ExactHold → Scrub so densify can run under the finger.
             let mut engine = self.shared.engine.get();
             engine.mode = crate::EngineMode::Scrub;
             self.shared.engine.set(engine);
-            self.shared.restarting.set(true);
+            self.apply_session_event(crate::SessionEvent::BeginRestart);
             self.note_scrub_direction(frame);
             // Drag: kick densify immediately so the strip fills while the finger moves.
             self.enter_scrub_cache_pipeline(frame);
@@ -883,7 +883,7 @@ impl VideoPlayer {
             }
         }
         .await;
-        self.shared.restarting.set(false);
+        self.apply_session_event(crate::SessionEvent::EndRestart);
         // End ExactHold after settle/drag op (densify arm is host-gated on settle).
         let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EndExact);
         self.shared.engine.set(next);

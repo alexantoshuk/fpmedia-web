@@ -16,7 +16,7 @@ impl VideoPlayer {
         self.abort_scrub_fill(true);
         let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
         self.shared.engine.set(next);
-        self.shared.restarting.set(true);
+        self.apply_session_event(crate::SessionEvent::BeginRestart);
         let result = async {
             self.shared.player.borrow_mut().pause();
             self.clear_loop_prime();
@@ -27,7 +27,7 @@ impl VideoPlayer {
             self.goto_frame_with_interim(frame, epoch).await
         }
         .await;
-        self.shared.restarting.set(false);
+        self.apply_session_event(crate::SessionEvent::EndRestart);
         let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EndExact);
         self.shared.engine.set(next);
         // Exact seek can leave main decodeQ elevated; idle before densify.

@@ -97,8 +97,7 @@ impl VideoPlayer {
     /// True when the play prefetch loop should decode another ahead/behind frame.
     pub fn wants_play_prefetch(&self) -> bool {
         self.is_playing()
-            && !self.shared.restarting.get()
-            && !self.shared.preparing_loop.get()
+            && !self.shared.session.get().blocks_prefetch()
             && self.presentation_len() < self.play_presentation_cap()
     }
 
@@ -285,7 +284,7 @@ impl VideoPlayer {
     /// Used to freeze the media clock (not for `skip_behind`). Distinct from a
     /// healthy empty queue while waiting for the next frame's deadline.
     pub fn play_underrun_hold(&self) -> bool {
-        if !self.is_playing() || self.shared.restarting.get() {
+        if !self.is_playing() || self.shared.session.get().is_restarting() {
             return false;
         }
         // Shuttle: keep clock running (skip overdue when frames arrive).
@@ -488,7 +487,7 @@ impl VideoPlayer {
     /// decoder, end frames already queued) so this is only a buffer swap.
     pub async fn loop_to_start(&self) -> Result<(), MediaError> {
         let mut waits = 0_u32;
-        while self.shared.preparing_loop.get() && waits < 500 {
+        while self.shared.session.get().is_preparing_loop() && waits < 500 {
             sleep_ms(5).await;
             waits += 1;
         }
@@ -511,17 +510,19 @@ impl VideoPlayer {
         if !self.is_looping() || !self.is_playing() {
             return Ok(());
         }
-        if self.shared.loop_prime.borrow().is_some() || self.shared.preparing_loop.get() {
+        if self.shared.loop_prime.borrow().is_some()
+            || self.shared.session.get().is_preparing_loop()
+        {
             return Ok(());
         }
         if !self.presentation_reaches_eof() {
             return Ok(());
         }
 
-        self.shared.preparing_loop.set(true);
+        self.apply_session_event(crate::SessionEvent::BeginPrepareLoop);
         let epoch = self.shared.op_epoch.get();
         let result = self.fill_loop_prime(epoch).await;
-        self.shared.preparing_loop.set(false);
+        self.apply_session_event(crate::SessionEvent::EndPrepareLoop);
         result
     }
 
@@ -590,7 +591,7 @@ impl VideoPlayer {
 
     pub(super) async fn loop_to_start_cold(&self) -> Result<(), MediaError> {
         let epoch = self.begin_op();
-        self.shared.restarting.set(true);
+        self.apply_session_event(crate::SessionEvent::BeginRestart);
         let result = async {
             self.clear_loop_prime();
             self.clear_presentation();
@@ -611,7 +612,7 @@ impl VideoPlayer {
             Ok(())
         }
         .await;
-        self.shared.restarting.set(false);
+        self.apply_session_event(crate::SessionEvent::EndRestart);
         if !self.is_current(epoch) {
             return Err(MediaError::Cancelled);
         }
@@ -623,7 +624,7 @@ impl VideoPlayer {
     /// No-ops while restarting or preparing a loop prime — those paths own the
     /// decoder (`prime_presentation` / `fill_loop_prime`).
     pub async fn prefetch_one(&self) -> Result<bool, MediaError> {
-        if !self.is_playing() || self.shared.restarting.get() || self.shared.preparing_loop.get() {
+        if !self.is_playing() || self.shared.session.get().blocks_prefetch() {
             return Ok(false);
         }
         let epoch = self.shared.op_epoch.get();

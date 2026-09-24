@@ -28,6 +28,7 @@ use crate::decoder_slot::{
 use crate::engine_mode::{EngineEvent, EngineModel, reduce as engine_reduce};
 use crate::error::MediaError;
 use crate::player::{Player, PlayerState};
+use crate::session::{SessionEvent, SessionModel, reduce as session_reduce};
 use crate::types::{
     AudioMetadata, FrameId, GopProfile, ThumbPolicy, VideoMetadata, coalesce_frame_runs,
 };
@@ -134,9 +135,8 @@ struct Shared {
     underrun_hold_since_ms: Cell<Option<f64>>,
     /// Timeline phase ([`ClockState`]) — run / stop / underrun / scrub hold.
     clock_state: Cell<ClockState>,
-    /// Prefetch must idle while seek/loop prepare owns the decoder.
-    restarting: Cell<bool>,
-    preparing_loop: Cell<bool>,
+    /// Prefetch / seek-loop gates ([`SessionModel`]).
+    session: Cell<SessionModel>,
     /// Bumped to cancel in-flight decode (mediabunny dispose / asyncId).
     op_epoch: Cell<u64>,
     /// Exclusive main-decoder checkout + reset-pending ([`DecoderSlotModel`]).
@@ -161,7 +161,7 @@ impl Shared {
     fn workload_hints(&self) -> WorkloadHints {
         WorkloadHints::new(
             self.engine.get().mode,
-            self.restarting.get(),
+            self.session.get().is_restarting(),
             self.clock_state.get().underrun_holding(),
             self.scrub_busy.get(),
         )
@@ -416,8 +416,7 @@ impl VideoPlayer {
             underrun_hold_ms: Cell::new(0.0),
             underrun_hold_since_ms: Cell::new(None),
             clock_state: Cell::new(ClockState::Stopped),
-            restarting: Cell::new(false),
-            preparing_loop: Cell::new(false),
+            session: Cell::new(SessionModel::new()),
             op_epoch: Cell::new(0),
             decoder_slot: Cell::new(DecoderSlotModel::new()),
             fill_stalled_aim: Cell::new(None),
@@ -889,6 +888,11 @@ impl VideoPlayer {
         }
     }
 
+    fn apply_session_event(&self, event: SessionEvent) {
+        let next = session_reduce(self.shared.session.get(), event);
+        self.shared.session.set(next);
+    }
+
     fn note_underrun_hold_start(&self) {
         if self.shared.underrun_hold_since_ms.get().is_some() {
             return;
@@ -1141,7 +1145,7 @@ impl VideoPlayer {
     }
 
     pub fn is_restarting(&self) -> bool {
-        self.shared.restarting.get()
+        self.shared.session.get().is_restarting()
     }
 
     pub fn pipeline_stats(&self) -> PipelineStats {

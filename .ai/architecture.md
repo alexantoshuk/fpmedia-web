@@ -106,7 +106,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | Byte IO | hole queue / workers / inner-slice | half-ports → full mediabunny `ReadOrchestrator` |
 | Open / backfill | probe → warm index → ready | **`webmedia::open_phase`** (`OpenPhase::label` for UI status) |
 | Media clock | stop / run / underrun hold / scrub hold | **`webmedia::clock_state`** (`ClockState` + `reduce`) |
-| rAF session | priming / running / loop restart | `restarting` flag → `Session` |
+| rAF session | priming / running / loop restart | **`webmedia::session`** (`SessionModel` restarting + preparing_loop) |
 
 **Success bar:** a new race is fixed by a **transition or coalesce row**, not another flag. Typestate across `async` WASM is optional; a runtime enum + tested reduce is enough.
 
@@ -120,7 +120,7 @@ Skills keep failure-mode gotchas; this section is the standing design rule.
 
 **Demo `/proxy` policy (fixed):** localhost-only for local tests / e2e. TCP peer must be loopback (`127.0.0.1` / `::1`, incl. IPv4-mapped); otherwise **403**. Keep `site-addr` on loopback. Not a production CORS proxy — no DNS-resolve / allowlist hardening. Host apps that need remote media supply their own same-origin fetch path.
 
-**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; gray URL buffer via **full** `ReadOrchestrator` (stream workers + hole queue + inner-slice resolve) / no-Range → `ReadableStreamSource` — closed-Range orch + aborting stream phase‑1 both reverted. Sample-span coalesce shipped: `demux/coalesce.rs`. `WorkloadMode` policy shipped: `webmedia::workload`. Open UI progress shipped: `webmedia::open_phase` (`OpenPhase::label`). Media clock phase shipped: `webmedia::clock_state`.
+**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; gray URL buffer via **full** `ReadOrchestrator` (stream workers + hole queue + inner-slice resolve) / no-Range → `ReadableStreamSource` — closed-Range orch + aborting stream phase‑1 both reverted. Sample-span coalesce shipped: `demux/coalesce.rs`. `WorkloadMode` policy shipped: `webmedia::workload`. Open UI progress shipped: `webmedia::open_phase` (`OpenPhase::label`). Media clock phase shipped: `webmedia::clock_state`. Play-session latches shipped: `webmedia::session`.
 
 **Out of scope:** stream-only sources without random access; live / growing fMP4; DASH/HLS segment playlists; MSE remux; production open media proxy.
 
