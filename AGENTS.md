@@ -96,6 +96,7 @@ Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, 
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
 | Crate layout, layers, ADRs | `architecture.md` | Skills may keep a **module map** for one crate |
+| State machines over flag soup | `architecture.md` § State machines over flags | One-line pointer only — do not restate domain table in skills |
 | Backlog / priorities | `state.md` | Never a Done list; never copy into skills |
 | Engine traps / decode / scrub | `skills/media.md` | UI host points here for decode hangs |
 | Leptos / `<Video>` host traps | `skills/leptos.md` | Engine skill points here for UI stuck |

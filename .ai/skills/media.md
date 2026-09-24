@@ -52,7 +52,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Pause→Seek same / Prev→Next ≠ pause frame | Scrub cache `put_chunk` / present_and_cache | canvas must replace scrub resident |
 | Play lag right after scrub (long GOP) | Scrub cache + `skills/leptos.md` Play after scrub | seek restart / densify before PlayPrime |
 | Play→scrub→release ~1–2s pause (gray warm) | Soft audio + settle seed | `pause_for_scrub` / `hold_media_clock_for_scrub` (no AudioDecoder reset); settle seeds play presentation; PlayPrime `resume_media_clock` — gray=`FetchMap` only, key→N still costs |
-| Play after scrub no-op (esp. after EOF) | `skills/leptos.md` Play after scrub | stale clock / UI `playing` early; **or** scrub throttle trailing drag after settle kills PlayPrime |
+| Play after scrub no-op (esp. after EOF) | `webmedia::transport` + leptos host | `ScrubRelease { then_play }`; stale clock / UI `playing` early still apply |
 | A/V desync / silent play with audio track | [Audio + media clock](#audio--media-clock) | video must use `VideoPlayer::media_time()` (AudioContext), not host wall-clock |
 | Play silent after ~1 s / ~frame 30 (URL) | `UrlFetchGate` + audio ahead | sample reads must **bypass** gate; 8 MiB cache fill must not block AAC |
 | Scrub settle / seek-to-0 hangs; long `UrlSource Range` chain (~50 KB steps) | Deferred sync verify | settle must **not** `await_sync_verify_complete` — on-retrieve `ensure_key_verified` only; bg verify yields on Play / `restarting` |

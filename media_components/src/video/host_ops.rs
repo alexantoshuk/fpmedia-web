@@ -42,51 +42,11 @@ pub(super) fn enqueue_seek_step(
     }
 }
 
-/// Async scrub drag — always cancel in-flight decode; latest frame wins.
-pub(super) fn enqueue_scrub(
-    queue: &OpQueue,
-    kick_drain: &Rc<dyn Fn()>,
-    player: &PlayerHandle,
-    session: &Rc<RefCell<Option<PlaySession>>>,
-    playing: RwSignal<bool>,
-    frame: u32,
-    settle: bool,
-) {
-    if player.borrow().as_ref().is_none() {
-        return;
-    }
-    // Leaving play: soft-hold audio once (keep AudioDecoder). Already paused: do
-    // **not** call `VideoPlayer::pause` on every pointer sample (re-enters scrub
-    // pipeline / parks queue and can nest into Leptos event handlers → tachys
-    // `RefCell already borrowed`).
-    let leaving_play = playing.get_untracked();
-    if leaving_play {
-        playing.set(false);
-        let _ = session.borrow_mut().take();
-    }
-    if let Some(p) = player.borrow().as_ref().cloned() {
-        if leaving_play {
-            p.pause_for_scrub();
-        }
-        if settle {
-            // Abort densify + hold HW for exact *before* the async op runs.
-            // Do not `note_scrub_frame` — that kicks densify and starved settle.
-            p.prepare_scrub_settle(u64::from(frame));
-        } else {
-            p.clear_densify_hold();
-            p.cancel_ops();
-            p.note_scrub_frame(u64::from(frame));
-        }
-    }
-    if queue.enqueue_scrub(frame, settle) {
-        kick_drain();
-    }
-}
-
 pub(super) enum SeekOrStep {
     Seek(u32),
     SeekKeyframe(u32),
     Scrub { target: u32, settle: bool },
+    ScrubRelease { target: u32, then_play: bool },
     Step(bool),
 }
 
@@ -180,19 +140,22 @@ pub(super) async fn run_seek_or_step(
     playing: RwSignal<bool>,
     playhead: RwSignal<u32>,
     op: SeekOrStep,
-) {
+) -> bool {
     if !queue.is_current(id) {
-        return;
+        return false;
     }
     let Some(p) = player.borrow().as_ref().cloned() else {
-        return;
+        return false;
     };
     let _ = session.borrow_mut().take();
     playing.set(false);
     // Scrub settle: host already soft-paused on pointerdown and `prepare_scrub_settle`
     // latched densify hold. Calling hard `pause()` cleared that hold and re-kicked
     // densify under exact goto → `decoder busy` / resume Play no-op (URL fMP4).
-    let scrub_settle = matches!(&op, SeekOrStep::Scrub { settle: true, .. });
+    let scrub_settle = matches!(
+        &op,
+        SeekOrStep::Scrub { settle: true, .. } | SeekOrStep::ScrubRelease { .. }
+    );
     if scrub_settle {
         if p.is_playing() {
             p.pause_for_scrub();
@@ -208,6 +171,16 @@ pub(super) async fn run_seek_or_step(
                 format!("scrub settle {t}")
             } else {
                 format!("scrub {t}")
+            }
+        }
+        SeekOrStep::ScrubRelease {
+            target: t,
+            then_play,
+        } => {
+            if *then_play {
+                format!("scrub release+play {t}")
+            } else {
+                format!("scrub release {t}")
             }
         }
         SeekOrStep::Step(true) => "next".into(),
@@ -227,11 +200,22 @@ pub(super) async fn run_seek_or_step(
             }
             r
         }
+        SeekOrStep::ScrubRelease { target, then_play } => {
+            let r = p.scrub_to(u64::from(target), true).await;
+            if r.is_ok()
+                && queue.is_current(id)
+                && !then_play
+                && !queue.has_pending_play()
+            {
+                p.arm_scrub_densify_after_exact(u64::from(target));
+            }
+            r
+        }
         SeekOrStep::Step(true) => p.next_frame().await,
         SeekOrStep::Step(false) => p.previous_frame().await,
     };
     if !queue.is_current(id) {
-        return;
+        return false;
     }
     let done = match &result {
         Ok(()) => "ok",
@@ -255,6 +239,7 @@ pub(super) async fn run_seek_or_step(
         playhead.set(engine);
     }
     playing.set(false);
+    result.is_ok()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -271,12 +256,12 @@ pub(super) async fn run_play_prime(
     playhead: RwSignal<u32>,
     error: RwSignal<Option<String>>,
     fps: RwSignal<Option<f64>>,
-) {
+) -> bool {
     if !queue.is_current(id) || !ready.get_untracked() {
-        return;
+        return false;
     }
     let Some(p) = player.borrow().as_ref().cloned() else {
-        return;
+        return false;
     };
 
     // Sync engine to UI playhead only if still mismatched (e.g. settle cancelled
@@ -290,14 +275,14 @@ pub(super) async fn run_play_prime(
         );
         match p.seek_frame(u64::from(ph)).await {
             Ok(()) => {}
-            Err(e) if e.is_cancelled() => return,
+            Err(e) if e.is_cancelled() => return false,
             Err(e) => {
                 error.set(Some(e.to_string()));
-                return;
+                return false;
             }
         }
         if !queue.is_current(id) {
-            return;
+            return false;
         }
     }
 
@@ -318,7 +303,7 @@ pub(super) async fn run_play_prime(
         if p.is_playing() {
             p.pause();
         }
-        return;
+        return false;
     }
 
     web_sys::console::log_1(&"webmedia: play prime start".into());
@@ -338,11 +323,11 @@ pub(super) async fn run_play_prime(
         if p.is_playing() {
             p.pause();
         }
-        return;
+        return false;
     }
     if !prime_ok {
         stop_playback();
-        return;
+        return false;
     }
 
     let media_origin = p.state().timestamp.seconds;
@@ -360,13 +345,13 @@ pub(super) async fn run_play_prime(
             error.set(Some(e.to_string()));
             stop_playback();
         }
-        return;
+        return false;
     }
     if !still_queued() {
         if p.is_playing() {
             p.pause();
         }
-        return;
+        return false;
     }
     let last_ui_ms = performance_now_ms().unwrap_or(0.0);
 
@@ -448,6 +433,7 @@ pub(super) async fn run_play_prime(
     if still_queued() && playing.get_untracked() {
         resume_raf();
     }
+    still_queued() && playing.get_untracked()
 }
 
 /// Await one animation frame with a dedicated Closure (not Promise.resolve).

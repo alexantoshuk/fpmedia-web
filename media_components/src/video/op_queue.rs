@@ -31,10 +31,18 @@ pub(crate) enum HostOp {
     /// Nearest sync at/before frame.
     SeekKeyframe(u32),
     /// Timeline drag — cancelable; latest target wins (does not latch `busy`).
-    /// `settle` = pointer up (exact-first densify hold); drag keeps densify on.
+    /// Drag only (`settle=false`). Pointer-up uses [`HostOp::ScrubRelease`].
     Scrub {
         frame: u32,
         settle: bool,
+    },
+    /// Atomic pointer-up: exact settle, then optional play-prime in the same op
+    /// (`architecture.md` § State machines — no drag between settle and play).
+    ScrubRelease {
+        frame: u32,
+        then_play: bool,
+        /// Transport settle generation — late Done must match.
+        settle_gen: u64,
     },
     Step(bool),
     /// Prime presentation queue then start the play session / rAF.
@@ -93,44 +101,48 @@ impl OpQueue {
         self.begin_drain_locked(&mut st)
     }
 
-    /// Async scrub: drop pending seek/step/scrub (keep open). Drag also drops
-    /// pending PlayPrime. **Settle keeps PlayPrime** and inserts ahead of it so
-    /// play-after-scrub stays behind exact settle (`VideoRef::play` contract).
-    ///
-    /// Rule mirror: [`webmedia::apply_scrub`].
-    pub fn enqueue_scrub(&self, frame: u32, settle: bool) -> bool {
+    /// Async scrub drag: drop pending seek/step/scrub/release/play (keep open).
+    /// Rule mirror: [`webmedia::apply_scrub`] (`settle=false`).
+    pub fn enqueue_scrub_drag(&self, frame: u32) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
-        if settle {
-            st.pending
-                .retain(|(_, o)| matches!(o, HostOp::Open { .. } | HostOp::PlayPrime));
-            let scrub = (
-                id,
-                HostOp::Scrub {
-                    frame,
-                    settle: true,
-                },
-            );
-            if let Some(pos) = st
-                .pending
-                .iter()
-                .position(|(_, o)| matches!(o, HostOp::PlayPrime))
-            {
-                st.pending.insert(pos, scrub);
-            } else {
-                st.pending.push_back(scrub);
-            }
-        } else {
-            st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
-            st.pending.push_back((
-                id,
-                HostOp::Scrub {
-                    frame,
-                    settle: false,
-                },
-            ));
-        }
+        st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
+        st.pending.push_back((
+            id,
+            HostOp::Scrub {
+                frame,
+                settle: false,
+            },
+        ));
         self.begin_drain_locked(&mut st)
+    }
+
+    /// Atomic scrub release (settle ± play). Drops pending transport ops; keeps Open.
+    /// Rule mirror: [`webmedia::apply_scrub_release`].
+    pub fn enqueue_scrub_release(&self, frame: u32, then_play: bool, settle_gen: u64) -> bool {
+        let id = self.async_id.get();
+        let mut st = self.inner.borrow_mut();
+        st.pending.retain(|(_, o)| matches!(o, HostOp::Open { .. }));
+        st.pending.push_back((
+            id,
+            HostOp::ScrubRelease {
+                frame,
+                then_play, settle_gen,
+            },
+        ));
+        self.busy.set(true);
+        self.begin_drain_locked(&mut st)
+    }
+
+    /// Drop pending scrub / scrub-release / play (PreemptScrub). Keeps Open.
+    pub fn clear_pending_scrub_and_play(&self) {
+        self.inner.borrow_mut().pending.retain(|(_, o)| {
+            !matches!(
+                o,
+                HostOp::Scrub { .. } | HostOp::ScrubRelease { .. } | HostOp::PlayPrime
+            )
+        });
+        self.sync_busy();
     }
 
     /// Seek/step: drop pending seek/step/scrub/play (keep open), enqueue latest.
@@ -164,8 +176,8 @@ impl OpQueue {
     }
 
     /// Play-prime: replace a pending PlayPrime; do not cancel an in-flight open/seek.
-    /// Pending scrub settle is kept — Play waits for it (same playhead) instead of
-    /// cancelling and restarting the key→N cascade (`VideoRef::play` used to seek).
+    /// Pending scrub settle / ScrubRelease is kept — Play waits (or no-ops when
+    /// `ScrubRelease { then_play }` already owns play).
     /// Returns `true` to start drain.
     ///
     /// Rule mirror: [`webmedia::apply_play`]. Surviving scrub entries keep their
@@ -173,28 +185,36 @@ impl OpQueue {
     pub fn enqueue_play(&self) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
+        if st.pending.iter().any(|(_, o)| {
+            matches!(
+                o,
+                HostOp::ScrubRelease {
+                    then_play: true,
+                    ..
+                }
+            )
+        }) {
+            return self.begin_drain_locked(&mut st);
+        }
         st.pending.retain(|(_, o)| !matches!(o, HostOp::PlayPrime));
         st.pending.push_back((id, HostOp::PlayPrime));
         self.busy.set(true);
         self.begin_drain_locked(&mut st)
     }
 
-    /// True when a PlayPrime is waiting (settle should skip densify arm).
+    /// True when a PlayPrime or `ScrubRelease { then_play }` is waiting
+    /// (settle should skip densify arm).
     pub fn has_pending_play(&self) -> bool {
-        self.inner
-            .borrow()
-            .pending
-            .iter()
-            .any(|(_, o)| matches!(o, HostOp::PlayPrime))
-    }
-
-    /// Drop queued play-prime (pause). Caller bumps epoch separately.
-    pub fn clear_pending_play(&self) {
-        self.inner
-            .borrow_mut()
-            .pending
-            .retain(|(_, o)| !matches!(o, HostOp::PlayPrime));
-        self.sync_busy();
+        self.inner.borrow().pending.iter().any(|(_, o)| {
+            matches!(o, HostOp::PlayPrime)
+                || matches!(
+                    o,
+                    HostOp::ScrubRelease {
+                        then_play: true,
+                        ..
+                    }
+                )
+        })
     }
 
     /// Abort in-flight work and drop every pending op (close / unload).

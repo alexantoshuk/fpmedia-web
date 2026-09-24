@@ -77,6 +77,40 @@ webmedia/
 | Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA live in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` only volume/mute **API**. Keyboard/chrome stay in demo `app`. Future `<Audio>` shares `audio/` (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
 | Component API like HTML media | Element crates expose open/play/seek/rate/volume — not host keybindings. Scrubber strip math: `media_components::helpers`. Demo owns JKL/Space/arrows. |
 | Domain schedulers, not one global async OS | Byte IO → future full mediabunny `ReadOrchestrator` (not half-ports — see `skills/media.md`). Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode` / policy knobs** (Play > Seek > Open > Bg) — **not** one priority queue for every `spawn_local`. |
+| Prefer explicit state machines over flag soup | Cross-turn playback / queue / decode control belongs in one **enum + reduce** (or a coalesce table), not scattered `bool` latches + Effects + TLS. See [State machines over flags](#state-machines-over-flags). **Shipped (host):** `webmedia::transport` + `HostOp::ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
+
+---
+
+## State machines over flags
+
+Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed by more `RwSignal<bool>` or thread-local “remember to play”. Rust `Send`/`Sync` also does not order JS turns.
+
+**Prefer:**
+
+- One **state enum** per domain + a single sync `reduce(Event) -> (State, Cmds)`.
+- Illegal combinations unrepresentable (or `debug_assert` on bad transitions).
+- Queue invariants in the scheduler (`OpQueue` coalesce table / atomic ops like `ScrubRelease { then_play }`), not in demo chrome.
+- UI and engine call sites only **dispatch events** / run **cmds** — no parallel `pause` + `play` + `scrub` side paths.
+
+**Avoid:** sticky latches mirrored in demo + component + TLS; Effects that clear intent “when playing flips”; half-ported orchestrators that implement only part of a machine (see UrlSource half-ports in `skills/media.md`).
+
+**Domains (same idea, separate machines — do not merge into one god-loop):**
+
+| Domain | Machine owns | Today’s smell → target |
+| ------ | ------------ | ---------------------- |
+| Host transport | play / scrub / settle / prime / ended | **`webmedia::transport`** + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*` (demo chrome only maps pointers) |
+| OpQueue | merge/drop pending ops | drag drops `PlayPrime` vs settle keeps it → explicit coalesce table |
+| Engine mode | play vs scrub densify / soft-hold audio | `hold_densify_*` / `audio_warm_resume` latches → `EngineMode` |
+| Decoder slot | configure / feed / drain / reset | ad-hoc busy / flush rules → slot lifecycle |
+| WorkloadMode | Play > Seek > Open > Bg knobs | ad-hoc “pause verify while Play” → shared policy only |
+| Byte IO | hole queue / workers / inner-slice | half-ports → full mediabunny `ReadOrchestrator` |
+| Open / backfill | probe → warm index → ready | status strings → `OpenPhase` |
+| Media clock | stop / run / underrun hold / scrub hold | `hold_*` / `resume_*` / `start_*` ordering → `ClockState` |
+| rAF session | priming / running / loop restart | `restarting` flag → `Session` |
+
+**Success bar:** a new race is fixed by a **transition or coalesce row**, not another flag. Typestate across `async` WASM is optional; a runtime enum + tested reduce is enough.
+
+Skills keep failure-mode gotchas; this section is the standing design rule.
 
 ---
 

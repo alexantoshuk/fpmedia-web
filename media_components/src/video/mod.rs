@@ -8,6 +8,7 @@ mod host_ops;
 mod op_queue;
 mod open_url;
 mod session;
+mod transport_apply;
 
 pub use component::Video;
 pub use webmedia::{PipelineStats, ReadyFrameKind, ReadyFrameMark, ThumbPolicy, VideoMetadata};
@@ -64,9 +65,9 @@ pub(crate) struct VideoOps {
     pub seek_frame: Rc<dyn Fn(u32)>,
     /// Scrub-drag preview: nearest sync at/before frame (mediabunny `seekToKey`).
     pub seek_keyframe: Rc<dyn Fn(u32)>,
-    /// Async timeline scrub — cancelable exact seek (latest wins).
-    /// `settle` = pointer released (exact-first); drag keeps densify warming.
-    pub scrub_frame: Rc<dyn Fn(u32, bool)>,
+    pub scrub_pointer_down: Rc<dyn Fn(u32)>,
+    pub scrub_pointer_move: Rc<dyn Fn(u32)>,
+    pub scrub_pointer_up: Rc<dyn Fn(u32)>,
     pub next_frame: Rc<dyn Fn()>,
     pub previous_frame: Rc<dyn Fn()>,
     pub set_loop: Rc<dyn Fn(bool)>,
@@ -218,25 +219,58 @@ impl VideoRef {
     /// Updates [`Self::playhead`] immediately; does not latch `busy`.
     /// Densify runs while dragging so the cache warms under the finger.
     pub fn scrub_frame(&self, frame: u32) {
-        self.scrub_frame_inner(frame, false);
+        self.scrub_pointer_move(frame);
     }
 
     /// Pointer-up settle — exact frame first (hold densify), then densify the GOP.
     pub fn scrub_settle(&self, frame: u32) {
-        self.scrub_frame_inner(frame, true);
+        // Legacy: down+up through transport (atomic ScrubRelease).
+        self.scrub_pointer_down(frame);
+        self.scrub_pointer_up(frame);
     }
 
-    fn scrub_frame_inner(&self, frame: u32, settle: bool) {
+    /// Timeline pointer down — transport FSM (`architecture.md` § State machines).
+    pub fn scrub_pointer_down(&self, frame: u32) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
         self.ended.set(false);
         self.playhead.set(frame);
-        if let Some(scrub) = self
+        if let Some(f) = self
             .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_frame)))
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_pointer_down)))
             .flatten()
         {
-            scrub(frame, settle);
+            f(frame);
+        }
+    }
+
+    /// Timeline pointer move while scrubbing.
+    pub fn scrub_pointer_move(&self, frame: u32) {
+        let max = self.frame_count.get_untracked().saturating_sub(1);
+        let frame = frame.min(max);
+        self.ended.set(false);
+        self.playhead.set(frame);
+        if let Some(f) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_pointer_move)))
+            .flatten()
+        {
+            f(frame);
+        }
+    }
+
+    /// Timeline pointer up — settle (± resume play when scrub began while playing).
+    pub fn scrub_pointer_up(&self, frame: u32) {
+        let max = self.frame_count.get_untracked().saturating_sub(1);
+        let frame = frame.min(max);
+        self.ended.set(false);
+        self.playhead.set(frame);
+        if let Some(f) = self
+            .ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_pointer_up)))
+            .flatten()
+        {
+            f(frame);
         }
     }
 

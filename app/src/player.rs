@@ -36,55 +36,42 @@ fn jkl_step(rate: f64, dir: i32) -> f64 {
     JKL_STEPS[next]
 }
 
-/// Coalesce scrub engine work after the Leptos/tachys event callback releases its
-/// `RefCell`. Duplicate targets (left-edge clamp spams `frame=0`) collapse to one
-/// pending sample so microtasks do not pile up and re-enter cache inserts.
-/// `settle` = pointer up (exact-first); drag keeps densify on.
-/// `resume_play` = after the coalesced settle is applied, enqueue PlayPrime
-/// (must not call `play()` before settle is queued — `enqueue_scrub` drops PlayPrime).
-fn defer_scrub(video: VideoRef, frame: u32, settle: bool) {
-    defer_scrub_inner(video, frame, settle, false);
-}
-
-fn defer_scrub_finish(video: VideoRef, frame: u32, resume_play: bool) {
-    defer_scrub_inner(video, frame, true, resume_play);
-}
-
-fn defer_scrub_inner(video: VideoRef, frame: u32, settle: bool, resume_play: bool) {
+/// Defer scrub pointer work off the Leptos/tachys event callback (`RefCell`).
+/// Transport FSM + OpQueue own resume/settle; this only coalesces targets.
+fn defer_scrub_pointer(video: VideoRef, frame: u32, phase: ScrubPointerPhase) {
     thread_local! {
-        static PENDING: std::cell::Cell<Option<(u32, bool)>> =
+        static PENDING: std::cell::Cell<Option<(u32, ScrubPointerPhase)>> =
             const { std::cell::Cell::new(None) };
         static SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-        static RESUME_PLAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
-    PENDING.with(|p| p.set(Some((frame, settle))));
-    if resume_play {
-        RESUME_PLAY.with(|r| r.set(true));
-    }
+    PENDING.with(|p| p.set(Some((frame, phase))));
     if SCHEDULED.with(|s| s.get()) {
         return;
     }
     SCHEDULED.with(|s| s.set(true));
     spawn_local(async move {
-        while let Some((frame, settle)) = PENDING.with(|p| p.take()) {
-            if settle {
-                video.scrub_settle(frame);
-            } else {
-                video.scrub_frame(frame);
+        while let Some((frame, phase)) = PENDING.with(|p| p.take()) {
+            match phase {
+                ScrubPointerPhase::Down => video.scrub_pointer_down(frame),
+                ScrubPointerPhase::Move => video.scrub_pointer_move(frame),
+                ScrubPointerPhase::Up => video.scrub_pointer_up(frame),
             }
             if PENDING.with(|p| p.get().is_none()) {
                 break;
             }
         }
         SCHEDULED.with(|s| s.set(false));
-        // Play **after** settle enqueue so PlayPrime stays behind scrub in OpQueue.
-        if RESUME_PLAY.with(|r| r.replace(false)) {
-            video.play();
-        }
-        if let Some((frame, settle)) = PENDING.with(|p| p.get()) {
-            defer_scrub_inner(video, frame, settle, false);
+        if let Some((frame, phase)) = PENDING.with(|p| p.get()) {
+            defer_scrub_pointer(video, frame, phase);
         }
     });
+}
+
+#[derive(Clone, Copy)]
+enum ScrubPointerPhase {
+    Down,
+    Move,
+    Up,
 }
 
 #[component]
@@ -747,14 +734,12 @@ pub fn DemoPlayer() -> impl IntoView {
 
 /// Timeline scrubber — bar follows [`VideoRef::playhead`] (potential frame).
 ///
-/// Scrub updates playhead immediately and decodes async without latching `busy`.
-/// Prev/Next/Seek/Play/Pause also drive `playhead` and commit via sync ops.
+/// Transport FSM (`VideoRef::scrub_pointer_*`) owns play↔scrub resume; this
+/// chrome only maps pointer events and keeps the bar in sync with the cursor.
 /// Hover thumbs: [`HoverThumbPreview`] chrome (Play+Pause; hide while scrubbing).
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
-    // Scrub began while playing → resume after pointer-up settle.
-    let resume_after_scrub = RwSignal::new(false);
     let thumb_api = StoredValue::new_local(None::<HoverThumbApi>);
 
     let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
@@ -781,9 +766,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
     let finish_scrub = move || {
         scrubbing.set(false);
         let frame = video.playhead.get_untracked();
-        let resume = resume_after_scrub.get_untracked();
-        resume_after_scrub.set(false);
-        defer_scrub_finish(video, frame, resume);
+        defer_scrub_pointer(video, frame, ScrubPointerPhase::Up);
     };
 
     view! {
@@ -807,19 +790,12 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 if let Ok(html) = el.clone().dyn_into::<web_sys::HtmlElement>() {
                     let _ = html.set_pointer_capture(ev.pointer_id());
                 }
-                if video.playing.get_untracked() {
-                    resume_after_scrub.set(true);
-                    video.pause();
-                } else {
-                    resume_after_scrub.set(false);
-                }
                 scrubbing.set(true);
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
-                    // Playhead must track the pointer immediately — `defer_scrub`
-                    // only enqueues engine work (microtask); waiting for it made
-                    // the bar lag the cursor while densify/URL held the thread.
+                    // Playhead tracks the pointer immediately — deferred transport
+                    // work must not stall the bar.
                     video.playhead.set(frame);
-                    defer_scrub(video, frame, false);
+                    defer_scrub_pointer(video, frame, ScrubPointerPhase::Down);
                 }
             }
             on:pointermove=move |ev| {
@@ -829,7 +805,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 if scrubbing.get_untracked() {
                     if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
                         video.playhead.set(frame);
-                        defer_scrub(video, frame, false);
+                        defer_scrub_pointer(video, frame, ScrubPointerPhase::Move);
                     }
                     return;
                 }

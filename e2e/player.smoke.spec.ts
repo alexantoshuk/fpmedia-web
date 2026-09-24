@@ -148,6 +148,41 @@ test.describe("demo player smoke", () => {
     expect(await player.error.innerText()).toBe("");
   });
 
+  test("Play then multi-tap scrubber resumes", async ({ page }) => {
+    const player = new DemoPlayer(page);
+    await player.goto();
+    await player.openFixture(FIXTURES.shortGop);
+
+    await player.play.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(true);
+    await expect
+      .poll(async () => (await player.readStatus()).playhead ?? 0)
+      .toBeGreaterThan(0);
+
+    const box = await player.scrubber.boundingBox();
+    if (!box) throw new Error("scrubber has no bounding box");
+    const y = box.y + box.height / 2;
+    // Burst of taps (bug needs frequent clicks) — drag between settle/play
+    // must not drop PlayPrime / clear resume latch.
+    const fractions = [0.3, 0.5, 0.4, 0.6, 0.35, 0.55, 0.45];
+    for (const fraction of fractions) {
+      const x = box.x + box.width * fraction;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.up();
+    }
+
+    await expect
+      .poll(async () => (await player.readStatus()).playing, {
+        timeout: 15_000,
+        message: "multi-tap scrub while Play left player paused",
+      })
+      .toBe(true);
+    expect(await player.error.innerText()).toBe("");
+  });
+
   test("Pause after play densifies dense cache", async ({ page }) => {
     const player = new DemoPlayer(page);
     await player.goto();

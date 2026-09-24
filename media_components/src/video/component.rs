@@ -12,15 +12,16 @@ use leptos_use::{
 };
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
-use webmedia::{BlobSource, DuePresent, MediaSource};
+use webmedia::{BlobSource, DuePresent, MediaSource, TransportEvent};
 
 use super::host_ops::{
-    PlayerHandle, SeekOrStep, enqueue_scrub, enqueue_seek_step, run_open, run_play_prime,
-    run_seek_or_step, wait_animation_frame,
+    PlayerHandle, SeekOrStep, enqueue_seek_step, run_open, run_play_prime, run_seek_or_step,
+    wait_animation_frame,
 };
 use super::op_queue::{HostOp, OpQueue};
 use super::open_url::{resolve_url_source, same_origin_media_proxy_url};
 use super::session::{FpsMeter, PlaySession, performance_now_ms};
+use super::transport_apply::{dispatch_transport, new_transport, note_transport};
 use super::{VideoOps, VideoRef};
 
 /// Frame-accurate media element (HTML `<video>` analog).
@@ -60,6 +61,7 @@ pub fn Video(
 
     // mediabunny CallSerializer + asyncId — one queue for open / seek / play-prime.
     let queue = OpQueue::new(busy);
+    let transport = new_transport();
 
     let sync_ui = {
         let player = Rc::clone(&player);
@@ -100,9 +102,9 @@ pub fn Video(
         let sync_ui = Rc::clone(&sync_ui);
         let queue = queue.clone();
         Rc::new(move || {
-            // Abort in-flight play-prime / prefetch; drop queued PlayPrime.
+            // Abort in-flight play-prime / scrub-release / prefetch.
             queue.bump();
-            queue.clear_pending_play();
+            queue.clear_pending_scrub_and_play();
             let leaving_play = playing.get_untracked();
             playing.set(false);
             let _ = session.borrow_mut().take();
@@ -135,6 +137,7 @@ pub fn Video(
             let fps_meter = Rc::clone(&fps_meter);
             let sync_ui = Rc::clone(&sync_ui);
             let stop_playback = Rc::clone(&stop_playback);
+            let transport = transport.clone();
             move |_| {
                 // Play path: normal present/prefetch UI.
                 // Pause path: still tick so gap-fill strip marks update (fill is async).
@@ -200,6 +203,7 @@ pub fn Video(
                 match outcome {
                     Ok(DuePresent::Ended) => {
                         ended.set(true);
+                        note_transport(&transport, TransportEvent::Ended);
                         stop_playback();
                         status.set("Ended.".into());
                     }
@@ -394,6 +398,7 @@ pub fn Video(
         let sync_ui = Rc::clone(&sync_ui);
         let stop_playback = Rc::clone(&stop_playback);
         let resume_raf = resume_raf.clone();
+        let transport = transport.clone();
         Rc::new(move || {
             let queue = queue.clone();
             let player = Rc::clone(&player);
@@ -402,6 +407,7 @@ pub fn Video(
             let sync_ui = Rc::clone(&sync_ui);
             let stop_playback = Rc::clone(&stop_playback);
             let resume_raf = resume_raf.clone();
+            let transport = transport.clone();
             // IMPORTANT: wasm_bindgen_futures::spawn_local (not leptos) — open may
             // be invoked from the file-input handler outside a reactive owner.
             spawn_local(async move {
@@ -437,9 +443,12 @@ pub fn Video(
                                 playback_rate,
                             )
                             .await;
+                            if queue.is_current(id) && ready.get_untracked() {
+                                note_transport(&transport, TransportEvent::OpenReady);
+                            }
                         }
                         HostOp::Seek(target) => {
-                            run_seek_or_step(
+                            let _ = run_seek_or_step(
                                 &queue,
                                 id,
                                 &player,
@@ -453,7 +462,7 @@ pub fn Video(
                             .await;
                         }
                         HostOp::SeekKeyframe(target) => {
-                            run_seek_or_step(
+                            let _ = run_seek_or_step(
                                 &queue,
                                 id,
                                 &player,
@@ -471,7 +480,7 @@ pub fn Video(
                             settle,
                         } => {
                             queue.set_scrub_inflight(true);
-                            run_seek_or_step(
+                            let _ = run_seek_or_step(
                                 &queue,
                                 id,
                                 &player,
@@ -485,8 +494,63 @@ pub fn Video(
                             .await;
                             queue.set_scrub_inflight(false);
                         }
+                        HostOp::ScrubRelease {
+                            frame: target,
+                            then_play, settle_gen,
+                        } => {
+                            queue.set_scrub_inflight(true);
+                            let ok = run_seek_or_step(
+                                &queue,
+                                id,
+                                &player,
+                                &sync_ui,
+                                &session,
+                                error,
+                                playing,
+                                playhead,
+                                SeekOrStep::ScrubRelease { target, then_play },
+                            )
+                            .await;
+                            queue.set_scrub_inflight(false);
+                            let mut played_ok = false;
+                            if ok && then_play && queue.is_current(id) {
+                                played_ok = run_play_prime(
+                                    &queue,
+                                    id,
+                                    &player,
+                                    &session,
+                                    &fps_meter,
+                                    &stop_playback,
+                                    &resume_raf,
+                                    ready,
+                                    playing,
+                                    playhead,
+                                    error,
+                                    fps,
+                                )
+                                .await;
+                            }
+                            // Only note if this release is still current — preempt
+                            // bumps the epoch. Also require UI `playing` when
+                            // then_play succeeded (soft-pause may have raced).
+                            if queue.is_current(id) {
+                                let ok_final = if then_play {
+                                    played_ok && playing.get_untracked()
+                                } else {
+                                    ok
+                                };
+                                note_transport(
+                                    &transport,
+                                    TransportEvent::ScrubReleaseDone {
+                                        settle_gen,
+                                        then_play,
+                                        ok: ok_final,
+                                    },
+                                );
+                            }
+                        }
                         HostOp::Step(forward) => {
-                            run_seek_or_step(
+                            let _ = run_seek_or_step(
                                 &queue,
                                 id,
                                 &player,
@@ -504,7 +568,7 @@ pub fn Video(
                             wait_animation_frame().await;
                         }
                         HostOp::PlayPrime => {
-                            run_play_prime(
+                            let ok = run_play_prime(
                                 &queue,
                                 id,
                                 &player,
@@ -519,6 +583,16 @@ pub fn Video(
                                 fps,
                             )
                             .await;
+                            if queue.is_current(id) {
+                                note_transport(
+                                    &transport,
+                                    if ok {
+                                        TransportEvent::PlayPrimeDone
+                                    } else {
+                                        TransportEvent::PlayPrimeFailed
+                                    },
+                                );
+                            }
                         }
                     }
                 }
@@ -649,6 +723,8 @@ pub fn Video(
         let session = Rc::clone(&session);
         let queue = queue.clone();
         let kick_drain = Rc::clone(&kick_drain);
+        let transport = transport.clone();
+        let stop_playback = Rc::clone(&stop_playback);
         Rc::new(move || {
             if !ready.get_untracked() {
                 web_sys::console::log_1(&"webmedia: play ignored (not ready)".into());
@@ -670,9 +746,41 @@ pub fn Video(
                 web_sys::console::log_1(&"webmedia: play ignored (no player)".into());
                 return;
             }
-            if queue.enqueue_play() {
-                kick_drain();
-            }
+            dispatch_transport(
+                &transport,
+                TransportEvent::PlayPressed,
+                &queue,
+                &kick_drain,
+                &player,
+                &session,
+                playing,
+                playhead,
+                ended,
+                &stop_playback,
+            );
+        }) as Rc<dyn Fn()>
+    };
+
+    let pause_fn = {
+        let player = Rc::clone(&player);
+        let session = Rc::clone(&session);
+        let queue = queue.clone();
+        let kick_drain = Rc::clone(&kick_drain);
+        let transport = transport.clone();
+        let stop_playback = Rc::clone(&stop_playback);
+        Rc::new(move || {
+            dispatch_transport(
+                &transport,
+                TransportEvent::PausePressed,
+                &queue,
+                &kick_drain,
+                &player,
+                &session,
+                playing,
+                playhead,
+                ended,
+                &stop_playback,
+            );
         }) as Rc<dyn Fn()>
     };
 
@@ -711,57 +819,92 @@ pub fn Video(
     };
 
     // Rate-limit scrub drag only — pointermove is denser than key-repeat.
-    // Next/Prev: OpQueue coalesce + hold-safe playhead aim (no throttle).
-    // Settle (pointer up) stays immediate — exact must not wait for a throttle window.
+    // Settle / release stays immediate via transport ScrubRelease.
     const SCRUB_DRAG_THROTTLE_MS: f64 = 50.0;
 
-    let scrub_drag_throttled = {
+    let scrub_pointer_move_throttled = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
         let queue = queue.clone();
         let kick_drain = Rc::clone(&kick_drain);
+        let transport = transport.clone();
+        let stop_playback = Rc::clone(&stop_playback);
         use_throttle_fn_with_arg_and_options(
             move |target: u32| {
-                enqueue_scrub(
+                dispatch_transport(
+                    &transport,
+                    TransportEvent::PointerMove { frame: target },
                     &queue,
                     &kick_drain,
                     &player,
                     &session,
                     playing,
-                    target,
-                    false,
+                    playhead,
+                    ended,
+                    &stop_playback,
                 );
             },
             SCRUB_DRAG_THROTTLE_MS,
             // trailing=false: a post-pointerup trailing drag can enqueue after
-            // settle + PlayPrime and silently kill play (EOF→scrub→Play smoke).
-            // Settle already exacts the live playhead; trailing is redundant.
+            // ScrubRelease and silently kill play.
             ThrottleOptions::default().leading(true).trailing(false),
         )
     };
 
-    let scrub_fn = {
+    let scrub_pointer_down_fn = {
         let player = Rc::clone(&player);
         let session = Rc::clone(&session);
         let queue = queue.clone();
         let kick_drain = Rc::clone(&kick_drain);
-        let scrub_drag_throttled = scrub_drag_throttled.clone();
-        Rc::new(move |target: u32, settle: bool| {
-            if settle {
-                enqueue_scrub(
-                    &queue,
-                    &kick_drain,
-                    &player,
-                    &session,
-                    playing,
-                    target,
-                    true,
-                );
-            } else {
-                scrub_drag_throttled(target);
-            }
-        }) as Rc<dyn Fn(u32, bool)>
+        let transport = transport.clone();
+        let stop_playback = Rc::clone(&stop_playback);
+        Rc::new(move |target: u32| {
+            dispatch_transport(
+                &transport,
+                TransportEvent::PointerDown { frame: target },
+                &queue,
+                &kick_drain,
+                &player,
+                &session,
+                playing,
+                playhead,
+                ended,
+                &stop_playback,
+            );
+        }) as Rc<dyn Fn(u32)>
     };
+
+    let scrub_pointer_move_fn = {
+        let scrub_pointer_move_throttled = scrub_pointer_move_throttled.clone();
+        Rc::new(move |target: u32| {
+            scrub_pointer_move_throttled(target);
+        }) as Rc<dyn Fn(u32)>
+    };
+
+    let scrub_pointer_up_fn = {
+        let player = Rc::clone(&player);
+        let session = Rc::clone(&session);
+        let queue = queue.clone();
+        let kick_drain = Rc::clone(&kick_drain);
+        let transport = transport.clone();
+        let stop_playback = Rc::clone(&stop_playback);
+        Rc::new(move |target: u32| {
+            dispatch_transport(
+                &transport,
+                TransportEvent::PointerUp { frame: target },
+                &queue,
+                &kick_drain,
+                &player,
+                &session,
+                playing,
+                playhead,
+                ended,
+                &stop_playback,
+            );
+        }) as Rc<dyn Fn(u32)>
+    };
+
+    // Legacy settle/drag API removed — use scrub_pointer_* (transport FSM).
 
     let next_fn = {
         let player = Rc::clone(&player);
@@ -904,7 +1047,9 @@ pub fn Video(
         let session = Rc::clone(&session);
         let fps_meter = Rc::clone(&fps_meter);
         let queue = queue.clone();
+        let transport = transport.clone();
         Rc::new(move || {
+            note_transport(&transport, TransportEvent::Closed);
             queue.cancel_all();
             playing.set(false);
             let _ = session.borrow_mut().take();
@@ -933,11 +1078,13 @@ pub fn Video(
         open_blob,
         open_url,
         play: play_fn,
-        pause: stop_playback,
+        pause: pause_fn,
         close: Rc::clone(&close_fn),
         seek_frame: seek_fn,
         seek_keyframe: seek_keyframe_fn,
-        scrub_frame: scrub_fn,
+        scrub_pointer_down: scrub_pointer_down_fn,
+        scrub_pointer_move: scrub_pointer_move_fn,
+        scrub_pointer_up: scrub_pointer_up_fn,
         next_frame: next_fn,
         previous_frame: prev_fn,
         set_loop: set_loop_fn,
