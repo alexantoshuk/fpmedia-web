@@ -83,9 +83,11 @@ webmedia/
 
 **Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` / `MemorySource` + `CachedSource` (512 MiB byte-budget LRU, 8 MiB quantum + hit-path margin prefetch / network grow; mediabunny `UrlSource` default is 64 MiB — we keep more for high-RTT `/proxy`); scrubber gray strip mirrors resident windows via `FetchMap`. Top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`; `open_url` rewrites remote `http(s)` to same-origin **`/proxy?url=`** (demo Axum forwards `Range`; bypasses GitHub Release / S3 CORS), then HTTP Range when the upstream supports `206` (else full-download fallback). Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
 
+**Demo `/proxy` policy (fixed):** localhost-only for local tests / e2e. TCP peer must be loopback (`127.0.0.1` / `::1`, incl. IPv4-mapped); otherwise **403**. Keep `site-addr` on loopback. Not a production CORS proxy — no DNS-resolve / allowlist hardening. Host apps that need remote media supply their own same-origin fetch path.
+
 **Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; coalesce adjacent sample ranges; UrlSource parallel workers / sequential no-Range stream (mediabunny orchestrator).
 
-**Out of scope:** stream-only sources without random access; live / growing fMP4; DASH/HLS segment playlists; MSE remux.
+**Out of scope:** stream-only sources without random access; live / growing fMP4; DASH/HLS segment playlists; MSE remux; production open media proxy.
 
 **Success bar:** 1080p progressive open to first paint without allocating the full media size in WASM.
 

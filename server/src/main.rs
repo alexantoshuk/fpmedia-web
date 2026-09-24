@@ -1,7 +1,10 @@
 //! Demo Axum shell: static site + same-origin media proxy (CORS bypass for Range GETs).
+//!
+//! `/proxy` is **localhost-only** (local tests / e2e). Non-loopback peers get 403.
+//! Not a production open proxy — no DNS/resolve hardening beyond existing URL checks.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -9,7 +12,7 @@ use std::time::{Duration, Instant};
 use axum::{
     Router,
     body::Body,
-    extract::{Query, State},
+    extract::{ConnectInfo, Query, State},
     http::{
         HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
         header::{
@@ -71,11 +74,16 @@ async fn main() {
         });
 
     log!("listening on http://{}", &addr);
-    log!("media proxy: GET/HEAD /proxy?url=<encoded https URL> (forwards Range)");
+    log!(
+        "media proxy: GET/HEAD /proxy?url=<encoded https URL> (forwards Range; loopback peers only)"
+    );
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app.into_make_service())
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 #[derive(Clone)]
@@ -91,7 +99,10 @@ struct ProxyQuery {
     url: String,
 }
 
-async fn proxy_preflight() -> impl IntoResponse {
+async fn proxy_preflight(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    ensure_loopback_peer(peer)?;
     let mut res = Response::new(Body::empty());
     *res.status_mut() = StatusCode::NO_CONTENT;
     add_cors_headers(res.headers_mut());
@@ -105,7 +116,7 @@ async fn proxy_preflight() -> impl IntoResponse {
     );
     res.headers_mut()
         .insert(ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("86400"));
-    res
+    Ok(res)
 }
 
 fn cached_redirect(state: &AppState, original: &str) -> Option<String> {
@@ -139,11 +150,13 @@ fn clear_redirect(state: &AppState, original: &str) {
 }
 
 async fn media_proxy(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     Query(q): Query<ProxyQuery>,
     method: Method,
     headers: HeaderMap,
 ) -> Result<Response<Body>, (StatusCode, String)> {
+    ensure_loopback_peer(peer)?;
     let original = validate_proxy_target(&q.url).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let original_s = original.to_string();
     let range = headers.get(RANGE).cloned();
@@ -287,6 +300,23 @@ fn add_cors_headers(headers: &mut HeaderMap) {
     headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
 }
 
+/// `/proxy` is for local tests / e2e only — refuse non-loopback TCP peers.
+fn ensure_loopback_peer(peer: SocketAddr) -> Result<(), (StatusCode, String)> {
+    if is_loopback_peer_ip(peer.ip()) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            "media proxy is localhost-only (local tests / e2e)".into(),
+        ))
+    }
+}
+
+fn is_loopback_peer_ip(ip: IpAddr) -> bool {
+    // `to_canonical` so IPv4-mapped `::ffff:127.0.0.1` counts as loopback.
+    ip.to_canonical().is_loopback()
+}
+
 fn validate_proxy_target(raw: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(raw.trim()).map_err(|e| format!("bad url: {e}"))?;
     match url.scheme() {
@@ -342,5 +372,24 @@ async fn get_static_file(uri: Uri, root: &str) -> Result<Response<Body>, (Status
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Something went wrong: {err}"),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn loopback_peer_accepts_v4_v6_and_mapped() {
+        assert!(is_loopback_peer_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(is_loopback_peer_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(is_loopback_peer_ip(IpAddr::V6(Ipv6Addr::new(
+            0, 0, 0, 0, 0, 0xffff, 0x7f00, 1
+        ))));
+        assert!(!is_loopback_peer_ip(IpAddr::V4(Ipv4Addr::new(
+            192, 168, 1, 2
+        ))));
+        assert!(!is_loopback_peer_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
     }
 }

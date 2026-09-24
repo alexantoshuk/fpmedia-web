@@ -56,3 +56,4 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - Multi-container write path; focus read + decode of MP4 (AVC + HEVC bitstream key-verify).
 - Production auth, storage, or collaboration UI (lives in host apps).
 - Production player chrome — demo controls in `app` are temporary.
+- Production CORS / open media proxy — demo `/proxy` is localhost-only (local tests / e2e).
