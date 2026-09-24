@@ -1,10 +1,11 @@
 //! HTTP [`UrlSource`] — ranged `fetch` for progressive remote open.
 //!
 //! mediabunny: `src/source.ts` `UrlSource` / `_runWorker` — probe with
-//! `Range: bytes=…`, require `206` + `Content-Range` for random access; each
-//! [`MediaSource::read`] is a bounded Range GET. Full orchestrator / sequential
-//! fallback / parallel workers are deferred; [`super::CachedSource`] covers
-//! play-time coalescing after demux.
+//! `Range: bytes=…`, require `206` + `Content-Range` for random access; up to
+//! `DEFAULT_PARALLELISM` (2) concurrent Range workers via [`UrlFetchGate`].
+//! Full `ReadOrchestrator` hole-cache + open-ended body streaming + mid-file
+//! sequential abandon are deferred — [`super::CachedSource`] covers play-time
+//! coalescing; connect-time no-Range → host full-download ([`is_no_http_range`]).
 
 use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
@@ -13,13 +14,30 @@ use web_sys::{Headers, Request, RequestInit, Response};
 
 use crate::error::MediaError;
 
+use super::url_gate::{DEFAULT_URL_PARALLELISM, UrlFetchGate};
 use super::{MediaSource, ReadFuture};
+
+/// Options for [`UrlSource::connect_with`].
+#[derive(Clone, Debug)]
+pub struct UrlSourceOptions {
+    /// Max concurrent Range GETs (`mediabunny: UrlSource.parallelism`).
+    pub parallelism: usize,
+}
+
+impl Default for UrlSourceOptions {
+    fn default() -> Self {
+        Self {
+            parallelism: DEFAULT_URL_PARALLELISM,
+        }
+    }
+}
 
 /// Ranged HTTP(S) byte source (progressive open without full download).
 #[derive(Clone, Debug)]
 pub struct UrlSource {
     url: String,
     size: u64,
+    gate: UrlFetchGate,
 }
 
 impl UrlSource {
@@ -29,18 +47,31 @@ impl UrlSource {
     /// Returns [`MediaError::Source`] with a stable `no_http_range:` prefix when
     /// the server ignores Range (host may fall back to a full download).
     pub async fn connect(url: impl Into<String>) -> Result<Self, MediaError> {
+        Self::connect_with(url, UrlSourceOptions::default()).await
+    }
+
+    /// Like [`connect`](Self::connect) with explicit [`UrlSourceOptions`].
+    pub async fn connect_with(
+        url: impl Into<String>,
+        options: UrlSourceOptions,
+    ) -> Result<Self, MediaError> {
         let url = url.into();
         let resp = range_get(&url, 0, 0).await?;
         let status = resp.status();
+        let gate = UrlFetchGate::new(options.parallelism);
 
         if status == 206 {
             let size = parse_total_size_from_content_range(&resp)?.ok_or_else(|| {
                 MediaError::Source("no_http_range: 206 without total size in Content-Range".into())
             })?;
             web_sys::console::log_1(
-                &format!("webmedia: UrlSource connect 206 size={size} {url}").into(),
+                &format!(
+                    "webmedia: UrlSource connect 206 size={size} parallelism={} {url}",
+                    gate.max()
+                )
+                .into(),
             );
-            return Ok(Self { url, size });
+            return Ok(Self { url, size, gate });
         }
 
         if status == 200 {
@@ -67,6 +98,11 @@ impl UrlSource {
     pub fn url(&self) -> &str {
         &self.url
     }
+
+    /// Max concurrent Range GETs for this source.
+    pub fn parallelism(&self) -> usize {
+        self.gate.max()
+    }
 }
 
 impl MediaSource for UrlSource {
@@ -77,6 +113,7 @@ impl MediaSource for UrlSource {
     fn read(&self, offset: u64, len: usize) -> ReadFuture<'_> {
         let url = self.url.clone();
         let size = self.size;
+        let gate = self.gate.clone();
         Box::pin(async move {
             if offset > size {
                 return Err(MediaError::ReadOutOfRange { offset, len, size });
@@ -92,53 +129,63 @@ impl MediaSource for UrlSource {
                 &format!("webmedia: UrlSource Range bytes={offset}-{end}").into(),
             );
 
-            // Transient CDN / proxy errors (GitHub Releases via /proxy) — brief retry.
-            let mut last_err = String::new();
-            for attempt in 0..4u32 {
-                if attempt > 0 {
-                    crate::util::yield_now().await;
-                    crate::util::yield_now().await;
-                }
-                let resp = match range_get(&url, offset, end).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        last_err = e.to_string();
-                        if last_err.contains("timed out") {
-                            continue;
-                        }
-                        return Err(e);
-                    }
-                };
-                let status = resp.status();
-                if status == 206 || status == 200 {
-                    // A 200 on a mid-file Range means the server dumped the whole object —
-                    // refuse rather than allocating multi‑100 MB into WASM.
-                    if status == 200 && offset > 0 {
-                        return Err(MediaError::Source(
-                            "no_http_range: mid-file read got HTTP 200 (Range ignored)".into(),
-                        ));
-                    }
-
-                    let buf = response_bytes(&resp).await?;
-                    if status == 200 && offset == 0 && buf.len() > want {
-                        return Ok(buf[..want].to_vec());
-                    }
-                    if buf.len() > want {
-                        return Ok(buf[..want].to_vec());
-                    }
-                    return Ok(buf);
-                }
-                last_err = format!("HTTP {status}");
-                if status != 502 && status != 503 && status != 429 {
-                    break;
-                }
-            }
-
-            Err(MediaError::Source(format!(
-                "{last_err} reading bytes={offset}-{end}"
-            )))
+            gate.with_slot(async { range_read_bytes(&url, offset, end, want).await })
+                .await
         })
     }
+}
+
+async fn range_read_bytes(
+    url: &str,
+    offset: u64,
+    end: u64,
+    want: usize,
+) -> Result<Vec<u8>, MediaError> {
+    // Transient CDN / proxy errors (GitHub Releases via /proxy) — brief retry.
+    let mut last_err = String::new();
+    for attempt in 0..4u32 {
+        if attempt > 0 {
+            crate::util::yield_now().await;
+            crate::util::yield_now().await;
+        }
+        let resp = match range_get(url, offset, end).await {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = e.to_string();
+                if last_err.contains("timed out") {
+                    continue;
+                }
+                return Err(e);
+            }
+        };
+        let status = resp.status();
+        if status == 206 || status == 200 {
+            // A 200 on a mid-file Range means the server dumped the whole object —
+            // refuse rather than allocating multi‑100 MB into WASM.
+            if status == 200 && offset > 0 {
+                return Err(MediaError::Source(
+                    "no_http_range: mid-file read got HTTP 200 (Range ignored)".into(),
+                ));
+            }
+
+            let buf = response_bytes(&resp).await?;
+            if status == 200 && offset == 0 && buf.len() > want {
+                return Ok(buf[..want].to_vec());
+            }
+            if buf.len() > want {
+                return Ok(buf[..want].to_vec());
+            }
+            return Ok(buf);
+        }
+        last_err = format!("HTTP {status}");
+        if status != 502 && status != 503 && status != 429 {
+            break;
+        }
+    }
+
+    Err(MediaError::Source(format!(
+        "{last_err} reading bytes={offset}-{end}"
+    )))
 }
 
 async fn range_get(url: &str, start: u64, end: u64) -> Result<Response, MediaError> {

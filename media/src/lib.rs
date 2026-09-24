@@ -57,10 +57,10 @@ pub use playback_policy::{
 };
 pub use player::{DecodeWindow, Player, PlayerState};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
-pub use source::{BlobSource, UrlSource, is_no_http_range};
+pub use source::{BlobSource, UrlSource, UrlSourceOptions, is_no_http_range};
 pub use source::{
-    CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE, FetchMap, MediaSource, MemorySource,
-    ReadFuture,
+    CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE, DEFAULT_URL_PARALLELISM, FetchMap,
+    MediaSource, MemorySource, OPEN_URL_PARALLELISM, ReadFuture,
 };
 pub use types::{
     AudioCodec, AudioCodecConfig, AudioMetadata, CodecConfig, DEFAULT_SCRUB_BLIT_MIB_LONG,

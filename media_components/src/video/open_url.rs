@@ -4,8 +4,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{HtmlCanvasElement, Response};
 use webmedia::{
-    BlobSource, MediaError, MediaSource, OpenMp4Options, UrlSource, VideoPlayer, is_no_http_range,
-    open_mp4_media_source_cached_with_progress,
+    BlobSource, MediaError, MediaSource, OPEN_URL_PARALLELISM, OpenMp4Options, UrlSource,
+    UrlSourceOptions, VideoPlayer, is_no_http_range, open_mp4_media_source_cached_with_progress,
 };
 
 /// Resolve `https:` via [`UrlSource`] (HTTP Range); `blob:` / no-Range hosts via
@@ -49,11 +49,23 @@ pub(super) async fn resolve_url_source(
     }
 
     on_status("Probing HTTP Range…");
-    match UrlSource::connect(url.to_string()).await {
+    // mediabunny DEFAULT_PARALLELISM=2; open uses 4 so mfra moof waves aren't gated.
+    match UrlSource::connect_with(
+        url.to_string(),
+        UrlSourceOptions {
+            parallelism: OPEN_URL_PARALLELISM,
+        },
+    )
+    .await
+    {
         Ok(src) => {
             let size_kb = src.size() / 1024;
             web_sys::console::log_1(
-                &format!("webmedia: open_url UrlSource size={size_kb} KB").into(),
+                &format!(
+                    "webmedia: open_url UrlSource size={size_kb} KB parallelism={}",
+                    src.parallelism()
+                )
+                .into(),
             );
             on_status(&format!("Opening (progressive, ~{size_kb} KB)…"));
             Ok(std::sync::Arc::new(src))

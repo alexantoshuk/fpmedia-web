@@ -6,6 +6,7 @@
 mod cache;
 mod fetch_map;
 mod memory;
+mod url_gate;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod blob;
@@ -15,11 +16,12 @@ mod url;
 pub use cache::{CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE};
 pub use fetch_map::FetchMap;
 pub use memory::MemorySource;
+pub use url_gate::{DEFAULT_URL_PARALLELISM, OPEN_URL_PARALLELISM};
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use blob::BlobSource;
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
-pub use url::{UrlSource, is_no_http_range};
+pub use url::{UrlSource, UrlSourceOptions, is_no_http_range};
 
 use std::future::Future;
 use std::pin::Pin;
