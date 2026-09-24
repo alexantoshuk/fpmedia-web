@@ -586,6 +586,19 @@ impl VideoPlayer {
         &self,
         epoch: u64,
     ) -> Result<bool, MediaError> {
+        self.enqueue_presentation_frame(epoch, true).await
+    }
+
+    /// Decode the next presentation frame into the queue.
+    ///
+    /// `require_playing`: play/prefetch path drops work if paused mid-await.
+    /// Scrub-settle seed (mediabunny `startVideoIterator` first two frames)
+    /// passes `false` so frames land while still soft-paused for resume.
+    async fn enqueue_presentation_frame(
+        &self,
+        epoch: u64,
+        require_playing: bool,
+    ) -> Result<bool, MediaError> {
         if self.presentation_len() >= self.play_presentation_cap() {
             return Ok(false);
         }
@@ -609,7 +622,7 @@ impl VideoPlayer {
             Err(MediaError::Cancelled) => return Ok(false),
             Err(e) => return Err(e),
         };
-        if !self.is_playing() || !self.is_current(epoch) {
+        if !self.is_current(epoch) || (require_playing && !self.is_playing()) {
             drop(video);
             return Ok(false);
         }
@@ -618,6 +631,28 @@ impl VideoPlayer {
             .borrow_mut()
             .push_back(QueuedFrame { frame: next, video });
         Ok(true)
+    }
+
+    /// After exact settle while soft-held for play resume: fill the first
+    /// presentation frames (mediabunny `startVideoIterator` awaits first two
+    /// canvases before `play`). PlayPrime then skips a cold re-prime.
+    pub(super) async fn seed_play_presentation_after_seek(
+        &self,
+        epoch: u64,
+    ) -> Result<(), MediaError> {
+        let target = PLAY_PRIME_FRAMES.min(self.play_presentation_cap());
+        while self.presentation_len() < target {
+            if !self.is_current(epoch) {
+                return Err(MediaError::Cancelled);
+            }
+            match self.enqueue_presentation_frame(epoch, false).await {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// Reverse: fill toward the past — sync key only (`mediabunny: #350`).

@@ -322,12 +322,15 @@ impl AudioOutput {
         t
     }
 
-    /// Soft hold for video underrun: silence + cancel pump, **keep** decoder configured.
+    /// Soft hold for video underrun / scrub-while-play: silence + cancel pump,
+    /// **keep** decoder configured.
     ///
-    /// Resume with [`Self::restart_warm`]. Avoids the audible stop/reconfigure gap that
-    /// made EOF / loop seams feel like "audio-only lag" while video stayed on-canvas.
-    /// `mediabunny: examples/media-player` keeps the audio path warm across brief stalls;
-    /// full iterator recreate is for seeks (our [`Self::stop`] + [`Self::begin`]).
+    /// Resume with [`Self::restart_warm`]. Avoids the audible stop/reconfigure gap
+    /// that made EOF / loop / scrub-resume seams feel like "audio-only lag" while
+    /// video stayed on-canvas.
+    /// `mediabunny: examples/media-player` `pause` keeps the audio path warm;
+    /// full iterator recreate is for seeks (our warm `restart_warm` after soft hold;
+    /// hard Pause still [`Self::stop`] + [`Self::begin`]).
     pub fn hold_underrun(&self) -> f64 {
         self.cancel_pump_and_silence()
     }

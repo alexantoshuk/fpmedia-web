@@ -152,6 +152,11 @@ struct Shared {
     clock: RefCell<MediaClock>,
     /// Wall `performance.now()/1000` origin while playing without audio.
     wall_origin: Cell<Option<f64>>,
+    /// Soft-held audio after scrub-while-play — next arm uses
+    /// [`VideoPlayer::resume_media_clock`] (`restart_warm`), not cold `begin`.
+    /// `mediabunny: examples/media-player/media-player.ts` `pause` stops nodes /
+    /// returns the iterator; no `AudioDecoder` teardown.
+    audio_warm_resume: Cell<bool>,
     /// File-byte fetch coverage (demo scrubber gray strip).
     fetch_map: std::sync::Arc<crate::FetchMap>,
     file_size: u64,
@@ -415,6 +420,7 @@ impl VideoPlayer {
             audio: RefCell::new(audio),
             clock: RefCell::new(MediaClock::new()),
             wall_origin: Cell::new(None),
+            audio_warm_resume: Cell::new(false),
             fetch_map,
             file_size,
         });
@@ -430,12 +436,14 @@ impl VideoPlayer {
     }
 
     /// Background fMP4 moof backfill after warm open (mediabunny: `readFragment`).
+    ///
+    /// Chunked: each step extends the index so play past warm moofs does not wait
+    /// for the entire mfra list (`ensure_frame_indexed` polls for the needed frame).
     fn kick_fragment_backfill(shared: &Rc<Shared>) {
         let track = shared.player.borrow().track_rc();
-        if track.fragments_complete() {
+        if !track.begin_fragment_backfill_worker() {
             return;
         }
-        track.kick_fragment_backfill();
         web_sys::console::log_1(
             &format!(
                 "webmedia: fragment backfill bg (indexed={}/{})",
@@ -446,18 +454,36 @@ impl VideoPlayer {
         );
         let track = track.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = track.run_fragment_backfill_step().await {
-                web_sys::console::error_1(
-                    &format!("webmedia: fragment backfill failed: {e}").into(),
-                );
-            } else {
-                web_sys::console::log_1(
-                    &format!(
-                        "webmedia: fragment backfill done ({} frames)",
-                        track.frame_count()
-                    )
-                    .into(),
-                );
+            loop {
+                match track.run_fragment_backfill_step().await {
+                    Ok(true) => {
+                        web_sys::console::log_1(
+                            &format!(
+                                "webmedia: fragment backfill chunk (indexed={}/{})",
+                                track.indexed_frame_count(),
+                                track.frame_count()
+                            )
+                            .into(),
+                        );
+                        crate::util::yield_now().await;
+                    }
+                    Ok(false) => {
+                        web_sys::console::log_1(
+                            &format!(
+                                "webmedia: fragment backfill done ({} frames)",
+                                track.frame_count()
+                            )
+                            .into(),
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        web_sys::console::error_1(
+                            &format!("webmedia: fragment backfill failed: {e}").into(),
+                        );
+                        break;
+                    }
+                }
             }
         });
     }
@@ -722,7 +748,38 @@ impl VideoPlayer {
         };
         self.shared.wall_origin.set(None);
         self.shared.clock.borrow_mut().snap(t);
+        self.shared.audio_warm_resume.set(false);
         t
+    }
+
+    /// Soft-silence for scrub-while-play — keep `AudioDecoder` configured.
+    ///
+    /// Next PlayPrime should [`Self::resume_media_clock`] (not cold
+    /// [`Self::start_media_clock`]). Hard Pause / open still use
+    /// [`Self::stop_media_clock`].
+    /// `mediabunny: examples/media-player/media-player.ts` `pause`.
+    pub fn hold_media_clock_for_scrub(&self) -> f64 {
+        let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
+            a.hold_underrun()
+        } else {
+            self.media_time()
+        };
+        self.shared.wall_origin.set(None);
+        self.shared.clock.borrow_mut().snap(t);
+        self.shared.audio_warm_resume.set(true);
+        t
+    }
+
+    /// Consume the scrub soft-hold latch (true → warm audio resume).
+    pub fn take_audio_warm_resume(&self) -> bool {
+        let warm = self.shared.audio_warm_resume.get();
+        self.shared.audio_warm_resume.set(false);
+        warm
+    }
+
+    /// True while soft-held after scrub-while-play (settle may seed play frames).
+    pub(crate) fn audio_warm_resume(&self) -> bool {
+        self.shared.audio_warm_resume.get()
     }
 
     /// Freeze the media clock while the presentation queue is empty.
@@ -746,11 +803,12 @@ impl VideoPlayer {
         t
     }
 
-    /// Warm resume after [`Self::hold_media_clock_for_underrun`] or loop seam.
+    /// Warm resume after [`Self::hold_media_clock_for_underrun`], scrub soft-hold,
+    /// or loop seam.
     ///
     /// Reuses the configured `AudioDecoder` + primes the first buffers
-    /// ([`AudioOutput::restart_warm`]). Fresh Play after pause still uses
-    /// [`Self::start_media_clock`] (hard begin).
+    /// ([`AudioOutput::restart_warm`]). Fresh Play after hard pause still uses
+    /// [`Self::start_media_clock`] (cold `begin`).
     pub async fn resume_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.finish_underrun_hold_timer();
         self.shared.clock.borrow_mut().start(media_time_secs);
@@ -894,12 +952,29 @@ impl VideoPlayer {
     }
 
     pub fn pause(&self) {
+        self.pause_inner(false);
+    }
+
+    /// Leave play for timeline scrub — soft-hold audio (no `AudioDecoder` reset).
+    ///
+    /// Hard [`Self::pause`] still tears down audio (Pause button / open / EOF).
+    /// `mediabunny: examples/media-player/media-player.ts` `seekToTime` → `pause`
+    /// then `play` without reconfigure.
+    pub fn pause_for_scrub(&self) {
+        self.pause_inner(true);
+    }
+
+    fn pause_inner(&self, soft_audio: bool) {
         // Leaving play: cancel decode + scrub fill epoch (pending latch restarts fill).
         // Already paused: do not bump scrub_epoch (UI steps call pause every time).
         let was_playing = self.shared.player.borrow().state().playing;
         if was_playing {
             self.cancel_ops_and_scrub_fill();
-            let _ = self.stop_media_clock();
+            if soft_audio {
+                let _ = self.hold_media_clock_for_scrub();
+            } else {
+                let _ = self.stop_media_clock();
+            }
             self.finish_underrun_hold_timer();
         }
         self.shared.player.borrow_mut().pause();

@@ -832,7 +832,14 @@ impl VideoPlayer {
                 // Reinforce ring clear when host skipped [`Self::prepare_scrub_settle`].
                 self.clear_step_ring();
                 self.clear_presentation();
-                self.goto_frame_with_interim(frame, epoch).await
+                self.goto_frame_with_interim(frame, epoch).await?;
+                // Soft-held scrub-while-play: seed play ahead here (one cascade +
+                // first two frames) so PlayPrime does not re-prime from cold.
+                // mediabunny: startVideoIterator awaits first two canvases before play.
+                if self.audio_warm_resume() {
+                    self.seed_play_presentation_after_seek(epoch).await?;
+                }
+                Ok(())
             } else {
                 if self.present_from_cache(frame).await? {
                     self.shared.player.borrow_mut().commit_frame(frame)?;

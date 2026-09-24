@@ -1067,15 +1067,19 @@ fn enqueue_scrub(
     if player.borrow().as_ref().is_none() {
         return;
     }
-    // Leaving play: full pause once. Already paused: do **not** call `VideoPlayer::pause`
-    // on every pointer sample (re-enters scrub pipeline / parks queue and can nest
-    // into Leptos event handlers → tachys `RefCell already borrowed`).
+    // Leaving play: soft-hold audio once (keep AudioDecoder). Already paused: do
+    // **not** call `VideoPlayer::pause` on every pointer sample (re-enters scrub
+    // pipeline / parks queue and can nest into Leptos event handlers → tachys
+    // `RefCell already borrowed`).
     let leaving_play = playing.get_untracked();
     if leaving_play {
         playing.set(false);
         let _ = session.borrow_mut().take();
     }
     if let Some(p) = player.borrow().as_ref().cloned() {
+        if leaving_play {
+            p.pause_for_scrub();
+        }
         if settle {
             // Abort densify + hold HW for exact *before* the async op runs.
             // Do not `note_scrub_frame` — that kicks densify and starved settle.
@@ -1083,9 +1087,6 @@ fn enqueue_scrub(
         } else {
             p.clear_densify_hold();
             p.cancel_ops();
-            if leaving_play {
-                p.pause();
-            }
             p.note_scrub_frame(u64::from(frame));
         }
     }
@@ -1200,11 +1201,15 @@ async fn run_seek_or_step(
     };
     let _ = session.borrow_mut().take();
     playing.set(false);
-    // Scrub settle: host already paused on pointerdown and `prepare_scrub_settle`
-    // latched densify hold. Calling `pause()` again cleared that hold and re-kicked
+    // Scrub settle: host already soft-paused on pointerdown and `prepare_scrub_settle`
+    // latched densify hold. Calling hard `pause()` cleared that hold and re-kicked
     // densify under exact goto → `decoder busy` / resume Play no-op (URL fMP4).
     let scrub_settle = matches!(&op, SeekOrStep::Scrub { settle: true, .. });
-    if p.is_playing() || !scrub_settle {
+    if scrub_settle {
+        if p.is_playing() {
+            p.pause_for_scrub();
+        }
+    } else {
         p.pause();
     }
     let label = match &op {
@@ -1353,7 +1358,16 @@ async fn run_play_prime(
     }
 
     let media_origin = p.state().timestamp.seconds;
-    if let Err(e) = p.start_media_clock(media_origin).await {
+    // Scrub-while-play soft-held the AudioDecoder — warm restart (no
+    // isConfigSupported). Fresh Pause→Play stays on cold start_media_clock.
+    // mediabunny: examples/media-player play() → buffers(t) after pause seek.
+    let clock = if p.take_audio_warm_resume() {
+        web_sys::console::log_1(&"webmedia: play clock warm resume".into());
+        p.resume_media_clock(media_origin).await
+    } else {
+        p.start_media_clock(media_origin).await
+    };
+    if let Err(e) = clock {
         if still_queued() {
             error.set(Some(e.to_string()));
             stop_playback();

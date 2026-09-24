@@ -65,10 +65,13 @@ pub struct Mp4VideoTrack {
 
 #[derive(Clone)]
 struct FragmentBackfillState {
-    plan: crate::demux::FragmentBackfillPlan,
+    /// `None` while a chunk step holds the plan across `.await`.
+    plan: Option<crate::demux::FragmentBackfillPlan>,
     source: Arc<dyn MediaSource>,
     complete: bool,
     started: bool,
+    /// Bg wasm worker already spawned (avoid double-loop).
+    worker_running: bool,
     error: Option<String>,
 }
 
@@ -140,17 +143,18 @@ impl Mp4VideoTrack {
     ) {
         self.apply_provisional_fragment_length(&plan);
         *self.fragment_backfill.borrow_mut() = Some(FragmentBackfillState {
-            plan,
+            plan: Some(plan),
             source,
             complete: false,
             started: false,
+            worker_running: false,
             error: None,
         });
     }
 
     /// Scrubber length before remaining moofs load (`mediabunny: tfra` lookup times).
     ///
-    /// Index stays warm-only; [`Self::ensure_frame_indexed`] awaits backfill past it.
+    /// Index stays warm-only; [`Self::ensure_frame_indexed`] awaits chunks past it.
     fn apply_provisional_fragment_length(&self, plan: &crate::demux::FragmentBackfillPlan) {
         let warm_moofs = plan.warm_moof_count.max(1) as u64;
         let total_moofs = plan.idx.moof_offsets.len() as u64;
@@ -197,22 +201,50 @@ impl Mp4VideoTrack {
         }
     }
 
-    /// Load remaining moofs and replace the frame index (one-shot).
-    pub async fn run_fragment_backfill_step(&self) -> Result<(), MediaError> {
-        let (plan, source) = {
+    /// Claim the bg chunk loop (wasm). `false` if already running / done / none.
+    pub fn begin_fragment_backfill_worker(&self) -> bool {
+        let mut slot = self.fragment_backfill.borrow_mut();
+        let Some(state) = slot.as_mut() else {
+            return false;
+        };
+        if state.complete || state.worker_running {
+            return false;
+        }
+        state.worker_running = true;
+        state.started = true;
+        true
+    }
+
+    /// Load the next moof chunk and extend the frame index.
+    ///
+    /// Returns `true` when more moofs remain. Play awaits only the needed frame via
+    /// [`Self::ensure_frame_indexed`] — not the full file.
+    /// `mediabunny: isobmff-demuxer.ts` `readFragment`.
+    pub async fn run_fragment_backfill_step(&self) -> Result<bool, MediaError> {
+        let (mut plan, source) = {
             let mut slot = self.fragment_backfill.borrow_mut();
             let Some(state) = slot.as_mut() else {
-                return Ok(());
+                return Ok(false);
             };
             if state.complete {
-                return Ok(());
+                return Ok(false);
             }
+            let Some(plan) = state.plan.take() else {
+                // Another step holds the plan across await — more work pending.
+                return Ok(true);
+            };
             state.started = true;
-            (state.plan.clone(), Arc::clone(&state.source))
+            (plan, Arc::clone(&state.source))
         };
 
-        match crate::demux::complete_mfra_backfill(source.as_ref(), plan, |_| {}).await {
-            Ok(mp4) => {
+        match crate::demux::advance_mfra_backfill_chunk(source.as_ref(), &mut plan, |_| {}).await {
+            Ok((mp4, complete)) => {
+                let provisional = if complete {
+                    None
+                } else {
+                    let meta = self.metadata.borrow();
+                    Some((meta.frame_count, meta.duration_ticks, meta.fps))
+                };
                 let timecode_start = self.metadata.borrow().timecode_start;
                 let rebuilt = build_video_track(
                     &mp4,
@@ -222,24 +254,51 @@ impl Mp4VideoTrack {
                         defer_avc_sync: false,
                     },
                     timecode_start,
-                )?;
-                let Some(fresh) = rebuilt else {
-                    return Err(MediaError::Mp4("mfra backfill: no video track".into()));
-                };
-                *self.index.borrow_mut() = fresh.index.borrow().clone();
-                *self.metadata.borrow_mut() = fresh.metadata.borrow().clone();
-                // Keep existing sync_verify policy; re-arm deferred if needed.
-                if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
-                    state.complete = true;
-                    state.error = None;
+                );
+                match rebuilt {
+                    Ok(Some(fresh)) => {
+                        *self.index.borrow_mut() = fresh.index.borrow().clone();
+                        if let Some((fc, dur, fps)) = provisional {
+                            let mut meta = self.metadata.borrow_mut();
+                            *meta = fresh.metadata.borrow().clone();
+                            // Keep scrubber length from tfra until the last chunk.
+                            meta.frame_count = fc.max(self.index.borrow().len() as u64);
+                            meta.duration_ticks = dur;
+                            meta.fps = fps;
+                        } else {
+                            *self.metadata.borrow_mut() = fresh.metadata.borrow().clone();
+                        }
+                        if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
+                            state.plan = if complete { None } else { Some(plan) };
+                            state.complete = complete;
+                            state.error = None;
+                        }
+                        self.sync_gen.set(self.sync_gen.get().saturating_add(1));
+                        Ok(!complete)
+                    }
+                    Ok(None) => {
+                        if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
+                            state.plan = Some(plan);
+                            state.error = Some("mfra backfill: no video track".into());
+                            state.complete = true;
+                        }
+                        Err(MediaError::Mp4("mfra backfill: no video track".into()))
+                    }
+                    Err(e) => {
+                        if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
+                            state.plan = Some(plan);
+                            state.error = Some(e.to_string());
+                            state.complete = true;
+                        }
+                        Err(e)
+                    }
                 }
-                self.sync_gen.set(self.sync_gen.get().saturating_add(1));
-                Ok(())
             }
             Err(e) => {
                 if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
+                    state.plan = Some(plan);
                     state.error = Some(e.to_string());
-                    state.complete = true; // stop spinning
+                    state.complete = true;
                 }
                 Err(e)
             }
@@ -251,11 +310,17 @@ impl Mp4VideoTrack {
         if self.fragments_complete() {
             return Ok(());
         }
-        // Native / tests: run inline. Wasm: bg worker in VideoPlayer runs the step;
-        // we only poll here.
+        // Native / tests: run chunks inline. Wasm: bg worker in VideoPlayer runs
+        // steps; we only poll here.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            return self.run_fragment_backfill_step().await;
+            while !self.fragments_complete() {
+                let more = self.run_fragment_backfill_step().await?;
+                if !more {
+                    break;
+                }
+            }
+            Ok(())
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -275,6 +340,8 @@ impl Mp4VideoTrack {
         }
     }
 
+    /// Ensure `frame` is in the index — wait only for chunks past it, not the
+    /// whole file (`mediabunny: readFragment` on demand).
     async fn ensure_frame_indexed(&self, frame: FrameId) -> Result<(), MediaError> {
         if (frame as usize) < self.index.borrow().len() {
             return Ok(());
@@ -282,11 +349,39 @@ impl Mp4VideoTrack {
         if self.fragments_complete() {
             return Err(MediaError::FrameOutOfRange(frame, self.frame_count()));
         }
-        self.await_fragment_backfill().await?;
-        if (frame as usize) < self.index.borrow().len() {
-            Ok(())
-        } else {
-            Err(MediaError::FrameOutOfRange(frame, self.frame_count()))
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            while (frame as usize) >= self.index.borrow().len() && !self.fragments_complete() {
+                let more = self.run_fragment_backfill_step().await?;
+                if !more {
+                    break;
+                }
+            }
+            if (frame as usize) < self.index.borrow().len() {
+                Ok(())
+            } else {
+                Err(MediaError::FrameOutOfRange(frame, self.frame_count()))
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.kick_fragment_backfill();
+            while (frame as usize) >= self.index.borrow().len() && !self.fragments_complete() {
+                if let Some(err) = self
+                    .fragment_backfill
+                    .borrow()
+                    .as_ref()
+                    .and_then(|s| s.error.clone())
+                {
+                    return Err(MediaError::Mp4(err));
+                }
+                crate::util::yield_now().await;
+            }
+            if (frame as usize) < self.index.borrow().len() {
+                Ok(())
+            } else {
+                Err(MediaError::FrameOutOfRange(frame, self.frame_count()))
+            }
         }
     }
 
