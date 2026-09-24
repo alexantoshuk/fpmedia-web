@@ -392,4 +392,13 @@ mod tests {
         ))));
         assert!(!is_loopback_peer_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
     }
+
+    #[test]
+    fn content_range_span_len_parses() {
+        assert_eq!(content_range_span_len("bytes 0-99/200"), Some(100));
+        assert_eq!(content_range_span_len("bytes 100-199/200"), Some(100));
+        assert_eq!(content_range_span_len("bytes 0-0/1"), Some(1));
+        assert_eq!(content_range_span_len("bytes */200"), None);
+        assert_eq!(content_range_span_len("invalid"), None);
+    }
 }

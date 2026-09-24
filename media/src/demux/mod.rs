@@ -1,6 +1,7 @@
 //! Container demuxers.
 
 mod boxes;
+mod coalesce;
 mod mp4;
 mod timecode;
 

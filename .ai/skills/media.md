@@ -13,7 +13,7 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Scrub: browser flicker + `Unsupported configuration` then Play dead (HEVC) | `create_scrub` dual-HW | densify must **not** HW-fallback; latch `scrub_densify_blocked` |
 | Hang / stuck on open, Play disabled | [WebCodecs decode](#webcodecs-decode), Chromium first AVC packet | `flush` hang, `busy`/`!ready`, lying sync |
 | Open slow on long files / many `stss` | Demux deferred AVC sync | `defer_avc_sync`; bg verify + `ensure_key_verified` |
-| `decoder busy` / `needs a key chunk` | Decoder lifecycle, Op cancel, Yields | `take_decoder` waits ~5s wall-clock (Chrome clamps `setTimeout(0)`); clear warm state after `flush`; HEVC: first-packet sanitize + RASL skip |
+| `decoder busy` / `needs a key chunk` | Decoder lifecycle, Op cancel, Yields | `take_decoder` waits ~5s wall-clock (Chrome clamps `setTimeout(0)`); clear warm state after `flush`; HEVC: first-packet sanitize + RASL skip; **Play→scrub settle: `pause()` must not clear densify hold** (see leptos Play after scrub) |
 | `backpressure timed out` | `decodeQueueSize` backpressure | wake on **new** output / take; `q≈41,held=0` → reset+retry; wire `skip_behind` on underrun |
 | Scrub exact slow / tab freeze on settle | [Scrub cache](#scrub-cache), backpressure | one key→N cascade + salvage; probes below |
 | Soft-drag eng lags playhead (Short) | ScrubPolicy soft-drag | expected until settle; blit only — exact on pointer-up |
@@ -55,7 +55,8 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | Play silent ~1–2s then audio (esp. URL) | Audio schedule + `start_spawned` | cold Play must `prime_schedule` before return (same as `restart_warm`); else video runs on empty `AudioContext` clock |
 | Scrub settle / seek-to-0 hangs; long `UrlSource Range` chain (~50 KB steps) | Deferred sync verify | settle must **not** `await_sync_verify_complete` — on-retrieve `ensure_key_verified` only; bg verify yields on `restarting` |
 | Rate wrong / pitch stretch only / no slow-mo | Playback rate gotcha | `normalize_playback_rate` forward-only; clock `* rate`; ≤4× = WSOLA fixed-pitch |
-| Shuttle / 8× silent stop mid-clip (no error; Play continues) | `present_due` EOF wall | Clock raced past duration while playhead mid — snap + don’t End until last frame |
+| Shuttle / 8× silent stop mid-clip (no error; Play continues) | `playback_policy::eof_wall_decision` / `present_due` | Clock raced past duration while playhead mid — snap + don’t End until last frame |
+| fMP4 Play `frame N out of range (count=N+1)` after warm open | `playback_policy::eof_timeline_end` / `present_due` | Use last *indexed* sample + provisional `metadata.duration`, never `get(count-1)` while backfilling |
 | Shuttle / non-1× choppy / audio ticks | Playback rate gotcha | `>4` silent (`is_wall_clock_rate`); shuttle present still `≥2` |
 | J rate-down still plays fast for ~1–2s | Playback rate gotcha | shuttle skips underrun hold → clock races; `set_playback_rate` snap to displayed on decrease |
 | K at non-1×: video pauses, audio starts | demo JKL + `set_playback_rate(1)` | pause before 1× snap; spawn aborts if `!playing` |
@@ -64,7 +65,6 @@ No Leptos/`app` dependency. Workspace layout: `.ai/architecture.md`.
 | `mfhd not found` / fMP4 open fail | Demux `load_ftyp_moov` | load full `moof` bodies; probe `progressive_fmp4_from_url --ignored` |
 | Remote URL fMP4 open still slow (many moofs) | Demux warm mfra + bg backfill | First 2 moofs → ready; rest via `complete_mfra_backfill` (mediabunny `readFragment`) |
 | fMP4 scrubber ~1s then jumps to full length | Provisional length from `tfra`/moof density | `arm_fragment_backfill` sets full `frame_count`/`duration` before UI ready |
-| fMP4 Play `frame N out of range (count=N+1)` after warm open | `present_due` EOF wall | Use last *indexed* sample + provisional `metadata.duration`, never `get(count-1)` while backfilling |
 | fMP4 status stuck at warm `frame 0 / 23` after open | Host paused rAF `sync_ui` | Backfill bumps track count; paused rAF must `sync_ui` + refresh `metadata` |
 | Remote URL open hang on `Downloading N MB…` / frozen UI | Demux mfra moof-only + parallel | Never bulk `0..mfra` into WASM; ≤64 KiB/moof ×4 parallel; progress after wave |
 | Remote URL open very slow / hung at `Fetching moof tables (N/N)` | Demux `load_via_mfra` parallel | adjacent moof Ranges ×4; scaled UrlSource timeout; not sequential ×120 |
@@ -83,6 +83,8 @@ media/src/                 ← package name: webmedia
 ├── bitstream/             ← AVC (IDR + Recovery Point SEI) + HEVC (IRAP 16…23)
 ├── source/                ← MediaSource + MemorySource + CachedSource (+ wasm BlobSource / UrlSource)
 ├── frame_index.rs         ← presentation order; sync_by_decode O(log k) + by_decode GOP map
+├── playback_policy.rs     ← pure EOF wall / near-EOF / loop-drain math (native unit tests)
+├── host_op_coalesce.rs    ← OpQueue coalesce kinds (CallSerializer rules; native tests)
 ├── audio/                 ← audio engine (isolated from canvas / video decode)
 │   ├── demux.rs           ← Mp4AudioTrack
 │   ├── stretch.rs         ← WSOLA fixed-pitch (Vanilagy gist; ≤4×)
@@ -90,6 +92,7 @@ media/src/                 ← package name: webmedia
 │   └── output.rs          ← AudioDecoder → (+WSOLA) → AudioContext (cfg webcodecs)
 ├── demux/
 │   ├── boxes.rs           ← top-level ISOBMFF scan + ftyp/moov/moof stub
+│   ├── coalesce.rs        ← Range GET coalesce (gap / MAX_COALESCE_RUN)
 │   ├── mp4.rs             ← re_mp4 → Mp4VideoTrack (+ builds audio via audio::); OpenedMp4
 │   └── timecode.rs        ← QT `tmcd` start TC (moov walk; mediabunny: no equivalent)
 ├── player.rs              ← play/pause/seek_frame/step → DecodeWindow

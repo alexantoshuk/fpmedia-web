@@ -4,6 +4,11 @@
 //! player uses `asyncId` + iterator `.return()` so superseded async work is a no-op.
 //! Here: one FIFO queue + a single `async_id` epoch. Bumping the epoch aborts the
 //! in-flight command after its next `.await`; coalescing drops stale pending seeks.
+//!
+//! Coalesce *rules* are unit-tested in [`webmedia::host_op_coalesce`] (keep in sync).
+//! This queue mutates `HostOp` in place so each entry keeps its enqueue `async_id`
+//! — rematerializing with the current id would revive ops left stale after
+//! [`Self::bump`] (e.g. pending scrub after Pause → blocks Play).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -91,6 +96,8 @@ impl OpQueue {
     /// Async scrub: drop pending seek/step/scrub (keep open). Drag also drops
     /// pending PlayPrime. **Settle keeps PlayPrime** and inserts ahead of it so
     /// play-after-scrub stays behind exact settle (`VideoRef::play` contract).
+    ///
+    /// Rule mirror: [`webmedia::apply_scrub`].
     pub fn enqueue_scrub(&self, frame: u32, settle: bool) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();
@@ -132,6 +139,8 @@ impl OpQueue {
     /// In-flight scrub is preempted by the caller via `cancel_ops` when
     /// [`Self::scrub_inflight`] is set. Sync step/seek wait for each other.
     /// Returns `true` to start drain.
+    ///
+    /// Rule mirror: [`webmedia::apply_seek_or_step`].
     pub fn enqueue_seek_or_step(&self, op: HostOp) -> bool {
         debug_assert!(matches!(
             op,
@@ -158,6 +167,9 @@ impl OpQueue {
     /// Pending scrub settle is kept — Play waits for it (same playhead) instead of
     /// cancelling and restarting the key→N cascade (`VideoRef::play` used to seek).
     /// Returns `true` to start drain.
+    ///
+    /// Rule mirror: [`webmedia::apply_play`]. Surviving scrub entries keep their
+    /// enqueue id (must not be refreshed to the current epoch).
     pub fn enqueue_play(&self) -> bool {
         let id = self.async_id.get();
         let mut st = self.inner.borrow_mut();

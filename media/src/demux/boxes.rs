@@ -16,6 +16,8 @@ use std::io::{self, Read, Seek, SeekFrom};
 use crate::error::MediaError;
 use crate::source::MediaSource;
 
+use super::coalesce::{CoalesceRun, coalesce_byte_runs, coalesce_byte_runs_adjacent};
+
 const HEADER_SIZE: usize = 8;
 const EXTENDED_HEADER_SIZE: usize = 16;
 /// Reject absurdly large `moov` (corruption / wrong container).
@@ -81,10 +83,6 @@ const HEAD_PREFETCH: usize = 64 * 1024;
 /// 1 MiB covers ~2–3 typical 1080p GOP fragments so walk without `mfra` is fewer
 /// Ranges than a 64 KiB window (GitHub Releases).
 const SCAN_WINDOW: usize = 1024 * 1024;
-/// Merge adjacent load ranges if the gap is at most this many bytes (fMP4 moof+mdat hdr).
-const COALESCE_GAP: u64 = 256;
-/// Cap a coalesced Range GET when packing across `mdat` gaps (full-file walk path).
-const MAX_COALESCE_RUN: usize = 1024 * 1024;
 /// Concurrent Range GETs. Demo `/proxy`→GitHub hangs under parallel waves —
 /// keep at 1 (sequential) for reliable open; progress updates after each GET.
 const COALESCE_FETCH_PARALLEL: usize = 1;
@@ -895,11 +893,6 @@ fn synthesize_box_header(info: &TopLevelBox) -> Vec<u8> {
     bytes
 }
 
-/// One box body to load: `(box index in scan, file offset, byte length)`.
-type BoxLoadNeed = (usize, u64, usize);
-/// One Range GET: `(start, length, members of this run)`.
-type CoalesceRun = (u64, usize, Vec<BoxLoadNeed>);
-
 /// Fetch coalesced runs in waves of `parallel` concurrent Range GETs
 /// (`mediabunny: UrlSource.parallelism`).
 ///
@@ -959,61 +952,6 @@ async fn fill_from_coalesce_runs(
         i = end;
     }
     Ok(())
-}
-
-/// Merge only near-adjacent needs ([`COALESCE_GAP`]) — no packing across large
-/// `mdat` (used by `mfra` moof body load).
-fn coalesce_byte_runs_adjacent(needs: &[BoxLoadNeed]) -> Vec<CoalesceRun> {
-    let mut sorted = needs.to_vec();
-    sorted.sort_by_key(|(_, off, _)| *off);
-    let mut runs: Vec<CoalesceRun> = Vec::new();
-    for &(idx, off, len) in &sorted {
-        if len == 0 {
-            continue;
-        }
-        let need_end = off.saturating_add(len as u64);
-        if let Some((run_off, run_len, members)) = runs.last_mut() {
-            let run_end = *run_off + *run_len as u64;
-            if off <= run_end.saturating_add(COALESCE_GAP) {
-                *run_len = (need_end.max(run_end) - *run_off) as usize;
-                members.push((idx, off, len));
-                continue;
-            }
-        }
-        runs.push((off, len, vec![(idx, off, len)]));
-    }
-    runs
-}
-
-/// Merge sorted `(box_idx, offset, len)` into fewer Range GETs.
-///
-/// Adjacent / near needs merge via [`COALESCE_GAP`]. On fMP4 full-file walk,
-/// also pack into ≤[`MAX_COALESCE_RUN`] windows so one RTT covers several
-/// fragments (extra media bytes are read then discarded when slicing).
-fn coalesce_byte_runs(needs: &[BoxLoadNeed]) -> Vec<CoalesceRun> {
-    let mut sorted = needs.to_vec();
-    sorted.sort_by_key(|(_, off, _)| *off);
-    let mut runs: Vec<CoalesceRun> = Vec::new();
-    for &(idx, off, len) in &sorted {
-        if len == 0 {
-            continue;
-        }
-        let need_end = off.saturating_add(len as u64);
-        if let Some((run_off, run_len, members)) = runs.last_mut() {
-            let run_end = *run_off + *run_len as u64;
-            let gap_ok = off <= run_end.saturating_add(COALESCE_GAP);
-            let packed_end = need_end.max(run_end);
-            let pack_ok = packed_end.saturating_sub(*run_off) as usize <= MAX_COALESCE_RUN
-                && off < run_off.saturating_add(MAX_COALESCE_RUN as u64);
-            if gap_ok || pack_ok {
-                *run_len = (packed_end - *run_off) as usize;
-                members.push((idx, off, len));
-                continue;
-            }
-        }
-        runs.push((off, len, vec![(idx, off, len)]));
-    }
-    runs
 }
 
 /// Sparse reader: real bytes for loaded segments; unread gaps are zeros.
@@ -1438,27 +1376,5 @@ mod tests {
         assert_eq!(bytes.len(), 8);
         assert_eq!(&bytes[4..8], b"mdat");
         assert_eq!(u32::from_be_bytes(bytes[0..4].try_into().unwrap()), 100);
-    }
-
-    #[test]
-    fn coalesce_packs_fmp4_style_gaps_into_mb_runs() {
-        // moof @0 (400), mdat hdr @400 (8), moof @200_000 (400) — second moof
-        // sits inside a 1 MiB window from the first run start.
-        let needs = vec![(0usize, 0u64, 400usize), (1, 400, 8), (2, 200_000, 400)];
-        let runs = coalesce_byte_runs(&needs);
-        assert_eq!(runs.len(), 1, "expected one packed run, got {}", runs.len());
-        assert_eq!(runs[0].0, 0);
-        assert_eq!(runs[0].1, 200_400);
-        assert_eq!(runs[0].2.len(), 3);
-    }
-
-    #[test]
-    fn coalesce_splits_when_over_max_run() {
-        let needs = vec![
-            (0usize, 0u64, 100usize),
-            (1, (MAX_COALESCE_RUN as u64) + 10, 100),
-        ];
-        let runs = coalesce_byte_runs(&needs);
-        assert_eq!(runs.len(), 2);
     }
 }

@@ -153,6 +153,27 @@ impl FrameIndex {
         self.sync_by_decode.get(i).map(|(_, f)| *f)
     }
 
+    /// True when `new_key_do` is the sync decode-order that immediately follows
+    /// `prev_key_do` (Play crossing one GOP boundary). Non-adjacent scrub jumps
+    /// are false. Soft sequential next-key — mediabunny `media-sink.ts` keeps
+    /// the decoder across adjacent GOP starts without recreate.
+    pub fn is_sequential_next_sync_do(&self, prev_key_do: usize, new_key_do: usize) -> bool {
+        if new_key_do <= prev_key_do {
+            return false;
+        }
+        let Some(prev_key_frame) = self
+            .frames
+            .iter()
+            .find(|e| e.is_sync && e.decode_order == prev_key_do)
+            .map(|e| e.frame)
+        else {
+            return false;
+        };
+        self.next_keyframe_after(prev_key_frame)
+            .and_then(|nk| self.get(nk).map(|e| e.decode_order))
+            .is_some_and(|d| d == new_key_do)
+    }
+
     /// All sync `FrameId`s in decode order (GOP starts). O(k).
     pub fn sync_frame_ids(&self) -> Vec<FrameId> {
         self.sync_by_decode.iter().map(|(_, f)| *f).collect()
@@ -343,6 +364,25 @@ mod tests {
         assert_eq!(index.gop_frame_ids(0), Some(vec![0, 1, 2]));
         assert_eq!(index.gop_frame_ids(3), Some(vec![3, 4]));
         assert_eq!(index.sync_frame_ids(), vec![0, 3]);
+        assert!(index.is_sequential_next_sync_do(0, 3));
+        assert!(!index.is_sequential_next_sync_do(0, 6)); // no such sync
+        assert!(!index.is_sequential_next_sync_do(3, 0));
+    }
+
+    #[test]
+    fn sequential_next_sync_do_skips_non_adjacent() {
+        let index = FrameIndex::from_entries(vec![
+            entry(0, true, 0, 0),
+            entry(1, false, 1, 1),
+            entry(2, false, 2, 2),
+            entry(3, true, 3, 3),
+            entry(4, false, 4, 4),
+            entry(5, false, 5, 5),
+            entry(6, true, 6, 6),
+        ]);
+        assert!(index.is_sequential_next_sync_do(0, 3));
+        assert!(index.is_sequential_next_sync_do(3, 6));
+        assert!(!index.is_sequential_next_sync_do(0, 6));
     }
 
     #[test]

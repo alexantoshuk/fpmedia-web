@@ -14,6 +14,8 @@ mod clock;
 mod demux;
 mod error;
 mod frame_index;
+mod host_op_coalesce;
+mod playback_policy;
 mod player;
 mod source;
 mod types;
@@ -49,6 +51,10 @@ pub use demux::{
 };
 pub use error::MediaError;
 pub use frame_index::{FrameEntry, FrameIndex};
+pub use host_op_coalesce::{HostOpKind, apply_play, apply_scrub, apply_seek_or_step};
+pub use playback_policy::{
+    EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
+};
 pub use player::{DecodeWindow, Player, PlayerState};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use source::{BlobSource, UrlSource, is_no_http_range};

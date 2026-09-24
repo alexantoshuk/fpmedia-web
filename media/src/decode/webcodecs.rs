@@ -1660,23 +1660,9 @@ fn holds_target(core: &Rc<RefCell<DecoderCore>>, target_us: i64) -> bool {
 /// True when `new_key_do` is the sync that immediately follows `prev_key_do`
 /// (Play crossing a GOP boundary). Scrub jumps to a non-adjacent key are false.
 fn is_sequential_next_key(track: &Mp4VideoTrack, prev_key_do: usize, new_key_do: usize) -> bool {
-    if new_key_do <= prev_key_do {
-        return false;
-    }
-    let Some(prev_key_frame) = track
-        .index()
-        .frames()
-        .iter()
-        .find(|e| e.is_sync && e.decode_order == prev_key_do)
-        .map(|e| e.frame)
-    else {
-        return false;
-    };
     track
         .index()
-        .next_keyframe_after(prev_key_frame)
-        .and_then(|nk| track.index().get(nk).map(|e| e.decode_order))
-        .is_some_and(|d| d == new_key_do)
+        .is_sequential_next_sync_do(prev_key_do, new_key_do)
 }
 
 /// Drain outputs for up to `turns` macrotasks; `true` once the target is held.

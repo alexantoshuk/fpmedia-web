@@ -12,7 +12,7 @@
 | Browse / file picker does nothing on Android Chrome | `.wm-file input` must not be `display:none` — opacity overlay (see gotcha) |
 | Open never finishes / console stops at `open_blob start` | File-input `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
 | Play / Next / Prev disabled or silent no-op | UI-owned `playing`; recover when session is `None` |
-| Play after scrub does nothing (esp. after EOF) | Defer UI `playing` until after prime+clock; snap clock; **scrub drag throttle `trailing(false)`**; Play→scrub→release: `defer_scrub_finish` applies settle **then** `play()` (immediate `play()` loses to `enqueue_scrub` dropping PlayPrime) |
+| Play after scrub does nothing (esp. after EOF) | Defer UI `playing` until after prime+clock; snap clock; **scrub drag throttle `trailing(false)`**; Play→scrub→release: `defer_scrub_finish` settle **then** `play()`; OpQueue keep scrub enqueue ids after Pause `bump`; **`pause()` must not clear `hold_densify_for_exact` / re-kick densify when settle already latched** (`decoder busy` / resume fail) |
 | EOF with `loop` off — host never notified | `VideoRef::ended`; clear on open/close/seek/play |
 | Decoder/cache leak after leaving a clip | `VideoRef::close()` (also on unmount) |
 | New clip: progress bar stays at old frame | Open must `player.take()` before `frame_count=0` | paused rAF `sync_ui` count 0→N restores playhead |
@@ -30,7 +30,7 @@
 | Scrubber bar lags cursor while dragging | Sync `playhead` on pointerdown/move before `defer_scrub` | Engine work stays deferred; bar must not wait on densify/URL |
 | Fullscreen scrub / Next·Prev flood stalls UI | Scrub drag throttle (~50 ms); Next/Prev: hold-safe playhead + OpQueue coalesce |
 | Next/Prev: lag then several frames jump | Hold key-repeat: hold-safe playhead (no Step→Seek); Step always VF; drain rAF |
-| Ops dropped / ignored while “busy” | OpQueue serialize — not `if busy { return }` |
+| Ops dropped / ignored while “busy” | OpQueue serialize — not `if busy { return }` | rules: `webmedia::host_op_coalesce` |
 
 Decode / densify / WebCodecs hangs → `skills/media.md` triage.
 

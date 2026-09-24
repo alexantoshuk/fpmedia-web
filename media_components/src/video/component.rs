@@ -1200,7 +1200,13 @@ async fn run_seek_or_step(
     };
     let _ = session.borrow_mut().take();
     playing.set(false);
-    p.pause();
+    // Scrub settle: host already paused on pointerdown and `prepare_scrub_settle`
+    // latched densify hold. Calling `pause()` again cleared that hold and re-kicked
+    // densify under exact goto → `decoder busy` / resume Play no-op (URL fMP4).
+    let scrub_settle = matches!(&op, SeekOrStep::Scrub { settle: true, .. });
+    if p.is_playing() || !scrub_settle {
+        p.pause();
+    }
     let label = match &op {
         SeekOrStep::Seek(t) => format!("seek {t}"),
         SeekOrStep::SeekKeyframe(t) => format!("seek-key {t}"),

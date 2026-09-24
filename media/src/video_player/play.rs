@@ -4,6 +4,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::error::MediaError;
+use crate::playback_policy::{
+    EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
+};
 use crate::types::{
     FrameId, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
     scrub_blit_frame_budget,
@@ -45,37 +48,39 @@ impl VideoPlayer {
 
     /// True when playhead is within `lead_secs` of EOF (rate-scaled).
     pub(super) fn near_eof_lead(&self, lead_secs: f64) -> bool {
-        if lead_secs <= 0.0 {
-            return false;
-        }
         let count = self.state().frame_count;
         if count == 0 {
             return false;
         }
-        let left = self.frames_left_on_timeline() as f64;
-        let rate = self.playback_rate().max(crate::PLAYBACK_RATE_MIN);
         let fps = self
             .metadata()
             .fps
             .filter(|f| f.is_finite() && *f > 0.0)
             .unwrap_or(24.0);
-        let lead_frames = (lead_secs * fps * rate).ceil().max(1.0);
-        left <= lead_frames
+        near_eof_by_frames(
+            self.frames_left_on_timeline() as f64,
+            lead_secs,
+            fps,
+            self.playback_rate(),
+        )
     }
 
     /// Frames to keep queued near EOF so `fill_loop_prime` finishes before drain.
     pub(super) fn loop_drain_frames_for_rate(&self) -> usize {
         let policy = self.metadata().play_policy();
-        let rate = self.playback_rate().max(crate::PLAYBACK_RATE_MIN);
         let fps = self
             .metadata()
             .fps
             .filter(|f| f.is_finite() && *f > 0.0)
             .unwrap_or(24.0);
-        let budget = policy.loop_prime_budget_secs();
-        let needed = (budget * fps * rate).ceil() as usize;
         let floor = policy.presentation_cap.max(policy.loop_prime_frames());
-        needed.clamp(floor, LOOP_NEAR_END_PRESENTATION_CAP_MAX)
+        loop_drain_frames(
+            policy.loop_prime_budget_secs(),
+            fps,
+            self.playback_rate(),
+            floor,
+            LOOP_NEAR_END_PRESENTATION_CAP_MAX,
+        )
     }
 
     /// Playhead is within the rate-scaled loop-prepare lead of EOF.
@@ -343,36 +348,36 @@ impl VideoPlayer {
             ))?;
             let sample_end = last.composition_timestamp().seconds
                 + (last.duration_ticks as f64 / last.timescale.max(1) as f64);
-            if indexed < count {
-                sample_end.max(player.metadata().duration().seconds)
-            } else {
-                sample_end
-            }
+            eof_timeline_end(
+                sample_end,
+                player.metadata().duration().seconds,
+                indexed,
+                count,
+            )
         };
-        if media_time_secs >= last_end {
-            // Do not End while decoded frames remain — audio can reach duration
-            // while video is still draining the presentation queue after an
-            // underrun hold (long-GOP stopped at 347/368 with empty error).
-            if self.presentation_len() > 0 {
+        if let Some(wall) = eof_wall_decision(
+            media_time_secs >= last_end,
+            self.presentation_len(),
+            self.state().frame,
+            count.saturating_sub(1),
+            self.is_looping(),
+        ) {
+            match wall {
                 // Fall through to present remaining due frames at EOF.
-            } else {
-                let playhead = self.state().frame;
-                let last_id = count.saturating_sub(1);
-                // Shuttle / wall-clock rates disable underrun hold — media_time can
-                // race past duration while decode lags (e.g. 8× HEVC 60 fps). Ending
-                // here froze mid-timeline with no error; Play continued from playhead.
+                EofWall::DrainRemaining => {}
+                // Shuttle / wall-clock: media_time raced past duration mid-timeline.
                 // mediabunny: no equivalent (no rate API).
-                if playhead < last_id {
+                EofWall::SnapClockContinue => {
                     self.snap_playing_clock_to_playhead();
                     return Ok(DuePresent::Playing { did_draw: false });
                 }
-                if self.is_looping() {
-                    return Ok(DuePresent::NeedsLoop);
+                EofWall::NeedsLoop => return Ok(DuePresent::NeedsLoop),
+                EofWall::Ended => {
+                    self.shared.player.borrow_mut().pause();
+                    self.clear_presentation();
+                    self.clear_step_ring();
+                    return Ok(DuePresent::Ended);
                 }
-                self.shared.player.borrow_mut().pause();
-                self.clear_presentation();
-                self.clear_step_ring();
-                return Ok(DuePresent::Ended);
             }
         }
 

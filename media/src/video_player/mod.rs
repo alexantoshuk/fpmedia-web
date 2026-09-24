@@ -904,10 +904,13 @@ impl VideoPlayer {
         }
         self.shared.player.borrow_mut().pause();
         self.clear_loop_prime();
-        // Never leave densify blocked behind a settle hold after pause / transport stop.
-        // (`prepare_scrub_settle` + cancelled settle, or play-after-scrub skipping arm,
-        // could latch hold/pending with no running fill task.)
-        self.shared.hold_densify_for_exact.set(false);
+        // `prepare_scrub_settle` latches densify hold *before* the async scrub op;
+        // `run_seek_or_step` always called `pause()` which used to clear that latch
+        // and re-kick densify — exact settle then raced the scrub decoder
+        // (`decoder busy` / play-after-scrub resume fail on URL fMP4).
+        if self.shared.hold_densify_for_exact.get() {
+            return;
+        }
         // Same pipeline as scrub drag / hold / release.
         self.enter_scrub_cache_pipeline(self.state().frame);
         if was_playing {
