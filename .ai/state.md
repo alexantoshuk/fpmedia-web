@@ -24,9 +24,10 @@
 ### Media engine (priority)
 
 1. **Verify** cold rapid-tap scrub + Play-after (`e2e/player.scrub.cold-open.spec.ts`) + gray URL buffer after orch port.
-2. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
-3. no-Range → `ReadableStreamSource` (host full-download stays for now).
-4. Drop `re_mp4` git pin `@aa5be9b` when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35); QT `skip_box(0)` still worked around in `SparseBoxReader`.
+2. Stress gate: `npm run e2e:stress` (`WEBMEDIA_CLIP`); zone decode stalls / `Decoding error` under rapid Exact — fail with `WEBMEDIA_STRESS_FAIL_ZONES=1` (default run collects latency JSON).
+3. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
+4. no-Range → `ReadableStreamSource` (host full-download stays for now).
+5. Drop `re_mp4` git pin `@aa5be9b` when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35); QT `skip_box(0)` still worked around in `SparseBoxReader`.
 
 ### Later
 

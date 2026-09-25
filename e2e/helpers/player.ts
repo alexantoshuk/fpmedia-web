@@ -1,11 +1,91 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import path from "node:path";
+import { resolveClip, type ResolvedClip } from "./clip";
 
 export const FIXTURES = {
   shortGop: path.resolve("public/short_gop.mp4"),
   withBFrames: path.resolve("public/with_b_frames.mp4"),
   withAudio: path.resolve("public/with_audio.mp4"),
 } as const;
+
+/** Zone on the scrubber strip (product gray / dim green / bright green). */
+export type ScrubZone = "cold" | "gray" | "covered" | "exact";
+
+export type ReadyFrameMarkJson = {
+  frame: number;
+  end: number;
+  kind: "Covered" | "Exact";
+};
+
+/** Parsed `data-testid="pipeline-json"` payload from demo chrome. */
+export type PipelineJson = {
+  fetch_file_ranges: [number, number][];
+  ready_frames: ReadyFrameMarkJson[];
+  last_behind_ms: number | null;
+  underrun_holds: number;
+  underrun_hold_ms: number;
+  frames_skipped: number;
+  held_len: number | null;
+  decode_queue_size: number | null;
+  scrub_busy: boolean;
+  cache_frames: number;
+  cache_chunks: number;
+};
+
+function inRanges(fraction: number, ranges: [number, number][]): boolean {
+  for (const [a, b] of ranges) {
+    if (fraction >= a && fraction <= b) return true;
+  }
+  return false;
+}
+
+/** Classify scrubber fraction using FetchMap + densify marks (Exact > Covered > gray > cold). */
+export function classifyFraction(
+  fraction: number,
+  pipe: PipelineJson,
+  lastFrame: number,
+): ScrubZone {
+  const max = Math.max(1, lastFrame);
+  const frame = Math.round(fraction * max);
+  for (const m of pipe.ready_frames) {
+    if (m.kind === "Exact" && frame >= m.frame && frame <= m.end) {
+      return "exact";
+    }
+  }
+  for (const m of pipe.ready_frames) {
+    if (m.kind === "Covered" && frame >= m.frame && frame <= m.end) {
+      return "covered";
+    }
+  }
+  if (inRanges(fraction, pipe.fetch_file_ranges)) return "gray";
+  return "cold";
+}
+
+/** First scrubber fraction (0…1) matching `zone`, or null if none in the sample grid. */
+export function pickZoneFraction(
+  pipe: PipelineJson,
+  lastFrame: number,
+  zone: ScrubZone,
+  opts?: { prefer?: "mid" | "edge"; samples?: number },
+): number | null {
+  const samples = opts?.samples ?? 40;
+  const hits: number[] = [];
+  for (let i = 1; i < samples; i++) {
+    const f = i / samples;
+    if (classifyFraction(f, pipe, lastFrame) === zone) hits.push(f);
+  }
+  if (hits.length === 0) return null;
+  if (opts?.prefer === "edge") return hits[0]!;
+  return hits[Math.floor(hits.length / 2)]!;
+}
+
+export function grayCoverageRatio(pipe: PipelineJson): number {
+  let covered = 0;
+  for (const [a, b] of pipe.fetch_file_ranges) {
+    covered += Math.max(0, b - a);
+  }
+  return Math.min(1, covered);
+}
 
 /** Parsed ready-state status line, e.g. `frame 3 / 29 · … · 0.100s · playing`. */
 export type PlayerStatus = {
@@ -59,11 +139,13 @@ export class DemoPlayer {
   readonly prefetchQueue: Locator;
   readonly prefetchAhead: Locator;
   readonly frameCache: Locator;
+  readonly pipelineJson: Locator;
 
   constructor(readonly page: Page) {
     this.root = page.getByTestId("player");
     this.status = page.getByTestId("status");
     this.pipeline = page.getByTestId("pipeline");
+    this.pipelineJson = page.getByTestId("pipeline-json");
     this.error = page.getByTestId("error");
     this.meta = page.getByTestId("meta");
     this.scrubber = page.getByTestId("scrubber");
@@ -97,6 +179,48 @@ export class DemoPlayer {
     await this.page.getByTestId("url-input").fill(url);
     await this.page.getByTestId("btn-open-url").click();
     await this.waitReady(timeout);
+  }
+
+  /**
+   * Open from `WEBMEDIA_CLIP` (or explicit override): URL, local file, or catalog alias.
+   * See `helpers/clip.ts`.
+   */
+  async openClip(
+    clipOrOverride?: ResolvedClip | string,
+    timeout = 180_000,
+  ): Promise<ResolvedClip> {
+    const clip =
+      typeof clipOrOverride === "object" && clipOrOverride != null
+        ? clipOrOverride
+        : resolveClip(
+            typeof clipOrOverride === "string" ? clipOrOverride : undefined,
+          );
+    if (clip.kind === "file") {
+      await this.openFixture(clip.value, timeout);
+    } else {
+      await this.openUrl(clip.value, timeout);
+    }
+    return clip;
+  }
+
+  async readPipelineJson(): Promise<PipelineJson> {
+    const raw = (await this.pipelineJson.innerText()).trim();
+    if (!raw || raw === "{}") {
+      return {
+        fetch_file_ranges: [],
+        ready_frames: [],
+        last_behind_ms: null,
+        underrun_holds: 0,
+        underrun_hold_ms: 0,
+        frames_skipped: 0,
+        held_len: null,
+        decode_queue_size: null,
+        scrub_busy: false,
+        cache_frames: 0,
+        cache_chunks: 0,
+      };
+    }
+    return JSON.parse(raw) as PipelineJson;
   }
 
   async waitReady(timeout = 20_000) {

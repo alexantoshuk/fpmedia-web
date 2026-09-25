@@ -8,13 +8,66 @@ use media_components::helpers::{
     cache_strip_gradient, fetch_strip_gradient, format_metadata, format_timecode_at,
     playhead_width_css, scrub_frame_from_x,
 };
-use media_components::{HoverThumbApi, HoverThumbPreview, ReadyFrameKind, Video, VideoRef};
+use media_components::{
+    HoverThumbApi, HoverThumbPreview, PipelineStats, ReadyFrameKind, Video, VideoRef,
+};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 
 /// Forward shuttle ladder for demo J/L keys (K → 1× + play/pause).
 const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
+
+/// Compact JSON for e2e (`data-testid="pipeline-json"`). Manual — app has no serde.
+fn pipeline_stats_json(stats: Option<PipelineStats>) -> String {
+    let Some(s) = stats else {
+        return "{}".into();
+    };
+    let ranges = s
+        .fetch_file_ranges
+        .iter()
+        .map(|(a, b)| format!("[{a:.6},{b:.6}]"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let ready = s
+        .ready_frames
+        .iter()
+        .map(|m| {
+            let kind = match m.kind {
+                ReadyFrameKind::Covered => "Covered",
+                ReadyFrameKind::Exact => "Exact",
+            };
+            format!(
+                "{{\"frame\":{},\"end\":{},\"kind\":\"{kind}\"}}",
+                m.frame, m.end
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let behind = match s.last_behind_ms {
+        Some(ms) => format!("{ms:.3}"),
+        None => "null".into(),
+    };
+    let held = if s.held_len == usize::MAX {
+        "null".into()
+    } else {
+        s.held_len.to_string()
+    };
+    let dq = if s.decode_queue_size == u32::MAX {
+        "null".into()
+    } else {
+        s.decode_queue_size.to_string()
+    };
+    format!(
+        "{{\"fetch_file_ranges\":[{ranges}],\"ready_frames\":[{ready}],\"last_behind_ms\":{behind},\"underrun_holds\":{},\"underrun_hold_ms\":{:.3},\"frames_skipped\":{},\"held_len\":{held},\"decode_queue_size\":{dq},\"scrub_busy\":{},\"cache_frames\":{},\"cache_chunks\":{}}}",
+        s.underrun_holds,
+        s.underrun_hold_ms,
+        s.frames_skipped,
+        s.scrub_busy,
+        s.cache_frames,
+        s.cache_chunks,
+    )
+}
 
 fn jkl_nearest_index(rate: f64) -> usize {
     let mut best = 0;
@@ -726,6 +779,16 @@ pub fn DemoPlayer() -> impl IntoView {
                         )
                     }}
                 </p>
+                // Machine-readable PipelineStats for e2e zone targeting / latency samples.
+                // Hidden; not production chrome.
+                <pre
+                    class="wm-pipeline-json"
+                    data-testid="pipeline-json"
+                    hidden
+                    aria-hidden="true"
+                >
+                    {move || pipeline_stats_json(video.pipeline.get())}
+                </pre>
                 <p class="wm-error" data-testid="error">{move || video.error.get().unwrap_or_default()}</p>
             </div>
         </div>
