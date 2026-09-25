@@ -4,30 +4,35 @@
 
 ---
 
-## Handoff (2026-09-25)
+## Handoff (2026-09-26)
 
-**Stable baseline:** `UrlSource` + full `ReadOrchestrator` (`source/orchestrator.rs`) + open-ended `_runWorker` stream + `CachedSource` + sample-span coalesce. Domain SMs through Session remain. Orch cache = mediabunny 64 MiB; `CachedSource` 512 MiB + FetchMap for gray strip.
+**Stable baseline:** `UrlSource` + full `ReadOrchestrator` + open-ended `_runWorker` + `CachedSource` + sample-span coalesce. Stress e2e: fast open→zone scrub→resume (`npm run e2e:stress`); full Release matrix `npm run e2e:stress:matrix` → `e2e/stress-reports/` (gitignored).
 
-**Cite:** `mediabunny: src/source.ts` `ReadOrchestrator` + `UrlSource._runWorker` — `queuedReads`, open-ended body, inner-slice resolve when bytes arrive.
+**Cite:** `mediabunny: src/source.ts` `ReadOrchestrator` + `UrlSource._runWorker`.
 
-**Verify next:** cold rapid-tap scrub + Play after (`e2e/player.scrub.cold-open.spec.ts`); URL gray strip holes/soft edges.
+**Matrix result (18 clips, fast stress):** 14 passed / 4 failed. Reports: `e2e/stress-reports/summary.md`.
 
-**Failed experiments (kept as skill gotchas — do not re-land):**
+**Hard fail — Play did not start after rapid scrub:**
 
-1. Open-ended stream + abort/replace workers (no queue).
-2. Closed-Range `ReadOrchestrator` (queue/merge/attach, no stream, no orch byte cache).
+- `avc_1080p_24_gop12_bf0`, `avc_1080p_24_gop12_bf2`
+- `hevc_1080p_24_gop12_bf0`, `hevc_1080p_2997_gop12_bf0`
+
+**Soft faults on passed runs:** `Decoding error` / closed codec on Exact/combo (gop48, 2997_gop*, 60fps); 60fps resume often ~9–10 s (budget edge).
+
+**Failed experiments (do not re-land):** open-ended abort/replace workers; closed-Range orch (no stream / no orch byte cache).
 
 ---
 
 ## Next up
 
-### Media engine (priority)
+### Media engine (priority) — bugfix from stress matrix
 
-1. **Verify** cold rapid-tap scrub + Play-after (`e2e/player.scrub.cold-open.spec.ts`) + gray URL buffer after orch port.
-2. Stress gate: `npm run e2e:stress` (`WEBMEDIA_CLIP`); zone decode stalls / `Decoding error` under rapid Exact — fail with `WEBMEDIA_STRESS_FAIL_ZONES=1` (default run collects latency JSON).
-3. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
-4. no-Range → `ReadableStreamSource` (host full-download stays for now).
-5. Drop `re_mp4` git pin `@aa5be9b` when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35); QT `skip_box(0)` still worked around in `SparseBoxReader`.
+1. **Play dead after rapid scrub** (gop12 AVC + HEVC above) — transport Settling / decoder closed; repro `WEBMEDIA_CLIP=gop12 npm run e2e:stress`. Also `e2e/player.scrub.cold-open.spec.ts` Play-after.
+2. **Decoding error / closed codec** under Exact/combo scrub (long-GOP, 60fps) — densify vs settle race.
+3. **Slow resume on 60fps** (~10 s) after scrub release.
+4. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
+5. no-Range → `ReadableStreamSource` (host full-download stays for now).
+6. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
 
 ### Later
 
