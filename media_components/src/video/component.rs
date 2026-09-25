@@ -531,24 +531,22 @@ pub fn Video(
                                 )
                                 .await;
                             }
-                            // Only note if this release is still current — preempt
-                            // bumps the epoch. Also require UI `playing` when
-                            // then_play succeeded (soft-pause may have raced).
-                            if queue.is_current(id) {
-                                let ok_final = if then_play {
-                                    played_ok && playing.get_untracked()
-                                } else {
-                                    ok
-                                };
-                                note_transport(
-                                    &transport,
-                                    TransportEvent::ScrubReleaseDone {
-                                        settle_gen,
-                                        then_play,
-                                        ok: ok_final,
-                                    },
-                                );
-                            }
+                            // Always note Done — reduce ignores stale `settle_gen`.
+                            // Skipping when `!is_current` left transport in Settling
+                            // after bump-without-Preempt (Play ignored / busy stuck).
+                            let ok_final = if then_play {
+                                played_ok && playing.get_untracked()
+                            } else {
+                                ok
+                            };
+                            note_transport(
+                                &transport,
+                                TransportEvent::ScrubReleaseDone {
+                                    settle_gen,
+                                    then_play,
+                                    ok: ok_final,
+                                },
+                            );
                         }
                         HostOp::Step(forward) => {
                             let _ = run_seek_or_step(

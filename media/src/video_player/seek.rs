@@ -7,6 +7,7 @@ use crate::types::FrameId;
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 
 use super::VideoPlayer;
+use super::scrub::{exact_scrub_ready, soft_cold_scrub_settle};
 
 impl VideoPlayer {
     pub async fn seek_frame(&self, frame: FrameId) -> Result<(), MediaError> {
@@ -23,8 +24,17 @@ impl VideoPlayer {
             self.clear_step_ring();
             self.clear_presentation();
             self.aim_scrub_cache(frame);
-            // Keep last canvas until exact decode paints (same as scrub settle).
-            self.goto_frame_with_interim(frame, epoch).await
+            // Cold seek on uncached / unindexed frame: do not block on
+            // `goto_frame_with_interim` (same hang as cold scrub settle).
+            if !exact_scrub_ready(&self.shared, frame) {
+                soft_cold_scrub_settle(self, frame)?;
+                self.shared.pending_cold_exact.set(Some(frame));
+                Ok(())
+            } else {
+                self.shared.pending_cold_exact.set(None);
+                // Keep last canvas until exact decode paints (same as scrub settle).
+                self.goto_frame_with_interim(frame, epoch).await
+            }
         }
         .await;
         self.apply_session_event(crate::SessionEvent::EndRestart);

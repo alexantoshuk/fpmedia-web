@@ -11,7 +11,7 @@
 | ------- | ---------- |
 | Browse / file picker does nothing on Android Chrome | `.wm-file input` must not be `display:none` — opacity overlay (see gotcha) |
 | Open never finishes / console stops at `open_blob start` | File-input `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
-| Play / Next / Prev disabled or silent no-op | UI-owned `playing`; recover when session is `None` |
+| Play / Next / Prev disabled or silent no-op | UI-owned `playing`; recover when session is `None`; cold scrub → `Settling`+Play Preempt (`skills/media.md`) |
 | Play after scrub does nothing (esp. after EOF) | Transport FSM + `ScrubRelease { then_play }` | `webmedia::transport` / `skills` — atomic release; do not reintroduce demo `resume_after_scrub` / TLS play latch |
 | EOF with `loop` off — host never notified | `VideoRef::ended`; clear on open/close/seek/play |
 | Decoder/cache leak after leaving a clip | `VideoRef::close()` (also on unmount) |

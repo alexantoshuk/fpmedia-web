@@ -282,13 +282,12 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
         (S::Playing, E::Ended) => (S::Ready, vec![]),
         (S::PlayPriming { .. }, E::Ended) => (S::Ready, vec![]),
 
-        (S::Scrubbing { resume: true, .. } | S::Settling { resume: true, .. }, E::PlayPressed) => {
-            (state, vec![])
-        }
-        (
-            S::Scrubbing { resume: false, .. } | S::Settling { resume: false, .. },
-            E::PlayPressed,
-        ) => (
+        // Scrubbing with resume: Play arrives after pointer-up via then_play —
+        // ignore while finger is down. Settling must always accept Play so a
+        // cancelled/stuck release cannot leave transport deaf (Play no-op /
+        // busy forever after cold scrub).
+        (S::Scrubbing { resume: true, .. }, E::PlayPressed) => (state, vec![]),
+        (S::Settling { .. } | S::Scrubbing { resume: false, .. }, E::PlayPressed) => (
             S::PlayPriming { from_scrub: false },
             vec![C::PreemptScrub, C::ClearEnded, C::EnqueuePlayPrime],
         ),
@@ -468,5 +467,39 @@ mod tests {
         let (m, c) = step(m, TransportEvent::PausePressed);
         assert_eq!(m.state, TransportState::Ready);
         assert!(c.contains(&TransportCmd::HardPause));
+    }
+
+    #[test]
+    fn play_from_settling_preempts_and_primes() {
+        // Stuck/cancelled Settling must not ignore Play (cold scrub recovery).
+        let m = TransportModel {
+            state: TransportState::Settling {
+                resume: true,
+                frame: 40,
+                settle_gen: 3,
+            },
+            next_settle_gen: 4,
+        };
+        let (m, c) = step(m, TransportEvent::PlayPressed);
+        assert_eq!(m.state, TransportState::PlayPriming { from_scrub: false });
+        assert!(c.contains(&TransportCmd::PreemptScrub));
+        assert!(c.contains(&TransportCmd::EnqueuePlayPrime));
+    }
+
+    #[test]
+    fn play_ignored_while_resume_scrubbing() {
+        let m = TransportModel {
+            state: TransportState::Scrubbing {
+                resume: true,
+                frame: 2,
+            },
+            next_settle_gen: 1,
+        };
+        let (m, c) = step(m, TransportEvent::PlayPressed);
+        assert!(matches!(
+            m.state,
+            TransportState::Scrubbing { resume: true, .. }
+        ));
+        assert!(c.is_empty());
     }
 }

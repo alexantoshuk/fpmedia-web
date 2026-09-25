@@ -212,7 +212,7 @@ impl Mp4VideoTrack {
     ///
     /// mfra backfill only loads `moof` tables; `mdat` stays cold until
     /// `encoded_sample`. A single 8 MiB tile left the tail cold (~frame 108 on
-    /// long warm spans). Tile ≤1 MiB chunks (under [`crate::source::url_gate::GATE_LARGE_BYTES`])
+    /// long warm spans). Tile ≤1 MiB chunks (under [`crate::source::GATE_LARGE_BYTES`])
     /// so fills bypass the URL gate and cover the whole ahead window.
     /// `mediabunny: URLSource` min-load + cache / on-demand packet `requestSlice`.
     pub fn kick_prefetch_samples(&self, from: usize, to: usize) {
@@ -236,7 +236,7 @@ impl Mp4VideoTrack {
         };
         // Stay under GATE_LARGE_BYTES so play sample Ranges are not queued
         // behind multi-MiB cache fills (`url_gate` / AAC starve lesson).
-        const TILE: u64 = 1024 * 1024;
+        const TILE: u64 = (crate::source::GATE_LARGE_BYTES as u64) / 2;
         const MAX_TILES: usize = 12;
         let mut tiles = 0usize;
         for (start, end) in spans {

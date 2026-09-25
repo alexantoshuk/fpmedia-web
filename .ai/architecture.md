@@ -103,7 +103,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | Engine mode | play vs scrub densify / soft-hold audio | **`webmedia::engine_mode`** (`Play` / `Scrub` / `ExactHold` + `AudioResume`) |
 | Decoder slot | configure / feed / drain / reset | **`webmedia::decoder_slot`** (`Idle` / `CheckedOut` + `reset_pending`) |
 | WorkloadMode | Play > Seek > Open > Bg knobs | **`webmedia::workload`** (`classify` + bg verify / backfill yield policy) |
-| Byte IO | hole queue / workers / inner-slice | half-ports → full mediabunny `ReadOrchestrator` |
+| Byte IO | hole queue / workers / inner-slice | **`ReadOrchestrator`** + `UrlSource._runWorker` (open-ended stream) |
 | Open / backfill | probe → warm index → ready | **`webmedia::open_phase`** (`OpenPhase::label` for UI status) |
 | Media clock | stop / run / underrun hold / scrub hold | **`webmedia::clock_state`** (`ClockState` + `reduce`) |
 | rAF session | priming / running / loop restart | **`webmedia::session`** (`SessionModel` restarting + preparing_loop) |
@@ -116,11 +116,11 @@ Skills keep failure-mode gotchas; this section is the standing design rule.
 
 ## Progressive open (MediaSource)
 
-**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` / `MemorySource` + `CachedSource` (512 MiB byte-budget LRU, 8 MiB quantum + hit-path margin prefetch / network grow; mediabunny `UrlSource` default is 64 MiB — we keep more for high-RTT `/proxy`); scrubber gray strip mirrors resident windows via `FetchMap`. Top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`; `open_url` rewrites remote `http(s)` to same-origin **`/proxy?url=`** (demo Axum forwards `Range`; bypasses GitHub Release / S3 CORS), then HTTP Range when the upstream supports `206` (else full-download fallback). Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
+**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` (`ReadOrchestrator` + open-ended Range workers) / `MemorySource` + `CachedSource` (512 MiB byte-budget LRU, 8 MiB quantum + hit-path margin prefetch / network grow; orch cache mediabunny-default 64 MiB); scrubber gray strip mirrors resident windows via `FetchMap`. Top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`; `open_url` rewrites remote `http(s)` to same-origin **`/proxy?url=`** (demo Axum forwards `Range`; bypasses GitHub Release / S3 CORS), then HTTP Range when the upstream supports `206` (else full-download fallback). Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
 
 **Demo `/proxy` policy (fixed):** localhost-only for local tests / e2e. TCP peer must be loopback (`127.0.0.1` / `::1`, incl. IPv4-mapped); otherwise **403**. Keep `site-addr` on loopback. Not a production CORS proxy — no DNS-resolve / allowlist hardening. Host apps that need remote media supply their own same-origin fetch path.
 
-**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; gray URL buffer via **full** `ReadOrchestrator` (stream workers + hole queue + inner-slice resolve) / no-Range → `ReadableStreamSource` — closed-Range orch + aborting stream phase‑1 both reverted. Sample-span coalesce shipped: `demux/coalesce.rs`. `WorkloadMode` policy shipped: `webmedia::workload`. Open UI progress shipped: `webmedia::open_phase` (`OpenPhase::label`). Media clock phase shipped: `webmedia::clock_state`. Play-session latches shipped: `webmedia::session`.
+**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; no-Range → `ReadableStreamSource`; verify URL gray strip after full `ReadOrchestrator` port. Sample-span coalesce shipped: `demux/coalesce.rs`. `WorkloadMode` policy shipped: `webmedia::workload`. Open UI progress shipped: `webmedia::open_phase` (`OpenPhase::label`). Media clock phase shipped: `webmedia::clock_state`. Play-session latches shipped: `webmedia::session`.
 
 **Out of scope:** stream-only sources without random access; live / growing fMP4; DASH/HLS segment playlists; MSE remux; production open media proxy.
 

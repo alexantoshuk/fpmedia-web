@@ -143,6 +143,9 @@ struct Shared {
     decoder_slot: Cell<DecoderSlotModel>,
     /// After fill stalls (no progress), skip restart until aim leaves this frame.
     fill_stalled_aim: Cell<Option<FrameId>>,
+    /// Scrub settle / seek landed on a cold (unindexed or uncached) frame — soft
+    /// present now; densify paints Exact when bytes arrive (`pending_cold_exact`).
+    pending_cold_exact: Cell<Option<FrameId>>,
     /// Scrub drag direction for predictive densify: `+1` ahead, `-1` behind, `0` neutral.
     scrub_dir: Cell<i8>,
     /// Last aim seen while updating `scrub_dir` (drag samples only).
@@ -420,6 +423,7 @@ impl VideoPlayer {
             op_epoch: Cell::new(0),
             decoder_slot: Cell::new(DecoderSlotModel::new()),
             fill_stalled_aim: Cell::new(None),
+            pending_cold_exact: Cell::new(None),
             scrub_dir: Cell::new(0),
             prev_scrub_aim: Cell::new(None),
             audio: RefCell::new(audio),
@@ -929,6 +933,18 @@ impl VideoPlayer {
 
     pub fn state(&self) -> PlayerState {
         self.shared.player.borrow().state()
+    }
+
+    /// Frames currently in the demux index (fMP4 warm prefix may be ≪ duration).
+    pub fn indexed_frame_count(&self) -> FrameId {
+        self.shared.player.borrow().track().indexed_frame_count()
+    }
+
+    /// True when Exact settle/seek may cascade without cold Range stampede.
+    ///
+    /// Host PlayPrime snaps playhead here when UI aim is still gray/unindexed.
+    pub fn frame_exact_ready(&self, frame: FrameId) -> bool {
+        scrub::exact_scrub_ready(&self.shared, frame)
     }
 
     pub fn canvas(&self) -> &HtmlCanvasElement {

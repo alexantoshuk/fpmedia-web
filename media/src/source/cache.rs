@@ -684,7 +684,9 @@ mod tests {
 
         let _ = poll_ready(&cached, 0, 20).unwrap();
         let _ = poll_ready(&cached, 64, 20).unwrap();
-        assert_eq!(map.file_fractions(128).len(), 2);
+        // Exact resident windows stay split; paint soft-merges sub‑8 KiB holes.
+        assert_eq!(map.windows().len(), 2);
+        assert_eq!(map.file_fractions(128).len(), 1);
     }
 
     #[test]

@@ -1,26 +1,35 @@
-//! HTTP [`UrlSource`] — ranged `fetch` for progressive remote open.
+//! HTTP [`UrlSource`] — ranged `fetch` via mediabunny `ReadOrchestrator`.
 //!
-//! mediabunny: `src/source.ts` `UrlSource` / `_runWorker` — probe with
-//! `Range: bytes=…`, require `206` + `Content-Range` for random access; up to
-//! `DEFAULT_PARALLELISM` (2) concurrent Range workers via [`UrlFetchGate`].
-//! Full `ReadOrchestrator` hole-cache + open-ended body streaming + mid-file
-//! sequential abandon are deferred — [`super::CachedSource`] covers play-time
-//! coalescing; connect-time no-Range → host full-download ([`is_no_http_range`]).
+//! mediabunny: `src/source.ts` `UrlSource` / `_runWorker` + `ReadOrchestrator`:
+//! open-ended `Range: bytes={pos}-`, stream body chunks into
+//! `supplyWorkerData`, resolve **inner** slices when their holes fill (outer
+//! prefetch may still be running). `maxWorkerCount` = `parallelism` (default 2).
+//!
+//! no-Range servers still fail connect with `no_http_range:` (host full-download);
+//! sequential-mode / `ReadableStreamSource` stays deferred (`.ai/state.md`).
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Headers, Request, RequestInit, Response};
+use web_sys::{
+    AbortController, Headers, ReadableStreamDefaultReader, Request, RequestInit, Response,
+};
 
 use crate::error::MediaError;
 
-use super::url_gate::{DEFAULT_URL_PARALLELISM, GATE_LARGE_BYTES, UrlFetchGate};
+use super::orchestrator::{
+    ReadOrchestrator, ReadOrchestratorOptions, URL_ORCH_CACHE_SIZE, WorkerId,
+};
+use super::url_gate::DEFAULT_URL_PARALLELISM;
 use super::{MediaSource, ReadFuture};
 
 /// Options for [`UrlSource::connect_with`].
 #[derive(Clone, Debug)]
 pub struct UrlSourceOptions {
-    /// Max concurrent Range GETs (`mediabunny: UrlSource.parallelism`).
+    /// Max concurrent Range workers (`mediabunny: UrlSource.parallelism`).
     pub parallelism: usize,
 }
 
@@ -32,20 +41,20 @@ impl Default for UrlSourceOptions {
     }
 }
 
+/// Abort controllers keyed by worker (mediabunny `_abortControllers`).
+type AbortMap = Arc<Mutex<HashMap<WorkerId, AbortController>>>;
+
 /// Ranged HTTP(S) byte source (progressive open without full download).
 #[derive(Clone, Debug)]
 pub struct UrlSource {
     url: String,
     size: u64,
-    gate: UrlFetchGate,
+    orch: Arc<ReadOrchestrator>,
 }
 
 impl UrlSource {
     /// Probe `url` with `Range: bytes=0-0` and build a source when the server
     /// answers `206` with a total size in `Content-Range`.
-    ///
-    /// Returns [`MediaError::Source`] with a stable `no_http_range:` prefix when
-    /// the server ignores Range (host may fall back to a full download).
     pub async fn connect(url: impl Into<String>) -> Result<Self, MediaError> {
         Self::connect_with(url, UrlSourceOptions::default()).await
     }
@@ -56,26 +65,26 @@ impl UrlSource {
         options: UrlSourceOptions,
     ) -> Result<Self, MediaError> {
         let url = url.into();
-        let resp = range_get(&url, 0, 0).await?;
+        let resp = range_get_closed(&url, 0, 0).await?;
         let status = resp.status();
-        let gate = UrlFetchGate::new(options.parallelism);
 
         if status == 206 {
             let size = parse_total_size_from_content_range(&resp)?.ok_or_else(|| {
                 MediaError::Source("no_http_range: 206 without total size in Content-Range".into())
             })?;
+            let parallelism = options.parallelism.max(1);
             web_sys::console::log_1(
                 &format!(
-                    "webmedia: UrlSource connect 206 size={size} parallelism={} {url}",
-                    gate.max()
+                    "webmedia: UrlSource connect 206 size={size} parallelism={parallelism} {url}"
                 )
                 .into(),
             );
-            return Ok(Self { url, size, gate });
+            let orch = build_orchestrator(url.clone(), parallelism);
+            orch.supply_file_size(size);
+            return Ok(Self { url, size, orch });
         }
 
         if status == 200 {
-            // Server ignored Range — cannot random-access without streaming the body.
             let len = resp
                 .headers()
                 .get("content-length")
@@ -99,9 +108,9 @@ impl UrlSource {
         &self.url
     }
 
-    /// Max concurrent Range GETs for this source.
+    /// Max concurrent Range workers for this source.
     pub fn parallelism(&self) -> usize {
-        self.gate.max()
+        self.orch.max_worker_count()
     }
 }
 
@@ -111,9 +120,8 @@ impl MediaSource for UrlSource {
     }
 
     fn read(&self, offset: u64, len: usize) -> ReadFuture<'_> {
-        let url = self.url.clone();
+        let orch = Arc::clone(&self.orch);
         let size = self.size;
-        let gate = self.gate.clone();
         Box::pin(async move {
             if offset > size {
                 return Err(MediaError::ReadOutOfRange { offset, len, size });
@@ -123,99 +131,226 @@ impl MediaSource for UrlSource {
             if want == 0 {
                 return Ok(Vec::new());
             }
-
-            let end = offset + want as u64 - 1;
+            let end = offset + want as u64;
             web_sys::console::log_1(
-                &format!("webmedia: UrlSource Range bytes={offset}-{end}").into(),
+                &format!("webmedia: UrlSource orch read bytes={offset}..{end}").into(),
             );
-
-            // Sample-sized A/V reads bypass the gate — large CachedSource fills
-            // must not starve AAC (~1 s ahead → silence near frame ~30).
-            if want >= GATE_LARGE_BYTES {
-                gate.with_slot(async { range_read_bytes(&url, offset, end, want).await })
-                    .await
-            } else {
-                range_read_bytes(&url, offset, end, want).await
-            }
+            orch.read(offset, end).await
         })
     }
 }
 
-async fn range_read_bytes(
-    url: &str,
-    offset: u64,
-    end: u64,
-    want: usize,
-) -> Result<Vec<u8>, MediaError> {
-    // Transient CDN / proxy errors (GitHub Releases via /proxy) — brief retry.
-    let mut last_err = String::new();
-    for attempt in 0..4u32 {
-        if attempt > 0 {
-            crate::util::yield_now().await;
-            crate::util::yield_now().await;
-        }
-        let resp = match range_get(url, offset, end).await {
-            Ok(r) => r,
-            Err(e) => {
-                last_err = e.to_string();
-                if last_err.contains("timed out") {
-                    continue;
-                }
-                return Err(e);
-            }
-        };
-        let status = resp.status();
-        if status == 206 || status == 200 {
-            // A 200 on a mid-file Range means the server dumped the whole object —
-            // refuse rather than allocating multi‑100 MB into WASM.
-            if status == 200 && offset > 0 {
-                return Err(MediaError::Source(
-                    "no_http_range: mid-file read got HTTP 200 (Range ignored)".into(),
-                ));
-            }
+fn build_orchestrator(url: String, parallelism: usize) -> Arc<ReadOrchestrator> {
+    let aborts: AbortMap = Arc::new(Mutex::new(HashMap::new()));
+    let aborts_for_run = Arc::clone(&aborts);
+    let aborts_for_idle = Arc::clone(&aborts);
+    let url_for_run = url;
 
-            let buf = response_bytes(&resp).await?;
-            if status == 200 && offset == 0 && buf.len() > want {
-                return Ok(buf[..want].to_vec());
+    ReadOrchestrator::new(ReadOrchestratorOptions {
+        max_cache_size: URL_ORCH_CACHE_SIZE,
+        max_worker_count: parallelism,
+        on_idle_worker_removed: Some(Arc::new(move |id| {
+            if let Ok(mut m) = aborts_for_idle.lock()
+                && let Some(ctrl) = m.remove(&id)
+            {
+                ctrl.abort();
             }
-            if buf.len() > want {
-                return Ok(buf[..want].to_vec());
-            }
-            return Ok(buf);
-        }
-        last_err = format!("HTTP {status}");
-        if status != 502 && status != 503 && status != 429 {
-            break;
-        }
-    }
-
-    Err(MediaError::Source(format!(
-        "{last_err} reading bytes={offset}-{end}"
-    )))
+        })),
+        run_worker: Arc::new(move |orch, id| {
+            let url = url_for_run.clone();
+            let aborts = Arc::clone(&aborts_for_run);
+            Box::pin(async move {
+                run_worker_loop(orch, id, &url, &aborts).await;
+            })
+        }),
+    })
 }
 
-async fn range_get(url: &str, start: u64, end: u64) -> Result<Response, MediaError> {
+/// mediabunny `UrlSource._runWorker` — open-ended Range + body stream.
+async fn run_worker_loop(orch: Arc<ReadOrchestrator>, id: WorkerId, url: &str, aborts: &AbortMap) {
+    // Outer loop: resume if the response dies mid-stream (mediabunny while(true)).
+    loop {
+        let Some(snap) = orch.worker_snapshot(id) else {
+            return;
+        };
+        if snap.aborted {
+            orch.signal_worker_stopped_running(id);
+            return;
+        }
+
+        let controller = match AbortController::new() {
+            Ok(c) => c,
+            Err(e) => {
+                reject_worker(&orch, id, js_to_source(e));
+                return;
+            }
+        };
+        if let Ok(mut m) = aborts.lock() {
+            m.insert(id, controller.clone());
+        }
+
+        let start = snap.current_pos;
+        let resp = match range_get_open(url, start, &controller).await {
+            Ok(r) => r,
+            Err(_e) => {
+                if controller.signal().aborted() {
+                    orch.signal_worker_stopped_running(id);
+                    return;
+                }
+                // Brief retry then fail the pending slices.
+                crate::util::yield_now().await;
+                match range_get_open(url, start, &controller).await {
+                    Ok(r) => r,
+                    Err(e2) => {
+                        reject_worker(&orch, id, e2);
+                        return;
+                    }
+                }
+            }
+        };
+
+        let status = resp.status();
+        if !resp.ok() {
+            // Retry transient CDN errors.
+            if matches!(status, 502 | 503 | 429) {
+                crate::util::yield_now().await;
+                continue;
+            }
+            reject_worker(
+                &orch,
+                id,
+                MediaError::Source(format!("HTTP {status} open Range bytes={start}-")),
+            );
+            return;
+        }
+
+        if status != 206 {
+            // no-Range mid-flight — refuse (host used connect probe; do not
+            // download whole object into WASM). Sequential mode deferred.
+            let _ = resp.body().map(|b| b.cancel());
+            reject_worker(
+                &orch,
+                id,
+                MediaError::Source(
+                    "no_http_range: mid-file open Range got non-206 (Range ignored)".into(),
+                ),
+            );
+            return;
+        }
+
+        let Some(body) = resp.body() else {
+            reject_worker(
+                &orch,
+                id,
+                MediaError::Source("Missing HTTP response body stream".into()),
+            );
+            return;
+        };
+
+        let reader: ReadableStreamDefaultReader = match body.get_reader().dyn_into() {
+            Ok(r) => r,
+            Err(_) => {
+                reject_worker(
+                    &orch,
+                    id,
+                    MediaError::Source("body.getReader failed".into()),
+                );
+                return;
+            }
+        };
+
+        loop {
+            let Some(snap) = orch.worker_snapshot(id) else {
+                controller.abort();
+                return;
+            };
+            if snap.current_pos >= snap.target_pos || snap.aborted {
+                controller.abort();
+                orch.signal_worker_stopped_running(id);
+                return;
+            }
+
+            let read_result = match JsFuture::from(reader.read()).await {
+                Ok(v) => v,
+                Err(e) => {
+                    if controller.signal().aborted() {
+                        orch.signal_worker_stopped_running(id);
+                        return;
+                    }
+                    // Resume outer loop with a new open Range (mediabunny retry).
+                    web_sys::console::warn_1(
+                        &format!(
+                            "webmedia: UrlSource stream error, resume @{}: {}",
+                            snap.current_pos,
+                            format_js_fetch_err(e)
+                        )
+                        .into(),
+                    );
+                    crate::util::yield_now().await;
+                    break;
+                }
+            };
+
+            let done = js_sys::Reflect::get(&read_result, &"done".into())
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            if done {
+                let Some(snap) = orch.worker_snapshot(id) else {
+                    return;
+                };
+                if snap.current_pos >= snap.target_pos {
+                    orch.signal_worker_stopped_running(id);
+                    return;
+                }
+                if snap.strict_target {
+                    // Server capped the open Range early — new request.
+                    break;
+                }
+                orch.on_worker_finished(id);
+                return;
+            }
+
+            let value = js_sys::Reflect::get(&read_result, &"value".into()).ok();
+            let Some(value) = value else {
+                continue;
+            };
+            let chunk = Uint8Array::new(&value).to_vec();
+            if chunk.is_empty() {
+                continue;
+            }
+            orch.supply_worker_data(id, &chunk);
+        }
+    }
+}
+
+fn reject_worker(orch: &Arc<ReadOrchestrator>, id: WorkerId, err: MediaError) {
+    web_sys::console::error_1(&format!("webmedia: UrlSource worker {id:?} err: {err}").into());
+    orch.fail_worker(id, err);
+}
+
+async fn range_get_open(
+    url: &str,
+    start: u64,
+    controller: &AbortController,
+) -> Result<Response, MediaError> {
     let window = web_sys::window().ok_or_else(|| MediaError::Source("no window".into()))?;
     let headers = Headers::new().map_err(js_to_source)?;
+    // mediabunny: open-ended `bytes=${worker.currentPos}-`
     headers
-        .set("Range", &format!("bytes={start}-{end}"))
+        .set("Range", &format!("bytes={start}-"))
         .map_err(js_to_source)?;
-
-    let controller = web_sys::AbortController::new().map_err(js_to_source)?;
-    let signal = controller.signal();
 
     let init = RequestInit::new();
     init.set_method("GET");
     init.set_headers(&headers);
-    init.set_signal(Some(&signal));
+    init.set_signal(Some(&controller.signal()));
 
     let request = Request::new_with_str_and_init(url, &init).map_err(js_to_source)?;
     let fetch_promise = window.fetch_with_request(&request);
 
-    // Scale with payload: 43 MiB through GitHub needs ~60 s budget, not 15 s.
-    // Floor 15 s (small Ranges); cap 180 s.
-    let nbytes = end.saturating_sub(start).saturating_add(1);
-    let timeout_ms = (15_000i64 + (nbytes as i64 / 1_000)).clamp(15_000, 180_000) as i32;
+    // Long streams: floor 30 s to first byte; cap 180 s (body read has its own life).
+    let timeout_ms = 180_000i32;
     let timeout = js_sys::Promise::new(&mut |resolve, _reject| {
         let ctrl = controller.clone();
         let resolve_ok = resolve.clone();
@@ -239,7 +374,7 @@ async fn range_get(url: &str, start: u64, end: u64) -> Result<Response, MediaErr
         let msg = format_js_fetch_err(e);
         if msg.to_ascii_lowercase().contains("abort") {
             MediaError::Source(format!(
-                "Range bytes={start}-{end} timed out ({timeout_ms}ms)"
+                "open Range bytes={start}- timed out ({timeout_ms}ms)"
             ))
         } else {
             MediaError::Source(msg)
@@ -248,7 +383,7 @@ async fn range_get(url: &str, start: u64, end: u64) -> Result<Response, MediaErr
 
     if resp_val.is_null() || resp_val.is_undefined() {
         return Err(MediaError::Source(format!(
-            "Range bytes={start}-{end} timed out ({timeout_ms}ms)"
+            "open Range bytes={start}- timed out ({timeout_ms}ms)"
         )));
     }
 
@@ -257,18 +392,57 @@ async fn range_get(url: &str, start: u64, end: u64) -> Result<Response, MediaErr
         .map_err(|_| MediaError::Source("fetch did not return a Response".into()))
 }
 
-async fn response_bytes(resp: &Response) -> Result<Vec<u8>, MediaError> {
-    let buf_promise = resp.array_buffer().map_err(js_to_source)?;
-    let buf = JsFuture::from(buf_promise).await.map_err(js_to_source)?;
-    Ok(Uint8Array::new(&buf).to_vec())
+/// Closed Range used only for the connect probe (`bytes=0-0`).
+async fn range_get_closed(url: &str, start: u64, end: u64) -> Result<Response, MediaError> {
+    let window = web_sys::window().ok_or_else(|| MediaError::Source("no window".into()))?;
+    let headers = Headers::new().map_err(js_to_source)?;
+    headers
+        .set("Range", &format!("bytes={start}-{end}"))
+        .map_err(js_to_source)?;
+
+    let controller = AbortController::new().map_err(js_to_source)?;
+    let init = RequestInit::new();
+    init.set_method("GET");
+    init.set_headers(&headers);
+    init.set_signal(Some(&controller.signal()));
+
+    let request = Request::new_with_str_and_init(url, &init).map_err(js_to_source)?;
+    let fetch_promise = window.fetch_with_request(&request);
+    let timeout_ms = 15_000i32;
+    let timeout = js_sys::Promise::new(&mut |resolve, _reject| {
+        let ctrl = controller.clone();
+        let resolve_ok = resolve.clone();
+        let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
+            ctrl.abort();
+            let _ = resolve_ok.call0(&wasm_bindgen::JsValue::NULL);
+        });
+        if window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                timeout_ms,
+            )
+            .is_err()
+        {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        }
+    });
+
+    let raced = js_sys::Promise::race(&js_sys::Array::of2(&fetch_promise, &timeout));
+    let resp_val = JsFuture::from(raced).await.map_err(js_to_source)?;
+    if resp_val.is_null() || resp_val.is_undefined() {
+        return Err(MediaError::Source(format!(
+            "Range bytes={start}-{end} timed out ({timeout_ms}ms)"
+        )));
+    }
+    resp_val
+        .dyn_into::<Response>()
+        .map_err(|_| MediaError::Source("fetch did not return a Response".into()))
 }
 
-/// `Content-Range: bytes <start>-<end>/<total|"*">` → total when numeric.
 fn parse_total_size_from_content_range(resp: &Response) -> Result<Option<u64>, MediaError> {
     let Some(cr) = resp.headers().get("content-range").map_err(js_to_source)? else {
         return Ok(None);
     };
-    // Prefer the `/total` suffix (mediabunny: `/\/(\d+)/`).
     let Some((_, total)) = cr.rsplit_once('/') else {
         return Ok(None);
     };

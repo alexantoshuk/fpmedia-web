@@ -840,12 +840,22 @@ impl VideoPlayer {
                 // Reinforce ring clear when host skipped [`Self::prepare_scrub_settle`].
                 self.clear_step_ring();
                 self.clear_presentation();
-                self.goto_frame_with_interim(frame, epoch).await?;
-                // Soft-held scrub-while-play: seed play ahead here (one cascade +
-                // first two frames) so PlayPrime does not re-prime from cold.
-                // mediabunny: startVideoIterator awaits first two canvases before play.
-                if self.audio_warm_resume() {
-                    self.seed_play_presentation_after_seek(epoch).await?;
+                // Cold click / tap on uncached or not-yet-indexed fMP4 frame: do
+                // **not** `goto_frame_with_interim` (ensure_frame_indexed + key→N
+                // on cold Ranges freezes the tab). Soft present + prefetch; densify
+                // paints when `FetchMap` covers the GOP.
+                if !exact_scrub_ready(&self.shared, frame) {
+                    soft_cold_scrub_settle(self, frame)?;
+                    self.shared.pending_cold_exact.set(Some(frame));
+                } else {
+                    self.shared.pending_cold_exact.set(None);
+                    self.goto_frame_with_interim(frame, epoch).await?;
+                    // Soft-held scrub-while-play: seed play ahead here (one cascade +
+                    // first two frames) so PlayPrime does not re-prime from cold.
+                    // mediabunny: startVideoIterator awaits first two canvases before play.
+                    if self.audio_warm_resume() {
+                        self.seed_play_presentation_after_seek(epoch).await?;
+                    }
                 }
                 Ok(())
             } else {
@@ -898,6 +908,11 @@ impl VideoPlayer {
             // lag on long GOPs (long-GOP). Drag still densifies below.
             // Do **not** `schedule_scrub_cache_fill` here when Play is pending — host
             // skips `arm_scrub_densify_after_exact` on purpose; Pause restarts fill.
+            // Cold soft-settle: kick densify so Exact/`pending_cold_exact` can resolve
+            // when bytes arrive (host may skip arm after settle).
+            if self.shared.pending_cold_exact.get().is_some() {
+                self.enter_scrub_cache_pipeline(frame);
+            }
         } else {
             self.enter_scrub_cache_pipeline(frame);
         }
@@ -973,6 +988,7 @@ impl VideoPlayer {
         {
             thumbs.clear();
         }
+        self.shared.pending_cold_exact.set(None);
     }
 
     /// Park `video` into scrub residency: sync `ImageBitmap` + gap marker.
@@ -1097,6 +1113,28 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                 return Ok(());
             };
 
+            // Cold open / URL: do not densify-decode until the GOP's sample bytes
+            // are resident (FetchMap) and the frame is indexed. Otherwise soft-drag
+            // right after open stamps Ranges + decode + ImageBitmap and freezes the
+            // tab. Prefetch / mfra backfill run; densify retries next pass.
+            // Local invention (mediabunny has no densify plane).
+            let key = shared
+                .player
+                .borrow()
+                .track()
+                .index()
+                .nearest_keyframe(target)
+                .unwrap_or(target);
+            if !scrub_gop_bytes_warm(&shared, key) {
+                warm_scrub_gop_bytes(&shared, key);
+                idle_passes = 0;
+                wait_animation_frame().await;
+                continue;
+            }
+            // Soft cold settle: GOP bytes arrived — paint Exact blit if densify
+            // already has the aim (or after the fill below).
+            try_resolve_pending_cold_exact(&shared);
+
             match fill_one_gap(Rc::clone(&shared), target, scrub_epoch).await {
                 Ok(made_progress) => {
                     idle_passes = if made_progress {
@@ -1112,6 +1150,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                         return Ok(());
                     }
                     if made_progress {
+                        try_resolve_pending_cold_exact(&shared);
                         // One display frame after a GOP of VF→ImageBitmap so the
                         // GPU process can reclaim before the next burst (Chrome
                         // whole-window black flash under densify VRAM pressure).
@@ -1284,6 +1323,16 @@ pub(super) fn playhead_and_last(shared: &Shared) -> (FrameId, FrameId) {
 /// when saturated / disarmed / stalled at this aim.
 pub(super) fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     let (playhead, last) = playhead_and_last(shared);
+    // fMP4 warm open: provisional duration may exceed indexed samples — never
+    // densify past the indexed prefix (would stall on mfra backfill + decode).
+    let indexed_last = shared
+        .player
+        .borrow()
+        .track()
+        .indexed_frame_count()
+        .saturating_sub(1);
+    let last = last.min(indexed_last);
+    let playhead = playhead.min(last);
     if shared.fill_stalled_aim.get() == Some(playhead) {
         return None;
     }
@@ -1311,6 +1360,117 @@ pub(super) fn next_gap_target(shared: &Shared) -> Option<FrameId> {
         return None;
     }
     cache.next_gap_frame(playhead, last, dir)
+}
+
+/// True when every sample in the GOP at `key` is indexed and resident in
+/// [`FetchMap`] (CachedSource windows). Cold → densify must prefetch, not decode.
+fn scrub_gop_bytes_warm(shared: &Shared, key: FrameId) -> bool {
+    let track = shared.player.borrow().track_rc();
+    let indexed = track.indexed_frame_count();
+    if key >= indexed {
+        return false;
+    }
+    let index = track.index();
+    let ids = index.gop_frame_ids(key).unwrap_or_default();
+    if ids.is_empty() {
+        return false;
+    }
+    if ids.iter().any(|&id| id >= indexed) {
+        return false;
+    }
+    for id in ids {
+        let Some(entry) = index.get(id) else {
+            return false;
+        };
+        let end = entry.offset.saturating_add(entry.size);
+        if !shared.fetch_map.covers_range(entry.offset, end) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Settle/seek may run Exact cascade only when aim GOP samples are indexed + resident.
+///
+/// Cold → soft present + prefetch (`soft_cold_scrub_settle`); densify paints later.
+/// Avoids `goto_frame_with_interim` → `ensure_frame_indexed` + key→N on cold Ranges
+/// (tab freeze on rapid taps). Local invention (no densify plane in mediabunny);
+/// async retrieve mirrors `mediabunny: src/media-sink.ts` `mediaSamplesAtTimestamps`
+/// (await packets without blocking the host on every seek).
+pub(super) fn exact_scrub_ready(shared: &Shared, frame: FrameId) -> bool {
+    let track = shared.player.borrow().track_rc();
+    let indexed = track.indexed_frame_count();
+    if frame >= indexed {
+        return false;
+    }
+    let key = track.index().nearest_keyframe(frame).unwrap_or(frame);
+    scrub_gop_bytes_warm(shared, key)
+}
+
+/// Soft settle/seek on a cold frame: prefetch only, optional warm blit, commit
+/// only within the **indexed** prefix.
+///
+/// Does **not** decode. Never `commit_frame` past `indexed_frame_count` — that
+/// left PlayPrime / `warm_sample_bytes` awaiting mfra on the OpQueue (Play stuck
+/// `busy`). User aim stays in `pending_cold_exact`; densify paints when warm.
+/// Canvas may stay on the prior frame until Exact blit lands.
+pub(super) fn soft_cold_scrub_settle(
+    player: &VideoPlayer,
+    frame: FrameId,
+) -> Result<(), MediaError> {
+    let indexed = player.shared.player.borrow().track().indexed_frame_count();
+    let key = player.key_for(frame).unwrap_or(frame);
+    warm_scrub_gop_bytes(&player.shared, key);
+    // Soft present: nearest warm blit only — never cold decode on the OpQueue.
+    if let Some(preview) = player.scrub_preview_frame(frame) {
+        let _ = player.try_present_warm_blit(preview)?;
+    }
+    if indexed > 0 {
+        let commit = frame.min(indexed - 1);
+        player.shared.player.borrow_mut().commit_frame(commit)?;
+        player.touch_playhead(commit);
+    }
+    Ok(())
+}
+
+/// When soft cold settle deferred Exact and densify now has the aim blit, paint it.
+fn try_resolve_pending_cold_exact(shared: &Rc<Shared>) {
+    let Some(aim) = shared.pending_cold_exact.get() else {
+        return;
+    };
+    if !exact_scrub_ready(shared, aim) {
+        return;
+    }
+    let Ok(mut blit) = shared.scrub_blit.try_borrow_mut() else {
+        return;
+    };
+    let Some(bitmap) = blit.get(aim) else {
+        return;
+    };
+    if draw_image_bitmap(&shared.canvas, &shared.ctx, bitmap).is_ok() {
+        let _ = shared.player.borrow_mut().commit_frame(aim);
+        shared.pending_cold_exact.set(None);
+    }
+}
+
+/// Kick sample prefetch (and fragment backfill if needed) for a cold densify GOP.
+fn warm_scrub_gop_bytes(shared: &Shared, key: FrameId) {
+    let track = shared.player.borrow().track_rc();
+    let indexed = track.indexed_frame_count();
+    if key >= indexed {
+        track.kick_fragment_backfill();
+        return;
+    }
+    let end = track
+        .index()
+        .gop_frame_ids(key)
+        .unwrap_or_default()
+        .last()
+        .copied()
+        .unwrap_or(key)
+        .saturating_add(1)
+        .min(indexed);
+    track.kick_prefetch_samples(key as usize, end as usize);
 }
 
 /// Densify the GOP containing `target`. Returns whether the cache gained frames.

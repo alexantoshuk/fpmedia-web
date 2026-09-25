@@ -1,15 +1,12 @@
-//! Concurrent Range GET gate for [`UrlSource`](super::UrlSource).
+//! URL fetch parallelism constants (+ legacy gate for unit tests).
 //!
 //! mediabunny: `src/source.ts` `UrlSource` `DEFAULT_PARALLELISM = 2` →
-//! `ReadOrchestrator.maxWorkerCount`. Workers there stream open-ended Ranges;
-//! here we only limit how many closed `bytes=start-end` GETs run at once
-//! (byte cache / network prefetch live in [`super::CachedSource`]).
+//! `ReadOrchestrator.maxWorkerCount`. Live [`super::UrlSource`] uses the
+//! orchestrator (open-ended stream workers); [`UrlFetchGate`] remains for
+//! native tests / reference. [`GATE_LARGE_BYTES`] still bounds demux warm
+//! tiles so sample fills stay small vs quantum prefetch.
 
-// Constructed from wasm `UrlSource`; native lib keeps the type for unit tests.
-#![cfg_attr(
-    not(all(target_arch = "wasm32", feature = "webcodecs")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::sync::{Arc, Mutex};
 
@@ -20,14 +17,13 @@ pub const DEFAULT_URL_PARALLELISM: usize = 2;
 /// are not serialized behind the play-time default of 2.
 pub const OPEN_URL_PARALLELISM: usize = 4;
 
-/// Only Range GETs this large take a gate slot. Sample-sized A/V reads must
-/// bypass — otherwise an 8 MiB `CachedSource` fill holds the semaphore and the
-/// ~1 s audio ahead buffer runs dry (~frame 30 @30 fps) → permanent silence
-/// when the pump then errors/waits. mediabunny workers multiplex small reads
-/// through the orchestrator cache; our closed-Range gate is too coarse for that.
+/// Warm-tile / sample-fill size ceiling (kept under orchestrator prefetch
+/// quantum). Formerly gated closed-Range GETs; orch multiplexes small reads
+/// through workers — this constant still sizes demux `kick_prefetch_samples`
+/// tiles so one fill does not monopolize bandwidth.
 pub const GATE_LARGE_BYTES: usize = 2 * 1024 * 1024;
 
-/// Shared slot limiter — clones of [`super::UrlSource`] share one gate.
+/// Shared slot limiter — legacy closed-Range semaphore (unit tests).
 #[derive(Clone, Debug)]
 pub struct UrlFetchGate {
     inner: Arc<Mutex<GateState>>,
@@ -69,7 +65,6 @@ impl UrlFetchGate {
                     return;
                 }
             }
-            // Contended: yield so other GETs / the UI can progress (wasm macrotask).
             crate::util::yield_now().await;
         }
     }

@@ -265,7 +265,27 @@ pub(super) async fn run_play_prime(
     // by seek/step, or play without a prior settle). Do this *before* `play()` so
     // we do not cancel an in-flight scrub that was already targeting playhead —
     // that op finished ahead of us in the drain queue.
-    let ph = playhead.get_untracked();
+    //
+    // Cold scrub soft-settle may leave UI playhead on an unindexed / uncached
+    // aim while engine committed the indexed prefix. Priming that aim blocked
+    // OpQueue (`warm_sample_bytes` / mfra) and stuck Play `busy`. Snap to a
+    // playable frame first (mediabunny: first samples before play).
+    let indexed_last = p
+        .indexed_frame_count()
+        .saturating_sub(1)
+        .min(u64::from(u32::MAX)) as u32;
+    let eng = p.state().frame.min(u64::from(u32::MAX)) as u32;
+    let mut ph = playhead.get_untracked().min(indexed_last);
+    if !p.frame_exact_ready(u64::from(ph)) {
+        let safe = eng.min(indexed_last);
+        if safe != ph {
+            web_sys::console::log_1(
+                &format!("webmedia: play snap cold playhead {ph} → {safe}").into(),
+            );
+            playhead.set(safe);
+            ph = safe;
+        }
+    }
     if p.state().frame != u64::from(ph) {
         web_sys::console::log_1(
             &format!("webmedia: play sync seek {ph} (engine {})", p.state().frame).into(),

@@ -6,6 +6,7 @@
 mod cache;
 mod fetch_map;
 mod memory;
+mod orchestrator;
 mod url_gate;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
@@ -16,7 +17,7 @@ mod url;
 pub use cache::{CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE};
 pub use fetch_map::FetchMap;
 pub use memory::MemorySource;
-pub use url_gate::{DEFAULT_URL_PARALLELISM, OPEN_URL_PARALLELISM};
+pub use url_gate::{DEFAULT_URL_PARALLELISM, GATE_LARGE_BYTES, OPEN_URL_PARALLELISM};
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use blob::BlobSource;
