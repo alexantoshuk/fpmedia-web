@@ -28,13 +28,15 @@
 ### Media engine (priority) — bugfix from stress matrix
 
 1. **Open UI lock until full gray** (progressive) — open warm lead=96 landed; confirm Ready before full gray.
-2. **Play dead after rapid scrub** — host soft-park + no main invalidate on `arm_scrub_densify_after_exact`; re-verify progressive + fMP4 gop12 scrub→Play.
-3. **Decoding error / closed codec** under Exact/combo scrub — abort put-back + densify yield before Exact + one poison retry; re-verify `WEBMEDIA_CLIP=gop48` / 60fps stress.
+2. **Play dead after rapid scrub** — still fails on some gop12 / 2997 / 60fps / HEVC stress clips (`no resume` / `Play did not start`); soft-park landed — re-verify.
+3. **Decoding error / closed codec** — cold/exact taps still fault on gop12 + gop48 Exact; abort put-back landed — re-verify stress.
 4. **PlayPrime lag on gray (no prior Exact)** — cold path still awaits warm=24; verify first Play on gray without scrub.
-5. **Slow resume on 60fps** (~10 s) after scrub release.
+5. **Slow resume on 60fps** (~10 s) after scrub release — stress: 60fps clips often miss Pause→Play sample / slow scrub→Play.
 6. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
 7. no-Range → `ReadableStreamSource` (host full-download stays for now).
 8. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
+
+**Stress matrix (2026-09-26, fast + Pause/scrub→Play budgets):** 8 passed / 10 failed — see `e2e/stress-reports/summary.md`. Pause→Play / Exact scrub→Play usually <600 ms when sample exists; fails are mostly decode poison / no resume / 60fps.
 
 ### Later
 

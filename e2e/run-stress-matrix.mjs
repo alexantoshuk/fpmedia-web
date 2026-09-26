@@ -57,6 +57,9 @@ function rowFrom(clip, report, exitCode, elapsedMs) {
     settleExactP95: report?.settle?.exact?.p95 ?? null,
     settleComboP95: report?.settle?.combo?.p95 ?? null,
     resumeP95: report?.resumeMs?.p95 ?? null,
+    resumePlayP95: report?.resumePlayMs?.p95 ?? null,
+    pausePlayP95: report?.pausePlayMs?.p95 ?? null,
+    scrubPlayP95: report?.scrubPlayMs?.p95 ?? null,
     behindP95: report?.behindMs?.p95 ?? null,
     holdMsMax: report?.holdMs?.max ?? null,
     skippedMax: report?.skippedMax ?? null,
@@ -92,13 +95,13 @@ async function writeSummary(rows) {
     `Base: \`${BASE}\``,
     `Progress: **${summary.done}** / ${summary.clips} (passed ${summary.passed}, failed ${summary.failed})`,
     "",
-    "| clip | ok | openMs | cold p95 | gray p95 | covered p95 | exact p95 | combo p95 | resume p95 | behind p95 | faults |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    "| clip | ok | openMs | pause→play | scrub→play | resume play | resume total | cold p95 | gray p95 | faults |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
   ];
   for (const row of rows) {
     const fault = (row.faults[0] ?? "").replace(/\|/g, "/").slice(0, 80);
     lines.push(
-      `| \`${row.clip}\` | ${row.ok ? "yes" : "NO"} | ${row.openMs ?? "—"} | ${row.settleColdP95 ?? "—"} | ${row.settleGrayP95 ?? "—"} | ${row.settleCoveredP95 ?? "—"} | ${row.settleExactP95 ?? "—"} | ${row.settleComboP95 ?? "—"} | ${row.resumeP95 ?? "—"} | ${row.behindP95 ?? "—"} | ${fault || "—"} |`,
+      `| \`${row.clip}\` | ${row.ok ? "yes" : "NO"} | ${row.openMs ?? "—"} | ${row.pausePlayP95 ?? "—"} | ${row.scrubPlayP95 ?? "—"} | ${row.resumePlayP95 ?? "—"} | ${row.resumeP95 ?? "—"} | ${row.settleColdP95 ?? "—"} | ${row.settleGrayP95 ?? "—"} | ${fault || "—"} |`,
     );
   }
   if (summary.pending.length) {

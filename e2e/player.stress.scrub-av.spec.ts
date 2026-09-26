@@ -1,10 +1,11 @@
 /**
- * Fast scrub stress (~1 min): open → rapid scrub across cache zones →
- * Play→scrub→release→resume → report.
+ * Fast scrub stress (~1 min): open → Pause→Play + scrub→Play latency →
+ * rapid scrub across cache zones → Play→scrub→release→resume → report.
  *
  * Clip: WEBMEDIA_CLIP=gop12|gop48|fmp4|… | URL | local path (default gop48).
  *
- * Soft report always. Hard fail: open fail, unresponsive, no resume after scrub.
+ * Soft report always. Hard fail: open fail, unresponsive, no/slow Pause→Play,
+ * scrub→Play, or resume after scrub (budget FAST_PLAY_MS).
  * Zone decode faults recorded; fail run with WEBMEDIA_STRESS_FAIL_ZONES=1.
  *
  *   npm run e2e:stress
@@ -77,6 +78,82 @@ async function waitExactSettle(player: DemoPlayer, timeoutMs: number) {
   return { settleMs: null as number | null, status: last };
 }
 
+/** eng==playhead and pipeline marks Exact at that frame (not soft-cold settle). */
+async function waitExactPainted(
+  player: DemoPlayer,
+  timeoutMs: number,
+): Promise<{ settleMs: number | null; status: Awaited<ReturnType<DemoPlayer["readStatus"]>> }> {
+  const t0 = Date.now();
+  let last = await player.readStatus();
+  while (Date.now() - t0 < timeoutMs) {
+    last = await player.readStatus();
+    if (
+      last.playhead != null &&
+      last.engine != null &&
+      last.playhead === last.engine &&
+      last.lastFrame != null
+    ) {
+      const pipe = await player.readPipelineJson();
+      const frac = last.playhead / Math.max(1, last.lastFrame);
+      if (classifyFraction(frac, pipe, last.lastFrame) === "exact") {
+        return { settleMs: Date.now() - t0, status: last };
+      }
+    }
+    await player.page.waitForTimeout(50);
+  }
+  return { settleMs: null, status: last };
+}
+
+/** Click Play already done — wait until playing with playhead past `ph0`. */
+async function waitPlayAdvances(
+  player: DemoPlayer,
+  ph0: number,
+  timeoutMs: number,
+): Promise<number | null> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const s = await player.readStatus();
+    if (s.playing && s.playhead != null && s.playhead > ph0) {
+      return Date.now() - t0;
+    }
+    await player.page.waitForTimeout(40);
+  }
+  return null;
+}
+
+async function ensurePaused(player: DemoPlayer) {
+  if ((await player.readStatus()).playing) {
+    await player.play.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing, { timeout: 5_000 })
+      .toBe(false);
+  }
+}
+
+/** Play control enabled and not mid-play (densify may still run in bg). */
+async function waitTransportIdle(player: DemoPlayer, timeoutMs = 15_000) {
+  await expect(player.play).toBeEnabled({ timeout: timeoutMs });
+  await expect
+    .poll(async () => !(await player.readStatus()).playing, {
+      timeout: timeoutMs,
+      message: "still playing",
+    })
+    .toBe(true);
+}
+
+async function ensurePlaying(player: DemoPlayer, timeoutMs = 8_000) {
+  if ((await player.readStatus()).playing) return;
+  await player.play.click();
+  await expect
+    .poll(async () => (await player.readStatus()).playing, {
+      timeout: timeoutMs,
+    })
+    .toBe(true);
+}
+
+/** Soft budget for warm Pause→Play / Exact-seeded scrub→Play (URL matrix). */
+const FAST_PLAY_MS = 1_500;
+
 function pickFracs(
   pipe: PipelineJson,
   lastFrame: number,
@@ -103,6 +180,9 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
   const player = new DemoPlayer(page);
   const settleSamples: SettleSample[] = [];
   const resumeMsList: number[] = [];
+  const resumePlayMsList: number[] = [];
+  const pausePlayMsList: number[] = [];
+  const scrubPlayMsList: number[] = [];
   const behindSamples: number[] = [];
   const faults: string[] = [];
   const warnings: string[] = [];
@@ -126,6 +206,58 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
   if ((await player.readStatus()).playing) {
     await player.play.click();
     await page.waitForTimeout(100);
+  }
+
+  // --- Pause → Play (warm soft-hold; must be fast) ---
+  {
+    await ensurePlaying(player);
+    await page.waitForTimeout(400);
+    await ensurePaused(player);
+    await page.waitForTimeout(80);
+    const ph0 = (await player.readStatus()).playhead ?? 0;
+    await player.play.click();
+    const ms = await waitPlayAdvances(player, ph0, 8_000);
+    if (ms == null) {
+      faults.push("Pause→Play did not start");
+    } else {
+      pausePlayMsList.push(ms);
+      if (ms > FAST_PLAY_MS) {
+        faults.push(`Pause→Play slow ${ms}ms (budget ${FAST_PLAY_MS})`);
+      }
+    }
+    await ensurePaused(player);
+    await waitTransportIdle(player);
+  }
+
+  // --- Paused Exact scrub → Play (settle seeds; PlayPrime skip fill) ---
+  {
+    await ensurePaused(player);
+    pipe = await player.readPipelineJson();
+    const frac =
+      pickFracs(pipe, lastFrame, "gray", 1)[0] ??
+      pickFracs(pipe, lastFrame, "exact", 1)[0] ??
+      0.35;
+    await player.scrubToFraction(frac);
+    const painted = await waitExactPainted(player, 12_000);
+    await assertResponsive(page, 5_000);
+    await waitTransportIdle(player);
+    if (painted.settleMs == null) {
+      faults.push("scrub→Play: Exact paint timeout (soft-cold?)");
+    } else {
+      const ph0 = painted.status.playhead ?? 0;
+      await player.play.click();
+      const ms = await waitPlayAdvances(player, ph0, 8_000);
+      if (ms == null) {
+        faults.push("scrub→Play did not start");
+      } else {
+        scrubPlayMsList.push(ms);
+        if (ms > FAST_PLAY_MS) {
+          faults.push(`scrub→Play slow ${ms}ms (budget ${FAST_PLAY_MS})`);
+        }
+      }
+    }
+    await ensurePaused(player);
+    await waitTransportIdle(player);
   }
 
   // --- Fast scrub: 1–2 taps per available zone (soft settle budget) ---
@@ -184,7 +316,7 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
   }
 
   // --- Combo: Play → scrub → release → resume (once) ---
-  await expect(player.play).toBeEnabled({ timeout: 8_000 });
+  await waitTransportIdle(player, 20_000);
   await player.scrubToFraction(0.25);
   await waitExactSettle(player, 6_000);
   await player.play.click();
@@ -230,7 +362,9 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
     if (err) faults.push(`combo scrub: ${err}`);
 
     const ph0 = settled.status.playhead ?? beforeUp.playhead ?? 0;
+    const playStart = Date.now();
     let resumed: number | null = null;
+    let resumePlay: number | null = null;
     while (Date.now() - resumeStart < 10_000) {
       const s = await player.readStatus();
       const pipeNow = await player.readPipelineJson();
@@ -240,15 +374,28 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
         (s.playhead != null && s.playhead > ph0 + 2)
       ) {
         resumed = Date.now() - resumeStart;
+        resumePlay = Date.now() - playStart;
         break;
       }
       if (!s.playing && Date.now() - resumeStart > 1_500) {
         await player.play.click();
+        // Reset playStart so we measure click→advance, not settle wait.
+        // (playStart already past settle; optional re-click is recovery.)
       }
       await page.waitForTimeout(80);
     }
     if (resumed == null) faults.push(`no resume after scrub (ph0=${ph0})`);
-    else resumeMsList.push(resumed);
+    else {
+      resumeMsList.push(resumed);
+      if (resumePlay != null) {
+        resumePlayMsList.push(resumePlay);
+        if (resumePlay > FAST_PLAY_MS) {
+          faults.push(
+            `resume Play slow ${resumePlay}ms after settle (budget ${FAST_PLAY_MS})`,
+          );
+        }
+      }
+    }
   }
 
   const byZone = (zone: ScrubZone | "combo") =>
@@ -274,12 +421,16 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
       all: summarizeMs(settleSamples.map((s) => s.settleMs)),
     },
     resumeMs: summarizeMs(resumeMsList),
+    resumePlayMs: summarizeMs(resumePlayMsList),
+    pausePlayMs: summarizeMs(pausePlayMsList),
+    scrubPlayMs: summarizeMs(scrubPlayMsList),
     behindMs: summarizeMs(behindSamples),
     samples: { settle: settleSamples.length },
     faults,
     warnings,
     failZones,
     strict,
+    fastPlayBudgetMs: FAST_PLAY_MS,
   };
 
   const flush = async () => {
@@ -302,6 +453,14 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
       report.resumeMs.n,
       `no resume: ${faults.join(" | ")}`,
     ).toBeGreaterThan(0);
+    expect(
+      report.pausePlayMs.n,
+      `no Pause→Play sample: ${faults.join(" | ")}`,
+    ).toBeGreaterThan(0);
+    expect(
+      report.scrubPlayMs.n,
+      `no scrub→Play sample: ${faults.join(" | ")}`,
+    ).toBeGreaterThan(0);
     if (failZones) {
       expect(faults, faults.join("\n")).toEqual([]);
     } else if (faults.length) {
@@ -311,6 +470,12 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
       (f) =>
         f.includes("no resume") ||
         f.includes("Play did not start") ||
+        f.includes("Pause→Play did not start") ||
+        f.includes("scrub→Play did not start") ||
+        f.includes("scrub→Play: Exact paint") ||
+        f.includes("Pause→Play slow") ||
+        f.includes("scrub→Play slow") ||
+        f.includes("resume Play slow") ||
         f.startsWith("pageerror:"),
     );
     expect(fatal, fatal.join("\n")).toEqual([]);

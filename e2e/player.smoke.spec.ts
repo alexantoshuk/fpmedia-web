@@ -183,6 +183,73 @@ test.describe("demo player smoke", () => {
     expect(await player.error.innerText()).toBe("");
   });
 
+  test("Pause→Play and scrub→Play resume quickly", async ({ page }) => {
+    const player = new DemoPlayer(page);
+    await player.goto();
+    await player.openFixture(FIXTURES.withAudio);
+
+    // Warm play then Pause.
+    await player.play.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(true);
+    await expect
+      .poll(async () => (await player.readStatus()).playhead ?? 0)
+      .toBeGreaterThan(0);
+    await player.pause.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(false);
+
+    const pausePh = (await player.readStatus()).playhead ?? 0;
+    const pausePlayStart = Date.now();
+    await player.play.click();
+    await expect
+      .poll(async () => {
+        const s = await player.readStatus();
+        return s.playing && (s.playhead ?? 0) > pausePh;
+      }, {
+        timeout: 5_000,
+        message: "Pause→Play did not advance",
+      })
+      .toBe(true);
+    const pausePlayMs = Date.now() - pausePlayStart;
+    expect(pausePlayMs, `Pause→Play ${pausePlayMs}ms`).toBeLessThan(800);
+
+    await player.pause.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
+      .toBe(false);
+
+    await player.scrubToFraction(0.45);
+    await expect
+      .poll(async () => {
+        const s = await player.readStatus();
+        return (
+          s.playhead != null &&
+          s.engine != null &&
+          s.playhead === s.engine
+        );
+      }, { timeout: 10_000 })
+      .toBe(true);
+
+    const scrubPh = (await player.readStatus()).playhead ?? 0;
+    const scrubPlayStart = Date.now();
+    await player.play.click();
+    await expect
+      .poll(async () => {
+        const s = await player.readStatus();
+        return s.playing && (s.playhead ?? 0) > scrubPh;
+      }, {
+        timeout: 5_000,
+        message: "scrub→Play did not advance",
+      })
+      .toBe(true);
+    const scrubPlayMs = Date.now() - scrubPlayStart;
+    expect(scrubPlayMs, `scrub→Play ${scrubPlayMs}ms`).toBeLessThan(800);
+    expect(await player.error.innerText()).toBe("");
+  });
+
   test("Pause after play densifies dense cache", async ({ page }) => {
     const player = new DemoPlayer(page);
     await player.goto();
