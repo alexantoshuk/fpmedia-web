@@ -33,8 +33,19 @@ impl VideoPlayer {
                 Ok(())
             } else {
                 self.shared.pending_cold_exact.set(None);
-                // Keep last canvas until exact decode paints (same as scrub settle).
-                self.exact_goto_with_decoder_retry(frame, epoch).await
+                match self.exact_goto_with_decoder_retry(frame, epoch).await {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.is_cancelled() => Err(e),
+                    Err(e) if super::is_decoder_poison(&e) => {
+                        web_sys::console::warn_1(
+                            &format!("webmedia: seek Exact poison → soft cold ({e})").into(),
+                        );
+                        soft_cold_scrub_settle(self, frame)?;
+                        self.shared.pending_cold_exact.set(Some(frame));
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
             }
         }
         .await;

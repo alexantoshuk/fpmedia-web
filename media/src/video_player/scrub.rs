@@ -741,15 +741,33 @@ impl VideoPlayer {
         }
     }
 
-    /// After [`Self::abort_scrub_fill`], wait until densify clears `scrub_busy`
-    /// (or a short budget). Exact/seek must not start while `decode_gop` still
-    /// feeds the scrub decoder.
+    /// After [`Self::abort_scrub_fill`], wait until densify clears `scrub_busy`.
+    ///
+    /// Exact/seek must not start while `decode_gop` still feeds the scrub
+    /// decoder (`mediabunny: seekToTime` terminates the prior iterator first).
+    /// If still busy after the budget, bump abort again and drain one more
+    /// short window — 250 ms alone left cold-tap Exact racing densify →
+    /// `Decoding error`.
     pub(super) async fn await_scrub_densify_yield(&self) {
-        const BUDGET_MS: f64 = 250.0;
+        const BUDGET_MS: f64 = 2_000.0;
+        const RETRY_MS: f64 = 250.0;
         let start = performance_now_ms().unwrap_or(0.0);
         while self.shared.scrub_busy.get() {
             let now = performance_now_ms().unwrap_or(start);
             if now - start >= BUDGET_MS {
+                break;
+            }
+            sleep_ms(0).await;
+        }
+        if !self.shared.scrub_busy.get() {
+            return;
+        }
+        web_sys::console::warn_1(&"webmedia: densify still busy after yield — re-abort".into());
+        self.abort_scrub_fill(true);
+        let start2 = performance_now_ms().unwrap_or(0.0);
+        while self.shared.scrub_busy.get() {
+            let now = performance_now_ms().unwrap_or(start2);
+            if now - start2 >= RETRY_MS {
                 break;
             }
             sleep_ms(0).await;
@@ -872,12 +890,40 @@ impl VideoPlayer {
                     self.shared.pending_cold_exact.set(Some(frame));
                 } else {
                     self.shared.pending_cold_exact.set(None);
-                    self.exact_goto_with_decoder_retry(frame, epoch).await?;
-                    // Always seed first play frames after Exact (mediabunny
-                    // `seekToTime` → `startVideoIterator` awaits two canvases
-                    // before optional `play`). Soft-drag / densify unchanged.
-                    // PlayPrime then skips byte-warm + fill when queue is primed.
-                    self.seed_play_presentation_after_seek(epoch).await?;
+                    match self.exact_goto_with_decoder_retry(frame, epoch).await {
+                        Ok(()) => {
+                            // Always seed first play frames after Exact (mediabunny
+                            // `seekToTime` → `startVideoIterator` awaits two canvases
+                            // before optional `play`). Soft-drag / densify unchanged.
+                            // PlayPrime then skips byte-warm + fill when queue is primed.
+                            // Seed poison must not sticky-UI after a painted Exact —
+                            // fall back like Exact poison (cold-tap / backpressure race).
+                            match self.seed_play_presentation_after_seek(epoch).await {
+                                Ok(()) => {}
+                                Err(e) if e.is_cancelled() => return Err(e),
+                                Err(e) if super::is_decoder_poison(&e) => {
+                                    web_sys::console::warn_1(
+                                        &format!("webmedia: Exact seed poison → soft cold ({e})")
+                                            .into(),
+                                    );
+                                    soft_cold_scrub_settle(self, frame)?;
+                                    self.shared.pending_cold_exact.set(Some(frame));
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        Err(e) if e.is_cancelled() => return Err(e),
+                        Err(e) if super::is_decoder_poison(&e) => {
+                            // Retry already failed — soft present + densify later
+                            // instead of sticky UI `Decoding error` (cold-tap race).
+                            web_sys::console::warn_1(
+                                &format!("webmedia: Exact poison → soft cold settle ({e})").into(),
+                            );
+                            soft_cold_scrub_settle(self, frame)?;
+                            self.shared.pending_cold_exact.set(Some(frame));
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 Ok(())
             } else {

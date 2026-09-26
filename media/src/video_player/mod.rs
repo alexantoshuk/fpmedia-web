@@ -1764,7 +1764,10 @@ fn performance_now_ms() -> Option<f64> {
 }
 
 /// WebCodecs poison after densify/settle abort races (Exact retry once).
-fn is_decoder_poison(err: &MediaError) -> bool {
+///
+/// Includes wedged `decodeQueueSize backpressure timed out` after the
+/// reset+retry in [`Self::decode_frame_inner`] (`q≈41,held=0`).
+pub(super) fn is_decoder_poison(err: &MediaError) -> bool {
     let MediaError::WebCodecs(msg) = err else {
         return false;
     };
@@ -1773,6 +1776,7 @@ fn is_decoder_poison(err: &MediaError) -> bool {
         || m.contains("closed")
         || m.contains("cannot call")
         || m.contains("key frame required")
+        || m.contains("decodequeuesize backpressure timed out")
 }
 
 /// One event-loop turn via `Promise.resolve` (microtask).
