@@ -921,12 +921,16 @@ impl VideoPlayer {
         Ok(())
     }
 
-    /// After exact settle / sync seek: idle main decoder, then densify.
+    /// After exact settle / sync seek: densify without killing the warm main
+    /// decoder left by key→N — PlayPrime wants that cascade, not a cold reset.
     ///
-    /// Call only when play is **not** about to start — PlayPrime wants the warm
-    /// cascade left by seekTo, not a cold `invalidate` + competing scrub decoder.
+    /// Densify runs on the **scrub** decoder; main `decodeQ` was already cleared
+    /// in [`Self::prepare_scrub_settle`] before Exact goto. Do **not**
+    /// `invalidate_decoder` here (was: play-after-scrub Decoding error / dead
+    /// prime). Parity with [`Self::arm_scrub_densify_after_step`].
+    /// `mediabunny: examples/media-player seekToTime` → keep iterator; play()
+    /// without an extra terminate after the settle decode.
     pub fn arm_scrub_densify_after_exact(&self, focus: FrameId) {
-        self.invalidate_decoder();
         self.enter_scrub_cache_pipeline(focus);
     }
 

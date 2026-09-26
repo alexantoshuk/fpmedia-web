@@ -291,6 +291,12 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
             S::PlayPriming { from_scrub: false },
             vec![C::PreemptScrub, C::ClearEnded, C::EnqueuePlayPrime],
         ),
+        // Failed/stuck prime used to stay in PlayPriming with no PlayPressed
+        // arm (catch-all no-op) after stop_playback bumped away PlayPrimeFailed.
+        (S::PlayPriming { .. }, E::PlayPressed) => (
+            S::PlayPriming { from_scrub: false },
+            vec![C::HardPause, C::ClearEnded, C::EnqueuePlayPrime],
+        ),
         (S::Playing, E::PlayPressed) => (state, vec![]),
 
         (other, _) => (other, vec![]),
@@ -483,6 +489,19 @@ mod tests {
         let (m, c) = step(m, TransportEvent::PlayPressed);
         assert_eq!(m.state, TransportState::PlayPriming { from_scrub: false });
         assert!(c.contains(&TransportCmd::PreemptScrub));
+        assert!(c.contains(&TransportCmd::EnqueuePlayPrime));
+    }
+
+    #[test]
+    fn play_from_play_priming_retries() {
+        // Missed PlayPrimeFailed left transport in PlayPriming — Play must retry.
+        let m = TransportModel {
+            state: TransportState::PlayPriming { from_scrub: false },
+            next_settle_gen: 1,
+        };
+        let (m, c) = step(m, TransportEvent::PlayPressed);
+        assert_eq!(m.state, TransportState::PlayPriming { from_scrub: false });
+        assert!(c.contains(&TransportCmd::HardPause));
         assert!(c.contains(&TransportCmd::EnqueuePlayPrime));
     }
 

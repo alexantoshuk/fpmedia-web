@@ -1067,20 +1067,8 @@ pub async fn open_mp4_source_cached_with_progress(
     let cached = wrap_cached_playback(source, fetch_map, parsed.cache_seed);
     if let Some(v) = opened.video.as_mut() {
         v.set_playback_source(Arc::clone(&cached));
-        // Ready ⇒ warm fragments' video+audio `mdat` cached past ~frame 130.
-        let n = v.indexed_frame_count();
-        let warm_secs = v
-            .index()
-            .get(n.saturating_sub(1))
-            .map(|e| e.composition_timestamp().seconds)
-            .unwrap_or(6.0);
-        progress(OpenPhase::WarmingMediaBytes);
-        v.warm_sample_bytes(0, n).await?;
-        if let Some(a) = opened.audio.as_mut() {
-            a.set_source(Arc::clone(&cached));
-            progress(OpenPhase::WarmingAudioBytes);
-            a.warm_bytes_through(warm_secs).await?;
-        }
+        // Ready after a short lead — not the full index (progressive gray lock).
+        warm_open_playback_bytes(v, opened.audio.as_ref(), &cached, &mut progress).await?;
     } else if let Some(a) = opened.audio.as_mut() {
         a.set_source(Arc::clone(&cached));
     }
@@ -1134,19 +1122,7 @@ pub async fn open_mp4_media_source_cached_with_progress(
     let cached = wrap_cached_playback(source, fetch_map, parsed.cache_seed);
     if let Some(v) = opened.video.as_mut() {
         v.set_playback_source(Arc::clone(&cached));
-        let n = v.indexed_frame_count();
-        let warm_secs = v
-            .index()
-            .get(n.saturating_sub(1))
-            .map(|e| e.composition_timestamp().seconds)
-            .unwrap_or(6.0);
-        progress(OpenPhase::WarmingMediaBytes);
-        v.warm_sample_bytes(0, n).await?;
-        if let Some(a) = opened.audio.as_mut() {
-            a.set_source(Arc::clone(&cached));
-            progress(OpenPhase::WarmingAudioBytes);
-            a.warm_bytes_through(warm_secs).await?;
-        }
+        warm_open_playback_bytes(v, opened.audio.as_ref(), &cached, &mut progress).await?;
     } else if let Some(a) = opened.audio.as_mut() {
         a.set_source(cached);
     }
@@ -1162,6 +1138,39 @@ fn wrap_cached_playback(
     let cached = CachedSource::with_fetch_map(source, fetch_map);
     cached.seed_windows(cache_seed);
     Arc::new(cached)
+}
+
+/// Frames of `mdat` to await before UI Ready.
+///
+/// Progressive open used to pass the full index into [`Mp4VideoTrack::warm_sample_bytes`]
+/// → OpQueue/`busy` until gray filled (cap 48 MiB). fMP4 warm-open index is already
+/// short (~warm moofs). Parity with PlayPrime `PLAY_INDEX_LEAD` in `video_player/play.rs`.
+/// `mediabunny: src/source.ts` UrlSource min-load / worker fill — not whole-file before play.
+const OPEN_WARM_SAMPLE_LEAD: u64 = 96;
+
+/// Warm a short lead of video (+ audio) sample bytes, then return — rest of gray
+/// fills in the background via prefetch / play / scrub.
+async fn warm_open_playback_bytes(
+    video: &Mp4VideoTrack,
+    audio: Option<&Mp4AudioTrack>,
+    cached: &Arc<dyn MediaSource>,
+    progress: &mut impl FnMut(OpenPhase),
+) -> Result<(), MediaError> {
+    let indexed = video.indexed_frame_count();
+    let lead = OPEN_WARM_SAMPLE_LEAD.min(indexed);
+    let warm_secs = video
+        .index()
+        .get(lead.saturating_sub(1))
+        .map(|e| e.composition_timestamp().seconds)
+        .unwrap_or(6.0);
+    progress(OpenPhase::WarmingMediaBytes);
+    video.warm_sample_bytes(0, lead).await?;
+    if let Some(a) = audio {
+        a.set_source(Arc::clone(cached));
+        progress(OpenPhase::WarmingAudioBytes);
+        a.warm_bytes_through(warm_secs).await?;
+    }
+    Ok(())
 }
 
 /// Open an MP4 from a filesystem path (native / tests).

@@ -323,6 +323,20 @@ pub(super) async fn run_play_prime(
         return false;
     }
 
+    // Soft-park after prime/clock failure: must NOT call `stop_playback()` —
+    // that bumps async_id so the drain skips `PlayPrimeFailed` and transport
+    // stays deaf in `PlayPriming` (stress: Play did not start after scrub).
+    // mediabunny: examples/media-player play() after seekToTime — no priming trap.
+    let park_failed_prime = || {
+        let _ = session.borrow_mut().take();
+        playing.set(false);
+        if p.is_playing() {
+            p.pause();
+        }
+        fps_meter.borrow_mut().reset();
+        fps.set(None);
+    };
+
     web_sys::console::log_1(&"webmedia: play prime start".into());
     let prime_ok = match p.prime_playback().await {
         Ok(()) => true,
@@ -343,7 +357,7 @@ pub(super) async fn run_play_prime(
         return false;
     }
     if !prime_ok {
-        stop_playback();
+        park_failed_prime();
         return false;
     }
 
@@ -360,7 +374,7 @@ pub(super) async fn run_play_prime(
     if let Err(e) = clock {
         if still_queued() {
             error.set(Some(e.to_string()));
-            stop_playback();
+            park_failed_prime();
         }
         return false;
     }
