@@ -30,7 +30,7 @@
 1. **Open UI lock until full gray** (progressive) — open warm lead=96 landed; confirm Ready before full gray.
 2. **Play dead after rapid scrub** — host soft-park + no main invalidate on `arm_scrub_densify_after_exact`; re-verify progressive + fMP4 gop12 scrub→Play.
 3. **Decoding error / closed codec** under Exact/combo scrub — abort put-back + densify yield before Exact + one poison retry; re-verify `WEBMEDIA_CLIP=gop48` / 60fps stress.
-4. **PlayPrime lag on gray / after Exact** — await shortened to 24 + prefetch 96; re-verify Play on gray.
+4. **PlayPrime lag on gray (no prior Exact)** — cold path still awaits warm=24; verify first Play on gray without scrub.
 5. **Slow resume on 60fps** (~10 s) after scrub release.
 6. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
 7. no-Range → `ReadableStreamSource` (host full-download stays for now).

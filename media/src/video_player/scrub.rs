@@ -873,12 +873,11 @@ impl VideoPlayer {
                 } else {
                     self.shared.pending_cold_exact.set(None);
                     self.exact_goto_with_decoder_retry(frame, epoch).await?;
-                    // Soft-held scrub-while-play: seed play ahead here (one cascade +
-                    // first two frames) so PlayPrime does not re-prime from cold.
-                    // mediabunny: startVideoIterator awaits first two canvases before play.
-                    if self.audio_warm_resume() {
-                        self.seed_play_presentation_after_seek(epoch).await?;
-                    }
+                    // Always seed first play frames after Exact (mediabunny
+                    // `seekToTime` → `startVideoIterator` awaits two canvases
+                    // before optional `play`). Soft-drag / densify unchanged.
+                    // PlayPrime then skips byte-warm + fill when queue is primed.
+                    self.seed_play_presentation_after_seek(epoch).await?;
                 }
                 Ok(())
             } else {

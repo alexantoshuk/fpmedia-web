@@ -220,11 +220,13 @@ impl VideoPlayer {
             return Ok(());
         }
         let epoch = self.shared.op_epoch.get();
-        // Soft Pause / scrub soft-hold already had sample bytes in cache and a
-        // warm AudioDecoder — skip the blocking warm awaits (tile yields alone
-        // felt like Pause→Play lag). Still fire-and-forget prefetch.
-        // mediabunny: examples/media-player pause→play restarts iterators only.
-        let skip_byte_warm = self.audio_warm_resume();
+        // Exact settle seeds [`PLAY_PRIME_FRAMES`] (mediabunny `startVideoIterator`).
+        // Soft Pause leaves Warm audio. Either way: skip blocking byte-warm and
+        // do not re-decode into an already-primed presentation queue.
+        // mediabunny: examples/media-player seekToTime / pause → play.
+        let prime_target = PLAY_PRIME_FRAMES.min(self.play_presentation_cap());
+        let presentation_primed = self.presentation_len() >= prime_target;
+        let skip_byte_warm = self.audio_warm_resume() || presentation_primed;
         // fMP4: arm a long index lead in bg, but only *await* one urgent batch
         // past the current index so Play click / PlayPrime cannot stall for
         // many RTTs (`mediabunny: first samples before play` — not the whole
@@ -252,7 +254,13 @@ impl VideoPlayer {
             }
         }
         if skip_byte_warm {
-            web_sys::console::log_1(&"webmedia: play prime skip byte warm (audio warm)".into());
+            web_sys::console::log_1(
+                &format!(
+                    "webmedia: play prime skip byte warm (warm_audio={} primed={presentation_primed})",
+                    self.audio_warm_resume()
+                )
+                .into(),
+            );
             let track = self.shared.player.borrow().track_rc();
             track.prefetch_samples_ahead(head, PLAY_INDEX_LEAD);
         } else {
@@ -282,6 +290,10 @@ impl VideoPlayer {
                     }
                 }
             }
+        }
+        if presentation_primed {
+            web_sys::console::log_1(&"webmedia: play prime skip fill (settle seeded)".into());
+            return Ok(());
         }
         // Scrub store is markers + blit — play re-decodes into the presentation
         // queue. Do **not** trim scrub residency on Play — eviction is budget /
@@ -709,9 +721,9 @@ impl VideoPlayer {
         Ok(true)
     }
 
-    /// After exact settle while soft-held for play resume: fill the first
-    /// presentation frames (mediabunny `startVideoIterator` awaits first two
-    /// canvases before `play`). PlayPrime then skips a cold re-prime.
+    /// After Exact settle: fill the first presentation frames (mediabunny
+    /// `startVideoIterator` awaits first two canvases before `play`). PlayPrime
+    /// skips byte-warm + fill when this queue is already primed.
     pub(super) async fn seed_play_presentation_after_seek(
         &self,
         epoch: u64,
