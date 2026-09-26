@@ -362,9 +362,9 @@ pub(super) async fn run_play_prime(
     }
 
     let media_origin = p.state().timestamp.seconds;
-    // Scrub-while-play soft-held the AudioDecoder — warm restart (no
-    // isConfigSupported). Fresh Pause→Play stays on cold start_media_clock.
-    // mediabunny: examples/media-player play() → buffers(t) after pause seek.
+    // Pause button / scrub soft-held the AudioDecoder — warm restart (no
+    // isConfigSupported). Open / EOF / abort-prime stay on cold start_media_clock.
+    // mediabunny: examples/media-player play() → buffers(t) after pause.
     let clock = if p.take_audio_warm_resume() {
         web_sys::console::log_1(&"webmedia: play clock warm resume".into());
         p.resume_media_clock(media_origin).await

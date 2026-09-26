@@ -352,8 +352,8 @@ impl AudioOutput {
     /// that made EOF / loop / scrub-resume seams feel like "audio-only lag" while
     /// video stayed on-canvas.
     /// `mediabunny: examples/media-player` `pause` keeps the audio path warm;
-    /// full iterator recreate is for seeks (our warm `restart_warm` after soft hold;
-    /// hard Pause still [`Self::stop`] + [`Self::begin`]).
+    /// full iterator recreate is for seeks (our warm `restart_warm` after soft hold).
+    /// Hard stop ([`Self::stop`] + [`Self::begin`]) stays for open / EOF / abort-prime.
     pub fn hold_underrun(&self) -> f64 {
         self.cancel_pump_and_silence()
     }

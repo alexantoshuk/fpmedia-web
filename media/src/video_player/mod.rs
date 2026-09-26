@@ -795,10 +795,11 @@ impl VideoPlayer {
         t
     }
 
-    /// Soft-silence for scrub-while-play — keep `AudioDecoder` configured.
+    /// Soft-silence for Pause button / scrub-while-play — keep `AudioDecoder`
+    /// configured.
     ///
     /// Next PlayPrime should [`Self::resume_media_clock`] (not cold
-    /// [`Self::start_media_clock`]). Hard Pause / open still use
+    /// [`Self::start_media_clock`]). Open / EOF / abort-prime still use
     /// [`Self::stop_media_clock`].
     /// `mediabunny: examples/media-player/media-player.ts` `pause`.
     pub fn hold_media_clock_for_scrub(&self) -> f64 {
@@ -1087,11 +1088,12 @@ impl VideoPlayer {
         self.pause_inner(false);
     }
 
-    /// Leave play for timeline scrub — soft-hold audio (no `AudioDecoder` reset).
+    /// Leave play with soft-held audio (no `AudioDecoder` reset) — Pause button
+    /// and scrub-while-play.
     ///
-    /// Hard [`Self::pause`] still tears down audio (Pause button / open / EOF).
-    /// `mediabunny: examples/media-player/media-player.ts` `seekToTime` → `pause`
-    /// then `play` without reconfigure.
+    /// Hard [`Self::pause`] still tears down audio (open / EOF / abort-prime).
+    /// `mediabunny: examples/media-player/media-player.ts` `pause` / `play`
+    /// (nodes + iterator only; no reconfigure).
     pub fn pause_for_scrub(&self) {
         self.pause_inner(true);
     }
@@ -1670,6 +1672,27 @@ impl VideoPlayer {
         Ok(())
     }
 
+    /// Exact settle/seek: one recreate+retry on densify/settle poison
+    /// (`Decoding error` / closed codec) after abort races.
+    pub(super) async fn exact_goto_with_decoder_retry(
+        &self,
+        frame: FrameId,
+        epoch: u64,
+    ) -> Result<(), MediaError> {
+        match self.goto_frame_with_interim(frame, epoch).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.is_cancelled() => Err(e),
+            Err(e) if is_decoder_poison(&e) && self.is_current(epoch) => {
+                web_sys::console::warn_1(
+                    &format!("webmedia: Exact retry after decoder poison ({e})").into(),
+                );
+                self.invalidate_decoder();
+                self.goto_frame_with_interim(frame, epoch).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Prev miss: key→target cascade; park near-target pruned VF into the behind ring.
     ///
     /// `mediabunny: mediaSamplesAtTimestamps` restarts from key on rewind — we keep
@@ -1738,6 +1761,18 @@ impl Drop for VideoPlayer {
 
 fn performance_now_ms() -> Option<f64> {
     web_sys::window()?.performance().map(|p| p.now())
+}
+
+/// WebCodecs poison after densify/settle abort races (Exact retry once).
+fn is_decoder_poison(err: &MediaError) -> bool {
+    let MediaError::WebCodecs(msg) = err else {
+        return false;
+    };
+    let m = msg.to_ascii_lowercase();
+    m.contains("decoding error")
+        || m.contains("closed")
+        || m.contains("cannot call")
+        || m.contains("key frame required")
 }
 
 /// One event-loop turn via `Promise.resolve` (microtask).

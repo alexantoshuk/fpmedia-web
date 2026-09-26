@@ -80,10 +80,12 @@ pub(super) fn dispatch_transport(
         player,
         session,
         playing,
+        playhead,
         stop_playback,
     );
 }
 
+#[allow(clippy::too_many_arguments)] // host wiring: transport + queue + UI signals
 fn schedule_cmd_drain(
     transport: &TransportHandle,
     queue: &OpQueue,
@@ -91,6 +93,7 @@ fn schedule_cmd_drain(
     player: &PlayerHandle,
     session: &Rc<RefCell<Option<PlaySession>>>,
     playing: RwSignal<bool>,
+    playhead: RwSignal<u32>,
     stop_playback: &Rc<dyn Fn()>,
 ) {
     if transport.scheduled.get() {
@@ -116,6 +119,7 @@ fn schedule_cmd_drain(
                 &player,
                 &session,
                 playing,
+                playhead,
                 &stop_playback,
             );
         }
@@ -128,12 +132,14 @@ fn schedule_cmd_drain(
                 &player,
                 &session,
                 playing,
+                playhead,
                 &stop_playback,
             );
         }
     });
 }
 
+#[allow(clippy::too_many_arguments)] // host wiring: transport + queue + UI signals
 fn apply_engine_cmd(
     cmd: TransportCmd,
     queue: &OpQueue,
@@ -141,16 +147,34 @@ fn apply_engine_cmd(
     player: &PlayerHandle,
     session: &Rc<RefCell<Option<PlaySession>>>,
     playing: RwSignal<bool>,
+    playhead: RwSignal<u32>,
     stop_playback: &Rc<dyn Fn()>,
 ) {
     match cmd {
         TransportCmd::SetPlayhead { .. } | TransportCmd::ClearEnded => {}
-        TransportCmd::SoftPauseForScrub => {
+        TransportCmd::SoftPause { align_playhead } => {
             if playing.get_untracked() {
                 playing.set(false);
                 let _ = session.borrow_mut().take();
             }
             if let Some(p) = player.borrow().as_ref().cloned() {
+                if align_playhead {
+                    // Same as HardPause `stop_playback`: UI playhead lags ~100ms
+                    // during play. Without this snap, PlayPrime seeks Exact on
+                    // the stale aim and the soft-hold warm resume is wasted.
+                    let eng = p.state().frame.min(u64::from(u32::MAX)) as u32;
+                    if playhead.get_untracked() != eng {
+                        web_sys::console::log_1(
+                            &format!(
+                                "webmedia: soft pause align playhead {} → {eng}",
+                                playhead.get_untracked()
+                            )
+                            .into(),
+                        );
+                    }
+                    playhead.set(eng);
+                }
+                web_sys::console::log_1(&"webmedia: soft pause (warm audio)".into());
                 p.pause_for_scrub();
             }
         }

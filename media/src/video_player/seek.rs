@@ -15,6 +15,7 @@ impl VideoPlayer {
         // Exact VF — abort densify and hold so scrub HW cannot starve the cascade.
         // Densify blit is for scrub/step warm hits; seek always decodes VF.
         self.abort_scrub_fill(true);
+        self.await_scrub_densify_yield().await;
         let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
         self.shared.engine.set(next);
         self.apply_session_event(crate::SessionEvent::BeginRestart);
@@ -33,7 +34,7 @@ impl VideoPlayer {
             } else {
                 self.shared.pending_cold_exact.set(None);
                 // Keep last canvas until exact decode paints (same as scrub settle).
-                self.goto_frame_with_interim(frame, epoch).await
+                self.exact_goto_with_decoder_retry(frame, epoch).await
             }
         }
         .await;

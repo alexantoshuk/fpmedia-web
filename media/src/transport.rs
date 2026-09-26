@@ -115,9 +115,16 @@ pub enum TransportCmd {
     SetPlayhead {
         frame: u32,
     },
-    /// Leave play without bumping epoch / wiping AudioDecoder.
-    SoftPauseForScrub,
-    /// User Pause / cancel prime — bump epoch, clear play session.
+    /// Leave play without wiping AudioDecoder (Pause button / scrub-while-play).
+    ///
+    /// `align_playhead`: snap UI playhead to the committed engine frame (Pause
+    /// button). Scrub-while-play keeps `false` so `SetPlayhead` aim is not
+    /// overwritten — otherwise PlayPrime `seek_frame`s the ~100 ms-stale UI
+    /// playhead and redoes Exact before warm resume.
+    SoftPause {
+        align_playhead: bool,
+    },
+    /// Open / EOF / abort-prime / leave-scrub — bump epoch, cold audio next Play.
     HardPause,
     /// Cancel in-flight scrub/prime; **bump** queue epoch so late Done is dropped.
     PreemptScrub,
@@ -156,7 +163,16 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
             S::PlayPriming { from_scrub: false },
             vec![C::ClearEnded, C::EnqueuePlayPrime],
         ),
-        (S::Playing, E::PausePressed) => (S::Ready, vec![C::HardPause]),
+        // Soft-hold like mediabunny pause — keep AudioDecoder warm for instant Play.
+        // Hard tear-down stays for open / EOF / abort-prime / leave-scrub.
+        // Align playhead so PlayPrime does not seek on the throttled UI playhead.
+        // mediabunny: examples/media-player/media-player.ts `pause` / `play`.
+        (S::Playing, E::PausePressed) => (
+            S::Ready,
+            vec![C::SoftPause {
+                align_playhead: true,
+            }],
+        ),
         (S::PlayPriming { .. }, E::PausePressed) => (S::Ready, vec![C::HardPause]),
         (S::Scrubbing { .. } | S::Settling { .. }, E::PausePressed) => {
             (S::Ready, vec![C::HardPause])
@@ -169,7 +185,9 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
             },
             vec![
                 C::ClearEnded,
-                C::SoftPauseForScrub,
+                C::SoftPause {
+                    align_playhead: false,
+                },
                 C::SetPlayhead { frame },
                 // Present soft-blit / Exact-drag while finger moves (same as paused scrub).
                 C::EnqueueDrag { frame },
@@ -347,7 +365,9 @@ mod tests {
                 frame: 10
             }
         ));
-        assert!(c.contains(&TransportCmd::SoftPauseForScrub));
+        assert!(c.contains(&TransportCmd::SoftPause {
+            align_playhead: false
+        }));
         assert!(c.contains(&TransportCmd::EnqueueDrag { frame: 10 }));
 
         let (m, c) = step(m, TransportEvent::PointerMove { frame: 12 });
@@ -459,6 +479,20 @@ mod tests {
             m.state,
             TransportState::Settling { resume: false, .. }
         ));
+    }
+
+    #[test]
+    fn pause_while_playing_soft_holds_audio() {
+        let m = TransportModel {
+            state: TransportState::Playing,
+            next_settle_gen: 1,
+        };
+        let (m, c) = step(m, TransportEvent::PausePressed);
+        assert_eq!(m.state, TransportState::Ready);
+        assert!(c.contains(&TransportCmd::SoftPause {
+            align_playhead: true
+        }));
+        assert!(!c.contains(&TransportCmd::HardPause));
     }
 
     #[test]

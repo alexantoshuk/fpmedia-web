@@ -220,12 +220,21 @@ impl VideoPlayer {
             return Ok(());
         }
         let epoch = self.shared.op_epoch.get();
+        // Soft Pause / scrub soft-hold already had sample bytes in cache and a
+        // warm AudioDecoder — skip the blocking warm awaits (tile yields alone
+        // felt like Pause→Play lag). Still fire-and-forget prefetch.
+        // mediabunny: examples/media-player pause→play restarts iterators only.
+        let skip_byte_warm = self.audio_warm_resume();
         // fMP4: arm a long index lead in bg, but only *await* one urgent batch
         // past the current index so Play click / PlayPrime cannot stall for
         // many RTTs (`mediabunny: first samples before play` — not the whole
         // warm→lead gap on the click turn).
         const PLAY_INDEX_LEAD: u64 = 96;
         const PLAY_INDEX_AWAIT_BATCH: u64 = 48; // ≈ urgent chunk × GOP12
+        // Await only a short `mdat`/AAC window so Play on gray is not 1–3s of
+        // tile yields across 96 frames. Longer lead is fire-and-forget prefetch
+        // (`play()` also kicks ahead). mediabunny: first samples before play.
+        const PLAY_WARM_AWAIT_FRAMES: u64 = 24;
         let head = self.state().frame;
         {
             let track = self.shared.player.borrow().track_rc();
@@ -242,30 +251,35 @@ impl VideoPlayer {
                 }
             }
         }
-        // Block until lead `mdat` is cached — fire-and-forget prefetch alone left
-        // cold seams while bg sync-verify / backfill stampeded Ranges.
-        // mediabunny: URLSource min-load / first samples before the sink runs.
-        let warm_secs = {
+        if skip_byte_warm {
+            web_sys::console::log_1(&"webmedia: play prime skip byte warm (audio warm)".into());
             let track = self.shared.player.borrow().track_rc();
-            track.warm_sample_bytes(head, PLAY_INDEX_LEAD).await?;
-            let last = head
-                .saturating_add(PLAY_INDEX_LEAD)
-                .min(track.indexed_frame_count().saturating_sub(1));
-            track
-                .index()
-                .get(last)
-                .map(|e| e.composition_timestamp().seconds)
-                .unwrap_or(0.0)
-        };
-        if !self.is_current(epoch) || !self.is_playing() {
-            return Err(MediaError::Cancelled);
-        }
-        if warm_secs > 0.0 {
-            let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
-            if let Some(a) = audio {
-                a.warm_bytes_through(warm_secs).await?;
-                if !self.is_current(epoch) || !self.is_playing() {
-                    return Err(MediaError::Cancelled);
+            track.prefetch_samples_ahead(head, PLAY_INDEX_LEAD);
+        } else {
+            let warm_secs = {
+                let track = self.shared.player.borrow().track_rc();
+                let await_lead = PLAY_WARM_AWAIT_FRAMES.min(PLAY_INDEX_LEAD);
+                track.warm_sample_bytes(head, await_lead).await?;
+                track.prefetch_samples_ahead(head, PLAY_INDEX_LEAD);
+                let last = head
+                    .saturating_add(await_lead)
+                    .min(track.indexed_frame_count().saturating_sub(1));
+                track
+                    .index()
+                    .get(last)
+                    .map(|e| e.composition_timestamp().seconds)
+                    .unwrap_or(0.0)
+            };
+            if !self.is_current(epoch) || !self.is_playing() {
+                return Err(MediaError::Cancelled);
+            }
+            if warm_secs > 0.0 {
+                let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+                if let Some(a) = audio {
+                    a.warm_bytes_through(warm_secs).await?;
+                    if !self.is_current(epoch) || !self.is_playing() {
+                        return Err(MediaError::Cancelled);
+                    }
                 }
             }
         }

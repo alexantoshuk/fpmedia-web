@@ -17,7 +17,8 @@ use crate::types::{
 };
 
 use super::{
-    PLAY_EXACT_VRAM_VF_SLACK, Shared, VideoPlayer, sleep_ms, wait_animation_frame, yield_event_loop,
+    PLAY_EXACT_VRAM_VF_SLACK, Shared, VideoPlayer, performance_now_ms, sleep_ms,
+    wait_animation_frame, yield_event_loop,
 };
 
 impl VideoPlayer {
@@ -717,11 +718,16 @@ impl VideoPlayer {
         )
     }
 
-    /// Stop densify immediately and free the scrub `VideoDecoder` HW session.
+    /// Stop densify immediately so Exact / seek can own decode.
     ///
     /// Long-GOP settle must not compete with exact cascade on the same GPU
-    /// (mediabunny: seekToKey/seekTo own the decoder; densify waits).
+    /// (mediabunny: seekToTime terminates the prior iterator before a new range;
+    /// densify plane is local — yield scrub decoder fully before Exact).
     /// `rearm` → latch `scrub_pending` so fill resumes after exact clears hold.
+    ///
+    /// When the scrub decoder is idle in the slot: `reset` and **put back** (do
+    /// not Drop/close — that raced densify `decode()` → closed codec). When
+    /// densify has it checked out, only bump epoch; densify aborts via cancel.
     pub(super) fn abort_scrub_fill(&self, rearm: bool) {
         let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
         self.shared.scrub_epoch.set(scrub);
@@ -731,6 +737,22 @@ impl VideoPlayer {
         let taken = self.shared.scrub_decoder.borrow_mut().take();
         if let Some(mut d) = taken {
             let _ = d.reset();
+            *self.shared.scrub_decoder.borrow_mut() = Some(d);
+        }
+    }
+
+    /// After [`Self::abort_scrub_fill`], wait until densify clears `scrub_busy`
+    /// (or a short budget). Exact/seek must not start while `decode_gop` still
+    /// feeds the scrub decoder.
+    pub(super) async fn await_scrub_densify_yield(&self) {
+        const BUDGET_MS: f64 = 250.0;
+        let start = performance_now_ms().unwrap_or(0.0);
+        while self.shared.scrub_busy.get() {
+            let now = performance_now_ms().unwrap_or(start);
+            if now - start >= BUDGET_MS {
+                break;
+            }
+            sleep_ms(0).await;
         }
     }
 
@@ -809,6 +831,7 @@ impl VideoPlayer {
         if settle {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
             self.abort_scrub_fill(true);
+            self.await_scrub_densify_yield().await;
             let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
             self.shared.engine.set(next);
             self.clear_scrub_direction();
@@ -849,7 +872,7 @@ impl VideoPlayer {
                     self.shared.pending_cold_exact.set(Some(frame));
                 } else {
                     self.shared.pending_cold_exact.set(None);
-                    self.goto_frame_with_interim(frame, epoch).await?;
+                    self.exact_goto_with_decoder_retry(frame, epoch).await?;
                     // Soft-held scrub-while-play: seed play ahead here (one cascade +
                     // first two frames) so PlayPrime does not re-prime from cold.
                     // mediabunny: startVideoIterator awaits first two canvases before play.

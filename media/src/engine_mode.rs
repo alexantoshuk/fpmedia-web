@@ -32,12 +32,13 @@ impl fmt::Display for EngineMode {
     }
 }
 
-/// Soft-held audio after scrub-while-play → warm `restart_warm` on PlayPrime.
+/// Soft-held audio after Pause / scrub-while-play → warm `restart_warm` on PlayPrime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioResume {
-    /// Hard Pause / open / EOF — cold `start_media_clock`.
+    /// Open / EOF / abort-prime — cold `start_media_clock`.
+    /// Pause button soft-holds (`Warm`) like scrub.
     Cold,
-    /// Scrub soft-hold — next resume uses `restart_warm`.
+    /// Soft-hold — next resume uses `restart_warm`.
     Warm,
 }
 
@@ -103,7 +104,7 @@ pub enum EngineEvent {
     BeginExact,
     /// Clear exact hold → Scrub; densify may rearm.
     EndExact,
-    /// Hard Pause / open / EOF — clear Warm.
+    /// Open / EOF / abort-prime — clear Warm.
     HardStopAudio,
 }
 
