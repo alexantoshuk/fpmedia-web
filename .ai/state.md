@@ -27,15 +27,18 @@
 
 ### Media engine (priority) — bugfix from stress matrix
 
-1. **Play dead after rapid scrub** (gop12 AVC + HEVC above) — transport Settling / decoder closed; repro `WEBMEDIA_CLIP=gop12 npm run e2e:stress`. Also `e2e/player.scrub.cold-open.spec.ts` Play-after.
-2. **Decoding error / closed codec** under Exact/combo scrub (long-GOP, 60fps) — densify vs settle race.
-3. **Slow resume on 60fps** (~10 s) after scrub release.
-4. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
-5. no-Range → `ReadableStreamSource` (host full-download stays for now).
-6. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
+1. **Open UI lock until full gray** (progressive) — open warm lead=96 landed; confirm Ready before full gray.
+2. **Play dead after rapid scrub** — host soft-park + no main invalidate on `arm_scrub_densify_after_exact`; re-verify progressive + fMP4 gop12 scrub→Play.
+3. **Decoding error / closed codec** under Exact/combo scrub (long-GOP, 60fps). fMP4 flicker deferred (seen since `d42f0f9`; other machine was OK).
+4. **PlayPrime ~5 s after Exact scrub** — await `warm_sample_bytes(96)` even when Exact warm; shorten await + prefetch rest.
+5. **Slow resume on 60fps** (~10 s) after scrub release.
+6. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
+7. no-Range → `ReadableStreamSource` (host full-download stays for now).
+8. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
 
 ### Later
 
+- Background play while tab hidden (`AudioContinue`: audio keeps running, skip paint, sync canvas on visible) — after Freeze; Web Audio may still suspend (not 1:1 with `<video>`). Default stays Freeze.
 - Pure audio path: `AudioPlayer` + `media_components::audio` (`AudioRef`) reusing `webmedia::audio` (mirror of `VideoPlayer`, thin — no canvas/scrub). Optional later: waveform chrome (not required for the element API).
 - Hover thumbs optional: Web Worker + OffscreenCanvas if Play+thumb janks main-thread present.
 - 4K loop/EOF residual: first-GOP warm after wrap — holds already 0; see `skills/media.md` “4K residual loop/EOF seam”. No committed 4K plate in testvideo yet.

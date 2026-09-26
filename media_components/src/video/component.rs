@@ -1,14 +1,14 @@
 //! [`Video`] component — canvas stage + playback orchestration.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use leptos_use::utils::Pausable;
 use leptos_use::{
-    ThrottleOptions, UseRafFnOptions, use_raf_fn_with_options, use_resize_observer,
-    use_throttle_fn_with_arg_and_options,
+    ThrottleOptions, UseRafFnOptions, use_event_listener, use_raf_fn_with_options,
+    use_resize_observer, use_throttle_fn_with_arg_and_options,
 };
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
@@ -126,6 +126,77 @@ pub fn Video(
         }) as Rc<dyn Fn()>
     };
 
+    // Tab / window hidden while playing: freeze clock + soft-hold audio so
+    // restore does not skip-catch with silent AudioContext.
+    // mediabunny media-player: no visibility handler — local adaptation.
+    let visibility_held = Rc::new(Cell::new(false));
+    let _visibility = {
+        let player = Rc::clone(&player);
+        let session = Rc::clone(&session);
+        let visibility_held = Rc::clone(&visibility_held);
+        let document = web_sys::window()
+            .and_then(|w| w.document())
+            .expect("document");
+        use_event_listener(document.clone(), leptos::ev::visibilitychange, move |_| {
+            if document.hidden() {
+                if !playing.get_untracked() || session.borrow().is_none() {
+                    return;
+                }
+                let Ok(borrow) = player.try_borrow() else {
+                    return;
+                };
+                let Some(p) = borrow.as_ref() else {
+                    return;
+                };
+                if let Some(t) = p.hold_media_clock_for_hidden() {
+                    drop(borrow);
+                    if let Some(s) = session.borrow_mut().as_mut() {
+                        s.media_origin = t;
+                        s.holding_for_buffer = false;
+                        s.resuming_clock = false;
+                    }
+                    visibility_held.set(true);
+                    web_sys::console::log_1(&"webmedia: visibility hold".into());
+                }
+                return;
+            }
+            if !visibility_held.get() {
+                return;
+            }
+            visibility_held.set(false);
+            if !playing.get_untracked() || session.borrow().is_none() {
+                return;
+            }
+            let player = Rc::clone(&player);
+            let session = Rc::clone(&session);
+            spawn_local(async move {
+                let Some(p) = player.borrow().as_ref().cloned() else {
+                    return;
+                };
+                if let Err(e) = p.resume_audio_context().await {
+                    web_sys::console::warn_1(
+                        &format!("webmedia: visibility audio resume: {e}").into(),
+                    );
+                }
+                let t = session
+                    .borrow()
+                    .as_ref()
+                    .map(|s| s.media_origin)
+                    .unwrap_or_else(|| p.state().timestamp.seconds);
+                match p.resume_media_clock(t).await {
+                    Ok(()) => {
+                        web_sys::console::log_1(&"webmedia: visibility resume".into());
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("webmedia: visibility clock resume: {e}").into(),
+                        );
+                    }
+                }
+            });
+        })
+    };
+
     let Pausable {
         pause: _pause_raf,
         resume: resume_raf,
@@ -166,6 +237,13 @@ pub fn Video(
                     s.restarting
                 };
                 if restarting {
+                    return;
+                }
+
+                // Tab hidden: clock soft-held — do not present_due (would skip-catch).
+                if let Ok(borrow) = player.try_borrow()
+                    && borrow.as_ref().is_some_and(|p| p.is_hidden_hold())
+                {
                     return;
                 }
 
@@ -278,9 +356,18 @@ pub fn Video(
                         };
                         if underrun {
                             let should_hold = {
+                                let hidden = player
+                                    .try_borrow()
+                                    .ok()
+                                    .and_then(|b| b.as_ref().map(|p| p.is_hidden_hold()))
+                                    .unwrap_or(false);
                                 let mut borrow = session.borrow_mut();
                                 borrow.as_mut().is_some_and(|s| {
-                                    if s.holding_for_buffer || s.resuming_clock || s.restarting {
+                                    if hidden
+                                        || s.holding_for_buffer
+                                        || s.resuming_clock
+                                        || s.restarting
+                                    {
                                         false
                                     } else {
                                         s.holding_for_buffer = true;

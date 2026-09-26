@@ -23,6 +23,10 @@ pub enum ClockState {
     HoldUnderrun,
     /// Scrub-while-play soft silence — warm [`crate::VideoPlayer::resume_media_clock`].
     HoldScrub,
+    /// Tab / window hidden while playing — freeze until visible (no skip catch-up).
+    /// Local: mediabunny media-player has **no** visibility handler; browsers
+    /// suspend `AudioContext` + throttle rAF → silent audio + accelerated video.
+    HoldHidden,
 }
 
 impl fmt::Display for ClockState {
@@ -32,6 +36,7 @@ impl fmt::Display for ClockState {
             Self::Running => write!(f, "Running"),
             Self::HoldUnderrun => write!(f, "HoldUnderrun"),
             Self::HoldScrub => write!(f, "HoldScrub"),
+            Self::HoldHidden => write!(f, "HoldHidden"),
         }
     }
 }
@@ -42,12 +47,19 @@ impl ClockState {
     }
 
     pub fn is_holding(self) -> bool {
-        matches!(self, Self::HoldUnderrun | Self::HoldScrub)
+        matches!(
+            self,
+            Self::HoldUnderrun | Self::HoldScrub | Self::HoldHidden
+        )
     }
 
     /// Bg sync-verify / backfill must yield while underrun owns the network.
     pub fn underrun_holding(self) -> bool {
         matches!(self, Self::HoldUnderrun)
+    }
+
+    pub fn hidden_holding(self) -> bool {
+        matches!(self, Self::HoldHidden)
     }
 }
 
@@ -64,6 +76,8 @@ pub enum ClockEvent {
     HoldUnderrun,
     /// Leave play for timeline scrub (soft audio).
     HoldScrub,
+    /// Document / tab became hidden while playing.
+    HoldHidden,
     /// New [`crate::VideoPlayer::play`] — drop in-progress underrun timer without
     /// accumulating (same as clearing `underrun_hold_since_ms`).
     ResetForPlay,
@@ -119,6 +133,18 @@ pub fn reduce(state: ClockState, event: ClockEvent) -> (ClockState, Vec<ClockCmd
             (S::HoldScrub, cmds)
         }
 
+        E::HoldHidden => match state {
+            S::Running | S::HoldUnderrun | S::HoldHidden => {
+                let mut cmds = Vec::new();
+                if state == S::HoldUnderrun {
+                    cmds.push(C::FinishUnderrunTimer);
+                }
+                (S::HoldHidden, cmds)
+            }
+            // Scrub / stopped own the timeline — do not latch hidden over them.
+            other => (other, vec![]),
+        },
+
         E::ResetForPlay => {
             let mut cmds = Vec::new();
             if state == S::HoldUnderrun {
@@ -169,6 +195,23 @@ mod tests {
         assert!(next.is_holding());
         assert!(!next.underrun_holding());
         assert_eq!(cmds, vec![ClockCmd::FinishUnderrunTimer]);
+    }
+
+    #[test]
+    fn hidden_hold_from_running() {
+        let (next, cmds) = reduce(ClockState::Running, ClockEvent::HoldHidden);
+        assert_eq!(next, ClockState::HoldHidden);
+        assert!(next.hidden_holding());
+        assert!(cmds.is_empty());
+
+        let (next, cmds) = reduce(ClockState::HoldUnderrun, ClockEvent::HoldHidden);
+        assert_eq!(next, ClockState::HoldHidden);
+        assert_eq!(cmds, vec![ClockCmd::FinishUnderrunTimer]);
+
+        // Scrub owns soft-hold — visibility must not replace it.
+        let (next, cmds) = reduce(ClockState::HoldScrub, ClockEvent::HoldHidden);
+        assert_eq!(next, ClockState::HoldScrub);
+        assert!(cmds.is_empty());
     }
 
     #[test]

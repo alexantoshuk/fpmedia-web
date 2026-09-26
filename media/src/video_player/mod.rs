@@ -165,7 +165,8 @@ impl Shared {
         WorkloadHints::new(
             self.engine.get().mode,
             self.session.get().is_restarting(),
-            self.clock_state.get().underrun_holding(),
+            // Any clock hold (underrun / scrub / hidden) — yield bg Range storms.
+            self.clock_state.get().is_holding(),
             self.scrub_busy.get(),
         )
     }
@@ -847,6 +848,46 @@ impl VideoPlayer {
         self.shared.wall_origin.set(None);
         self.shared.clock.borrow_mut().snap(t);
         t
+    }
+
+    /// Freeze while the tab / window is hidden (browser suspends `AudioContext`
+    /// and throttles rAF). Keeps UI `playing`; on `visibilitychange` → visible the
+    /// host calls [`Self::resume_audio_context`] then [`Self::resume_media_clock`].
+    ///
+    /// No-op when not playing, already hidden-held, or scrub soft-hold owns the
+    /// clock. `mediabunny: examples/media-player` — **no** visibility handler;
+    /// local adaptation (HTML media / AudioContext background policy).
+    pub fn hold_media_clock_for_hidden(&self) -> Option<f64> {
+        if !self.is_playing() {
+            return None;
+        }
+        let cs = self.shared.clock_state.get();
+        if cs.hidden_holding() {
+            return Some(self.shared.clock.borrow().media_time(None));
+        }
+        if matches!(
+            cs,
+            crate::ClockState::HoldScrub | crate::ClockState::Stopped
+        ) {
+            return None;
+        }
+        self.apply_clock_event(ClockEvent::HoldHidden);
+        if !self.shared.clock_state.get().hidden_holding() {
+            return None;
+        }
+        let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
+            a.hold_underrun()
+        } else {
+            self.media_time()
+        };
+        self.shared.wall_origin.set(None);
+        self.shared.clock.borrow_mut().snap(t);
+        Some(t)
+    }
+
+    /// True while [`Self::hold_media_clock_for_hidden`] latched the clock.
+    pub fn is_hidden_hold(&self) -> bool {
+        self.shared.clock_state.get().hidden_holding()
     }
 
     /// Warm resume after [`Self::hold_media_clock_for_underrun`], scrub soft-hold,
