@@ -21,7 +21,7 @@
 
 **Not done (do not assume fixed):**
 
-- Exact/cold tap soft **Decoding error** / closed codec / backpressure — densify-busy→skip Exact landed (uncommitted); HEVC still flaky `Unsupported configuration` / closed codec on rare combo release+play.
+- Exact/cold tap soft **Decoding error** / closed codec / backpressure — densify-busy→skip Exact landed; HEVC still flaky `Unsupported configuration` / closed codec on rare combo release+play (Chrome/Firefox often no HEVC; Edge OK on Windows).
 - First **Play on gray without prior Exact** — confirm GOP-cap warm (was fixed-24 lag).
 - Full matrix refresh (`npm run e2e:stress:matrix`) — last report `e2e/stress-reports/` is **2026-09-26** (stale vs HEAD).
 
