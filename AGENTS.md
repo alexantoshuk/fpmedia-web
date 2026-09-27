@@ -143,6 +143,8 @@ cargo leptos build                                      # build → target/site/
 cargo check -p server                                   # server (ssr) type check
 cargo check --target wasm32-unknown-unknown -p frontend # CSR WASM client + UI
 cargo check --target wasm32-unknown-unknown -p media_components # <Video> element crate
+# Opt-in HEVC: `cargo test -p webmedia --features hevc`; demo WASM →
+# `media_components` feature `hevc` (e.g. default = ["thumbs", "hevc"] while testing)
 # Pre-commit only (see CONTRIBUTING.md):
 cargo clippy -p webmedia --all-targets --all-features -- -D warnings
 cargo clippy --target wasm32-unknown-unknown -p frontend -- -D warnings

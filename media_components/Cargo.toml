@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["thumbs"]
 thumbs = ["webmedia/thumbs"]
+# Opt-in H.265 — see `webmedia` feature `hevc`.
+hevc = ["webmedia/hevc"]
 
 [dependencies]
 leptos = { workspace = true }

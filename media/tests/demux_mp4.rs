@@ -7,10 +7,12 @@ use std::time::Instant;
 
 use webmedia::{
     GopProfile, MediaSource, MemorySource, OpenMp4Options, PacketType, Player, ReadFuture,
-    VideoCodec, avc_nal_length_size, determine_avc_packet_type, determine_hevc_packet_type,
-    hevc_nal_length_size, open_mp4_bytes, open_mp4_media_source_cached, open_mp4_path,
-    open_mp4_source,
+    VideoCodec, avc_nal_length_size, determine_avc_packet_type, open_mp4_media_source_cached,
+    open_mp4_path, open_mp4_source,
 };
+
+#[cfg(feature = "hevc")]
+use webmedia::{determine_hevc_packet_type, hevc_nal_length_size, open_mp4_bytes};
 
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -431,8 +433,11 @@ fn demux_with_audio_track() {
 }
 
 /// testvideo HEVC plate — bitstream IRAP verify. Override with `WEBMEDIA_HEVC_URL`.
+/// Requires `--features hevc`.
+#[cfg(feature = "hevc")]
 const DEFAULT_HEVC_URL: &str = "https://github.com/alexantoshuk/testvideo/releases/download/v0.1.0/hevc_1080p_24_gop12_bf0.mp4";
 
+#[cfg(feature = "hevc")]
 #[test]
 #[ignore = "network: downloads HEVC from testvideo Release (or WEBMEDIA_HEVC_URL)"]
 fn hevc_bitstream_sync_verify_irap_keys() {

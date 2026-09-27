@@ -17,12 +17,13 @@
 - `HoldHidden` ≠ underrun for bg sync-verify (`blocks_bg_sync_verify`).
 - Stress re-verify (2026-09-27, HEAD): **pass** `gop12_60`, `hevc`, `hevc_1080p_2997_gop12_bf0`, `hevc_1080p_60_gop12_bf0` — budgets OK, `faults: []`. Soft console: densify re-abort / Decoding error / backpressure→soft-cold (esp. hevc 24).
 - Gray/cold first Play (no Exact seed): probe `e2e/player.play.gray-first.spec.ts` **passed** (GOP warm lead / budget 2.5 s).
+- **HEVC** behind cargo feature `hevc` (default **off**) — open rejects `hvc1`/`hev1` with clear message; enable `webmedia/hevc` + `media_components/hevc` to bring back.
 
 **Cite:** `mediabunny: examples/media-player/media-player.ts` `seekToTime` → `startVideoIterator`.
 
 **Not done (do not assume fixed):**
 
-- Exact/cold tap soft **Decoding error** / closed codec / backpressure — densify-busy→skip Exact landed; HEVC still flaky `Unsupported configuration` / closed codec on rare combo release+play (Chrome/Firefox often no HEVC; Edge OK on Windows).
+- Exact/cold tap soft **Decoding error** / closed codec / backpressure — densify-busy→skip Exact landed; residual dual-HW mainly when **`hevc` feature** enabled (Chrome/Firefox often no HEVC; Edge OK).
 - Full matrix refresh (`npm run e2e:stress:matrix`) — last report `e2e/stress-reports/` is **2026-09-26** (stale vs HEAD).
 
 **Failed experiments (do not re-land):** open-ended abort/replace workers; closed-Range orch (no stream / no orch byte cache).
@@ -33,12 +34,11 @@
 
 ### Media engine (priority)
 
-1. **Decoding error / closed codec** (remaining) — densify-busy→skip Exact landed; HEVC still rare `Unsupported configuration` / closed codec on combo release+play. Probe/harden dual-HW recreate.
-2. **Open UI lock until full gray** (progressive) — open warm lead=96 landed; confirm Ready before full gray.
-3. Optional: refresh full matrix `npm run e2e:stress:matrix`.
-4. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
-5. no-Range → `ReadableStreamSource` (host full-download stays for now).
-6. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
+1. Optional: refresh full matrix `npm run e2e:stress:matrix` (AVC).
+2. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
+3. no-Range → `ReadableStreamSource` (host full-download stays for now).
+4. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
+5. Later / opt-in: enable cargo feature `hevc` + harden dual-HW if shipping H.265 again.
 
 ### Later
 

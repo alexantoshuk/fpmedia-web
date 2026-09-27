@@ -53,7 +53,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 ## Non-goals (for now)
 
 - Full FFmpeg-in-browser convert/mux toolkit (mediabunny’s full scope).
-- Multi-container write path; focus read + decode of MP4 (AVC + HEVC bitstream key-verify).
+- Multi-container write path; focus read + decode of MP4 (AVC; **HEVC** opt-in via cargo feature `webmedia/hevc` / `media_components/hevc` — off by default).
 - Production auth, storage, or collaboration UI (lives in host apps).
 - Production player chrome — demo controls in `app` are temporary.
 - Production CORS / open media proxy — demo `/proxy` is localhost-only (local tests / e2e).

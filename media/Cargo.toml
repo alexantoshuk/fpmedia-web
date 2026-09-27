@@ -9,6 +9,10 @@ publish = false
 default = ["thumbs"]
 # Hover / filmstrip thumbs (ThumbPreview + ThumbCache). Soft stubs when off.
 thumbs = []
+# H.265 / HEVC (`hvc1` / `hev1`) open + bitstream verify + RASL sanitize.
+# Off by default — Chrome/Firefox often lack WebCodecs HEVC; dual-HW densify tax.
+# Enable: `-p webmedia --features hevc` and `media_components` feature `hevc`.
+hevc = []
 webcodecs = [
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",

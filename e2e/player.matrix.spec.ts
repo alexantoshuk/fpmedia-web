@@ -2,7 +2,8 @@
  * Narrow testvideo Release matrix for ScrubPolicy / PlayPolicy / open-path tuning.
  *
  * Roles: GOP12, GOP12+bf2, GOP48, fMP4, 60 fps GOP12, scenecut.
- * Optional HEVC: `WEBMEDIA_MATRIX_HEVC=1`.
+ * Optional HEVC: `WEBMEDIA_MATRIX_HEVC=1` **and** app built with
+ * `media_components` cargo feature `hevc` (off by default).
  *
  * Expects app on :3000 + network (`/proxy`).
  *   npm run e2e:matrix

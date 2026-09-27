@@ -527,7 +527,7 @@ impl Timestamp {
 pub enum VideoCodec {
     /// H.264 / AVC (`avc1`), AVCC length-prefixed NALs.
     Avc,
-    /// H.265 / HEVC (`hvc1` / `hev1`).
+    /// H.265 / HEVC (`hvc1` / `hev1`). Requires cargo feature `hevc` to open.
     Hevc,
     /// Recognized but not yet wired for decode.
     Other,

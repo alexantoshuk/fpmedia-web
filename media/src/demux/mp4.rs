@@ -1258,7 +1258,7 @@ fn build_video_track(
         .raw_codec_config(mp4)
         .ok_or(MediaError::UnsupportedCodec)?;
 
-    let codec = classify_codec(codec_string.as_deref());
+    let codec = classify_codec(codec_string.as_deref())?;
 
     let mut entries: Vec<FrameEntry> = track
         .samples
@@ -1332,11 +1332,22 @@ fn build_video_track(
     }))
 }
 
-fn classify_codec(codec_string: Option<&str>) -> VideoCodec {
+fn classify_codec(codec_string: Option<&str>) -> Result<VideoCodec, MediaError> {
     match codec_string {
-        Some(s) if s.starts_with("avc1") || s.starts_with("avc3") => VideoCodec::Avc,
-        Some(s) if s.starts_with("hvc1") || s.starts_with("hev1") => VideoCodec::Hevc,
-        _ => VideoCodec::Other,
+        Some(s) if s.starts_with("avc1") || s.starts_with("avc3") => Ok(VideoCodec::Avc),
+        Some(s) if s.starts_with("hvc1") || s.starts_with("hev1") => {
+            #[cfg(feature = "hevc")]
+            {
+                Ok(VideoCodec::Hevc)
+            }
+            #[cfg(not(feature = "hevc"))]
+            {
+                Err(MediaError::CodecUnsupported(format!(
+                    "{s} (HEVC disabled; rebuild with cargo feature webmedia/hevc)"
+                )))
+            }
+        }
+        _ => Ok(VideoCodec::Other),
     }
 }
 
@@ -1433,4 +1444,38 @@ fn verify_hevc_sync_flags(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod classify_codec_tests {
+    use super::classify_codec;
+    use crate::types::VideoCodec;
+
+    #[test]
+    fn avc_ok() {
+        assert_eq!(
+            classify_codec(Some("avc1.64001f")).unwrap(),
+            VideoCodec::Avc
+        );
+    }
+
+    #[cfg(not(feature = "hevc"))]
+    #[test]
+    fn hevc_rejected_without_feature() {
+        let err = classify_codec(Some("hvc1.1.6.L123.90")).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("HEVC disabled"),
+            "expected feature-gate message, got {msg}"
+        );
+    }
+
+    #[cfg(feature = "hevc")]
+    #[test]
+    fn hevc_ok_with_feature() {
+        assert_eq!(
+            classify_codec(Some("hvc1.1.6.L123.90")).unwrap(),
+            VideoCodec::Hevc
+        );
+    }
 }
