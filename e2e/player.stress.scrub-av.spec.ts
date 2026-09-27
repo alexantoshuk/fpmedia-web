@@ -186,8 +186,24 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
   const behindSamples: number[] = [];
   const faults: string[] = [];
   const warnings: string[] = [];
+  const engineLogs: string[] = [];
 
   page.on("pageerror", (err) => faults.push(`pageerror: ${err}`));
+  page.on("console", (msg) => {
+    const t = msg.text();
+    if (
+      t.includes("webmedia: settle") ||
+      t.includes("webmedia: take_decoder") ||
+      t.includes("webmedia: Exact") ||
+      t.includes("webmedia: PlayPrime") ||
+      t.includes("webmedia: play prime") ||
+      t.includes("webmedia: scrub release") ||
+      t.includes("webmedia: densify still busy") ||
+      t.includes("webmedia: decoder busy")
+    ) {
+      engineLogs.push(t);
+    }
+  });
   const readError = async () => (await player.error.innerText()).trim();
 
   await player.goto();
@@ -428,6 +444,7 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
     samples: { settle: settleSamples.length },
     faults,
     warnings,
+    engineLogs: engineLogs.slice(-40),
     failZones,
     strict,
     fastPlayBudgetMs: FAST_PLAY_MS,

@@ -744,12 +744,13 @@ impl VideoPlayer {
     /// After [`Self::abort_scrub_fill`], wait until densify clears `scrub_busy`.
     ///
     /// Exact/seek must not start while `decode_gop` still feeds the scrub
-    /// decoder (`mediabunny: seekToTime` terminates the prior iterator first).
-    /// If still busy after the budget, bump abort again and drain one more
-    /// short window — 250 ms alone left cold-tap Exact racing densify →
-    /// `Decoding error`.
+    /// decoder (`mediabunny: seekToTime` → `startVideoIterator` terminates the
+    /// prior iterator immediately — no densify plane). Local dual-decoder: brief
+    /// yield then Exact; long URL Range stalls must not block settle for seconds.
+    /// Poison recovery: Exact soft-cold / recreate + PlayPrime fill recreate.
+    /// If still busy after the first window, bump abort again and drain once more.
     pub(super) async fn await_scrub_densify_yield(&self) {
-        const BUDGET_MS: f64 = 2_000.0;
+        const BUDGET_MS: f64 = 250.0;
         const RETRY_MS: f64 = 250.0;
         let start = performance_now_ms().unwrap_or(0.0);
         while self.shared.scrub_busy.get() {
@@ -846,15 +847,18 @@ impl VideoPlayer {
     pub async fn scrub_to(&self, frame: FrameId, settle: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         let soft_drag = self.scrub_policy().soft_drag();
-        if settle {
+        let densify_yield_ms = if settle {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
             self.abort_scrub_fill(true);
+            let yield_t0 = performance_now_ms().unwrap_or(0.0);
             self.await_scrub_densify_yield().await;
+            let yield_ms = performance_now_ms().unwrap_or(yield_t0) - yield_t0;
             let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
             self.shared.engine.set(next);
             self.clear_scrub_direction();
             self.apply_session_event(crate::SessionEvent::BeginRestart);
             self.aim_scrub_cache(frame);
+            yield_ms
         } else {
             // Drag: ExactHold → Scrub so densify can run under the finger.
             let mut engine = self.shared.engine.get();
@@ -864,7 +868,8 @@ impl VideoPlayer {
             self.note_scrub_direction(frame);
             // Drag: kick densify immediately so the strip fills while the finger moves.
             self.enter_scrub_cache_pipeline(frame);
-        }
+            0.0
+        };
         let result = async {
             self.shared.player.borrow_mut().pause();
             self.clear_loop_prime();
@@ -886,24 +891,107 @@ impl VideoPlayer {
                 // on cold Ranges freezes the tab). Soft present + prefetch; densify
                 // paints when `FetchMap` covers the GOP.
                 if !exact_scrub_ready(&self.shared, frame) {
+                    // Soft-present immediately, then briefly poll for GOP bytes and
+                    // Exact if they land — play→scrub→resume otherwise soft-colds
+                    // with empty seed and PlayPrime cold-fills / seek-hangs.
+                    // Do **not** `warm_sample_bytes` here (can stall seconds on URL).
+                    // mediabunny: startVideoIterator awaits first packets before play.
                     soft_cold_scrub_settle(self, frame)?;
                     self.shared.pending_cold_exact.set(Some(frame));
+                    let warm_t0 = performance_now_ms().unwrap_or(0.0);
+                    const WARM_EXACT_POLL_MS: f64 = 400.0;
+                    let key = self.key_for(frame).unwrap_or(frame);
+                    warm_scrub_gop_bytes(&self.shared, key);
+                    while !exact_scrub_ready(&self.shared, frame) {
+                        let now = performance_now_ms().unwrap_or(warm_t0);
+                        if now - warm_t0 >= WARM_EXACT_POLL_MS {
+                            break;
+                        }
+                        if !self.is_current(epoch) {
+                            return Err(MediaError::Cancelled);
+                        }
+                        sleep_ms(0).await;
+                    }
+                    let warm_ms = performance_now_ms().unwrap_or(warm_t0) - warm_t0;
+                    if exact_scrub_ready(&self.shared, frame) {
+                        self.shared.pending_cold_exact.set(None);
+                        let exact_t0 = performance_now_ms().unwrap_or(0.0);
+                        match self.exact_goto_with_decoder_retry(frame, epoch).await {
+                            Ok(()) => {
+                                let exact_ms =
+                                    performance_now_ms().unwrap_or(exact_t0) - exact_t0;
+                                let seed_t0 = performance_now_ms().unwrap_or(0.0);
+                                match self.seed_play_presentation_after_seek(epoch).await {
+                                    Ok(()) => {
+                                        let seed_ms = performance_now_ms().unwrap_or(seed_t0)
+                                            - seed_t0;
+                                        web_sys::console::log_1(
+                                            &format!(
+                                                "webmedia: settle Exact after warm densify_yield={densify_yield_ms:.0}ms warm={warm_ms:.0}ms exact={exact_ms:.0}ms seed={seed_ms:.0}ms"
+                                            )
+                                            .into(),
+                                        );
+                                    }
+                                    Err(e) if e.is_cancelled() => return Err(e),
+                                    Err(e) if super::is_decoder_poison(&e) => {
+                                        web_sys::console::warn_1(
+                                            &format!("webmedia: Exact seed poison after warm → keep soft cold ({e})").into(),
+                                        );
+                                        soft_cold_scrub_settle(self, frame)?;
+                                        self.shared.pending_cold_exact.set(Some(frame));
+                                    }
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            Err(e) if e.is_cancelled() => return Err(e),
+                            Err(e) if super::is_decoder_poison(&e) => {
+                                web_sys::console::warn_1(
+                                    &format!("webmedia: Exact poison after warm → soft cold ({e})").into(),
+                                );
+                                soft_cold_scrub_settle(self, frame)?;
+                                self.shared.pending_cold_exact.set(Some(frame));
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    } else {
+                        web_sys::console::log_1(
+                            &format!(
+                                "webmedia: settle soft-cold (densify_yield={densify_yield_ms:.0}ms warm_poll={warm_ms:.0}ms)"
+                            )
+                            .into(),
+                        );
+                    }
                 } else {
                     self.shared.pending_cold_exact.set(None);
+                    let exact_t0 = performance_now_ms().unwrap_or(0.0);
                     match self.exact_goto_with_decoder_retry(frame, epoch).await {
                         Ok(()) => {
+                            let exact_ms =
+                                performance_now_ms().unwrap_or(exact_t0) - exact_t0;
                             // Always seed first play frames after Exact (mediabunny
                             // `seekToTime` → `startVideoIterator` awaits two canvases
                             // before optional `play`). Soft-drag / densify unchanged.
                             // PlayPrime then skips byte-warm + fill when queue is primed.
                             // Seed poison must not sticky-UI after a painted Exact —
                             // fall back like Exact poison (cold-tap / backpressure race).
+                            let seed_t0 = performance_now_ms().unwrap_or(0.0);
                             match self.seed_play_presentation_after_seek(epoch).await {
-                                Ok(()) => {}
+                                Ok(()) => {
+                                    let seed_ms =
+                                        performance_now_ms().unwrap_or(seed_t0) - seed_t0;
+                                    web_sys::console::log_1(
+                                        &format!(
+                                            "webmedia: settle Exact densify_yield={densify_yield_ms:.0}ms exact={exact_ms:.0}ms seed={seed_ms:.0}ms"
+                                        )
+                                        .into(),
+                                    );
+                                }
                                 Err(e) if e.is_cancelled() => return Err(e),
                                 Err(e) if super::is_decoder_poison(&e) => {
+                                    let seed_ms =
+                                        performance_now_ms().unwrap_or(seed_t0) - seed_t0;
                                     web_sys::console::warn_1(
-                                        &format!("webmedia: Exact seed poison → soft cold ({e})")
+                                        &format!("webmedia: Exact seed poison → soft cold ({e}); densify_yield={densify_yield_ms:.0}ms exact={exact_ms:.0}ms seed={seed_ms:.0}ms")
                                             .into(),
                                     );
                                     soft_cold_scrub_settle(self, frame)?;
@@ -914,10 +1002,12 @@ impl VideoPlayer {
                         }
                         Err(e) if e.is_cancelled() => return Err(e),
                         Err(e) if super::is_decoder_poison(&e) => {
+                            let exact_ms =
+                                performance_now_ms().unwrap_or(exact_t0) - exact_t0;
                             // Retry already failed — soft present + densify later
                             // instead of sticky UI `Decoding error` (cold-tap race).
                             web_sys::console::warn_1(
-                                &format!("webmedia: Exact poison → soft cold settle ({e})").into(),
+                                &format!("webmedia: Exact poison → soft cold settle ({e}); densify_yield={densify_yield_ms:.0}ms exact={exact_ms:.0}ms").into(),
                             );
                             soft_cold_scrub_settle(self, frame)?;
                             self.shared.pending_cold_exact.set(Some(frame));

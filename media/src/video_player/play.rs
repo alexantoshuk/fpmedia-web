@@ -298,7 +298,24 @@ impl VideoPlayer {
         // Scrub store is markers + blit — play re-decodes into the presentation
         // queue. Do **not** trim scrub residency on Play — eviction is budget /
         // farthest-from-aim only (Pause densify paid for that trail).
-        self.fill_presentation_queue(epoch).await
+        // Poison after Exact/densify race: soft-park retry alone cannot heal a
+        // closed main — recreate once then refill (parity Exact retry).
+        // mediabunny: seekToTime → startVideoIterator (return prior + new canvases).
+        match self.fill_presentation_queue(epoch).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.is_cancelled() => Err(e),
+            Err(e)
+                if super::is_decoder_poison(&e) && self.is_current(epoch) && self.is_playing() =>
+            {
+                web_sys::console::warn_1(
+                    &format!("webmedia: PlayPrime fill poison → recreate ({e})").into(),
+                );
+                self.clear_presentation();
+                self.invalidate_decoder();
+                self.fill_presentation_queue(epoch).await
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub fn presentation_len(&self) -> usize {

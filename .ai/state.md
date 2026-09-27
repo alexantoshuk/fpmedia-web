@@ -28,10 +28,10 @@
 ### Media engine (priority) — bugfix from stress matrix
 
 1. **Open UI lock until full gray** (progressive) — open warm lead=96 landed; confirm Ready before full gray.
-2. **Play dead after rapid scrub** — still fails on some gop12 / 2997 / 60fps / HEVC stress clips (`no resume` / `Play did not start`); soft-park landed — re-verify.
+2. **Play dead after rapid scrub** — PlayPrime fill poison → recreate+retry; gop12 / bf2 / 2997_gop12 stress clean — re-verify 60fps / HEVC.
 3. **Decoding error / closed codec** — cold/exact taps still fault on gop12 + gop48 Exact; abort put-back landed — re-verify stress.
 4. **PlayPrime lag on gray (no prior Exact)** — cold path still awaits warm=24; verify first Play on gray without scrub.
-5. **Slow resume on 60fps** (~10 s) after scrub release — stress: 60fps clips often miss Pause→Play sample / slow scrub→Play.
+5. **Slow resume after scrub** (esp. 2997 / 60fps) — soft-cold eng≠ph snap + densify yield 250 ms landed; re-verify 2997 combo / 60fps.
 6. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
 7. no-Range → `ReadableStreamSource` (host full-download stays for now).
 8. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).

@@ -226,9 +226,11 @@ pub(super) async fn run_seek_or_step(
         error.set(Some(e.to_string()));
     }
     sync_ui();
-    // Step can no-op (warm blit miss); snap playhead to committed engine so hold
-    // repeat does not keep aiming one ahead of a stuck frame.
-    if is_step
+    // Snap UI playhead to committed engine after scrub settle/release (and step).
+    // Soft-cold can commit a safe indexed frame while the pointer aim stays ahead —
+    // leaving eng≠ph makes waitExactSettle spin and PlayPrime `seek_frame` the
+    // cold aim (long hang). Step already snapped for hold-repeat.
+    if (scrub_settle || is_step)
         && let Ok(borrow) = player.try_borrow()
         && let Some(p) = borrow.as_ref()
     {

@@ -1611,12 +1611,19 @@ impl VideoPlayer {
         // (`skills/leptos.md` Quick Pause→Play).
         const TAKE_DECODER_WAIT_MS: f64 = 5_000.0;
         let start = performance_now_ms().unwrap_or(0.0);
+        let mut waited_logged = false;
         loop {
             if !self.is_current(epoch) {
                 return Err(MediaError::Cancelled);
             }
             let taken = self.decoder.borrow_mut().take();
             if let Some(mut decoder) = taken {
+                let waited = performance_now_ms().unwrap_or(start) - start;
+                if waited >= 100.0 {
+                    web_sys::console::warn_1(
+                        &format!("webmedia: take_decoder waited {waited:.0}ms").into(),
+                    );
+                }
                 let cmds = self.apply_decoder_slot(DecoderSlotEvent::Checkout);
                 for cmd in cmds {
                     if matches!(cmd, DecoderSlotCmd::ApplyReset) {
@@ -1627,6 +1634,12 @@ impl VideoPlayer {
                 return Ok(decoder);
             }
             let now = performance_now_ms().unwrap_or(start);
+            if !waited_logged && now - start >= 250.0 {
+                waited_logged = true;
+                web_sys::console::warn_1(
+                    &"webmedia: take_decoder still busy (≥250ms) — peer holds slot".into(),
+                );
+            }
             if now - start >= TAKE_DECODER_WAIT_MS {
                 break;
             }
