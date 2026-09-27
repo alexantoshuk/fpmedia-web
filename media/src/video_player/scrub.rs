@@ -890,11 +890,27 @@ impl VideoPlayer {
                 // **not** `goto_frame_with_interim` (ensure_frame_indexed + key→N
                 // on cold Ranges freezes the tab). Soft present + prefetch; densify
                 // paints when `FetchMap` covers the GOP.
-                if !exact_scrub_ready(&self.shared, frame) {
+                //
+                // Densify still busy after yield: skip Exact on the main decoder —
+                // dual-HW race → Decoding error / backpressure (stress HEVC/60).
+                // mediabunny: seekToTime → await startVideoIterator →
+                // `await videoFrameIterator?.return()` before a new iterator
+                // (examples/media-player/media-player.ts). Local densify plane:
+                // soft-cold until scrub HW yields; densify rearms after EndExact.
+                let densify_busy = self.shared.scrub_busy.get();
+                if densify_busy {
+                    web_sys::console::warn_1(
+                        &format!(
+                            "webmedia: settle densify busy after yield ({densify_yield_ms:.0}ms) → soft-cold (skip Exact)"
+                        )
+                        .into(),
+                    );
+                }
+                if densify_busy || !exact_scrub_ready(&self.shared, frame) {
                     // Soft-present immediately, then await **one GOP** of sample
-                    // bytes and Exact+seed. Empty 400ms poll left soft-cold →
-                    // PlayPrime `warm_sample_bytes(24)` (7–16s on cold URL).
-                    // mediabunny: startVideoIterator awaits first packets for `t`.
+                    // bytes and Exact+seed when densify has yielded and bytes warm.
+                    // Empty 400ms poll left soft-cold → PlayPrime `warm_sample_bytes(24)`
+                    // (7–16s on cold URL).
                     soft_cold_scrub_settle(self, frame)?;
                     self.shared.pending_cold_exact.set(Some(frame));
                     let warm_t0 = performance_now_ms().unwrap_or(0.0);
@@ -916,7 +932,8 @@ impl VideoPlayer {
                         return Err(MediaError::Cancelled);
                     }
                     let warm_ms = performance_now_ms().unwrap_or(warm_t0) - warm_t0;
-                    if exact_scrub_ready(&self.shared, frame) {
+                    // Densify may have cleared during gop-warm — Exact only then.
+                    if !self.shared.scrub_busy.get() && exact_scrub_ready(&self.shared, frame) {
                         self.shared.pending_cold_exact.set(None);
                         self.settle_exact_seed_logged(
                             frame,
@@ -928,7 +945,9 @@ impl VideoPlayer {
                     } else {
                         web_sys::console::log_1(
                             &format!(
-                                "webmedia: settle soft-cold (densify_yield={densify_yield_ms:.0}ms gop_warm={warm_ms:.0}ms still cold)"
+                                "webmedia: settle soft-cold (densify_yield={densify_yield_ms:.0}ms gop_warm={warm_ms:.0}ms densify_busy={} still cold={})",
+                                self.shared.scrub_busy.get(),
+                                !exact_scrub_ready(&self.shared, frame),
                             )
                             .into(),
                         );

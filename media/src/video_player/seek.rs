@@ -25,9 +25,16 @@ impl VideoPlayer {
             self.clear_step_ring();
             self.clear_presentation();
             self.aim_scrub_cache(frame);
-            // Cold seek on uncached / unindexed frame: do not block on
-            // `goto_frame_with_interim` (same hang as cold scrub settle).
-            if !exact_scrub_ready(&self.shared, frame) {
+            // Cold seek / densify still busy after yield: soft present (do not
+            // Exact while scrub HW feeds — dual-HW Decoding error / backpressure).
+            // mediabunny: await prior videoFrameIterator.return() before new work.
+            let densify_busy = self.shared.scrub_busy.get();
+            if densify_busy || !exact_scrub_ready(&self.shared, frame) {
+                if densify_busy {
+                    web_sys::console::warn_1(
+                        &"webmedia: seek densify busy after yield → soft-cold (skip Exact)".into(),
+                    );
+                }
                 soft_cold_scrub_settle(self, frame)?;
                 self.shared.pending_cold_exact.set(Some(frame));
                 Ok(())
