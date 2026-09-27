@@ -233,10 +233,9 @@ impl VideoPlayer {
         // warm→lead gap on the click turn).
         const PLAY_INDEX_LEAD: u64 = 96;
         const PLAY_INDEX_AWAIT_BATCH: u64 = 48; // ≈ urgent chunk × GOP12
-        // Await only a short `mdat`/AAC window so Play on gray is not 1–3s of
-        // tile yields across 96 frames. Longer lead is fire-and-forget prefetch
-        // (`play()` also kicks ahead). mediabunny: first samples before play.
-        const PLAY_WARM_AWAIT_FRAMES: u64 = 24;
+        // Unprimed cold PlayPrime: await one GOP at head (not fixed 24) so
+        // soft-cold→Play does not re-open a 7–16s `warm_sample_bytes` stall.
+        // mediabunny: first samples for seek `t`, not a long timeline warm.
         let head = self.state().frame;
         {
             let track = self.shared.player.borrow().track_rc();
@@ -264,19 +263,26 @@ impl VideoPlayer {
             let track = self.shared.player.borrow().track_rc();
             track.prefetch_samples_ahead(head, PLAY_INDEX_LEAD);
         } else {
+            let warm_t0 = performance_now_ms().unwrap_or(0.0);
             let warm_secs = {
                 let track = self.shared.player.borrow().track_rc();
-                let await_lead = PLAY_WARM_AWAIT_FRAMES.min(PLAY_INDEX_LEAD);
+                let key = track.index().nearest_keyframe(head).unwrap_or(head);
+                let await_lead = super::scrub::gop_sample_lead(&track, key).min(PLAY_INDEX_LEAD);
                 track.warm_sample_bytes(head, await_lead).await?;
                 track.prefetch_samples_ahead(head, PLAY_INDEX_LEAD);
                 let last = head
                     .saturating_add(await_lead)
                     .min(track.indexed_frame_count().saturating_sub(1));
-                track
+                let secs = track
                     .index()
                     .get(last)
                     .map(|e| e.composition_timestamp().seconds)
-                    .unwrap_or(0.0)
+                    .unwrap_or(0.0);
+                let warm_ms = performance_now_ms().unwrap_or(warm_t0) - warm_t0;
+                web_sys::console::log_1(
+                    &format!("webmedia: play prime warm lead={await_lead} {warm_ms:.0}ms").into(),
+                );
+                secs
             };
             if !self.is_current(epoch) || !self.is_playing() {
                 return Err(MediaError::Cancelled);
