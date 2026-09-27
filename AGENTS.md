@@ -84,7 +84,7 @@ Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, 
 | ---- | -------------- | ---------------- |
 | **`product.md`** | Domain or UX decision stabilises | Model, surfaces, business invariants. One row/paragraph per decision — no session notes. |
 | **`architecture.md`** | Stack, layers, or DB policy stabilises | Layout, layer rules, code conventions, ADRs. Point to skills for how-to. |
-| **`state.md`** | End of session; before commit if priorities shifted | **In progress** + **Next up** only (no Done list). Drop finished specs; don’t duplicate product/architecture. |
+| **`state.md`** | End of session; **chat handoff**; before commit if priorities shifted | **In progress** + **Next up** only (no Done list). Drop finished specs; don’t duplicate product/architecture. |
 | **`skills/*.md`** | Reusable trap or API mismatch fixed in code | Triage table + gotchas + patterns. Not backlog, workspace layout, or Dev commands. |
 
 ### One source of truth
@@ -98,6 +98,7 @@ Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, 
 | Crate layout, layers, ADRs | `architecture.md` | Skills may keep a **module map** for one crate |
 | State machines over flag soup | `architecture.md` § State machines over flags | One-line pointer only — do not restate domain table in skills |
 | Backlog / priorities | `state.md` | Never a Done list; never copy into skills |
+| Chat handoff → refresh `state.md` | `AGENTS.md` § State hygiene | One-line pointer only |
 | Engine traps / decode / scrub | `skills/media.md` | UI host points here for decode hangs |
 | Leptos / `<Video>` host traps | `skills/leptos.md` | Engine skill points here for UI stuck |
 | Dev commands | `AGENTS.md` | Do not duplicate in skills |
@@ -119,10 +120,11 @@ If two files disagree, fix the canonical home and delete the duplicate prose.
 - `state.md` = **In progress** + **Next up** (+ optional **Later**). Never **Done**.
 - Finished work: delete the bullet (durable knowledge → skill/product/architecture).
 - Keep Next up actionable and short; no session narrative.
+- **Chat handoff (hard):** when the user signals a move to another chat / session (e.g. «переходим в другой чат», «handoff», «new chat»), **refresh `.ai/state.md` before wrapping up** — accurate Handoff + Next up (what landed, what is unverified, what is still open). Do not leave a stale matrix or “re-verify” that already passed without saying so.
 
 **Before commit / PR push:** follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** (format, Clippy, checks, tests, size). Include `.ai/` when architecture, player UI, or a skill-worthy fix changed.
 
-**End of session:** refresh `state.md` (drop finished items); append/trim skill triage + gotchas if any.
+**End of session / chat handoff:** refresh `state.md` (drop finished items; update Handoff); append/trim skill triage + gotchas if any.
 
 ## Commits
 

@@ -4,20 +4,26 @@
 
 ---
 
-## Handoff (2026-09-26)
+## Handoff (2026-09-27)
 
-**Stable baseline:** `UrlSource` + full `ReadOrchestrator` + open-ended `_runWorker` + `CachedSource` + sample-span coalesce. Stress e2e: fast open→zone scrub→resume (`npm run e2e:stress`); full Release matrix `npm run e2e:stress:matrix` → `e2e/stress-reports/` (gitignored).
+**HEAD:** `8a1f6b4` (ahead of `origin/main` by 2 — also `6d1fd19`). Not pushed.
 
-**Cite:** `mediabunny: src/source.ts` `ReadOrchestrator` + `UrlSource._runWorker`.
+**Landed this session (scrub→Play / resume):**
 
-**Matrix result (18 clips, fast stress):** 14 passed / 4 failed. Reports: `e2e/stress-reports/summary.md`.
+- PlayPrime fill poison → `invalidate_decoder` + one refill; soft-park host (no bump).
+- Settle: densify yield 250+250 ms; snap UI playhead→engine after settle; cold → await **one GOP** `warm_sample_bytes` → Exact+seed (not soft-cold → PlayPrime warm=24).
+- Unprimed PlayPrime warm capped to GOP length (`gop_sample_lead` 8…24).
+- Probes: `e2e/player.scrub.cold-resume.spec.ts` (budget 4 s, passed); stress gop12 / bf2 / `2997_gop12` clean after fixes.
 
-**Hard fail — Play did not start after rapid scrub:**
+**Cite:** `mediabunny: examples/media-player/media-player.ts` `seekToTime` → `startVideoIterator`.
 
-- `avc_1080p_24_gop12_bf0`, `avc_1080p_24_gop12_bf2`
-- `hevc_1080p_24_gop12_bf0`, `hevc_1080p_2997_gop12_bf0`
+**Not done (do not assume fixed):**
 
-**Soft faults on passed runs:** `Decoding error` / closed codec on Exact/combo (gop48, 2997_gop*, 60fps); 60fps resume often ~9–10 s (budget edge).
+- Host sticky UI: `error.set(None)` on **Ok** scrub settle (plan leftover — only `error.set(Some)` on fail today).
+- Fresh stress re-verify: **60fps** progressive (`gop12_60`, …) and **HEVC** gop12 / 2997 / 60.
+- Exact/cold tap soft **Decoding error** / closed codec (matrix soft faults).
+- First **Play on gray without prior Exact** — confirm GOP-cap warm (was fixed-24 lag).
+- Full matrix refresh (`npm run e2e:stress:matrix`) — last report `e2e/stress-reports/` is **2026-09-26** (stale vs HEAD).
 
 **Failed experiments (do not re-land):** open-ended abort/replace workers; closed-Range orch (no stream / no orch byte cache).
 
@@ -25,18 +31,16 @@
 
 ## Next up
 
-### Media engine (priority) — bugfix from stress matrix
+### Media engine (priority)
 
-1. **Open UI lock until full gray** (progressive) — open warm lead=96 landed; confirm Ready before full gray.
-2. **Play dead after rapid scrub** — PlayPrime fill poison → recreate+retry; gop12 / bf2 / 2997_gop12 stress clean — re-verify 60fps / HEVC.
-3. **Decoding error / closed codec** — cold/exact taps still fault on gop12 + gop48 Exact; abort put-back landed — re-verify stress.
-4. **PlayPrime lag on gray (no prior Exact)** — cold path still awaits warm=24; verify first Play on gray without scrub.
-5. **Slow resume after scrub** (esp. cold / 60fps) — soft-cold snap + densify yield + **GOP warm→Exact+seed** landed; probe `e2e/player.scrub.cold-resume.spec.ts` — re-verify 60fps.
+1. **Sticky Decoding error UI after Ok settle** — `error.set(None)` on successful scrub settle/release (`host_ops` / settle Ok path). Leftover from Play-dead plan.
+2. **Re-verify 60fps + HEVC stress** — `WEBMEDIA_CLIP=gop12_60` / `hevc` / `hevc_1080p_2997_gop12_bf0` (`npm run e2e:stress`); resume + Play-dead budgets. Optionally refresh full matrix.
+3. **Decoding error / closed codec** on Exact/cold taps (gop12/gop48 soft faults) — densify vs Exact race; abort put-back landed — still soft-faults.
+4. **PlayPrime first Play on gray (no Exact)** — confirm GOP-lead warm is enough; add/adjust probe if still 1–3 s lag.
+5. **Open UI lock until full gray** (progressive) — open warm lead=96 landed; confirm Ready before full gray.
 6. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
 7. no-Range → `ReadableStreamSource` (host full-download stays for now).
 8. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
-
-**Stress matrix (2026-09-26, fast + Pause/scrub→Play budgets):** 8 passed / 10 failed — see `e2e/stress-reports/summary.md`. Pause→Play / Exact scrub→Play usually <600 ms when sample exists; fails are mostly decode poison / no resume / 60fps.
 
 ### Later
 
@@ -48,3 +52,4 @@
 - Dual-source compare layout hooks.
 - Publish `webmedia` / `media_components` crates for reuse by host apps.
 - Production player chrome (demo controls in `app` stay for now).
+- Optional later: extract settle/prime budgets into `SettlePolicy` (after hard fails quiet) — inventory only until then.
