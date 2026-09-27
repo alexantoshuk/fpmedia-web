@@ -165,8 +165,8 @@ impl Shared {
         WorkloadHints::new(
             self.engine.get().mode,
             self.session.get().is_restarting(),
-            // Any clock hold (underrun / scrub / hidden) — yield bg Range storms.
-            self.clock_state.get().is_holding(),
+            // Underrun / scrub soft-hold only — not HoldHidden (tab freeze ≠ underrun).
+            self.clock_state.get().blocks_bg_sync_verify(),
             self.scrub_busy.get(),
         )
     }
@@ -553,8 +553,9 @@ impl VideoPlayer {
                 let Some(shared) = weak.upgrade() else {
                     break;
                 };
-                // Yield while Play / Seek own the network, on underrun, or while
-                // densify is busy (avoid GitHub/proxy 502 + sample-sized Range storms).
+                // Yield while Play / Seek own the network, on underrun / scrub
+                // soft-hold, or while densify is busy (avoid GitHub/proxy 502 +
+                // sample-sized Range storms). HoldHidden does not block verify.
                 // mediabunny: verifyKeyPackets on retrieve — no bg full-file walk
                 // during playback (`WorkloadMode` / `allows_bg_sync_verify`).
                 if !allows_bg_sync_verify(shared.workload_hints()) {

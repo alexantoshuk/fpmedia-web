@@ -58,8 +58,19 @@ impl ClockState {
         matches!(self, Self::HoldUnderrun)
     }
 
+    pub fn scrub_holding(self) -> bool {
+        matches!(self, Self::HoldScrub)
+    }
+
     pub fn hidden_holding(self) -> bool {
         matches!(self, Self::HoldHidden)
+    }
+
+    /// Pause deferred bitstream sync-verify while underrun or scrub soft-hold
+    /// own the network. [`Self::HoldHidden`] does **not** block — tab freeze is
+    /// not underrun (verify may run when engine is Bg / Open).
+    pub fn blocks_bg_sync_verify(self) -> bool {
+        self.underrun_holding() || self.scrub_holding()
     }
 }
 
@@ -212,6 +223,19 @@ mod tests {
         let (next, cmds) = reduce(ClockState::HoldScrub, ClockEvent::HoldHidden);
         assert_eq!(next, ClockState::HoldScrub);
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn hidden_hold_does_not_block_bg_sync_verify() {
+        let (hidden, _) = reduce(ClockState::Running, ClockEvent::HoldHidden);
+        assert!(hidden.is_holding());
+        assert!(!hidden.blocks_bg_sync_verify());
+
+        let (underrun, _) = reduce(ClockState::Running, ClockEvent::HoldUnderrun);
+        assert!(underrun.blocks_bg_sync_verify());
+
+        let (scrub, _) = reduce(ClockState::Running, ClockEvent::HoldScrub);
+        assert!(scrub.blocks_bg_sync_verify());
     }
 
     #[test]
