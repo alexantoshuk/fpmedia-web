@@ -220,10 +220,14 @@ pub(super) async fn run_seek_or_step(
         Err(_) => "err",
     };
     web_sys::console::log_1(&format!("webmedia: {label} done {done}").into());
-    if let Err(e) = &result
-        && !e.is_cancelled()
-    {
-        error.set(Some(e.to_string()));
+    match &result {
+        Ok(()) => {
+            // Clear sticky UI error after a successful seek/scrub/step — e.g.
+            // FrameOutOfRange or Decoding error left from a prior failed op.
+            error.set(None);
+        }
+        Err(e) if e.is_cancelled() => {}
+        Err(e) => error.set(Some(e.to_string())),
     }
     sync_ui();
     // Snap UI playhead to committed engine after scrub settle/release (and step).

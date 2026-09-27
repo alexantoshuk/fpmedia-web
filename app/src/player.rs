@@ -669,11 +669,8 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                                 ev.prevent_default();
                                 let Some(input) = url_input.get() else { return };
-                                let url = input.value();
-                                if url.trim().is_empty() {
-                                    return;
-                                }
-                                video.open_url(url);
+                                // Empty → component sets sticky "empty URL" (keeps player).
+                                video.open_url(input.value());
                             }
                         />
                         <button
@@ -683,11 +680,8 @@ pub fn DemoPlayer() -> impl IntoView {
                             prop:disabled=move || video.busy.get()
                             on:click=move |_| {
                                 let Some(input) = url_input.get() else { return };
-                                let url = input.value();
-                                if url.trim().is_empty() {
-                                    return;
-                                }
-                                video.open_url(url);
+                                // Empty → component sets sticky "empty URL" (keeps player).
+                                video.open_url(input.value());
                             }
                         >
                             "Open URL"

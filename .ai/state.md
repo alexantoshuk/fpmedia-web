@@ -6,20 +6,20 @@
 
 ## Handoff (2026-09-27)
 
-**HEAD:** `8a1f6b4` (ahead of `origin/main` by 2 — also `6d1fd19`). Not pushed.
+**HEAD:** sticky-error clear (this commit; ahead of `origin/main`). Not pushed.
 
 **Landed this session (scrub→Play / resume):**
 
 - PlayPrime fill poison → `invalidate_decoder` + one refill; soft-park host (no bump).
 - Settle: densify yield 250+250 ms; snap UI playhead→engine after settle; cold → await **one GOP** `warm_sample_bytes` → Exact+seed (not soft-cold → PlayPrime warm=24).
 - Unprimed PlayPrime warm capped to GOP length (`gop_sample_lead` 8…24).
+- Host: `error.set(None)` on **Ok** seek/scrub/step (`host_ops`); probe `e2e/player.scrub.sticky-error.spec.ts`.
 - Probes: `e2e/player.scrub.cold-resume.spec.ts` (budget 4 s, passed); stress gop12 / bf2 / `2997_gop12` clean after fixes.
 
 **Cite:** `mediabunny: examples/media-player/media-player.ts` `seekToTime` → `startVideoIterator`.
 
 **Not done (do not assume fixed):**
 
-- Host sticky UI: `error.set(None)` on **Ok** scrub settle (plan leftover — only `error.set(Some)` on fail today).
 - Fresh stress re-verify: **60fps** progressive (`gop12_60`, …) and **HEVC** gop12 / 2997 / 60.
 - Exact/cold tap soft **Decoding error** / closed codec (matrix soft faults).
 - First **Play on gray without prior Exact** — confirm GOP-cap warm (was fixed-24 lag).
@@ -33,14 +33,13 @@
 
 ### Media engine (priority)
 
-1. **Sticky Decoding error UI after Ok settle** — `error.set(None)` on successful scrub settle/release (`host_ops` / settle Ok path). Leftover from Play-dead plan.
-2. **Re-verify 60fps + HEVC stress** — `WEBMEDIA_CLIP=gop12_60` / `hevc` / `hevc_1080p_2997_gop12_bf0` (`npm run e2e:stress`); resume + Play-dead budgets. Optionally refresh full matrix.
-3. **Decoding error / closed codec** on Exact/cold taps (gop12/gop48 soft faults) — densify vs Exact race; abort put-back landed — still soft-faults.
-4. **PlayPrime first Play on gray (no Exact)** — confirm GOP-lead warm is enough; add/adjust probe if still 1–3 s lag.
-5. **Open UI lock until full gray** (progressive) — open warm lead=96 landed; confirm Ready before full gray.
-6. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
-7. no-Range → `ReadableStreamSource` (host full-download stays for now).
-8. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
+1. **Re-verify 60fps + HEVC stress** — `WEBMEDIA_CLIP=gop12_60` / `hevc` / `hevc_1080p_2997_gop12_bf0` (`npm run e2e:stress`); resume + Play-dead budgets. Optionally refresh full matrix.
+2. **Decoding error / closed codec** on Exact/cold taps (gop12/gop48 soft faults) — densify vs Exact race; abort put-back landed — still soft-faults.
+3. **PlayPrime first Play on gray (no Exact)** — confirm GOP-lead warm is enough; add/adjust probe if still 1–3 s lag.
+4. **Open UI lock until full gray** (progressive) — open warm lead=96 landed; confirm Ready before full gray.
+5. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
+6. no-Range → `ReadableStreamSource` (host full-download stays for now).
+7. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
 
 ### Later
 
