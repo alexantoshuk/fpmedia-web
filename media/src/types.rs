@@ -493,6 +493,67 @@ impl PlayPolicy {
     }
 }
 
+/// Densify yield before Exact — first window (ms).
+pub const SETTLE_DENSIFY_YIELD_MS: f64 = 250.0;
+/// Densify yield retry after re-abort (ms).
+pub const SETTLE_DENSIFY_YIELD_RETRY_MS: f64 = 250.0;
+/// Floor for one-GOP sample warm on Exact settle / cold PlayPrime.
+pub const SETTLE_GOP_SAMPLE_LEAD_MIN: u64 = 8;
+/// Ceiling for one-GOP sample warm (was fixed-24 stall on long/cold GOP).
+pub const SETTLE_GOP_SAMPLE_LEAD_MAX: u64 = 24;
+/// Presentation frames seeded before clock start / Exact→Play skip-fill.
+pub const SETTLE_PLAY_PRIME_FRAMES: usize = 2;
+/// Index / sample prefetch lead for PlayPrime + open warm (`mdat` frames).
+/// Shared with demux `warm_open_playback_bytes` — keep one number.
+pub const SETTLE_PLAY_INDEX_LEAD: u64 = 96;
+/// fMP4: max frames to *await* past current index on PlayPrime (rest bg).
+pub const SETTLE_PLAY_INDEX_AWAIT_BATCH: u64 = 48;
+/// Wall-clock wait for main decoder slot checkout (Chromium `setTimeout` clamp).
+pub const SETTLE_TAKE_DECODER_WAIT_MS: f64 = 5_000.0;
+
+/// Settle / PlayPrime timing budgets (local — not resolution/GOP branched yet).
+///
+/// Dual-decoder densify vs Exact needs brief yield windows and one-GOP byte warm;
+/// mediabunny has **no equivalent** timers (`seekToTime` → `await videoFrameIterator?.return()`
+/// then `startVideoIterator`). Soft-cold / poison paths stay named recovery helpers,
+/// not fields here. Do **not** retune these when changing [`PlayPolicy`] Uhd or
+/// [`ScrubPolicy`] MiB — different axes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SettlePolicy {
+    /// First densify-busy drain after abort (ms).
+    pub densify_yield_ms: f64,
+    /// Second drain after re-abort (ms).
+    pub densify_yield_retry_ms: f64,
+    pub gop_sample_lead_min: u64,
+    pub gop_sample_lead_max: u64,
+    pub play_prime_frames: usize,
+    pub play_index_lead: u64,
+    pub play_index_await_batch: u64,
+    pub take_decoder_wait_ms: f64,
+}
+
+impl Default for SettlePolicy {
+    fn default() -> Self {
+        Self {
+            densify_yield_ms: SETTLE_DENSIFY_YIELD_MS,
+            densify_yield_retry_ms: SETTLE_DENSIFY_YIELD_RETRY_MS,
+            gop_sample_lead_min: SETTLE_GOP_SAMPLE_LEAD_MIN,
+            gop_sample_lead_max: SETTLE_GOP_SAMPLE_LEAD_MAX,
+            play_prime_frames: SETTLE_PLAY_PRIME_FRAMES,
+            play_index_lead: SETTLE_PLAY_INDEX_LEAD,
+            play_index_await_batch: SETTLE_PLAY_INDEX_AWAIT_BATCH,
+            take_decoder_wait_ms: SETTLE_TAKE_DECODER_WAIT_MS,
+        }
+    }
+}
+
+impl SettlePolicy {
+    /// Clamp observed GOP length for Exact / PlayPrime sample warm.
+    pub fn clamp_gop_sample_lead(self, gop_len: u64) -> u64 {
+        gop_len.clamp(self.gop_sample_lead_min, self.gop_sample_lead_max)
+    }
+}
+
 impl ResolutionClass {
     pub fn from_height(height: u32) -> Self {
         if height >= UHD_MIN_HEIGHT {
@@ -577,6 +638,11 @@ impl VideoMetadata {
     /// Scrub knobs (secondary) — `GopProfile` → soft-drag / densify / budgets.
     pub fn scrub_policy(&self) -> ScrubPolicy {
         ScrubPolicy::from_gop_profile(self.gop_profile)
+    }
+
+    /// Settle / PlayPrime timing budgets (tertiary). Clip-invariant for now.
+    pub fn settle_policy(&self) -> SettlePolicy {
+        SettlePolicy::default()
     }
 
     /// Dense scrub-cache frame cap from policy MiB budget and coded size.
@@ -808,6 +874,39 @@ mod tests {
             PlayPolicy::hd().loop_prime_frames(),
             PLAY_LOOP_PRIME_FRAMES_HD
         );
+    }
+
+    #[test]
+    fn settle_policy_defaults_match_historical() {
+        let s = SettlePolicy::default();
+        assert_eq!(s.densify_yield_ms, SETTLE_DENSIFY_YIELD_MS);
+        assert_eq!(s.densify_yield_retry_ms, SETTLE_DENSIFY_YIELD_RETRY_MS);
+        assert_eq!(s.gop_sample_lead_min, SETTLE_GOP_SAMPLE_LEAD_MIN);
+        assert_eq!(s.gop_sample_lead_max, SETTLE_GOP_SAMPLE_LEAD_MAX);
+        assert_eq!(s.play_prime_frames, SETTLE_PLAY_PRIME_FRAMES);
+        assert_eq!(s.play_index_lead, SETTLE_PLAY_INDEX_LEAD);
+        assert_eq!(s.play_index_await_batch, SETTLE_PLAY_INDEX_AWAIT_BATCH);
+        assert_eq!(s.take_decoder_wait_ms, SETTLE_TAKE_DECODER_WAIT_MS);
+        assert_eq!(s.clamp_gop_sample_lead(12), 12);
+        assert_eq!(s.clamp_gop_sample_lead(4), SETTLE_GOP_SAMPLE_LEAD_MIN);
+        assert_eq!(s.clamp_gop_sample_lead(100), SETTLE_GOP_SAMPLE_LEAD_MAX);
+        // Clip-invariant for now — metadata always returns Default.
+        let meta = VideoMetadata {
+            width: 1920,
+            height: 1080,
+            timescale: 24_000,
+            duration_ticks: 24_000,
+            frame_count: 24,
+            fps: Some(24.0),
+            codec: CodecConfig {
+                codec: VideoCodec::Avc,
+                codec_string: None,
+                description: vec![],
+            },
+            gop_profile: GopProfile::ShortFixed { len: 12 },
+            timecode_start: None,
+        };
+        assert_eq!(meta.settle_policy(), SettlePolicy::default());
     }
 
     #[test]

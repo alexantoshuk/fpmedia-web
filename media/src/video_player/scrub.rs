@@ -750,12 +750,13 @@ impl VideoPlayer {
     /// Poison recovery: Exact soft-cold / recreate + PlayPrime fill recreate.
     /// If still busy after the first window, bump abort again and drain once more.
     pub(super) async fn await_scrub_densify_yield(&self) {
-        const BUDGET_MS: f64 = 250.0;
-        const RETRY_MS: f64 = 250.0;
+        let policy = self.metadata().settle_policy();
+        let budget_ms = policy.densify_yield_ms;
+        let retry_ms = policy.densify_yield_retry_ms;
         let start = performance_now_ms().unwrap_or(0.0);
         while self.shared.scrub_busy.get() {
             let now = performance_now_ms().unwrap_or(start);
-            if now - start >= BUDGET_MS {
+            if now - start >= budget_ms {
                 break;
             }
             sleep_ms(0).await;
@@ -768,7 +769,7 @@ impl VideoPlayer {
         let start2 = performance_now_ms().unwrap_or(0.0);
         while self.shared.scrub_busy.get() {
             let now = performance_now_ms().unwrap_or(start2);
-            if now - start2 >= RETRY_MS {
+            if now - start2 >= retry_ms {
                 break;
             }
             sleep_ms(0).await;
@@ -1526,14 +1527,15 @@ pub(super) fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     cache.next_gap_frame(playhead, last, dir)
 }
 
-/// Frames to warm for Exact settle / PlayPrime: one GOP at `key`, clamped.
+/// Frames to warm for Exact settle / PlayPrime: one GOP at `key`, clamped by
+/// [`crate::SettlePolicy`] (not a fixed 24).
 pub(super) fn gop_sample_lead(track: &crate::demux::Mp4VideoTrack, key: FrameId) -> u64 {
     let n = track
         .index()
         .gop_frame_ids(key)
         .map(|ids| ids.len() as u64)
         .unwrap_or(12);
-    n.clamp(8, 24)
+    crate::SettlePolicy::default().clamp_gop_sample_lead(n)
 }
 
 /// True when every sample in the GOP at `key` is indexed and resident in
@@ -1583,6 +1585,10 @@ pub(super) fn exact_scrub_ready(shared: &Shared, frame: FrameId) -> bool {
 
 /// Soft settle/seek on a cold frame: prefetch only, optional warm blit, commit
 /// only within the **indexed** prefix.
+///
+/// **Named recovery** (not a [`crate::SettlePolicy`] knob): control-flow fallback
+/// when Exact would stampede cold Ranges or densify still owns HW. Poison /
+/// densify-busy paths call this instead of inventing timeout parameters.
 ///
 /// Does **not** decode. Never `commit_frame` past `indexed_frame_count` — that
 /// left PlayPrime / `warm_sample_bytes` awaiting mfra on the OpQueue (Play stuck

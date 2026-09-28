@@ -4,27 +4,20 @@
 
 ---
 
-## Handoff (2026-09-27)
+## Handoff (2026-09-28)
 
-**HEAD:** gray-first Play probe (this commit). Ahead of `origin/main` (check `git status`).
+**HEAD:** local (SettlePolicy extract). Ahead of `origin/main` (check `git status`).
 
-**Landed this session (scrub→Play / resume + sticky error + HoldHidden verify):**
+**Landed this session (policy hygiene):**
 
-- PlayPrime fill poison → `invalidate_decoder` + one refill; soft-park host (no bump).
-- Settle: densify yield 250+250 ms; snap UI playhead→engine after settle; cold → await **one GOP** `warm_sample_bytes` → Exact+seed.
-- Unprimed PlayPrime warm capped to GOP length (`gop_sample_lead` 8…24).
-- Host: `error.set(None)` on **Ok** seek/scrub/step; probe `e2e/player.scrub.sticky-error.spec.ts`.
-- `HoldHidden` ≠ underrun for bg sync-verify (`blocks_bg_sync_verify`).
-- Stress re-verify (2026-09-27, HEAD): **pass** `gop12_60`, `hevc`, `hevc_1080p_2997_gop12_bf0`, `hevc_1080p_60_gop12_bf0` — budgets OK, `faults: []`. Soft console: densify re-abort / Decoding error / backpressure→soft-cold (esp. hevc 24).
-- Gray/cold first Play (no Exact seed): probe `e2e/player.play.gray-first.spec.ts` **passed** (GOP warm lead / budget 2.5 s).
-- **HEVC** behind cargo feature `hevc` (default **off**) — open rejects `hvc1`/`hev1` with clear message; enable `webmedia/hevc` + `media_components/hevc` to bring back.
+- `SettlePolicy` + consts in `types` — densify yield, gop lead clamp, play prime/index lead, take_decoder wait; `VideoMetadata::settle_policy()` (clip-invariant Default).
+- Wired scrub densify yield / `gop_sample_lead`, PlayPrime warm, prefetch lead, `take_decoder`; demux open warm shares `SETTLE_PLAY_INDEX_LEAD`.
+- Soft-cold / poison documented as **named recovery** (not knobs). Dropped dead `LOOP_PRIME_*` Hd aliases.
+- **Cite:** mediabunny **no equivalent** settle timers — `seekToTime` → iterator `return` + `startVideoIterator`.
 
-**Cite:** `mediabunny: examples/media-player/media-player.ts` `seekToTime` → `startVideoIterator`.
+**Prior still holds:** PlayPrime poison recreate, settle yield+gop warm, sticky error clear, HoldHidden ≠ underrun, gray-first Play, HEVC feature-off default. AVC stress 15/15 (2026-09-28).
 
-**Not done (do not assume fixed):**
-
-- Exact/cold tap soft **Decoding error** / closed codec / backpressure — densify-busy→skip Exact landed; residual dual-HW mainly when **`hevc` feature** enabled (Chrome/Firefox often no HEVC; Edge OK).
-- Full AVC stress matrix refreshed **2026-09-28** — `e2e/stress-reports/` **15/15** pass, `faults: []`. HEVC: `e2e:stress:matrix:hevc` when `hevc` feature on.
+**Not done:** Exact/cold residual soft Decoding error when `hevc` on; OpenIoDefaults extraction (not needed yet).
 
 **Failed experiments (do not re-land):** open-ended abort/replace workers; closed-Range orch (no stream / no orch byte cache).
 
@@ -49,4 +42,4 @@
 - Dual-source compare layout hooks.
 - Publish `webmedia` / `media_components` crates for reuse by host apps.
 - Production player chrome (demo controls in `app` stay for now).
-- Optional later: extract settle/prime budgets into `SettlePolicy` (after hard fails quiet) — inventory only until then.
+- Optional later: branch `SettlePolicy` by GOP/resolution only if probes demand (defaults shipped clip-invariant).

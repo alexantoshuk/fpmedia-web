@@ -66,16 +66,6 @@ const STEP_BEHIND_CAP_PLAY: usize = 0;
 /// Extra in-flight / held VF beyond displayed + presentation queue when sizing
 /// Exact trim on Play (YUV↔RGBA heuristic headroom).
 const PLAY_EXACT_VRAM_VF_SLACK: usize = 4;
-/// Frames to decode before starting the media clock (rest filled by prefetch).
-const PLAY_PRIME_FRAMES: usize = 2;
-/// Start-of-clip frames prepared into `loop_prime` before EOF (one decoder).
-/// Hd default alias — live value from [`PlayPolicy::loop_prime_frames`].
-#[allow(dead_code)]
-const LOOP_PRIME_FRAMES: usize = crate::PLAY_LOOP_PRIME_FRAMES_HD;
-/// Wall-time budget for `fill_loop_prime` / near-EOF cap (Hd alias).
-/// Live value from [`PlayPolicy::loop_prime_budget_secs`].
-#[allow(dead_code)]
-const LOOP_PRIME_BUDGET_SECS: f64 = crate::PLAY_EOF_BUDGET_SECS_HD;
 /// Ceiling on near-EOF presentation growth (live VF VRAM).
 const LOOP_NEAR_END_PRESENTATION_CAP_MAX: usize = 64;
 /// Wall-clock lag above this → skip to nearest keyframe instead of exact frame.
@@ -1610,7 +1600,8 @@ impl VideoPlayer {
         // mediabunny: no shared slot — iterators use `terminated`; we cancel via
         // `op_epoch` and must keep waiting while the epoch is current
         // (`skills/leptos.md` Quick Pause→Play).
-        const TAKE_DECODER_WAIT_MS: f64 = 5_000.0;
+        let wait_ms = self.metadata().settle_policy().take_decoder_wait_ms;
+        let busy_log_ms = self.metadata().settle_policy().densify_yield_ms;
         let start = performance_now_ms().unwrap_or(0.0);
         let mut waited_logged = false;
         loop {
@@ -1635,13 +1626,16 @@ impl VideoPlayer {
                 return Ok(decoder);
             }
             let now = performance_now_ms().unwrap_or(start);
-            if !waited_logged && now - start >= 250.0 {
+            if !waited_logged && now - start >= busy_log_ms {
                 waited_logged = true;
                 web_sys::console::warn_1(
-                    &"webmedia: take_decoder still busy (≥250ms) — peer holds slot".into(),
+                    &format!(
+                        "webmedia: take_decoder still busy (≥{busy_log_ms:.0}ms) — peer holds slot"
+                    )
+                    .into(),
                 );
             }
-            if now - start >= TAKE_DECODER_WAIT_MS {
+            if now - start >= wait_ms {
                 break;
             }
             sleep_ms(0).await;
@@ -1779,8 +1773,10 @@ fn performance_now_ms() -> Option<f64> {
 
 /// WebCodecs poison after densify/settle abort races (Exact retry once).
 ///
-/// Includes wedged `decodeQueueSize backpressure timed out` after the
-/// reset+retry in [`Self::decode_frame_inner`] (`q≈41,held=0`).
+/// **Named recovery predicate** (not a [`crate::SettlePolicy`] knob) — classifies
+/// closed-codec / Decoding error / wedged backpressure so Exact/PlayPrime can
+/// soft-cold or recreate once. Includes wedged `decodeQueueSize backpressure
+/// timed out` after the reset+retry in [`Self::decode_frame_inner`] (`q≈41,held=0`).
 pub(super) fn is_decoder_poison(err: &MediaError) -> bool {
     let MediaError::WebCodecs(msg) = err else {
         return false;

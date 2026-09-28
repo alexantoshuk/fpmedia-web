@@ -17,7 +17,9 @@ use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
 use crate::open_phase::OpenPhase;
 use crate::source::{CachedSource, FetchMap, MediaSource, MemorySource};
-use crate::types::{CodecConfig, EncodedSample, FrameId, VideoCodec, VideoMetadata};
+use crate::types::{
+    CodecConfig, EncodedSample, FrameId, SETTLE_PLAY_INDEX_LEAD, VideoCodec, VideoMetadata,
+};
 use crate::util::block_on;
 
 /// Options for [`open_mp4_source`].
@@ -1144,9 +1146,10 @@ fn wrap_cached_playback(
 ///
 /// Progressive open used to pass the full index into [`Mp4VideoTrack::warm_sample_bytes`]
 /// → OpQueue/`busy` until gray filled (cap 48 MiB). fMP4 warm-open index is already
-/// short (~warm moofs). Parity with PlayPrime `PLAY_INDEX_LEAD` in `video_player/play.rs`.
+/// short (~warm moofs). Same lead as [`crate::SettlePolicy::play_index_lead`] /
+/// [`SETTLE_PLAY_INDEX_LEAD`].
 /// `mediabunny: src/source.ts` UrlSource min-load / worker fill — not whole-file before play.
-const OPEN_WARM_SAMPLE_LEAD: u64 = 96;
+const OPEN_WARM_SAMPLE_LEAD: u64 = SETTLE_PLAY_INDEX_LEAD;
 
 /// Warm a short lead of video (+ audio) sample bytes, then return — rest of gray
 /// fills in the background via prefetch / play / scrub.

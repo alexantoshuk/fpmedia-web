@@ -14,8 +14,8 @@ use crate::types::{
 
 use super::{
     BIG_LAG_SECONDS, DuePresent, LOOP_NEAR_END_PRESENTATION_CAP_MAX, PLAY_EXACT_VRAM_VF_SLACK,
-    PLAY_PRIME_FRAMES, PREFETCH_DEADLINE_SLACK_MS, QueuedFrame, SHUTTLE_PRESENTATION_QUEUE_CAP,
-    VideoPlayer, performance_now_ms, sleep_ms,
+    PREFETCH_DEADLINE_SLACK_MS, QueuedFrame, SHUTTLE_PRESENTATION_QUEUE_CAP, VideoPlayer,
+    performance_now_ms, sleep_ms,
 };
 
 impl VideoPlayer {
@@ -220,19 +220,20 @@ impl VideoPlayer {
             return Ok(());
         }
         let epoch = self.shared.op_epoch.get();
-        // Exact settle seeds [`PLAY_PRIME_FRAMES`] (mediabunny `startVideoIterator`).
+        // Exact settle seeds play_prime_frames (mediabunny `startVideoIterator`).
         // Soft Pause leaves Warm audio. Either way: skip blocking byte-warm and
         // do not re-decode into an already-primed presentation queue.
         // mediabunny: examples/media-player seekToTime / pause → play.
-        let prime_target = PLAY_PRIME_FRAMES.min(self.play_presentation_cap());
+        let settle = self.metadata().settle_policy();
+        let prime_target = settle.play_prime_frames.min(self.play_presentation_cap());
         let presentation_primed = self.presentation_len() >= prime_target;
         let skip_byte_warm = self.audio_warm_resume() || presentation_primed;
         // fMP4: arm a long index lead in bg, but only *await* one urgent batch
         // past the current index so Play click / PlayPrime cannot stall for
         // many RTTs (`mediabunny: first samples before play` — not the whole
         // warm→lead gap on the click turn).
-        const PLAY_INDEX_LEAD: u64 = 96;
-        const PLAY_INDEX_AWAIT_BATCH: u64 = 48; // ≈ urgent chunk × GOP12
+        let play_index_lead = settle.play_index_lead;
+        let play_index_await_batch = settle.play_index_await_batch;
         // Unprimed cold PlayPrime: await one GOP at head (not fixed 24) so
         // soft-cold→Play does not re-open a 7–16s `warm_sample_bytes` stall.
         // mediabunny: first samples for seek `t`, not a long timeline warm.
@@ -240,10 +241,10 @@ impl VideoPlayer {
         {
             let track = self.shared.player.borrow().track_rc();
             if !track.fragments_complete() {
-                let want = head.saturating_add(PLAY_INDEX_LEAD);
+                let want = head.saturating_add(play_index_lead);
                 track.request_index_through(want);
                 let indexed = track.indexed_frame_count();
-                let await_through = want.min(indexed.saturating_add(PLAY_INDEX_AWAIT_BATCH));
+                let await_through = want.min(indexed.saturating_add(play_index_await_batch));
                 if await_through > indexed {
                     track.ensure_indexed_through(await_through).await?;
                     if !self.is_current(epoch) || !self.is_playing() {
@@ -261,15 +262,15 @@ impl VideoPlayer {
                 .into(),
             );
             let track = self.shared.player.borrow().track_rc();
-            track.prefetch_samples_ahead(head, PLAY_INDEX_LEAD);
+            track.prefetch_samples_ahead(head, play_index_lead);
         } else {
             let warm_t0 = performance_now_ms().unwrap_or(0.0);
             let warm_secs = {
                 let track = self.shared.player.borrow().track_rc();
                 let key = track.index().nearest_keyframe(head).unwrap_or(head);
-                let await_lead = super::scrub::gop_sample_lead(&track, key).min(PLAY_INDEX_LEAD);
+                let await_lead = super::scrub::gop_sample_lead(&track, key).min(play_index_lead);
                 track.warm_sample_bytes(head, await_lead).await?;
-                track.prefetch_samples_ahead(head, PLAY_INDEX_LEAD);
+                track.prefetch_samples_ahead(head, play_index_lead);
                 let last = head
                     .saturating_add(await_lead)
                     .min(track.indexed_frame_count().saturating_sub(1));
@@ -720,7 +721,7 @@ impl VideoPlayer {
             // Stay ahead of mfra index so play never stalls at a chunk seam.
             if !track.fragments_complete() {
                 let indexed = track.indexed_frame_count();
-                let lead = 96u64;
+                let lead = self.metadata().settle_policy().play_index_lead;
                 if next.saturating_add(lead) >= indexed {
                     track.request_index_through(next.saturating_add(lead.saturating_mul(2)));
                 }
@@ -751,7 +752,11 @@ impl VideoPlayer {
         &self,
         epoch: u64,
     ) -> Result<(), MediaError> {
-        let target = PLAY_PRIME_FRAMES.min(self.play_presentation_cap());
+        let target = self
+            .metadata()
+            .settle_policy()
+            .play_prime_frames
+            .min(self.play_presentation_cap());
         while self.presentation_len() < target {
             if !self.is_current(epoch) {
                 return Err(MediaError::Cancelled);
@@ -852,7 +857,8 @@ impl VideoPlayer {
 
     pub(super) async fn fill_presentation_queue(&self, epoch: u64) -> Result<(), MediaError> {
         // Start playback after a couple of frames; background prefetch fills to CAP.
-        self.prime_presentation(PLAY_PRIME_FRAMES, epoch).await
+        let min_frames = self.metadata().settle_policy().play_prime_frames;
+        self.prime_presentation(min_frames, epoch).await
     }
 
     /// Decode up to `min_frames` into the presentation queue (bypasses restarting gate).
