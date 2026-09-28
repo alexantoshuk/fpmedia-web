@@ -6,20 +6,15 @@
 
 ## Handoff (2026-09-28)
 
-**HEAD:** local (SettlePolicy extract). Ahead of `origin/main` (check `git status`).
+**HEAD:** local — SettlePolicy + cold Seek Exact fix. Ahead of `origin/main` (check `git status`).
 
-**Landed this session (policy hygiene):**
+**Landed:**
 
-- `SettlePolicy` + consts in `types` — densify yield, gop lead clamp, play prime/index lead, take_decoder wait; `VideoMetadata::settle_policy()` (clip-invariant Default).
-- Wired scrub densify yield / `gop_sample_lead`, PlayPrime warm, prefetch lead, `take_decoder`; demux open warm shares `SETTLE_PLAY_INDEX_LEAD`.
-- Soft-cold / poison documented as **named recovery** (not knobs). Dropped dead `LOOP_PRIME_*` Hd aliases.
-- **Cite:** mediabunny **no equivalent** settle timers — `seekToTime` → iterator `return` + `startVideoIterator`.
+- `SettlePolicy` (clip-invariant densify yield / gop lead / PlayPrime / take_decoder).
+- Cold `seek_frame`: `ensure_indexed` + GOP warm + Exact (soft-cold only if densify busy); densify arm at pending aim. e2e: single seek (no blur+Seek), JKL wait idle/play, mute assert accessible name.
+- Probes: fmp4-gap, JKL×3, mute smoke **pass**.
 
-**Prior still holds:** PlayPrime poison recreate, settle yield+gop warm, sticky error clear, HoldHidden ≠ underrun, gray-first Play, HEVC feature-off default. AVC stress 15/15 (2026-09-28).
-
-**Not done:** Exact/cold residual soft Decoding error when `hevc` on; OpenIoDefaults extraction (not needed yet).
-
-**Failed experiments (do not re-land):** open-ended abort/replace workers; closed-Range orch (no stream / no orch byte cache).
+**Cite:** mediabunny `seekToTime` → retrieve then `startVideoIterator` (not soft-cold-only).
 
 ---
 

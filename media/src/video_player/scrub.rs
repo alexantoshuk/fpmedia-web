@@ -1634,7 +1634,7 @@ fn try_resolve_pending_cold_exact(shared: &Rc<Shared>) {
 }
 
 /// Kick sample prefetch (and fragment backfill if needed) for a cold densify GOP.
-fn warm_scrub_gop_bytes(shared: &Shared, key: FrameId) {
+pub(super) fn warm_scrub_gop_bytes(shared: &Shared, key: FrameId) {
     let track = shared.player.borrow().track_rc();
     let indexed = track.indexed_frame_count();
     if key >= indexed {

@@ -7,7 +7,9 @@ use crate::types::FrameId;
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 
 use super::VideoPlayer;
-use super::scrub::{exact_scrub_ready, soft_cold_scrub_settle};
+use super::scrub::{
+    exact_scrub_ready, gop_sample_lead, soft_cold_scrub_settle, warm_scrub_gop_bytes,
+};
 
 impl VideoPlayer {
     pub async fn seek_frame(&self, frame: FrameId) -> Result<(), MediaError> {
@@ -25,34 +27,78 @@ impl VideoPlayer {
             self.clear_step_ring();
             self.clear_presentation();
             self.aim_scrub_cache(frame);
-            // Cold seek / densify still busy after yield: soft present (do not
-            // Exact while scrub HW feeds — dual-HW Decoding error / backpressure).
+            // Densify still busy after yield: soft present only (dual-HW race).
             // mediabunny: await prior videoFrameIterator.return() before new work.
+            //
+            // Cold / unindexed aim (fMP4 mfra lag): do **not** soft-cold-and-return —
+            // that left eng≪aim (waitEngine / Seek stuck). Mirror scrub settle:
+            // ensure index + one-GOP warm, then Exact (`mediabunny: seekToTime` →
+            // retrieve samples then `startVideoIterator`).
             let densify_busy = self.shared.scrub_busy.get();
-            if densify_busy || !exact_scrub_ready(&self.shared, frame) {
-                if densify_busy {
-                    web_sys::console::warn_1(
-                        &"webmedia: seek densify busy after yield → soft-cold (skip Exact)".into(),
-                    );
-                }
+            if densify_busy {
+                web_sys::console::warn_1(
+                    &"webmedia: seek densify busy after yield → soft-cold (skip Exact)".into(),
+                );
                 soft_cold_scrub_settle(self, frame)?;
                 self.shared.pending_cold_exact.set(Some(frame));
-                Ok(())
+                return Ok(());
+            }
+            if !exact_scrub_ready(&self.shared, frame) {
+                soft_cold_scrub_settle(self, frame)?;
+                self.shared.pending_cold_exact.set(Some(frame));
+                let key = self.key_for(frame).unwrap_or(frame);
+                warm_scrub_gop_bytes(&self.shared, key);
+                {
+                    let track = self.shared.player.borrow().track_rc();
+                    if let Err(e) = track.ensure_indexed_through(frame).await {
+                        if e.is_cancelled() {
+                            return Err(e);
+                        }
+                        web_sys::console::warn_1(
+                            &format!("webmedia: seek ensure_indexed: {e}").into(),
+                        );
+                    }
+                    if !self.is_current(epoch) {
+                        return Err(MediaError::Cancelled);
+                    }
+                    let lead = gop_sample_lead(&track, key);
+                    if let Err(e) = track.warm_sample_bytes(key, lead).await {
+                        if e.is_cancelled() {
+                            return Err(e);
+                        }
+                        web_sys::console::warn_1(&format!("webmedia: seek gop-warm: {e}").into());
+                    }
+                }
+                if !self.is_current(epoch) {
+                    return Err(MediaError::Cancelled);
+                }
+                if self.shared.scrub_busy.get() || !exact_scrub_ready(&self.shared, frame) {
+                    web_sys::console::log_1(
+                        &format!(
+                            "webmedia: seek soft-cold after warm (densify_busy={} still cold={})",
+                            self.shared.scrub_busy.get(),
+                            !exact_scrub_ready(&self.shared, frame),
+                        )
+                        .into(),
+                    );
+                    return Ok(());
+                }
+                self.shared.pending_cold_exact.set(None);
             } else {
                 self.shared.pending_cold_exact.set(None);
-                match self.exact_goto_with_decoder_retry(frame, epoch).await {
-                    Ok(()) => Ok(()),
-                    Err(e) if e.is_cancelled() => Err(e),
-                    Err(e) if super::is_decoder_poison(&e) => {
-                        web_sys::console::warn_1(
-                            &format!("webmedia: seek Exact poison → soft cold ({e})").into(),
-                        );
-                        soft_cold_scrub_settle(self, frame)?;
-                        self.shared.pending_cold_exact.set(Some(frame));
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
+            }
+            match self.exact_goto_with_decoder_retry(frame, epoch).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.is_cancelled() => Err(e),
+                Err(e) if super::is_decoder_poison(&e) => {
+                    web_sys::console::warn_1(
+                        &format!("webmedia: seek Exact poison → soft cold ({e})").into(),
+                    );
+                    soft_cold_scrub_settle(self, frame)?;
+                    self.shared.pending_cold_exact.set(Some(frame));
+                    Ok(())
                 }
+                Err(e) => Err(e),
             }
         }
         .await;
@@ -65,7 +111,14 @@ impl VideoPlayer {
         }
         result?;
         self.snap_media_clock_to_playhead();
-        self.arm_scrub_densify_after_exact(self.state().frame);
+        // Prefer pending cold aim so densify walks toward the Seek target, not the
+        // soft-committed prefix (was: arm at eng while aim≪far → eng never catches).
+        let densify_aim = self
+            .shared
+            .pending_cold_exact
+            .get()
+            .unwrap_or_else(|| self.state().frame);
+        self.arm_scrub_densify_after_exact(densify_aim);
         Ok(())
     }
 

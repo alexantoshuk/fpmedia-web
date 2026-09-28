@@ -93,7 +93,10 @@ test.describe("demo player smoke", () => {
 
     await mute.click();
     await expect(mute).toHaveClass(/is-on/);
-    await expect(mute).toHaveAttribute("aria-label", "Unmute");
+    // Leptos `prop:aria-label` sets the IDL/reflected name; `toHaveAttribute`
+    // often sees null. Prefer accessible name (+ title mirror).
+    await expect(mute).toHaveAccessibleName("Unmute");
+    await expect(mute).toHaveAttribute("title", "Unmute");
 
     await volume.fill("0.25");
     await expect(volume).toHaveValue("0.25");

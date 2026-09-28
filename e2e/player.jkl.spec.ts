@@ -30,17 +30,22 @@ test.describe("JKL shuttle (Chrome)", () => {
     expect(last).toBeGreaterThan(200);
     const mid = Math.floor(last * 0.35);
     await player.seekToFrame(mid);
+    // Seek latches `busy` until OpQueue drains — L→play while busy stacks PlayPrime
+    // and can leave transport stuck (Play disabled, rate already 8×).
+    await expect(player.play).toBeEnabled({ timeout: 30_000 });
 
     expect(await player.readPlaybackRate()).toBeCloseTo(1, 2);
 
-    for (const rate of [2, 4, 8]) {
+    await page.keyboard.press("l");
+    await player.waitPlaybackRate(2, 3_000);
+    await expect
+      .poll(async () => (await player.readStatus()).playing, { timeout: 15_000 })
+      .toBe(true);
+
+    for (const rate of [4, 8]) {
       await page.keyboard.press("l");
       await player.waitPlaybackRate(rate, 3_000);
     }
-
-    await expect
-      .poll(async () => (await player.readStatus()).playing, { timeout: 10_000 })
-      .toBe(true);
 
     const start = (await player.readStatus()).playhead ?? mid;
     await page.waitForTimeout(1_200);
@@ -66,8 +71,15 @@ test.describe("JKL shuttle (Chrome)", () => {
     const last = (await player.readStatus()).lastFrame ?? 0;
     const mid = Math.floor(last * 0.4);
     await player.seekToFrame(mid);
+    await expect(player.play).toBeEnabled({ timeout: 30_000 });
 
-    for (const rate of [2, 4, 8]) {
+    await page.keyboard.press("l");
+    await player.waitPlaybackRate(2, 3_000);
+    await expect
+      .poll(async () => (await player.readStatus()).playing, { timeout: 15_000 })
+      .toBe(true);
+
+    for (const rate of [4, 8]) {
       await page.keyboard.press("l");
       await player.waitPlaybackRate(rate, 3_000);
     }
@@ -97,6 +109,7 @@ test.describe("JKL shuttle (Chrome)", () => {
     const last = (await player.readStatus()).lastFrame ?? 0;
     const mid = Math.floor(last * 0.3);
     await player.seekToFrame(mid);
+    await expect(player.play).toBeEnabled({ timeout: 30_000 });
 
     await page.keyboard.press("l");
     await player.waitPlaybackRate(2, 3_000);

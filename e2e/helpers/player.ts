@@ -314,12 +314,12 @@ export class DemoPlayer {
     await this.page.mouse.up();
   }
 
-  async seekToFrame(frame: number) {
+  async seekToFrame(frame: number, timeout = 60_000) {
+    // One seek only: fill + blur fires `change` → `seek_frame`. Do **not** also
+    // click Seek (second enqueue cancelled the first / left soft-cold eng≪aim).
     await this.frameInput.fill(String(frame));
     await this.frameInput.blur();
-    // change event fires on blur after edit; Seek button also commits current value
-    await this.seek.click();
-    await this.waitEngine(frame);
+    await this.waitEngine(frame, timeout);
   }
 
   async snapshot() {
