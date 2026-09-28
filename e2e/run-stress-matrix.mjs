@@ -3,11 +3,13 @@
  * (via WEBMEDIA_STRESS_REPORT_PATH) and refresh summary.json / summary.md.
  *
  * Usage (app on :3000):
- *   node e2e/run-stress-matrix.mjs
+ *   npm run e2e:stress:matrix          # AVC (default)
+ *   npm run e2e:stress:matrix:hevc     # HEVC (needs WASM built with hevc)
  *
  * Env:
- *   WEBMEDIA_STRESS_OUT   default e2e/stress-reports
- *   TESTVIDEO_BASE        default …/download/v0.1.0
+ *   WEBMEDIA_STRESS_CODEC  avc (default) | hevc  (or argv: `node … hevc`)
+ *   WEBMEDIA_STRESS_OUT    default e2e/stress-reports or …-hevc
+ *   TESTVIDEO_BASE         default …/download/v0.1.0
  *   WEBMEDIA_STRESS_FORCE=1  re-run clips that already have a .json
  *
  * Note: do not write under test-results/ — Playwright wipes that dir each run.
@@ -16,14 +18,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const OUT = process.env.WEBMEDIA_STRESS_OUT ?? "e2e/stress-reports";
-const BASE = (
-  process.env.TESTVIDEO_BASE ??
-  "https://github.com/alexantoshuk/testvideo/releases/download/v0.1.0"
-).replace(/\/$/, "");
-const FORCE = process.env.WEBMEDIA_STRESS_FORCE === "1";
-
-const CLIPS = [
+const AVC_CLIPS = [
   "avc_1080p_24_fmp4_gop12_bf0",
   "avc_1080p_24_gop12_bf0",
   "avc_1080p_24_gop12_bf2",
@@ -39,10 +34,36 @@ const CLIPS = [
   "avc_1080p_60_gop12_bf2",
   "avc_1080p_60_gop48_bf0",
   "avc_1080p_60_scenecut_bf0",
+];
+
+const HEVC_CLIPS = [
   "hevc_1080p_24_gop12_bf0",
   "hevc_1080p_2997_gop12_bf0",
   "hevc_1080p_60_gop12_bf0",
 ];
+
+const codecArg = process.argv
+  .slice(2)
+  .find((a) => a === "avc" || a === "hevc");
+const CODEC = (
+  codecArg ??
+  process.env.WEBMEDIA_STRESS_CODEC ??
+  "avc"
+).toLowerCase();
+if (CODEC !== "avc" && CODEC !== "hevc") {
+  console.error(`codec must be avc|hevc (got ${CODEC})`);
+  process.exit(2);
+}
+
+const CLIPS = CODEC === "hevc" ? HEVC_CLIPS : AVC_CLIPS;
+const OUT =
+  process.env.WEBMEDIA_STRESS_OUT ??
+  (CODEC === "hevc" ? "e2e/stress-reports-hevc" : "e2e/stress-reports");
+const BASE = (
+  process.env.TESTVIDEO_BASE ??
+  "https://github.com/alexantoshuk/testvideo/releases/download/v0.1.0"
+).replace(/\/$/, "");
+const FORCE = process.env.WEBMEDIA_STRESS_FORCE === "1";
 
 function rowFrom(clip, report, exitCode, elapsedMs) {
   return {
@@ -75,6 +96,7 @@ function rowFrom(clip, report, exitCode, elapsedMs) {
 async function writeSummary(rows) {
   const summary = {
     generatedAt: new Date().toISOString(),
+    codec: CODEC,
     base: BASE,
     out: OUT,
     clips: CLIPS.length,
@@ -90,7 +112,7 @@ async function writeSummary(rows) {
   await fs.writeFile(summaryPath, JSON.stringify(summary, null, 2), "utf8");
 
   const lines = [
-    `# Stress matrix (${summary.generatedAt})`,
+    `# Stress matrix ${CODEC.toUpperCase()} (${summary.generatedAt})`,
     "",
     `Base: \`${BASE}\``,
     `Progress: **${summary.done}** / ${summary.clips} (passed ${summary.passed}, failed ${summary.failed})`,
@@ -163,15 +185,27 @@ function runOneClip(clipStem) {
     await fs.mkdir(OUT, { recursive: true });
     const log = await fs.open(logPath, "w");
     const t0 = Date.now();
-    const child = spawn("npm run e2e:stress", {
-      env: {
-        ...process.env,
-        WEBMEDIA_CLIP: url,
-        WEBMEDIA_STRESS_REPORT_PATH: reportPath,
+    // Prefer direct Playwright CLI so we don't depend on `npm` being on PATH
+    // (agent shells / minimal CI images).
+    const playwrightCli = path.resolve(
+      "node_modules",
+      "@playwright",
+      "test",
+      "cli.js",
+    );
+    const child = spawn(
+      process.execPath,
+      [playwrightCli, "test", "e2e/player.stress.scrub-av.spec.ts"],
+      {
+        env: {
+          ...process.env,
+          WEBMEDIA_CLIP: url,
+          WEBMEDIA_STRESS_REPORT_PATH: reportPath,
+        },
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
       },
-      shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    );
 
     const write = async (buf) => {
       await log.write(buf);
@@ -202,7 +236,9 @@ function runOneClip(clipStem) {
 }
 
 async function main() {
-  console.log(`stress matrix → ${OUT} (${CLIPS.length} clips, one at a time)`);
+  console.log(
+    `stress matrix ${CODEC} → ${OUT} (${CLIPS.length} clips, one at a time)`,
+  );
   console.log(`base: ${BASE}`);
   await fs.mkdir(OUT, { recursive: true });
 

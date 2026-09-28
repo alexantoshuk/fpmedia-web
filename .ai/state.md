@@ -24,7 +24,7 @@
 **Not done (do not assume fixed):**
 
 - Exact/cold tap soft **Decoding error** / closed codec / backpressure — densify-busy→skip Exact landed; residual dual-HW mainly when **`hevc` feature** enabled (Chrome/Firefox often no HEVC; Edge OK).
-- Full matrix refresh (`npm run e2e:stress:matrix`) — last report `e2e/stress-reports/` is **2026-09-26** (stale vs HEAD).
+- Full AVC stress matrix refreshed **2026-09-28** — `e2e/stress-reports/` **15/15** pass, `faults: []`. HEVC: `e2e:stress:matrix:hevc` when `hevc` feature on.
 
 **Failed experiments (do not re-land):** open-ended abort/replace workers; closed-Range orch (no stream / no orch byte cache).
 
@@ -34,11 +34,10 @@
 
 ### Media engine (priority)
 
-1. Optional: refresh full matrix `npm run e2e:stress:matrix` (AVC).
-2. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
-3. no-Range → `ReadableStreamSource` (host full-download stays for now).
-4. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
-5. Later / opt-in: enable cargo feature `hevc` + harden dual-HW if shipping H.265 again.
+1. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
+2. no-Range → `ReadableStreamSource` (host full-download stays for now).
+3. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
+4. Later / opt-in: enable cargo feature `hevc` + harden dual-HW if shipping H.265 again (+ `e2e:stress:matrix:hevc`).
 
 ### Later
 

@@ -1,11 +1,12 @@
 /**
- * Fast scrub stress (~1 min): open → Pause→Play + scrub→Play latency →
- * rapid scrub across cache zones → Play→scrub→release→resume → report.
+ * Fast scrub stress (~1–2 min): open → Pause→Play + scrub→Play latency →
+ * rapid scrub across cache zones → Play→tap each zone→resume →
+ * Play→scrub→release→resume → report.
  *
  * Clip: WEBMEDIA_CLIP=gop12|gop48|fmp4|… | URL | local path (default gop48).
  *
  * Soft report always. Hard fail: open fail, unresponsive, no/slow Pause→Play,
- * scrub→Play, or resume after scrub (budget FAST_PLAY_MS).
+ * scrub→Play, play-zone resume, or combo resume (budget FAST_PLAY_MS).
  * Zone decode faults recorded; fail run with WEBMEDIA_STRESS_FAIL_ZONES=1.
  *
  *   npm run e2e:stress
@@ -21,10 +22,10 @@ import {
 } from "./helpers/player";
 import { resolveClip } from "./helpers/clip";
 
-test.describe.configure({ timeout: 120_000 });
+test.describe.configure({ timeout: 180_000 });
 
 type SettleSample = {
-  zone: ScrubZone | "combo";
+  zone: ScrubZone | "combo" | `play-${ScrubZone}`;
   fraction: number;
   settleMs: number | null;
   playhead: number | null;
@@ -183,6 +184,7 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
   const resumePlayMsList: number[] = [];
   const pausePlayMsList: number[] = [];
   const scrubPlayMsList: number[] = [];
+  const playZoneResumePlayMs: Partial<Record<ScrubZone, number[]>> = {};
   const behindSamples: number[] = [];
   const faults: string[] = [];
   const warnings: string[] = [];
@@ -331,6 +333,83 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
     }
   }
 
+  // --- Play → tap each cache zone → settle → resume ---
+  // Paused zone taps above do not cover mid-play scrub resume per zone.
+  {
+    await waitTransportIdle(player, 20_000);
+    pipe = await player.readPipelineJson();
+    const playZones: ScrubZone[] = ["cold", "gray", "covered", "exact"];
+    for (const zone of playZones) {
+      const frac = pickFracs(pipe, lastFrame, zone, 1)[0];
+      if (frac == null) continue;
+
+      await ensurePlaying(player, 8_000);
+      await page.waitForTimeout(200);
+      await assertResponsive(page, 5_000);
+
+      await player.scrubToFraction(frac);
+      const settleBudget = zone === "cold" ? 4_000 : 6_000;
+      const settled = await waitExactSettle(player, settleBudget);
+      const err = await readError();
+      settleSamples.push({
+        zone: `play-${zone}`,
+        fraction: frac,
+        settleMs: settled.settleMs,
+        playhead: settled.status.playhead,
+        engine: settled.status.engine,
+        error: err,
+      });
+      if (err) faults.push(`play→${zone} scrub: ${err}`);
+      if (settled.settleMs == null && settleBudget >= 3_000) {
+        faults.push(`play→${zone} settle timeout @ ${frac.toFixed(2)}`);
+      }
+
+      const ph0 = settled.status.playhead ?? 0;
+      const resumeStart = Date.now();
+      let playStart = Date.now();
+      let resumed: number | null = null;
+      let resumePlay: number | null = null;
+      while (Date.now() - resumeStart < 10_000) {
+        const s = await player.readStatus();
+        const pipeNow = await player.readPipelineJson();
+        if (pipeNow.last_behind_ms != null) {
+          behindSamples.push(pipeNow.last_behind_ms);
+        }
+        if (
+          (s.playing && s.playhead != null && s.playhead > ph0) ||
+          (s.playhead != null && s.playhead > ph0 + 2)
+        ) {
+          resumed = Date.now() - resumeStart;
+          resumePlay = Date.now() - playStart;
+          break;
+        }
+        if (!s.playing && Date.now() - resumeStart > 1_500) {
+          await player.play.click();
+          playStart = Date.now();
+        }
+        await page.waitForTimeout(80);
+      }
+      if (resumed == null) {
+        faults.push(`play→${zone} no resume (ph0=${ph0})`);
+      } else {
+        resumeMsList.push(resumed);
+        if (resumePlay != null) {
+          resumePlayMsList.push(resumePlay);
+          (playZoneResumePlayMs[zone] ??= []).push(resumePlay);
+          if (resumePlay > FAST_PLAY_MS) {
+            faults.push(
+              `play→${zone} resume Play slow ${resumePlay}ms (budget ${FAST_PLAY_MS})`,
+            );
+          }
+        }
+      }
+
+      await ensurePaused(player);
+      await waitTransportIdle(player);
+      pipe = await player.readPipelineJson();
+    }
+  }
+
   // --- Combo: Play → scrub → release → resume (once) ---
   await waitTransportIdle(player, 20_000);
   await player.scrubToFraction(0.25);
@@ -414,7 +493,7 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
     }
   }
 
-  const byZone = (zone: ScrubZone | "combo") =>
+  const byZone = (zone: SettleSample["zone"]) =>
     summarizeMs(
       settleSamples.filter((s) => s.zone === zone).map((s) => s.settleMs),
     );
@@ -433,6 +512,10 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
       gray: byZone("gray"),
       covered: byZone("covered"),
       exact: byZone("exact"),
+      playCold: byZone("play-cold"),
+      playGray: byZone("play-gray"),
+      playCovered: byZone("play-covered"),
+      playExact: byZone("play-exact"),
       combo: byZone("combo"),
       all: summarizeMs(settleSamples.map((s) => s.settleMs)),
     },
@@ -440,6 +523,12 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
     resumePlayMs: summarizeMs(resumePlayMsList),
     pausePlayMs: summarizeMs(pausePlayMsList),
     scrubPlayMs: summarizeMs(scrubPlayMsList),
+    playZoneResumePlayMs: {
+      cold: summarizeMs(playZoneResumePlayMs.cold ?? []),
+      gray: summarizeMs(playZoneResumePlayMs.gray ?? []),
+      covered: summarizeMs(playZoneResumePlayMs.covered ?? []),
+      exact: summarizeMs(playZoneResumePlayMs.exact ?? []),
+    },
     behindMs: summarizeMs(behindSamples),
     samples: { settle: settleSamples.length },
     faults,
@@ -495,6 +584,14 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
         f.includes("resume Play slow") ||
         f.startsWith("pageerror:"),
     );
+    const playZoneSamples = Object.values(playZoneResumePlayMs).reduce(
+      (n, xs) => n + (xs?.length ?? 0),
+      0,
+    );
+    expect(
+      playZoneSamples,
+      `no play→zone resume samples: ${faults.join(" | ")}`,
+    ).toBeGreaterThan(0);
     expect(fatal, fatal.join("\n")).toEqual([]);
     if (strict) {
       expect(report.resumeMs.p95).toBeLessThan(5_000);
