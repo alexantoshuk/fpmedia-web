@@ -442,10 +442,15 @@ impl ReadOrchestrator {
         }
     }
 
-    #[allow(dead_code)] // UrlSource Drop / navigate-away
+    /// Abort workers + pending reads (mediabunny `UrlSource._dispose` → orch).
+    /// Called from [`super::UrlSource`] Drop when the last host ref releases.
     pub fn dispose(self: &Arc<Self>) {
         let mut g = self.state.lock().expect("orch");
+        if g.disposed {
+            return;
+        }
         g.disposed = true;
+        let idle_cb = self.options.on_idle_worker_removed.clone();
         for w in &mut g.workers {
             w.aborted = true;
             for s in w.pending_slices.drain(..) {
@@ -455,9 +460,9 @@ impl ReadOrchestrator {
                         .complete(Err(MediaError::Source("disposed".into())));
                 }
             }
-            if !w.running
-                && let Some(cb) = &self.options.on_idle_worker_removed
-            {
+            // Always abort fetch controllers — including in-flight workers
+            // (idle-only path left open Ranges alive after clip switch).
+            if let Some(cb) = &idle_cb {
                 cb(w.id);
             }
         }

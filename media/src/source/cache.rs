@@ -551,6 +551,10 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
         }
         self.kick_prefetch_explicit(offset, len);
     }
+
+    fn dispose(&self) {
+        self.inner.dispose();
+    }
 }
 
 #[cfg(test)]

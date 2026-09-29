@@ -52,6 +52,13 @@ pub trait MediaSource: Send + Sync {
     /// before play hits the fragment seam (`mediabunny: URLSource` min-load /
     /// on-demand fragment reads still go through the cache).
     fn prefetch(&self, _offset: u64, _len: usize) {}
+
+    /// Cancel in-flight IO / workers (mediabunny `Source` / `Input.dispose`).
+    ///
+    /// Default no-op. [`UrlSource`] aborts Range workers immediately so a clip
+    /// switch does not leave zombie fetches while `Shared` bg tasks still hold
+    /// Arcs. Idempotent.
+    fn dispose(&self) {}
 }
 
 impl<T: MediaSource + ?Sized> MediaSource for &T {
@@ -66,6 +73,10 @@ impl<T: MediaSource + ?Sized> MediaSource for &T {
     fn prefetch(&self, offset: u64, len: usize) {
         (**self).prefetch(offset, len)
     }
+
+    fn dispose(&self) {
+        (**self).dispose()
+    }
 }
 
 impl<T: MediaSource + ?Sized> MediaSource for std::sync::Arc<T> {
@@ -79,5 +90,9 @@ impl<T: MediaSource + ?Sized> MediaSource for std::sync::Arc<T> {
 
     fn prefetch(&self, offset: u64, len: usize) {
         (**self).prefetch(offset, len)
+    }
+
+    fn dispose(&self) {
+        (**self).dispose()
     }
 }

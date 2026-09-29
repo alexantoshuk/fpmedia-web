@@ -240,7 +240,8 @@ impl OpQueue {
         true
     }
 
-    fn sync_busy(&self) {
+    /// Clear `busy` when nothing is draining / pending (superseded URL fetch).
+    pub fn sync_busy(&self) {
         let st = self.inner.borrow();
         if !st.draining && st.pending.is_empty() {
             self.busy.set(false);

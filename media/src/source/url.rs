@@ -45,11 +45,21 @@ impl Default for UrlSourceOptions {
 type AbortMap = Arc<Mutex<HashMap<WorkerId, AbortController>>>;
 
 /// Ranged HTTP(S) byte source (progressive open without full download).
-#[derive(Clone, Debug)]
+///
+/// Not [`Clone`] — share via [`std::sync::Arc`]. Drop disposes the orchestrator
+/// (`mediabunny: src/source.ts` `UrlSource._dispose`).
+#[derive(Debug)]
 pub struct UrlSource {
     url: String,
     size: u64,
     orch: Arc<ReadOrchestrator>,
+}
+
+impl Drop for UrlSource {
+    fn drop(&mut self) {
+        // mediabunny: UrlSource._dispose → this._orchestrator.dispose()
+        self.orch.dispose();
+    }
 }
 
 impl UrlSource {
@@ -137,6 +147,10 @@ impl MediaSource for UrlSource {
             );
             orch.read(offset, end).await
         })
+    }
+
+    fn dispose(&self) {
+        self.orch.dispose();
     }
 }
 

@@ -1760,10 +1760,17 @@ impl VideoPlayer {
 
 impl Drop for VideoPlayer {
     fn drop(&mut self) {
+        self.cancel_ops();
         self.clear_loop_prime();
         self.clear_presentation();
         self.clear_step_ring();
         self.clear_scrub_store();
+        // Abort Range workers now — densify/backfill may keep `Shared` (and the
+        // source Arc) alive a few turns after this Drop.
+        // mediabunny: Input.dispose / UrlSource._dispose on clip switch.
+        if let Ok(p) = self.shared.player.try_borrow() {
+            p.track_rc().source().dispose();
+        }
     }
 }
 

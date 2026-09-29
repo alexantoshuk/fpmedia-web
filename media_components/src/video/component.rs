@@ -686,28 +686,29 @@ pub fn Video(
         }) as Rc<dyn Fn()>
     };
 
-    let open_blob = {
+    // mediabunny media-player `initMediaPlayer`: pause → iterator.return →
+    // asyncId++ before a new Input. Drop retiring VideoPlayer so UrlSource
+    // dispose aborts Range workers (was: zombie orch after clip switch).
+    let retire_clip = {
         let queue = queue.clone();
         let player = Rc::clone(&player);
+        let session = Rc::clone(&session);
         let stop_playback = Rc::clone(&stop_playback);
         let fps_meter = Rc::clone(&fps_meter);
-        let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move |blob: web_sys::Blob| {
-            let Some(canvas_el) = canvas_ref.get_untracked() else {
-                error.set(Some("canvas not mounted".into()));
-                status.set("Canvas missing — refresh the page.".into());
-                return;
-            };
-            let canvas: HtmlCanvasElement = canvas_el;
-            // Always supersede in-flight work (mediabunny asyncId++ on new file).
+        let transport = transport.clone();
+        Rc::new(move || {
+            note_transport(&transport, TransportEvent::Closed);
             stop_playback();
-            // Drop the old player *before* zeroing frame_count. Paused rAF still
-            // calls sync_ui; with the old engine alive, count 0→N looks like a new
-            // clip and restores the previous playhead on the progress bar.
+            queue.cancel_all();
+            playing.set(false);
+            let _ = session.borrow_mut().take();
+            // Drop *before* zeroing frame_count — paused rAF sync_ui treats
+            // count 0→N as a new clip and would restore the old playhead.
             let retiring = player.borrow_mut().take();
             if let Some(p) = retiring {
                 p.pause();
             }
+            // `retiring` drops here → decoder/caches + UrlSource orch.dispose.
             ready.set(false);
             ended.set(false);
             error.set(None);
@@ -719,9 +720,24 @@ pub fn Video(
             frame_count.set(0);
             timestamp.set(0.0);
             has_audio.set(false);
+            fps_meter.borrow_mut().reset();
+        }) as Rc<dyn Fn()>
+    };
+
+    let open_blob = {
+        let queue = queue.clone();
+        let retire_clip = Rc::clone(&retire_clip);
+        let kick_drain = Rc::clone(&kick_drain);
+        Rc::new(move |blob: web_sys::Blob| {
+            let Some(canvas_el) = canvas_ref.get_untracked() else {
+                error.set(Some("canvas not mounted".into()));
+                status.set("Canvas missing — refresh the page.".into());
+                return;
+            };
+            let canvas: HtmlCanvasElement = canvas_el;
+            retire_clip();
             let size_kb = (blob.size() as u64) / 1024;
             status.set(OpenPhase::ProbingSource(OpenSourceKind::Progressive { size_kb }).label());
-            fps_meter.borrow_mut().reset();
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("webmedia: open_blob start ~{size_kb} KB").into());
             let source: std::sync::Arc<dyn MediaSource> =
@@ -734,9 +750,7 @@ pub fn Video(
 
     let open_url = {
         let queue = queue.clone();
-        let player = Rc::clone(&player);
-        let stop_playback = Rc::clone(&stop_playback);
-        let fps_meter = Rc::clone(&fps_meter);
+        let retire_clip = Rc::clone(&retire_clip);
         let kick_drain = Rc::clone(&kick_drain);
         Rc::new(move |url: String| {
             let Some(canvas_el) = canvas_ref.get_untracked() else {
@@ -751,27 +765,11 @@ pub fn Video(
                 status.set("Enter a URL to open.".into());
                 return;
             }
-            stop_playback();
-            queue.cancel_all();
+            retire_clip();
             let fetch_id = queue.current_id();
-            // Same race as open_blob — drop engine before zeroing UI count/playhead.
-            let retiring = player.borrow_mut().take();
-            if let Some(p) = retiring {
-                p.pause();
-            }
-            ready.set(false);
-            ended.set(false);
-            error.set(None);
-            fps.set(None);
-            pipeline.set(None);
-            metadata.set(None);
-            frame.set(0);
-            playhead.set(0);
-            frame_count.set(0);
-            timestamp.set(0.0);
-            has_audio.set(false);
-            fps_meter.borrow_mut().reset();
-            busy.set(true);
+            // Do **not** latch `busy` across resolve — cancelled fetch used to
+            // leave busy=true forever when drain had already ended. `!ready`
+            // keeps Play disabled; enqueue_open sets busy for demux/seek.
             // Same-origin /proxy bypasses CDN CORS (GitHub Releases, S3, …).
             let url = same_origin_media_proxy_url(&url).unwrap_or(url);
             status.set(OpenPhase::OpeningUrl { url: url.clone() }.label());
@@ -783,6 +781,7 @@ pub fn Video(
             spawn_local(async move {
                 let opened = resolve_url_source(&url, |phase| status.set(phase.label())).await;
                 if !queue.is_current(fetch_id) {
+                    queue.sync_busy();
                     return;
                 }
                 match opened {
@@ -792,7 +791,7 @@ pub fn Video(
                         }
                     }
                     Err(e) => {
-                        busy.set(false);
+                        queue.sync_busy();
                         ready.set(false);
                         error.set(Some(e.clone()));
                         status.set("Open URL failed.".into());
