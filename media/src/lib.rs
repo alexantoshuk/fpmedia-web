@@ -102,6 +102,7 @@ pub use types::{
     exact_frames_to_free_for_play_vram, hover_thumb_dims, nearer_gap_with_dir,
     next_missing_sync_key, scrub_blit_cap_during_play, scrub_blit_frame_budget,
     scrub_cache_frame_budget, scrub_edge_margins, scrub_gap_fill_armed, scrub_preview_choice,
+    soft_merge_frame_runs, strip_merge_gap_frames,
 };
 pub use workload::{
     FRAGMENT_BACKFILL_IDLE_AHEAD, WorkloadHints, WorkloadMode, allows_bg_sync_verify, classify,

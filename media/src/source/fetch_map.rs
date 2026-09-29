@@ -4,16 +4,31 @@
 //! File offset → timeline % (not sample-accurate). mediabunny: no equivalent meter.
 //!
 //! **Display soft-merge:** [`Self::file_fractions`] closes gaps ≤
-//! [`FETCH_MAP_DISPLAY_MERGE_GAP`] so fMP4 `moof` (~1 KiB) between resident
-//! `mdat` islands does not paint a 1‑px “blurry hole”. [`Self::windows`] /
+//! [`display_merge_gap`] so (1) fMP4 `moof` (~1 KiB) between resident `mdat`
+//! islands and (2) sub‑pixel unread holes on large files after scrub LRU
+//! fragmentation do not paint a 1‑px “blurry hole”. [`Self::windows`] /
 //! [`Self::interior_gaps`] stay exact (diagnostics / tests).
 
 use std::sync::Mutex;
 
-/// Merge FetchMap windows for the gray strip when the hole is at most this
-/// many bytes (fMP4 `moof` between `mdat` is typically ≤2 KiB; 8 KiB leaves
-/// headroom without swallowing real unread islands).
+/// Floor for gray-strip soft-merge (fMP4 `moof` between `mdat` is typically
+/// ≤2 KiB; 8 KiB leaves headroom without swallowing real unread islands on
+/// small files).
 pub const FETCH_MAP_DISPLAY_MERGE_GAP: u64 = 8 * 1024;
+
+/// Assumed scrubber CSS width when scaling soft-merge to ~1 px of `file_size`
+/// (engine has no layout width; demo track is ~full panel).
+const ASSUMED_SCRUBBER_PX: u64 = 800;
+
+/// Paint-only merge threshold: at least [`FETCH_MAP_DISPLAY_MERGE_GAP`], else
+/// ~one scrubber pixel of `file_size` so sub‑pixel holes do not antialias.
+pub fn display_merge_gap(file_size: u64) -> u64 {
+    if file_size == 0 {
+        return FETCH_MAP_DISPLAY_MERGE_GAP;
+    }
+    let pixel = (file_size / ASSUMED_SCRUBBER_PX).max(1);
+    FETCH_MAP_DISPLAY_MERGE_GAP.max(pixel)
+}
 
 /// Half-open `[start, end)` intervals, merged, file-absolute.
 #[derive(Debug, Default)]
@@ -127,7 +142,7 @@ impl FetchMap {
     }
 
     /// Coverage as fractions of `file_size` in `0.0..1.0` for the scrubber.
-    /// Soft-merges holes ≤ [`FETCH_MAP_DISPLAY_MERGE_GAP`] (moof-sized).
+    /// Soft-merges holes ≤ [`display_merge_gap`] (moof floor or ~1 px).
     pub fn file_fractions(&self, file_size: u64) -> Vec<(f32, f32)> {
         if file_size == 0 {
             return Vec::new();
@@ -135,7 +150,7 @@ impl FetchMap {
         let Ok(ranges) = self.ranges.lock() else {
             return Vec::new();
         };
-        let merged = soft_merge_windows(&ranges, FETCH_MAP_DISPLAY_MERGE_GAP);
+        let merged = soft_merge_windows(&ranges, display_merge_gap(file_size));
         merged
             .iter()
             .filter_map(|&(s, e)| {
@@ -277,11 +292,35 @@ mod tests {
     #[test]
     fn file_fractions_keeps_real_unread_island() {
         let m = FetchMap::new();
-        m.set_windows(&[
-            (0, 1_000_000),
-            (1_000_000 + 64 * 1024, 2_000_000), // 64 KiB hole > display merge
-        ]);
+        // 2 MiB file → pixel gap = 2 MiB/800 = 2.5 KiB; floor stays 8 KiB.
+        // 64 KiB hole > display merge → still paints as a hole.
+        m.set_windows(&[(0, 1_000_000), (1_000_000 + 64 * 1024, 2_000_000)]);
         assert_eq!(m.file_fractions(2_000_000).len(), 2);
+    }
+
+    #[test]
+    fn file_fractions_soft_merges_subpixel_gap_on_large_file() {
+        // ~725 MiB progressive Blob (BBB-class): 1 px ≈ 900 KiB.
+        let file_size = 725 * 1024 * 1024u64;
+        let pixel = display_merge_gap(file_size);
+        assert!(pixel > FETCH_MAP_DISPLAY_MERGE_GAP);
+        let gap = pixel / 2; // larger than moof floor, still < 1 px
+        let mid = file_size / 2;
+        let m = FetchMap::new();
+        m.set_windows(&[(0, mid), (mid + gap, file_size)]);
+        assert_eq!(m.interior_gaps(), vec![(mid, mid + gap)]);
+        assert_eq!(
+            m.file_fractions(file_size).len(),
+            1,
+            "sub-pixel scrub-LRU gap must not paint a blurry hole"
+        );
+    }
+
+    #[test]
+    fn display_merge_gap_scales_with_file() {
+        assert_eq!(display_merge_gap(0), FETCH_MAP_DISPLAY_MERGE_GAP);
+        assert_eq!(display_merge_gap(800_000), FETCH_MAP_DISPLAY_MERGE_GAP); // 1 KiB < floor
+        assert_eq!(display_merge_gap(800 * 1024 * 1024), 1024 * 1024); // 1 MiB/px
     }
 
     #[test]

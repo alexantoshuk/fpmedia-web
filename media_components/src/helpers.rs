@@ -5,8 +5,13 @@
 //! they do not depend on Leptos.
 
 use crate::video::{ReadyFrameKind, ReadyFrameMark, VideoMetadata};
+use webmedia::{soft_merge_frame_runs, strip_merge_gap_frames};
 
 /// Hard-stop `linear-gradient` for coalesced densify / covered runs (O(1) DOM).
+///
+/// Soft-merges same-kind runs whose hole is ≤ ~1 px of `max` so Covered/Exact
+/// strips do not antialias into blurry gaps on long clips. Engine marks stay
+/// exact (`coalesce_frame_runs` / densify geometry unchanged).
 pub fn cache_strip_gradient(
     marks: &[ReadyFrameMark],
     kind: ReadyFrameKind,
@@ -14,20 +19,26 @@ pub fn cache_strip_gradient(
     color: &str,
 ) -> String {
     let max = max.max(1.0);
+    let merge_gap = strip_merge_gap_frames(max);
+    let mut runs: Vec<(u64, u64)> = marks
+        .iter()
+        .filter(|m| m.kind == kind)
+        .map(|m| (m.frame, m.end.max(m.frame)))
+        .collect();
+    runs.sort_by_key(|&(lo, _)| lo);
+    let merged = soft_merge_frame_runs(&runs, merge_gap);
+    if merged.is_empty() {
+        return "none".into();
+    }
     let mut stops = String::from("linear-gradient(90deg, transparent 0%");
-    let mut any = false;
-    for m in marks.iter().filter(|m| m.kind == kind) {
-        any = true;
-        let start = (m.frame as f64 / max) * 100.0;
-        let end = ((m.end.max(m.frame) as f64 + 1.0) / max) * 100.0;
+    for &(lo, hi) in &merged {
+        let start = (lo as f64 / max) * 100.0;
+        let end = ((hi as f64 + 1.0) / max) * 100.0;
         let start = start.clamp(0.0, 100.0);
         let end = end.clamp(0.0, 100.0).max(start);
         stops.push_str(&format!(
             ", transparent {start:.3}%, {color} {start:.3}%, {color} {end:.3}%, transparent {end:.3}%"
         ));
-    }
-    if !any {
-        return "none".into();
     }
     stops.push_str(", transparent 100%)");
     stops

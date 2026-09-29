@@ -110,6 +110,35 @@ pub fn coalesce_frame_runs(ids: impl IntoIterator<Item = FrameId>) -> Vec<(Frame
     out
 }
 
+/// Assumed scrubber CSS width for paint soft-merge (~1 px). Parity with
+/// [`crate::source::fetch_map`] gray-strip scaling.
+const STRIP_ASSUMED_SCRUBBER_PX: f64 = 800.0;
+
+/// Missing frames between inclusive runs that still paint as &lt;1 px on an
+/// ~800 px scrubber (`floor(max / 800)`; short clips → 0 = no soft-merge).
+pub fn strip_merge_gap_frames(max_frame: f64) -> u64 {
+    let max = max_frame.max(0.0);
+    (max / STRIP_ASSUMED_SCRUBBER_PX).floor() as u64
+}
+
+/// Paint-only: merge inclusive `(lo, hi)` densify runs when the hole is ≤
+/// `max_gap` frames. Engine / densify geometry stays exact via
+/// [`coalesce_frame_runs`].
+pub fn soft_merge_frame_runs(runs: &[(FrameId, FrameId)], max_gap: u64) -> Vec<(FrameId, FrameId)> {
+    let mut out: Vec<(FrameId, FrameId)> = Vec::new();
+    for &(start, end) in runs {
+        let end = end.max(start);
+        if let Some((_, prev_end)) = out.last_mut()
+            && start <= prev_end.saturating_add(1).saturating_add(max_gap)
+        {
+            *prev_end = (*prev_end).max(end);
+            continue;
+        }
+        out.push((start, end));
+    }
+    out
+}
+
 /// Interim scrub canvas frame while `target` is not yet exact-cached.
 ///
 /// Prefer `cached` when it is at least as close as `key` (tie → cache, already
@@ -782,6 +811,38 @@ mod tests {
         assert_eq!(
             coalesce_frame_runs([0u64, 1, 2, 5, 6, 10]),
             vec![(0, 2), (5, 6), (10, 10)]
+        );
+    }
+
+    #[test]
+    fn strip_merge_gap_scales_with_timeline() {
+        assert_eq!(strip_merge_gap_frames(100.0), 0);
+        assert_eq!(strip_merge_gap_frames(800.0), 1);
+        assert_eq!(strip_merge_gap_frames(14_400.0), 18); // BBB-class ~10 min @24
+    }
+
+    #[test]
+    fn soft_merge_frame_runs_closes_subpixel_holes() {
+        let runs = [(0u64, 10), (15, 30), (100, 110)];
+        assert_eq!(
+            soft_merge_frame_runs(&runs, 0),
+            vec![(0, 10), (15, 30), (100, 110)]
+        );
+        assert_eq!(
+            soft_merge_frame_runs(&runs, 4),
+            vec![(0, 30), (100, 110)],
+            "4-frame hole (11..=14) merges; 69-frame hole stays"
+        );
+        // Long-clip paint path: gap of 10 < floor(14400/800)=18.
+        let gap = strip_merge_gap_frames(14_400.0);
+        assert_eq!(
+            soft_merge_frame_runs(&[(0, 100), (111, 200)], gap),
+            vec![(0, 200)]
+        );
+        assert_eq!(
+            soft_merge_frame_runs(&[(0, 100), (200, 300)], gap).len(),
+            2,
+            "visible multi-px hole stays split"
         );
     }
 

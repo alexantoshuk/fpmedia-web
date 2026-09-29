@@ -1,6 +1,6 @@
 /**
  * fMP4 gray strip past ~frame 1222: play through without decode faults.
- * Moof-sized FetchMap holes are soft-merged in `file_fractions` (unit-tested);
+ * Moof-/sub-pixel FetchMap holes are soft-merged in `file_fractions` (unit-tested);
  * this probe guards play/scrub through the reported seam.
  *
  * Clip: testvideo `avc_1080p_24_fmp4_gop12_bf0`.
