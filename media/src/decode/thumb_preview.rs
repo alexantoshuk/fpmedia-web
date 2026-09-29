@@ -49,6 +49,8 @@ pub struct ThumbPreview {
     last_max_h: Cell<u32>,
     /// Bg key-fill wants another pass when the worker was busy.
     fill_pending: Cell<bool>,
+    /// Wall ms of last hover-aim decode start (Play throttle floor).
+    last_aim_decode_ms: Cell<f64>,
 }
 
 impl ThumbPreview {
@@ -65,6 +67,7 @@ impl ThumbPreview {
             last_max_w: Cell::new(DEFAULT_THUMB_MAX_W),
             last_max_h: Cell::new(DEFAULT_THUMB_MAX_H),
             fill_pending: Cell::new(false),
+            last_aim_decode_ms: Cell::new(0.0),
         }
     }
 
@@ -104,6 +107,14 @@ impl ThumbPreview {
 
     pub fn take_fill_pending(&self) -> bool {
         self.fill_pending.replace(false)
+    }
+
+    pub fn last_aim_decode_ms(&self) -> f64 {
+        self.last_aim_decode_ms.get()
+    }
+
+    pub fn note_aim_decode_ms(&self, now_ms: f64) {
+        self.last_aim_decode_ms.set(now_ms);
     }
 
     /// Drop cache + decoder (open / close / `ThumbPolicy::Off`).
@@ -295,17 +306,18 @@ pub fn paint_thumb_canvas(
 /// Sparse keyframe → ThumbCache (`mediabunny:` `canvasesAtTimestamps`).
 ///
 /// `next_gap` returns the next missing sync id (caller supplies focus / index).
-/// Releases the worker if hover queues a pending aim mid-fill.
+/// Releases the worker if hover queues a pending aim mid-fill or `yield_to_play`.
 pub async fn run_sparse_key_fill(
     sink: Rc<ThumbPreview>,
     track: Rc<Mp4VideoTrack>,
     meta: VideoMetadata,
     mut next_gap: impl FnMut() -> Option<FrameId>,
+    yield_to_play: impl Fn() -> bool,
 ) -> Result<(), MediaError> {
     let end = || sink.end_decode();
 
     loop {
-        if sink.decode_blocked() {
+        if yield_to_play() || sink.decode_blocked() {
             end();
             return Ok(());
         }
@@ -332,7 +344,7 @@ pub async fn run_sparse_key_fill(
                     }
                 },
             };
-            let cancelled = || sink.decode_blocked() || sink.has_pending_aim();
+            let cancelled = || yield_to_play() || sink.decode_blocked() || sink.has_pending_aim();
             if cancelled() {
                 sink.put_decoder(decoder);
                 end();
@@ -344,6 +356,7 @@ pub async fn run_sparse_key_fill(
                     sink.put_decoder(decoder);
                     // Cache even if hover preempted — key still warms ThumbCache.
                     if !sink.decode_blocked()
+                        && !yield_to_play()
                         && let Ok(bmp) = sink.with_blit(|enc| {
                             enc.frame_to_bitmap(video.as_video_frame(), tw, th)
                                 .map(|(bmp, _, _)| bmp)
@@ -368,6 +381,11 @@ pub async fn run_sparse_key_fill(
             }
         }
 
+        if yield_to_play() {
+            end();
+            return Ok(());
+        }
+
         // Hover queued mid-fill — release so paint_hover can claim.
         if sink.has_pending_aim() {
             end();
@@ -382,6 +400,7 @@ pub async fn run_sparse_key_fill(
         let want_again = sink.take_fill_pending();
         end();
         if want_again
+            && !yield_to_play()
             && let Some(k) = next_gap()
             && sink.claim_fill_key(k)
         {

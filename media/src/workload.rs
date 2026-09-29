@@ -2,13 +2,16 @@
 //!
 //! **Not** a global async priority OS — domain schedulers (OpQueue, decode,
 //! byte IO) stay separate. This module only classifies whether background
-//! sync-verify / fragment-backfill should yield.
+//! sync-verify / fragment-backfill / thumb key-fill should yield.
 //!
 //! See `.ai/architecture.md` § State machines over flags / ADR domain schedulers.
 //!
 //! mediabunny: `verifyKeyPackets` on packet retrieve — no background full-file
 //! sync walk during playback. Our deferred `verify_next_pending` loop is a local
 //! adaptation for scrub geometry and must yield while Play / Seek own the network.
+//! Thumb sparse fill similarly yields under Play; single hover-aim decode may
+//! run throttled (`PLAY_THUMB_AIM_DECODE_MIN_MS`). `mediabunny:` separate CanvasSink
+//! still competes for main-thread / Ranges — Product Play-first.
 
 use std::fmt;
 
@@ -86,6 +89,30 @@ pub fn allows_bg_sync_verify(hints: WorkloadHints) -> bool {
     }
     matches!(classify(hints), WorkloadMode::Bg | WorkloadMode::Open)
 }
+
+/// Whether sparse thumb **key-fill** (many keys) may run.
+///
+/// False under Play / Seek — the fill chain steals Ranges and main-thread from
+/// presentation. Pause/idle (`Bg`) only. Densify busy does **not** block (own
+/// 3rd decoder).
+pub fn allows_thumb_key_fill(hints: WorkloadHints) -> bool {
+    matches!(classify(hints), WorkloadMode::Bg | WorkloadMode::Open)
+}
+
+/// Whether a **single** hover-aim thumb decode may run.
+///
+/// Allowed on Play (caller applies a strong ms floor) and Bg. False under Seek
+/// / ExactHold so settle owns the machine. `mediabunny:` separate CanvasSink;
+/// local Play-first throttle — not a full hard gate on aim decode.
+pub fn allows_thumb_aim_decode(hints: WorkloadHints) -> bool {
+    !matches!(classify(hints), WorkloadMode::Seek)
+}
+
+/// Min wall time between hover-aim thumb decodes while [`WorkloadMode::Play`].
+///
+/// Host UI already debounces ~80 ms; this floor stops sparse-rate decode storms
+/// on long clips. Pause uses [`allows_thumb_key_fill`] without this floor.
+pub const PLAY_THUMB_AIM_DECODE_MIN_MS: f64 = 400.0;
 
 /// Whether fMP4 fragment backfill should `yield_now` between chunks.
 ///
@@ -165,6 +192,57 @@ mod tests {
     fn verify_allowed_on_idle_scrub() {
         assert!(allows_bg_sync_verify(hints(
             EngineMode::Scrub,
+            false,
+            false,
+            false
+        )));
+    }
+
+    #[test]
+    fn thumb_key_fill_yields_on_play_and_seek() {
+        assert!(!allows_thumb_key_fill(hints(
+            EngineMode::Play,
+            false,
+            false,
+            false
+        )));
+        assert!(!allows_thumb_key_fill(hints(
+            EngineMode::ExactHold,
+            false,
+            false,
+            false
+        )));
+        assert!(allows_thumb_key_fill(hints(
+            EngineMode::Scrub,
+            false,
+            false,
+            false
+        )));
+        // Densify busy does not block thumbs (own decoder) — unlike sync verify.
+        assert!(allows_thumb_key_fill(hints(
+            EngineMode::Scrub,
+            false,
+            false,
+            true
+        )));
+    }
+
+    #[test]
+    fn thumb_aim_decode_allowed_on_play_not_seek() {
+        assert!(allows_thumb_aim_decode(hints(
+            EngineMode::Play,
+            false,
+            false,
+            false
+        )));
+        assert!(allows_thumb_aim_decode(hints(
+            EngineMode::Scrub,
+            false,
+            false,
+            false
+        )));
+        assert!(!allows_thumb_aim_decode(hints(
+            EngineMode::ExactHold,
             false,
             false,
             false

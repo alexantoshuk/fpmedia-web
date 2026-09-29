@@ -105,7 +105,8 @@ pub use types::{
     soft_merge_frame_runs, strip_merge_gap_frames,
 };
 pub use workload::{
-    FRAGMENT_BACKFILL_IDLE_AHEAD, WorkloadHints, WorkloadMode, allows_bg_sync_verify, classify,
+    FRAGMENT_BACKFILL_IDLE_AHEAD, PLAY_THUMB_AIM_DECODE_MIN_MS, WorkloadHints, WorkloadMode,
+    allows_bg_sync_verify, allows_thumb_aim_decode, allows_thumb_key_fill, classify,
     fragment_backfill_should_idle_yield,
 };
 

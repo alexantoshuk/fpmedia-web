@@ -1071,8 +1071,9 @@ impl VideoPlayer {
         self.apply_clock_event(ClockEvent::ResetForPlay);
         self.shared.underrun_holds.set(0);
         self.shared.underrun_hold_ms.set(0.0);
-        #[cfg(feature = "thumbs")]
-        self.schedule_thumb_key_fill();
+        // Do **not** schedule_thumb_key_fill here — Play owns Ranges/main thread
+        // for sparse chains; hover uses throttled single-aim decode instead.
+        // Fill resumes on Pause / scrub (`allows_thumb_key_fill`).
     }
 
     pub fn pause(&self) {

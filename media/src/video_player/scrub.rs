@@ -15,6 +15,9 @@ use crate::types::{
     FrameId, GopProfile, ScrubPolicy, ThumbPolicy, exact_frames_to_free_for_play_vram,
     hover_thumb_dims, scrub_blit_cap_during_play, scrub_blit_frame_budget, scrub_preview_choice,
 };
+use crate::workload::{
+    PLAY_THUMB_AIM_DECODE_MIN_MS, allows_thumb_aim_decode, allows_thumb_key_fill,
+};
 
 use super::{
     PLAY_EXACT_VRAM_VF_SLACK, Shared, VideoPlayer, performance_now_ms, sleep_ms,
@@ -23,8 +26,8 @@ use super::{
 
 impl VideoPlayer {
     /// Abort in-flight hover Exact downscale (scrub start / pointer leave).
-    /// Do **not** call from [`Self::play`] — thumbs stay across Play
-    /// (`mediabunny:` separate thumb `CanvasSink`).
+    /// Play does not cancel the sink — ThumbCache stays; sparse fill yields via
+    /// `allows_thumb_key_fill`, aim decode is throttled. `mediabunny:` separate thumb `CanvasSink`.
     pub fn cancel_hover_thumb(&self) {
         #[cfg(feature = "thumbs")]
         if let Ok(slot) = self.shared.thumb.try_borrow()
@@ -186,7 +189,8 @@ impl VideoPlayer {
                     }
                 }
             };
-            if matches!(&result, Ok(Some(_))) {
+            if matches!(&result, Ok(Some(_))) && allows_thumb_key_fill(self.shared.workload_hints())
+            {
                 self.schedule_thumb_key_fill();
             }
             result
@@ -195,11 +199,10 @@ impl VideoPlayer {
 
     /// Paint a hover preview into `dest`.
     ///
-    /// Sync nearest (ThumbCache ∪ Exact) first; missing sync keys warm via bg
-    /// [`Self::schedule_thumb_key_fill`] only — do **not** block the canvas on
-    /// key decode (that left a far interim while Exact was nearer).
-    /// True cold miss → `create_thumb` decode of aim. `mediabunny:` present
-    /// cached canvas immediately; sparse key fill off the present path.
+    /// Sync nearest (ThumbCache ∪ Exact) first. Sparse key fill only when paused
+    /// ([`allows_thumb_key_fill`]). Cold miss → one aim decode: free on Pause,
+    /// throttled on Play ([`PLAY_THUMB_AIM_DECODE_MIN_MS`]), blocked on Seek.
+    /// `mediabunny:` present cached canvas immediately; sparse fill off present path.
     pub async fn paint_hover_thumb(
         &self,
         frame: FrameId,
@@ -230,14 +233,40 @@ impl VideoPlayer {
             }
 
             let interim = self.try_paint_hover_thumb_cached(frame, dest, max_w, max_h)?;
-            self.schedule_thumb_key_fill();
+            if allows_thumb_key_fill(self.shared.workload_hints()) {
+                self.schedule_thumb_key_fill();
+            }
             if let Some(p) = interim {
                 return Ok(p);
             }
 
-            // Cold: no ThumbCache / Exact — decode aim (latest-wins).
+            // Cold miss — single aim decode (throttled under Play).
+            if !self.may_start_hover_aim_decode() {
+                return interim.ok_or(MediaError::Cancelled);
+            }
             self.decode_hover_thumb(frame, dest, max_w, max_h).await
         }
+    }
+
+    /// True when a cold hover-aim decode may start now (Pause free; Play floor).
+    #[cfg(feature = "thumbs")]
+    fn may_start_hover_aim_decode(&self) -> bool {
+        let hints = self.shared.workload_hints();
+        if !allows_thumb_aim_decode(hints) {
+            return false;
+        }
+        if allows_thumb_key_fill(hints) {
+            return true;
+        }
+        // Play: strong floor between aim decodes (latest aim still latched).
+        let now = performance_now_ms().unwrap_or(0.0);
+        let Ok(slot) = self.shared.thumb.try_borrow() else {
+            return false;
+        };
+        let Some(thumbs) = slot.as_ref() else {
+            return false;
+        };
+        now - thumbs.last_aim_decode_ms() >= PLAY_THUMB_AIM_DECODE_MIN_MS
     }
 
     /// Exact blit → sized thumb into [`ThumbPreview`] (read-only densify plane).
@@ -331,6 +360,15 @@ impl VideoPlayer {
         max_w: u32,
         max_h: u32,
     ) -> Result<FrameId, MediaError> {
+        if !self.may_start_hover_aim_decode() {
+            return Err(MediaError::Cancelled);
+        }
+        // Stamp before claim so concurrent paints see the Play floor.
+        if let Ok(slot) = self.shared.thumb.try_borrow()
+            && let Some(thumbs) = slot.as_ref()
+        {
+            thumbs.note_aim_decode_ms(performance_now_ms().unwrap_or(0.0));
+        }
         let blocked = {
             let Ok(slot) = self.shared.thumb.try_borrow() else {
                 return Err(MediaError::Cancelled);
@@ -362,6 +400,9 @@ impl VideoPlayer {
             };
             loop {
                 yield_event_loop().await;
+                if !allows_thumb_aim_decode(self.shared.workload_hints()) {
+                    return Err(MediaError::Cancelled);
+                }
                 let Ok(slot) = self.shared.thumb.try_borrow() else {
                     return Err(MediaError::Cancelled);
                 };
@@ -618,8 +659,14 @@ impl VideoPlayer {
     }
 
     /// Kick sparse keyframe → ThumbCache fill (same 3rd decoder; hover wins).
+    ///
+    /// Pause/idle only ([`allows_thumb_key_fill`]). Play uses throttled single-aim
+    /// decode instead — no fill chain.
     #[cfg(feature = "thumbs")]
     pub(super) fn schedule_thumb_key_fill(&self) {
+        if !allows_thumb_key_fill(self.shared.workload_hints()) {
+            return;
+        }
         if !self.ensure_thumb_preview() {
             return;
         }
@@ -643,6 +690,9 @@ impl VideoPlayer {
 
     #[cfg(feature = "thumbs")]
     pub(super) fn kick_thumb_key_fill(&self) {
+        if !allows_thumb_key_fill(self.shared.workload_hints()) {
+            return;
+        }
         let Some(key) = self.next_thumb_key_gap() else {
             return;
         };
@@ -657,8 +707,14 @@ impl VideoPlayer {
         wasm_bindgen_futures::spawn_local(async move {
             let track = shared.player.borrow().track_rc();
             let meta = shared.player.borrow().metadata().clone();
-            let next_gap = || next_thumb_key_gap_shared(&shared);
-            let _ = run_sparse_key_fill(sink, track, meta, next_gap).await;
+            let yield_play = || !allows_thumb_key_fill(shared.workload_hints());
+            let next_gap = || {
+                if yield_play() {
+                    return None;
+                }
+                next_thumb_key_gap_shared(&shared)
+            };
+            let _ = run_sparse_key_fill(sink, track, meta, next_gap, yield_play).await;
         });
     }
 
