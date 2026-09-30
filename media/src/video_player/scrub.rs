@@ -197,12 +197,24 @@ impl VideoPlayer {
         }
     }
 
+    /// True when a painted hover preview is the same sync key as `aim`.
+    ///
+    /// Far interim (other GOP) must still schedule aim decode — otherwise a
+    /// single warm thumb short-circuits Play refine forever (no gray / no update).
+    pub fn hover_thumb_close_enough(&self, aim: FrameId, painted: FrameId) -> bool {
+        let ka = self.key_for(aim).unwrap_or(aim);
+        let kp = self.key_for(painted).unwrap_or(painted);
+        ka == kp
+    }
+
     /// Paint a hover preview into `dest`.
     ///
     /// Sync nearest (ThumbCache ∪ Exact) first. Sparse key fill only when paused
-    /// ([`allows_thumb_key_fill`]). Cold miss → one aim decode: free on Pause,
-    /// throttled on Play ([`PLAY_THUMB_AIM_DECODE_MIN_MS`]), blocked on Seek.
-    /// `mediabunny:` present cached canvas immediately; sparse fill off present path.
+    /// ([`allows_thumb_key_fill`]). Cold miss → aim decode (free on Pause, Play
+    /// floor). Far interim → aim decode with [`PLAY_THUMB_AIM_DECODE_MIN_MS`] on
+    /// **both** Pause and Play (Exact-at-0 after open must not storm the 3rd
+    /// decoder against densify). Seek blocks aim decode. `mediabunny:` present
+    /// cached canvas immediately; sparse fill off present path.
     pub async fn paint_hover_thumb(
         &self,
         frame: FrameId,
@@ -237,28 +249,41 @@ impl VideoPlayer {
                 self.schedule_thumb_key_fill();
             }
             if let Some(p) = interim {
-                return Ok(p);
+                if self.hover_thumb_close_enough(frame, p) {
+                    return Ok(p);
+                }
+                // Far interim on canvas — always throttle refine (Pause+Play).
+                if !self.may_start_hover_aim_decode(true) {
+                    return Ok(p);
+                }
+                return self
+                    .decode_hover_thumb(frame, dest, max_w, max_h, true)
+                    .await;
             }
 
-            // Cold miss — single aim decode (throttled under Play).
-            if !self.may_start_hover_aim_decode() {
-                return interim.ok_or(MediaError::Cancelled);
+            // Cold miss — Pause free; Play floor.
+            if !self.may_start_hover_aim_decode(false) {
+                return Err(MediaError::Cancelled);
             }
-            self.decode_hover_thumb(frame, dest, max_w, max_h).await
+            self.decode_hover_thumb(frame, dest, max_w, max_h, false)
+                .await
         }
     }
 
-    /// True when a cold hover-aim decode may start now (Pause free; Play floor).
+    /// Whether a hover-aim decode may start now.
+    ///
+    /// Seek blocks. Cold miss (`far_refine=false`): free on Pause, floor on Play.
+    /// Far refine: floor on Pause **and** Play — after open Exact frame 0 is a
+    /// far hit for almost every aim; unthrottled Pause refine froze the tab.
     #[cfg(feature = "thumbs")]
-    fn may_start_hover_aim_decode(&self) -> bool {
+    fn may_start_hover_aim_decode(&self, far_refine: bool) -> bool {
         let hints = self.shared.workload_hints();
         if !allows_thumb_aim_decode(hints) {
             return false;
         }
-        if allows_thumb_key_fill(hints) {
+        if !far_refine && allows_thumb_key_fill(hints) {
             return true;
         }
-        // Play: strong floor between aim decodes (latest aim still latched).
         let now = performance_now_ms().unwrap_or(0.0);
         let Ok(slot) = self.shared.thumb.try_borrow() else {
             return false;
@@ -352,6 +377,8 @@ impl VideoPlayer {
     }
 
     /// Dedicated 3rd decoder → ThumbCache only (latest-wins coalesce).
+    ///
+    /// `far_refine` selects the aim-decode throttle (see [`Self::may_start_hover_aim_decode`]).
     #[cfg(feature = "thumbs")]
     pub(super) async fn decode_hover_thumb(
         &self,
@@ -359,8 +386,9 @@ impl VideoPlayer {
         dest: &HtmlCanvasElement,
         max_w: u32,
         max_h: u32,
+        far_refine: bool,
     ) -> Result<FrameId, MediaError> {
-        if !self.may_start_hover_aim_decode() {
+        if !self.may_start_hover_aim_decode(far_refine) {
             return Err(MediaError::Cancelled);
         }
         // Stamp before claim so concurrent paints see the Play floor.
@@ -389,7 +417,10 @@ impl VideoPlayer {
             thumbs.claim_decode(frame)
         };
         if !claim {
-            // Bg key-fill owns the worker — wait until free, keep latest aim pending.
+            // Bg key-fill owns the worker — wait until free; latest aim already
+            // latched in `pending_aim`. Do **not** spin on `yield_event_loop`
+            // (Promise.resolve microtask) — that freezes the tab while fill
+            // decodes. Macrotask + wall cap; pending survives for the next paint.
             let wait_epoch = {
                 let Ok(slot) = self.shared.thumb.try_borrow() else {
                     return Err(MediaError::Cancelled);
@@ -398,8 +429,13 @@ impl VideoPlayer {
                     .map(|t| t.generation())
                     .ok_or(MediaError::Cancelled)?
             };
+            let wait_start = performance_now_ms().unwrap_or(0.0);
+            const CLAIM_WAIT_MS: f64 = 2_000.0;
             loop {
-                yield_event_loop().await;
+                sleep_ms(0).await;
+                if performance_now_ms().unwrap_or(wait_start) - wait_start >= CLAIM_WAIT_MS {
+                    return Err(MediaError::Cancelled);
+                }
                 if !allows_thumb_aim_decode(self.shared.workload_hints()) {
                     return Err(MediaError::Cancelled);
                 }

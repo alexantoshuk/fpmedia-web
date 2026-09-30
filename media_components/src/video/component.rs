@@ -1097,10 +1097,13 @@ pub fn Video(
                 let Some(p) = borrow.as_ref() else {
                     return false;
                 };
-                matches!(
-                    p.try_paint_hover_thumb_cached(u64::from(frame), &dest, max_w, max_h),
-                    Ok(Some(_))
-                )
+                let aim = u64::from(frame);
+                match p.try_paint_hover_thumb_cached(aim, &dest, max_w, max_h) {
+                    // Far interim still paints, but return false so host defers
+                    // throttled aim decode (Pause+Play far refine floor).
+                    Ok(Some(painted)) => p.hover_thumb_close_enough(aim, painted),
+                    _ => false,
+                }
             },
         ) as Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32) -> bool>
     };

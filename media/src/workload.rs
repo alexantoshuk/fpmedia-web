@@ -10,8 +10,9 @@
 //! sync walk during playback. Our deferred `verify_next_pending` loop is a local
 //! adaptation for scrub geometry and must yield while Play / Seek own the network.
 //! Thumb sparse fill similarly yields under Play; single hover-aim decode may
-//! run throttled (`PLAY_THUMB_AIM_DECODE_MIN_MS`). `mediabunny:` separate CanvasSink
-//! still competes for main-thread / Ranges — Product Play-first.
+//! run throttled (`PLAY_THUMB_AIM_DECODE_MIN_MS` — always for far refine; Play
+//! also for cold miss). `mediabunny:` separate CanvasSink still competes for
+//! main-thread / Ranges — Product Play-first.
 
 use std::fmt;
 
@@ -108,10 +109,13 @@ pub fn allows_thumb_aim_decode(hints: WorkloadHints) -> bool {
     !matches!(classify(hints), WorkloadMode::Seek)
 }
 
-/// Min wall time between hover-aim thumb decodes while [`WorkloadMode::Play`].
+/// Min wall time between hover-aim thumb decodes on Play, and for **far-refine**
+/// on Pause as well.
 ///
 /// Host UI already debounces ~80 ms; this floor stops sparse-rate decode storms
-/// on long clips. Pause uses [`allows_thumb_key_fill`] without this floor.
+/// on long clips. Pause **cold miss** stays free ([`allows_thumb_key_fill`]);
+/// far interim (e.g. Exact-at-0 after open) must still respect the floor or
+/// Pause hover storms the 3rd decoder against densify.
 pub const PLAY_THUMB_AIM_DECODE_MIN_MS: f64 = 400.0;
 
 /// Whether fMP4 fragment backfill should `yield_now` between chunks.

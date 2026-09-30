@@ -22,7 +22,7 @@
 | `/proxy` 403 from phone / LAN IP | Demo proxy refuses non-loopback peers — use `http://127.0.0.1:3000` (`adb reverse`) not `http://192.168.x.x` |
 | `/proxy` `ERR_CONTENT_LENGTH_MISMATCH` 206 | Demo proxy buffers ≤16 MiB Ranges (exact CL); large bodies chunked without CL; stale signed redirect → clear+retry |
 | Gray scrubber bar vs green densify strips | Gray = `FetchMap` → `helpers::fetch_strip_gradient`; green = densify via `helpers::cache_strip_gradient` (paint soft-merge ~1 px) |
-| Hover thumb during Play / scrub | `HoverThumbPreview` + engine cancel | Play+Pause OK (Play = throttled single-aim decode, no key-fill); cancel only scrub start / leave |
+| Hover thumb during Play / scrub | `HoverThumbPreview` + engine cancel | Play+Pause OK; far interim → defer refine (same sync key = done); far refine floor 400 ms Pause+Play; Play no key-fill |
 | Hover thumb lags cursor until frame paints | Sync DOM `transform` first; ThumbCache try-paint; coalesce Exact downscale (read-only — no decode) |
 | `RefCell already borrowed` in Loop / sync_ui / tachys | No borrow across `.await`; defer scrub work off `on:pointer*`; engine: `skills/media.md` RefCell / WASM re-entry |
 | Start stutter / low measured fps after Play | Set wall-clock origins **after** `prime_playback` |
