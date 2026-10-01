@@ -35,9 +35,10 @@ wasm-bindgen = "0.2.126"
 js-sys = "0.3"
 web-sys = "0.3"
 wasm-bindgen-futures = "0.4"
-# Temporary: QT SoundDescriptionV2 / wave+esds (#35) until next crates.io release.
-# https://github.com/rerun-io/re_mp4/issues/32
-re_mp4 = { git = "https://github.com/rerun-io/re_mp4", rev = "aa5be9b10686f9cd1834cc8c8c75f6adbb7cf468" }
+# Temporary fork: QT SoundDescriptionV2 (#35) + PCM chunk-coalesce (#37).
+# Upstream: https://github.com/rerun-io/re_mp4/issues/32 — drop pin when crates.io has both.
+# webmedia ignores non-`mp4a` audio; coalesce is still required so long PCM masters open.
+re_mp4 = { git = "https://github.com/alexantoshuk/re_mp4", rev = "5b3cc258a50a278a62785bad426529037dab6129" }
 
 [[workspace.metadata.leptos]]
 name = "webmedia"
