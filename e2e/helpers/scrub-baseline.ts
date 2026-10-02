@@ -258,8 +258,7 @@ async function waitExact(
 async function waitDensifyQuiet(player: DemoPlayer, maxMs = 8_000) {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
-    const cache = (await player.frameCache.innerText()).trim();
-    if (!cache.includes("· dense")) return;
+    if (!(await player.scrubBusy())) return;
     await player.page.waitForTimeout(150);
   }
 }

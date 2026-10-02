@@ -30,6 +30,8 @@ export type PipelineJson = {
   scrub_busy: boolean;
   cache_frames: number;
   cache_chunks: number;
+  presentation_len?: number;
+  presentation_cap?: number;
 };
 
 function inRanges(fraction: number, ranges: [number, number][]): boolean {
@@ -136,9 +138,6 @@ export class DemoPlayer {
   readonly next: Locator;
   readonly seek: Locator;
   readonly playbackRate: Locator;
-  readonly prefetchQueue: Locator;
-  readonly prefetchAhead: Locator;
-  readonly frameCache: Locator;
   readonly pipelineJson: Locator;
 
   constructor(readonly page: Page) {
@@ -159,9 +158,6 @@ export class DemoPlayer {
     this.next = page.getByTestId("btn-next");
     this.seek = page.getByTestId("btn-seek");
     this.playbackRate = page.getByTestId("playback-rate");
-    this.prefetchQueue = page.getByTestId("meter-prefetch-queue-detail");
-    this.prefetchAhead = page.getByTestId("meter-prefetch-ahead-detail");
-    this.frameCache = page.getByTestId("meter-frame-cache-detail");
   }
 
   async goto() {
@@ -324,23 +320,31 @@ export class DemoPlayer {
 
   async snapshot() {
     const status = await this.readStatus();
+    const pipe = await this.readPipelineJson();
+    const dense = pipe.scrub_busy ? " · dense" : "";
+    const frameCache = `${pipe.cache_frames}f / ${pipe.cache_chunks}c${dense}`;
+    const qLen = pipe.presentation_len ?? 0;
+    const qCap = pipe.presentation_cap ?? 0;
     return {
       status,
       ariaPlayhead: await this.ariaPlayhead(),
       scrubberPercent: await this.scrubberPercent(),
       pipeline: (await this.pipeline.innerText()).trim(),
       meta: (await this.meta.innerText()).trim(),
-      prefetchQueue: (await this.prefetchQueue.innerText()).trim(),
-      prefetchAhead: (await this.prefetchAhead.innerText()).trim(),
-      frameCache: (await this.frameCache.innerText()).trim(),
+      prefetchQueue: `${qLen}/${qCap}`,
+      prefetchAhead: "",
+      frameCache,
       error: (await this.error.innerText()).trim(),
     };
   }
 
-  /** Parsed `Nf / Mc` from the frame-cache meter (`12f / 1c · …`). */
+  /** Densify marker frame count from hidden `pipeline-json` (`cache_frames`). */
   async denseCacheFrames(): Promise<number> {
-    const text = (await this.frameCache.innerText()).trim();
-    const m = text.match(/^(\d+)f\s*\//);
-    return m ? Number(m[1]) : 0;
+    return (await this.readPipelineJson()).cache_frames;
+  }
+
+  /** True while densify fill owns the scrub decoder. */
+  async scrubBusy(): Promise<boolean> {
+    return (await this.readPipelineJson()).scrub_busy;
   }
 }
