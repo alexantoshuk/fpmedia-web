@@ -856,7 +856,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
 
     let dpr = move || {
         window()
-            .and_then(|w| Some(w.device_pixel_ratio()))
+            .map(|w| w.device_pixel_ratio())
             .unwrap_or(1.0)
             .max(1.0)
     };
@@ -884,8 +884,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
             let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, FETCH_STRIP_COLOR);
         }
         if let Some(canvas) = covered_canvas.get() {
-            let cand =
-                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Covered, max, buf_w);
+            let cand = cache_strip_px_runs_for_width(marks, ReadyFrameKind::Covered, max, buf_w);
             let mut runs = Vec::new();
             covered_latch.update_value(|latch| {
                 runs = latch.resolve(&cand, buf_w).to_vec();
