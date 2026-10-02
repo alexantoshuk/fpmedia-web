@@ -734,10 +734,13 @@ impl Mp4VideoTrack {
                 .ok_or(MediaError::FrameOutOfRange(frame, self.frame_count()))?;
             (entry.offset, entry.size)
         };
-        // Prefer playback `CachedSource` so warm-open keys are hits; fall back
-        // to raw `sync_source` only when playback I/O is still unset.
-        // mediabunny: `requestSlice` / verify goes through the source cache.
-        let sample = self.source.read(offset, size as usize).await?;
+        // Always `sync_source` (raw / uncached). Playback `CachedSource` must not
+        // absorb a full-file key walk — long masters (~1 GiB, 1k+ syncs) fill the
+        // 512 MiB LRU with scattered I-frames → Play judder from frame 0.
+        // `sync_source` was kept for this; prefer-cache was a local regression.
+        // mediabunny: `verifyKeyPackets` on retrieve only — no bg full-file walk
+        // into the play cache (`src/media-sink.ts`).
+        let sample = self.sync_source.read(offset, size as usize).await?;
         let keep = sample.len() == size as usize
             && matches!(
                 match codec {
@@ -946,11 +949,11 @@ pub fn open_mp4_bytes(bytes: Vec<u8>) -> Result<Mp4VideoTrack, MediaError> {
 
 /// Like [`open_mp4_bytes`], but keeps an optional audio track.
 pub fn open_mp4_media_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
-    let bytes: Arc<[u8]> = Arc::from(bytes);
+    let bytes = bytes::Bytes::from(bytes);
     let fetch_map = Arc::new(FetchMap::new());
     fetch_map.mark_full(bytes.len() as u64);
     let mp4 = Mp4::read_bytes(bytes.as_ref())?;
-    let source: Arc<dyn MediaSource> = Arc::new(MemorySource::new(Arc::clone(&bytes)));
+    let source: Arc<dyn MediaSource> = Arc::new(MemorySource::new(bytes.clone()));
     let timecode_start = crate::demux::timecode::find_moov_box(bytes.as_ref()).and_then(|moov| {
         crate::demux::timecode::read_tmcd_start_sample_blocking(&mp4, moov, source.as_ref())
             .ok()
@@ -1132,6 +1135,9 @@ pub async fn open_mp4_media_source_cached_with_progress(
 }
 
 /// Attach [`CachedSource`] for playback and seed ranges already read during demux.
+///
+/// Budget follows [`CachedSource::with_fetch_map`]: Url → 512 MiB, Blob/Memory →
+/// 8 MiB (`mediabunny: src/source.ts BlobSource` `maxCacheSize` default).
 fn wrap_cached_playback(
     source: Arc<dyn MediaSource>,
     fetch_map: Arc<FetchMap>,

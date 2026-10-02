@@ -3267,6 +3267,7 @@ dependencies = [
 name = "webmedia"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures",
  "js-sys",
  "lru",

@@ -80,7 +80,7 @@ pub use session::{SessionEvent, SessionModel, reduce as session_reduce};
 pub use source::{BlobSource, UrlSource, UrlSourceOptions, is_no_http_range};
 pub use source::{
     CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE, DEFAULT_URL_PARALLELISM, FetchMap,
-    MediaSource, MemorySource, OPEN_URL_PARALLELISM, ReadFuture,
+    LOCAL_CACHE_BUDGET, MediaSource, MemorySource, OPEN_URL_PARALLELISM, ReadFuture,
 };
 pub use transport::{
     TransportCmd, TransportEvent, TransportModel, TransportState, reduce as transport_reduce,

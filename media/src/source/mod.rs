@@ -14,7 +14,7 @@ mod blob;
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod url;
 
-pub use cache::{CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE};
+pub use cache::{CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE, LOCAL_CACHE_BUDGET};
 pub use fetch_map::FetchMap;
 pub use memory::MemorySource;
 pub use url_gate::{DEFAULT_URL_PARALLELISM, GATE_LARGE_BYTES, OPEN_URL_PARALLELISM};
@@ -27,10 +27,17 @@ pub use url::{UrlSource, UrlSourceOptions, is_no_http_range};
 use std::future::Future;
 use std::pin::Pin;
 
+use bytes::Bytes;
+
 use crate::error::MediaError;
 
 /// Async future returned by [`MediaSource::read`].
-pub type ReadFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<u8>, MediaError>> + 'a>>;
+///
+/// [`Bytes`] so [`CachedSource`] hits share the window allocation with the
+/// decoder (no per-NAL `to_vec`). mediabunny keeps packet bytes in JS
+/// `Uint8Array` from `Blob.slice` — we still cross into WASM once on fill,
+/// then share.
+pub type ReadFuture<'a> = Pin<Box<dyn Future<Output = Result<Bytes, MediaError>> + 'a>>;
 
 /// Random-access byte source (`size` + ranged `read`).
 ///
@@ -59,6 +66,16 @@ pub trait MediaSource: Send + Sync {
     /// switch does not leave zombie fetches while `Shared` bg tasks still hold
     /// Arcs. Idempotent.
     fn dispose(&self) {}
+
+    /// True when sample-miss blocking reads should floor at
+    /// mediabunny `URL_SOURCE_MIN_LOAD_AMOUNT` (0.5 MiB) to amortize HTTP Range RTT.
+    ///
+    /// [`UrlSource`] → true. [`BlobSource`] / [`MemorySource`] → false (local
+    /// `slice` has no RTT; awaiting 0.5 MiB per NAL burns the main thread).
+    /// mediabunny: min-load is a UrlSource concern; BlobSource is a local window.
+    fn network_min_load(&self) -> bool {
+        false
+    }
 }
 
 impl<T: MediaSource + ?Sized> MediaSource for &T {
@@ -77,6 +94,10 @@ impl<T: MediaSource + ?Sized> MediaSource for &T {
     fn dispose(&self) {
         (**self).dispose()
     }
+
+    fn network_min_load(&self) -> bool {
+        (**self).network_min_load()
+    }
 }
 
 impl<T: MediaSource + ?Sized> MediaSource for std::sync::Arc<T> {
@@ -94,5 +115,9 @@ impl<T: MediaSource + ?Sized> MediaSource for std::sync::Arc<T> {
 
     fn dispose(&self) {
         (**self).dispose()
+    }
+
+    fn network_min_load(&self) -> bool {
+        (**self).network_min_load()
     }
 }

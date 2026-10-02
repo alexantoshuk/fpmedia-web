@@ -1,6 +1,6 @@
 //! In-memory [`MediaSource`] for fixtures and `open_mp4_bytes`.
 
-use std::sync::Arc;
+use bytes::Bytes;
 
 use crate::error::MediaError;
 
@@ -9,11 +9,11 @@ use super::{MediaSource, ReadFuture};
 /// Owns (or shares) the full media bytes; ranged reads are slices.
 #[derive(Clone, Debug)]
 pub struct MemorySource {
-    bytes: Arc<[u8]>,
+    bytes: Bytes,
 }
 
 impl MemorySource {
-    pub fn new(bytes: impl Into<Arc<[u8]>>) -> Self {
+    pub fn new(bytes: impl Into<Bytes>) -> Self {
         Self {
             bytes: bytes.into(),
         }
@@ -21,7 +21,7 @@ impl MemorySource {
 
     pub fn from_vec(bytes: Vec<u8>) -> Self {
         Self {
-            bytes: Arc::from(bytes),
+            bytes: Bytes::from(bytes),
         }
     }
 
@@ -36,18 +36,19 @@ impl MediaSource for MemorySource {
     }
 
     fn read(&self, offset: u64, len: usize) -> ReadFuture<'_> {
-        Box::pin(async move { read_slice(&self.bytes, offset, len) })
+        let bytes = self.bytes.clone();
+        Box::pin(async move { read_slice(&bytes, offset, len) })
     }
 }
 
-fn read_slice(bytes: &[u8], offset: u64, len: usize) -> Result<Vec<u8>, MediaError> {
+fn read_slice(bytes: &Bytes, offset: u64, len: usize) -> Result<Bytes, MediaError> {
     let size = bytes.len() as u64;
     if offset > size {
         return Err(MediaError::ReadOutOfRange { offset, len, size });
     }
     let start = offset as usize;
     let end = start.saturating_add(len).min(bytes.len());
-    Ok(bytes[start..end].to_vec())
+    Ok(bytes.slice(start..end))
 }
 
 #[cfg(test)]
@@ -61,10 +62,10 @@ mod tests {
         assert_eq!(src.size(), 8);
 
         let mid = pollster_read(&src, 2, 3).unwrap();
-        assert_eq!(mid, b"cde");
+        assert_eq!(&mid[..], b"cde");
 
         let tail = pollster_read(&src, 6, 10).unwrap();
-        assert_eq!(tail, b"gh");
+        assert_eq!(&tail[..], b"gh");
 
         let empty = pollster_read(&src, 8, 4).unwrap();
         assert!(empty.is_empty());
@@ -75,13 +76,13 @@ mod tests {
         ));
     }
 
-    fn pollster_read(src: &MemorySource, offset: u64, len: usize) -> Result<Vec<u8>, MediaError> {
+    fn pollster_read(src: &MemorySource, offset: u64, len: usize) -> Result<Bytes, MediaError> {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
         let mut fut = src.read(offset, len);
         match std::future::Future::poll(std::pin::Pin::new(&mut fut), &mut cx) {
             std::task::Poll::Ready(r) => r,
-            std::task::Poll::Pending => panic!("MemorySource::read must be ready"),
+            std::task::Poll::Pending => panic!("memory read pending"),
         }
     }
 }

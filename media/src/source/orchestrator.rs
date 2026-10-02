@@ -19,6 +19,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
+use bytes::Bytes;
+
 use crate::error::MediaError;
 
 /// mediabunny `URL_SOURCE_MIN_LOAD_AMOUNT`.
@@ -188,15 +190,16 @@ impl ReadOrchestrator {
             .collect()
     }
 
-    pub async fn read(self: &Arc<Self>, start: u64, end: u64) -> Result<Vec<u8>, MediaError> {
+    pub async fn read(self: &Arc<Self>, start: u64, end: u64) -> Result<Bytes, MediaError> {
         if end <= start {
-            return Ok(Vec::new());
+            return Ok(Bytes::new());
         }
         match self.begin_read(start, end)? {
-            ReadKick::Ready(bytes) => Ok(bytes),
+            ReadKick::Ready(bytes) => Ok(Bytes::from(bytes)),
             ReadKick::Pending(cell) => CompleteFut(cell)
                 .await
-                .unwrap_or_else(|| Err(MediaError::Source("read cancelled".into()))),
+                .unwrap_or_else(|| Err(MediaError::Source("read cancelled".into())))
+                .map(Bytes::from),
         }
     }
 

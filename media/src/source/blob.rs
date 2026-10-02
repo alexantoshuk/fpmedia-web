@@ -3,6 +3,7 @@
 //! mediabunny `BlobSource`: prefer `blob.slice(start,end).arrayBuffer()` when
 //! `blob.stream()` is unreliable (Safari/iOS). Same approach here.
 
+use bytes::Bytes;
 use js_sys::Uint8Array;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Blob;
@@ -42,15 +43,13 @@ impl MediaSource for BlobSource {
             let available = (size - offset) as usize;
             let want = len.min(available);
             if want == 0 {
-                return Ok(Vec::new());
+                return Ok(Bytes::new());
             }
 
-            let end = offset + want as u64;
-            web_sys::console::log_1(
-                &format!("webmedia: blob.slice({offset},{end}).arrayBuffer()").into(),
-            );
-
             // mediabunny: `await blob.slice(start, end).arrayBuffer()`
+            // Do not console.log every read — 8 MiB play prefetches flood the
+            // main thread and drop paint FPS on large local masters.
+            let end = offset + want as u64;
             let slice = blob
                 .slice_with_f64_and_f64(offset as f64, end as f64)
                 .map_err(MediaError::from)?;
@@ -58,9 +57,10 @@ impl MediaSource for BlobSource {
                 .await
                 .map_err(MediaError::from)?;
             let array = Uint8Array::new(&buffer);
-            let out = array.to_vec();
-            web_sys::console::log_1(&format!("webmedia: blob read ok got={}", out.len()).into());
-            Ok(out)
+            // One copy into WASM; [`CachedSource`] + [`bytes::Bytes`] share from here.
+            let mut v = vec![0u8; array.length() as usize];
+            array.copy_to(&mut v);
+            Ok(Bytes::from(v))
         })
     }
 }

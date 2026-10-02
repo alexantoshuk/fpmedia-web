@@ -26,6 +26,7 @@ timecode = { path = "../timecode" }
 thiserror = { workspace = true }
 lru = { workspace = true }
 futures = { workspace = true }
+bytes = { workspace = true }
 
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }

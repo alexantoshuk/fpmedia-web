@@ -166,7 +166,7 @@ pub(super) struct DecoderCore {
     pub(super) decoder: VideoDecoder,
     pub(super) config: DecoderConfig,
     pub(super) optimize_for_latency: bool,
-    /// `prefer-hardware` on configure (Uhd main only after HW support probe).
+    /// `prefer-hardware` on configure (main play when HW probe ok; scrub never).
     pub(super) prefer_hardware: bool,
     /// Pump warm frames past consumer target
     /// ([`crate::types::PlayPolicy::decode_warm_ahead`]).
@@ -622,9 +622,13 @@ impl DecoderCore {
                 .into(),
             );
         }
-        let bytes = sanitized.as_deref().unwrap_or(sample.data.as_slice());
+        let bytes = sanitized.as_deref().unwrap_or(sample.data.as_ref());
 
-        let init = EncodedVideoChunkInit::new(&Uint8Array::from(bytes), timestamp_i32, chunk_type);
+        // EncodedVideoChunk::new copies the buffer synchronously (mediabunny
+        // keeps JS Uint8Array bytes). `view` avoids an extra WASM→JS copy of
+        // the sample payload before that copy.
+        let view = unsafe { Uint8Array::view(bytes) };
+        let init = EncodedVideoChunkInit::new(&view, timestamp_i32, chunk_type);
         let duration_us = ticks_to_micros(sample.duration_ticks as i64, sample.timescale);
         if duration_us > 0 {
             init.set_duration(duration_us.clamp(0, u32::MAX as i64) as u32);

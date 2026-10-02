@@ -18,6 +18,8 @@ use web_sys::{
     AbortController, Headers, ReadableStreamDefaultReader, Request, RequestInit, Response,
 };
 
+use bytes::Bytes;
+
 use crate::error::MediaError;
 
 use super::orchestrator::{
@@ -139,18 +141,20 @@ impl MediaSource for UrlSource {
             let available = (size - offset) as usize;
             let want = len.min(available);
             if want == 0 {
-                return Ok(Vec::new());
+                return Ok(Bytes::new());
             }
+            // No per-read console.log — same main-thread cost as BlobSource spam.
             let end = offset + want as u64;
-            web_sys::console::log_1(
-                &format!("webmedia: UrlSource orch read bytes={offset}..{end}").into(),
-            );
             orch.read(offset, end).await
         })
     }
 
     fn dispose(&self) {
         self.orch.dispose();
+    }
+
+    fn network_min_load(&self) -> bool {
+        true
     }
 }
 

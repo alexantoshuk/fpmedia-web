@@ -767,7 +767,8 @@ impl AudioOutput {
         } else {
             EncodedAudioChunkType::Delta
         };
-        let data = Uint8Array::from(sample.data.as_slice());
+        // EncodedAudioChunk::new copies synchronously — view avoids a pre-copy.
+        let data = unsafe { Uint8Array::view(sample.data.as_ref()) };
         let init = EncodedAudioChunkInit::new(data.as_ref(), ts_us, ty);
         let dur_us =
             (sample.duration_ticks as f64 * 1_000_000.0 / sample.timescale.max(1) as f64).round();

@@ -4,37 +4,40 @@
 
 ---
 
-## Handoff (2026-09-28)
+## Handoff (2026-10-02) — ChG Play judder (not holds)
 
-**HEAD:** local — SettlePolicy + cold Seek Exact fix. Ahead of `origin/main` (check `git status`).
+**Symptom (user):** local ChG full ~30 min VO still judders / micro-lags. **Do not upload ChG.**
 
-**Landed:**
+**Ladder:** ChG 20 min ≈OK (skip=0); full still FAIL; synth OK after prime; mb full VO smooth (prior).
 
-- `SettlePolicy` (clip-invariant densify yield / gop lead / PlayPrime / take_decoder).
-- Cold `seek_frame`: `ensure_indexed` + GOP warm + Exact (soft-cold only if densify busy); densify arm at pending aim. e2e: single seek (no blur+Seek), JKL wait idle/play, mute assert accessible name.
-- Probes: fmp4-gap, JKL×3, mute smoke **pass**.
+**Series 45 s progression (ChG full):**
 
-**Cite:** mediabunny `seekToTime` → retrieve then `startVideoIterator` (not soft-cold-only).
+| step | skip/s | fps_min | holds |
+|------|--------|---------|-------|
+| pre (512 MiB + bg quantum) | 1.51 | 8 | 4 |
+| `LOCAL_CACHE_BUDGET` 8 MiB | 0.51 | ~17 | 0 |
+| + want-only (no bg/margin/`prefetch`) | **0.22** | ~20 | 0 |
+
+Still FAIL (`skip/s`≥0.15, `held_min` 0). Most full skips in first ~2 s after probe discard; mid-play quieter.
+
+**In tree (uncommitted):** Blob local cache port (`LOCAL_CACHE_BUDGET` + want-only) + prior dirty Play-clock/`Bytes`/`sync_source` — **split commits**. Probe: `e2e/_chg_series_probe.mjs`.
+
+**Cite:** `mediabunny: src/source.ts BlobSource` (`maxCacheSize ?? 8MiB`, JS orch `Uint8Array`).
 
 ---
 
 ## Next up
 
-### Media engine (priority)
+### Play lag
 
-1. Native `FileSource` (`Seek`+`Read`, `cfg(not(wasm32))`) — replace `open_mp4_path` full `fs::read`.
-2. no-Range → `ReadableStreamSource` (host full-download stays for now).
-3. Drop `re_mp4` git pin when crates.io has [#35](https://github.com/rerun-io/re_mp4/pull/35).
-4. Later / opt-in: enable cargo feature `hevc` + harden dual-HW if shipping H.265 again (+ `e2e:stress:matrix:hevc`).
+1. Dig remaining full gap (prime skip / thin held / `warm_sample_bytes` 0.5 MiB WASM tiles) — **cite before edit**; or commit cache port now as partial.
+2. Optional mb same-wall series.
+
+### Also open
+
+1. Drop `re_mp4` fork when upstream has #35 + #37.
+2. Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc`.
 
 ### Later
 
-- Background play while tab hidden (`AudioContinue`: audio keeps running, skip paint, sync canvas on visible) — after Freeze; Web Audio may still suspend (not 1:1 with `<video>`). Default stays Freeze. Strip cache while hidden = best-effort / throttled (browser); not a hard fail.
-- Pure audio path: `AudioPlayer` + `media_components::audio` (`AudioRef`) reusing `webmedia::audio` (mirror of `VideoPlayer`, thin — no canvas/scrub). Optional later: waveform chrome (not required for the element API).
-- Hover thumbs optional: Web Worker + OffscreenCanvas if Play+thumb janks main-thread present.
-- 4K loop/EOF residual: first-GOP warm after wrap — holds already 0; see `skills/media.md` “4K residual loop/EOF seam”. No committed 4K plate in testvideo yet.
-- Broader packet / sample / canvas sink layering (decode pump+consumer shipped).
-- Dual-source compare layout hooks.
-- Publish `webmedia` / `media_components` crates for reuse by host apps.
-- Production player chrome (demo controls in `app` stay for now).
-- Optional later: branch `SettlePolicy` by GOP/resolution only if probes demand (defaults shipped clip-invariant).
+- Tab-hidden `AudioContinue`; pure `AudioPlayer`; thumb Worker; 4K loop residual; dual-source; publish crates; production chrome.

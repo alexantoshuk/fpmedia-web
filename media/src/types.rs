@@ -449,8 +449,10 @@ pub const PLAY_EOF_LEAD_SECS_UHD: f64 = 1.0;
 /// Per-clip **play** knobs (primary). Derived from coded height, not GOP.
 ///
 /// Local invention for Uhd queue/warm/EOF (mediabunny has no resolution play
-/// profile). HW preference mirrors mediabunny optional
-/// `decoderOptions.hardwareAcceleration` (PR #406) — only on Uhd main decoder.
+/// profile). `prefer_hardware` on the policy documents Uhd intent; **main** play
+/// always probes HW when allowed (`WebCodecsDecoder::create`). Scrub/thumb keep
+/// [`PlayPolicy::hd`] with no HW (mediabunny `decoderOptions.hardwareAcceleration`,
+/// PR #406 — dual HW stalls).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayPolicy {
     pub class: ResolutionClass,
@@ -458,13 +460,13 @@ pub struct PlayPolicy {
     pub presentation_cap: usize,
     /// Packet-pump warm frames past the consumer target.
     pub decode_warm_ahead: usize,
-    /// Try `prefer-hardware` on configure after a separate support probe.
-    /// Support-check without HW still gates open (FHD-safe).
+    /// Uhd documents HW intent; scrub densify uses [`Self::hd`] (`false`) and
+    /// never steals HW. Main play probes HW via `create` regardless of Hd/Uhd.
     pub prefer_hardware: bool,
 }
 
 impl PlayPolicy {
-    /// Historical Full-HD defaults — also used for scrub decoder (never steal HW).
+    /// Historical Full-HD queue/warm defaults — scrub/thumb knobs (never steal HW).
     pub fn hd() -> Self {
         Self {
             class: ResolutionClass::Hd,
@@ -1127,7 +1129,10 @@ pub struct EncodedSample {
     pub duration_ticks: u64,
     pub timescale: u64,
     /// Raw sample bytes (AVCC for AVC).
-    pub data: Vec<u8>,
+    ///
+    /// [`bytes::Bytes`] so cache hits share the window buffer with decode
+    /// (`mediabunny:` packet bytes stay one allocation into the chunk).
+    pub data: bytes::Bytes,
 }
 
 impl EncodedSample {
@@ -1177,7 +1182,7 @@ pub struct EncodedAudioSample {
     pub composition_timestamp_ticks: i64,
     pub duration_ticks: u64,
     pub timescale: u64,
-    pub data: Vec<u8>,
+    pub data: bytes::Bytes,
 }
 
 impl EncodedAudioSample {
