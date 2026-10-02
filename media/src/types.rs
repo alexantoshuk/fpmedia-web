@@ -168,12 +168,8 @@ impl StripPaintLatch {
             self.accepted = candidate.to_vec();
             return &self.accepted;
         }
-        let next = stabilize_strip_segments(
-            &self.accepted,
-            candidate,
-            STRIP_PAINT_STICKY_PX,
-            width,
-        );
+        let next =
+            stabilize_strip_segments(&self.accepted, candidate, STRIP_PAINT_STICKY_PX, width);
         if next.as_slice() != self.accepted.as_slice() {
             self.accepted = next;
         }
@@ -271,7 +267,9 @@ pub fn fetch_strip_px_runs_for_width(ranges: &[(f32, f32)], width_px: u16) -> Ve
         return Vec::new();
     }
     snap_pct_runs_to_width(
-        ranges.iter().map(|&(a, b)| (a as f64 * 100.0, b as f64 * 100.0)),
+        ranges
+            .iter()
+            .map(|&(a, b)| (a as f64 * 100.0, b as f64 * 100.0)),
         width_px,
     )
 }

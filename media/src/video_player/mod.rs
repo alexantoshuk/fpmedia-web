@@ -140,10 +140,13 @@ struct Shared {
     scrub_dir: Cell<i8>,
     /// Last aim seen while updating `scrub_dir` (drag samples only).
     prev_scrub_aim: Cell<Option<FrameId>>,
-    /// Optional AAC (etc.) sink — drives [`MediaClock`] when present.
+    /// Optional AAC (etc.) sink — drives timeline when present and playing.
     audio: RefCell<Option<Rc<AudioOutput>>>,
+    /// Silent `AudioContext` timeline when there is no AAC track
+    /// (`mediabunny: media-player getPlaybackTime` always uses AudioContext).
+    playback_clock: Option<Rc<crate::audio::PlaybackClock>>,
     clock: RefCell<MediaClock>,
-    /// Wall `performance.now()/1000` origin while playing without audio.
+    /// Wall `performance.now()/1000` origin — shuttle `>4×` only (or paused snaps).
     wall_origin: Cell<Option<f64>>,
     /// File-byte fetch coverage (demo scrubber gray strip).
     fetch_map: std::sync::Arc<crate::FetchMap>,
@@ -383,6 +386,25 @@ impl VideoPlayer {
                 None
             }
         };
+        let playback_clock = if audio.is_none() {
+            match crate::audio::PlaybackClock::create() {
+                Ok(c) => {
+                    web_sys::console::log_1(
+                        &"webmedia: PlaybackClock (silent AudioContext) ready".into(),
+                    );
+                    Some(Rc::new(c))
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(
+                        &format!("webmedia: PlaybackClock disabled ({e}); wall clock fallback")
+                            .into(),
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let shared = Rc::new(Shared {
             player: RefCell::new(player),
             presentation: RefCell::new(VecDeque::new()),
@@ -418,6 +440,7 @@ impl VideoPlayer {
             scrub_dir: Cell::new(0),
             prev_scrub_aim: Cell::new(None),
             audio: RefCell::new(audio),
+            playback_clock,
             clock: RefCell::new(MediaClock::new()),
             wall_origin: Cell::new(None),
             fetch_map,
@@ -549,7 +572,9 @@ impl VideoPlayer {
                 // mediabunny: verifyKeyPackets on retrieve — no bg full-file walk
                 // during playback (`WorkloadMode` / `allows_bg_sync_verify`).
                 if !allows_bg_sync_verify(shared.workload_hints()) {
-                    crate::util::yield_now().await;
+                    // Long park — not `sleep_ms(50)` (20 wakeups/s while Play owns
+                    // the clock). mediabunny: no bg sync walk during playback.
+                    sleep_ms(1000).await;
                     continue;
                 }
                 let track = shared.player.borrow().track_rc();
@@ -693,11 +718,29 @@ impl VideoPlayer {
                 }
             }
         } else {
-            let playing = self.shared.clock.borrow().is_playing();
+            let playing = self.shared.clock.borrow().is_playing()
+                || self
+                    .shared
+                    .playback_clock
+                    .as_ref()
+                    .is_some_and(|c| c.is_running());
             self.shared.clock.borrow_mut().set_playback_rate(rate);
+            if let Some(c) = self.shared.playback_clock.as_ref() {
+                c.set_playback_rate(rate);
+            }
             if playing {
                 self.shared.clock.borrow_mut().start(t);
-                if let Some(now) = performance_now_ms() {
+                if wall {
+                    if let Some(c) = self.shared.playback_clock.as_ref() {
+                        let _ = c.stop();
+                    }
+                    if let Some(now) = performance_now_ms() {
+                        self.shared.wall_origin.set(Some(now / 1000.0));
+                    }
+                } else if let Some(c) = self.shared.playback_clock.as_ref() {
+                    self.shared.wall_origin.set(None);
+                    c.start(t);
+                } else if let Some(now) = performance_now_ms() {
                     self.shared.wall_origin.set(Some(now / 1000.0));
                 }
             }
@@ -717,12 +760,22 @@ impl VideoPlayer {
         head.min(clock_t)
     }
 
-    /// Media timeline seconds (audio `AudioContext` when present, else wall).
+    /// Media timeline seconds.
+    ///
+    /// AAC playing → [`AudioOutput`] context clock. No track → silent
+    /// [`crate::audio::PlaybackClock`] when running. Else wall `performance`
+    /// (shuttle `>4×` / paused).
+    /// `mediabunny: examples/media-player/media-player.ts` `getPlaybackTime`.
     pub fn media_time(&self) -> f64 {
         if let Some(a) = self.shared.audio.borrow().as_ref()
             && a.is_playing()
         {
             return a.media_time();
+        }
+        if let Some(c) = self.shared.playback_clock.as_ref()
+            && c.is_running()
+        {
+            return c.media_time();
         }
         let elapsed = self
             .shared
@@ -738,6 +791,8 @@ impl VideoPlayer {
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
         if let Some(a) = audio {
             a.resume_context().await?;
+        } else if let Some(c) = self.shared.playback_clock.as_ref() {
+            c.resume_context().await?;
         }
         Ok(())
     }
@@ -745,8 +800,14 @@ impl VideoPlayer {
     /// Arm the media clock after `prime_playback` (host play path).
     ///
     /// Review / 1×–4× + audio track → decode/schedule pump (mediabunny `play` +
-    /// `runAudioIterator`; non-1× adds WSOLA stretch). Above 4× / no audio
-    /// → wall `performance`.
+    /// `runAudioIterator`; non-1× adds WSOLA stretch). No AAC → silent
+    /// [`PlaybackClock`]. Above 4× → wall `performance`.
+    ///
+    /// Silent / no-AAC PlayPrime should prefer [`Self::arm_silent_play_clock`] on
+    /// the **first present rAF** instead — arming here leaves a main-thread gap
+    /// (ChG-class open) where `AudioContext` runs ahead → skip storm.
+    /// `mediabunny: examples/media-player/media-player.ts` `play` sets
+    /// `audioContextStartTime` while `render` already loops.
     pub async fn start_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.apply_clock_event(ClockEvent::Start);
         self.shared.clock.borrow_mut().start(media_time_secs);
@@ -756,6 +817,10 @@ impl VideoPlayer {
                 let _ = a.stop();
                 a.store_playback_rate(self.playback_rate());
             }
+            if let Some(c) = self.shared.playback_clock.as_ref() {
+                let _ = c.stop();
+                c.set_playback_rate(self.playback_rate());
+            }
             if let Some(now) = performance_now_ms() {
                 self.shared.wall_origin.set(Some(now / 1000.0));
             }
@@ -763,11 +828,68 @@ impl VideoPlayer {
         }
         if let Some(a) = audio {
             self.shared.wall_origin.set(None);
+            if let Some(c) = self.shared.playback_clock.as_ref() {
+                let _ = c.stop();
+            }
             a.start_spawned(media_time_secs).await?;
+        } else {
+            self.arm_silent_play_driver(media_time_secs);
+        }
+        Ok(())
+    }
+
+    /// Sync-arm silent [`PlaybackClock`] / wall on the first play rAF (no AAC).
+    ///
+    /// Host PlayPrime sets `pending_clock_start` and calls
+    /// [`Self::finish_silent_play_prime`] from rAF so the first canvas present
+    /// lands **before** the driver runs (mediabunny `startVideoIterator` draw
+    /// then `play` / `audioContextStartTime`).
+    pub fn arm_silent_play_clock(&self, media_time_secs: f64) {
+        self.apply_clock_event(ClockEvent::Start);
+        self.shared.clock.borrow_mut().start(media_time_secs);
+        if crate::is_wall_clock_rate(self.playback_rate()) {
+            if let Some(c) = self.shared.playback_clock.as_ref() {
+                let _ = c.stop();
+                c.set_playback_rate(self.playback_rate());
+            }
+            if let Some(now) = performance_now_ms() {
+                self.shared.wall_origin.set(Some(now / 1000.0));
+            }
+            return;
+        }
+        self.arm_silent_play_driver(media_time_secs);
+    }
+
+    /// First present turn for no-AAC PlayPrime: paint presentation front, then
+    /// arm the silent clock at that frame's time.
+    ///
+    /// Presentation holds frames **after** the committed playhead (canvas already
+    /// shows it). Drawing the front here is mediabunny `startVideoIterator`'s
+    /// first canvas; clock arm matches `play` / `audioContextStartTime`.
+    /// Returns the media origin used for the driver (caller stores on session).
+    pub fn finish_silent_play_prime(&self) -> Result<f64, MediaError> {
+        let origin = if let Some(queued) = self.shared.presentation.borrow_mut().pop_front() {
+            let frame = queued.frame;
+            self.present_play_frame(frame, queued.video)?;
+            self.touch_playhead(frame);
+            self.shared.player.borrow_mut().commit_frame(frame)?;
+            self.frame_timestamp_seconds(frame)
+                .unwrap_or_else(|_| self.state().timestamp.seconds)
+        } else {
+            self.state().timestamp.seconds
+        };
+        self.arm_silent_play_clock(origin);
+        Ok(origin)
+    }
+
+    fn arm_silent_play_driver(&self, media_time_secs: f64) {
+        if let Some(c) = self.shared.playback_clock.as_ref() {
+            self.shared.wall_origin.set(None);
+            c.set_playback_rate(self.playback_rate());
+            c.start(media_time_secs);
         } else if let Some(now) = performance_now_ms() {
             self.shared.wall_origin.set(Some(now / 1000.0));
         }
-        Ok(())
     }
 
     /// Snap the media clock (pause / seek). Stops audio nodes if attached.
@@ -775,6 +897,8 @@ impl VideoPlayer {
         self.apply_clock_event(ClockEvent::Stop);
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.stop()
+        } else if let Some(c) = self.shared.playback_clock.as_ref() {
+            c.stop()
         } else {
             self.media_time()
         };
@@ -797,6 +921,8 @@ impl VideoPlayer {
         self.apply_clock_event(ClockEvent::HoldScrub);
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.hold_underrun()
+        } else if let Some(c) = self.shared.playback_clock.as_ref() {
+            c.hold()
         } else {
             self.media_time()
         };
@@ -834,6 +960,8 @@ impl VideoPlayer {
         self.apply_clock_event(ClockEvent::HoldUnderrun);
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.hold_underrun()
+        } else if let Some(c) = self.shared.playback_clock.as_ref() {
+            c.hold()
         } else {
             self.media_time()
         };
@@ -869,6 +997,8 @@ impl VideoPlayer {
         }
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.hold_underrun()
+        } else if let Some(c) = self.shared.playback_clock.as_ref() {
+            c.hold()
         } else {
             self.media_time()
         };
@@ -897,6 +1027,10 @@ impl VideoPlayer {
                 let _ = a.stop();
                 a.store_playback_rate(self.playback_rate());
             }
+            if let Some(c) = self.shared.playback_clock.as_ref() {
+                let _ = c.stop();
+                c.set_playback_rate(self.playback_rate());
+            }
             if let Some(now) = performance_now_ms() {
                 self.shared.wall_origin.set(Some(now / 1000.0));
             }
@@ -904,7 +1038,15 @@ impl VideoPlayer {
         }
         if let Some(a) = audio {
             self.shared.wall_origin.set(None);
+            if let Some(c) = self.shared.playback_clock.as_ref() {
+                let _ = c.stop();
+            }
             a.restart_warm(media_time_secs).await?;
+        } else if let Some(c) = self.shared.playback_clock.as_ref() {
+            self.shared.wall_origin.set(None);
+            c.set_playback_rate(self.playback_rate());
+            c.resume_context().await?;
+            c.start(media_time_secs);
         } else if let Some(now) = performance_now_ms() {
             self.shared.wall_origin.set(Some(now / 1000.0));
         }
@@ -1172,6 +1314,9 @@ impl VideoPlayer {
     fn snap_media_clock_to_playhead(&self) {
         let t = self.state().timestamp.seconds;
         self.shared.wall_origin.set(None);
+        if let Some(c) = self.shared.playback_clock.as_ref() {
+            c.snap(t);
+        }
         self.shared.clock.borrow_mut().snap(t);
     }
 

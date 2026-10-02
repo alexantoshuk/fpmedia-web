@@ -1630,8 +1630,12 @@ pub(super) fn gop_sample_lead(track: &crate::demux::Mp4VideoTrack, key: FrameId)
     crate::SettlePolicy::default().clamp_gop_sample_lead(n)
 }
 
-/// True when every sample in the GOP at `key` is indexed and resident in
-/// [`FetchMap`] (CachedSource windows). Cold → densify must prefetch, not decode.
+/// True when every sample in the GOP at `key` is indexed and byte-ready.
+///
+/// **Url:** resident in [`FetchMap`] (CachedSource windows) — cold → densify
+/// must prefetch, not decode. **Blob/Memory:** JS already holds the file
+/// (`mediabunny: BlobSource`); skip FetchMap — want-only WASM mirrors must not
+/// block densify / punch the gray strip via `mark_full`.
 fn scrub_gop_bytes_warm(shared: &Shared, key: FrameId) -> bool {
     let track = shared.player.borrow().track_rc();
     let indexed = track.indexed_frame_count();
@@ -1645,6 +1649,11 @@ fn scrub_gop_bytes_warm(shared: &Shared, key: FrameId) -> bool {
     }
     if ids.iter().any(|&id| id >= indexed) {
         return false;
+    }
+    // Local Blob/Memory — samples are always sliceable; FetchMap only mirrors
+    // the tiny WASM cache for the gray meter.
+    if !track.source().network_min_load() {
+        return true;
     }
     for id in ids {
         let Some(entry) = index.get(id) else {

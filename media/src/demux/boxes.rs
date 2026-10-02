@@ -184,7 +184,7 @@ async fn probe_mfra(source: &dyn MediaSource) -> Result<Option<MfraIndex>, Media
     Ok(Some(MfraIndex {
         mfra_off,
         mfra_size,
-        mfra_bytes,
+        mfra_bytes: mfra_bytes.to_vec(),
         moof_offsets,
         tfra_last_time,
     }))
@@ -363,7 +363,7 @@ async fn load_via_mfra_per_moof(
                     header_len: header_len as u8,
                     typ,
                 },
-                bytes: exact,
+                bytes: exact.to_vec(),
             });
         } else {
             loaded.push(LoadedBox {
@@ -515,7 +515,7 @@ async fn scan_top_level_from(
     let mut win = if first_len == 0 {
         Vec::new()
     } else {
-        source.read(start, first_len).await?
+        source.read(start, first_len).await?.to_vec()
     };
     if start < end && win.len() < HEADER_SIZE {
         return Err(MediaError::Mp4(format!(
@@ -724,7 +724,7 @@ async fn ensure_scan_window(
         )));
     }
     let chunk = SCAN_WINDOW.min(available).max(need);
-    *win = source.read(pos, chunk).await?;
+    *win = source.read(pos, chunk).await?.to_vec();
     *win_off = pos;
     if win.len() < need {
         return Err(MediaError::Mp4(format!(
@@ -759,7 +759,7 @@ async fn read_box_header_at_window(
         let ext = if rel + EXTENDED_HEADER_SIZE <= win.len() {
             win[rel + 8..rel + 16].to_vec()
         } else {
-            source.read(offset + 8, 8).await?
+            source.read(offset + 8, 8).await?.to_vec()
         };
         if ext.len() < 8 {
             return Err(MediaError::Mp4(format!(

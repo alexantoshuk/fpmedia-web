@@ -33,10 +33,10 @@ use self::core::{
     DecoderConfig, DecoderCore, PruneInterim, REORDER_FEED_SLACK, ensure_webcodecs_available,
 };
 use self::pump::{
-    FramePump, PumpSignals, PumpStopGuard, await_outputs_if_pending, feed_sample, feed_sample_gop,
-    finish_gop_for_target, flush_with_timeout, flush_with_timeout_ms, holds_target,
-    is_sequential_next_key, now_ms, poll_for_target, progress_signature, sleep_promise_ms,
-    ticks_to_micros, wait_for_frame_progress,
+    FramePump, LivePump, PumpPlayCursor, PumpSignals, PumpStopGuard, await_outputs_if_pending,
+    feed_sample, feed_sample_gop, finish_gop_for_target, flush_with_timeout, flush_with_timeout_ms,
+    holds_target, is_sequential_next_key, now_ms, poll_for_target, progress_signature,
+    sleep_promise_ms, ticks_to_micros, wait_for_frame_progress,
 };
 
 /// Hard backstop for the consumer pull loop when no clock is available.
@@ -53,12 +53,20 @@ const CONSUMER_STALL_MS: f64 = 5_000.0;
 pub struct WebCodecsDecoder {
     core: Rc<RefCell<DecoderCore>>,
     pump_epoch: Rc<Cell<u64>>,
+    /// Live range feeder cursor — retargeted on consumer take (no respawn).
+    play_cursor: Rc<PumpPlayCursor>,
+    /// Last spawned pump; skip respawn while this epoch is still feeding.
+    live_pump: RefCell<Option<LivePump>>,
 }
 
 impl WebCodecsDecoder {
     /// Main play/seek decoder — knobs from [`VideoMetadata::play_policy`].
+    ///
+    /// Always probes `prefer-hardware` when the host supports it (Hd and Uhd).
+    /// Scrub/thumb stay software via [`Self::create_scrub`].
+    /// mediabunny: `decoderOptions.hardwareAcceleration` (PR #406).
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
-        // HEVC on Chrome is often HW-only — allow prefer-hardware fallback.
+        // `true`: HW-only codecs (HEVC) + prefer HW for main play when available.
         Self::create_with_policy(meta, meta.play_policy(), true).await
     }
 
@@ -67,6 +75,7 @@ impl WebCodecsDecoder {
     /// (mediabunny: `decoderOptions.hardwareAcceleration`, dual-HW stall /
     /// `Unsupported configuration` when a second HEVC HW decoder configures).
     pub async fn create_scrub(meta: &VideoMetadata) -> Result<Self, MediaError> {
+        // Hd knobs (cap/warm) only — force no HW even if main play prefers it.
         Self::create_with_policy(meta, PlayPolicy::hd(), false).await
     }
 
@@ -77,13 +86,14 @@ impl WebCodecsDecoder {
         Self::create_scrub(meta).await
     }
 
-    /// `allow_hw_only_fallback` — when no-preference `isConfigSupported` is false,
-    /// retry with `prefer-hardware` (main open for HEVC). Scrub densify must
-    /// pass `false` so it never steals the HW session.
+    /// `allow_hw` — main play/seek passes `true`: (1) if no-preference
+    /// `isConfigSupported` is false, retry `prefer-hardware` (HEVC); (2) if
+    /// soft-ok, still prefer HW when the host supports it. Scrub/thumb pass
+    /// `false` so they never steal the HW session.
     async fn create_with_policy(
         meta: &VideoMetadata,
         policy: PlayPolicy,
-        allow_hw_only_fallback: bool,
+        allow_hw: bool,
     ) -> Result<Self, MediaError> {
         ensure_webcodecs_available()?;
         let config = DecoderConfig::from_meta(meta)?;
@@ -99,7 +109,7 @@ impl WebCodecsDecoder {
         let probe = config.to_web_config(optimize_for_latency, false);
         web_sys::console::log_1(
             &format!(
-                "webmedia: VideoDecoder isConfigSupported ({}, {}x{}, play={}, hw_fallback={allow_hw_only_fallback})…",
+                "webmedia: VideoDecoder isConfigSupported ({}, {}x{}, play={}, allow_hw={allow_hw})…",
                 config.codec,
                 config.width,
                 config.height,
@@ -116,7 +126,7 @@ impl WebCodecsDecoder {
             .unwrap_or(false);
 
         let mut prefer_hardware = false;
-        if !supported && allow_hw_only_fallback {
+        if !supported && allow_hw {
             let hw_probe = config.to_web_config(optimize_for_latency, true);
             let hw_support = JsFuture::from(VideoDecoder::is_config_supported(&hw_probe))
                 .await
@@ -135,7 +145,7 @@ impl WebCodecsDecoder {
             }
         }
         if !supported {
-            if !allow_hw_only_fallback {
+            if !allow_hw {
                 web_sys::console::log_1(
                     &"webmedia: scrub densify skipped (codec HW-only; refuse second HW decoder)"
                         .into(),
@@ -144,7 +154,11 @@ impl WebCodecsDecoder {
             return Err(MediaError::CodecUnsupported(config.codec.clone()));
         }
 
-        if !prefer_hardware && policy.prefer_hardware {
+        // Main play: prefer HW whenever the host supports it (Hd + Uhd). Scrub
+        // passes `allow_hw=false` so it stays software. `policy.prefer_hardware`
+        // still covers Uhd documentation; main does not depend on it alone.
+        // mediabunny: decoderOptions.hardwareAcceleration (PR #406).
+        if !prefer_hardware && (allow_hw || policy.prefer_hardware) {
             let hw_probe = config.to_web_config(optimize_for_latency, true);
             let hw_support = JsFuture::from(VideoDecoder::is_config_supported(&hw_probe))
                 .await
@@ -182,6 +196,8 @@ impl WebCodecsDecoder {
         Ok(Self {
             core: Rc::new(RefCell::new(core)),
             pump_epoch,
+            play_cursor: Rc::new(PumpPlayCursor::default()),
+            live_pump: RefCell::new(None),
         })
     }
 
@@ -304,8 +320,12 @@ impl WebCodecsDecoder {
                 drop(c);
                 // Hit in held — still keep a cross-GOP pump warm so Play does not
                 // drain the buffer dry between takes (was: return with no feeder).
+                // Retarget live feeder; do not bump epoch while it still runs
+                // (mediabunny: mediaSamplesInRange — one loop, consumer pulls).
                 if ahead < want {
-                    self.spawn_warm_pump(Rc::clone(track), key_do, target_do, target_us);
+                    self.ensure_warm_pump(Rc::clone(track), key_do, target_do, target_us);
+                } else {
+                    self.retarget_play_cursor(target_do, target_us);
                 }
                 return Ok(ready);
             }
@@ -325,6 +345,14 @@ impl WebCodecsDecoder {
                     let mut c = core.borrow_mut();
                     c.collect_and_prune_held(target_us)?;
                     if let Some(ready) = c.take_held(target_us) {
+                        let ahead = c.held.iter().filter(|h| h.pts_us > target_us).count();
+                        let want = c.warm_ahead;
+                        drop(c);
+                        if ahead < want {
+                            self.ensure_warm_pump(Rc::clone(track), key_do, target_do, target_us);
+                        } else {
+                            self.retarget_play_cursor(target_do, target_us);
+                        }
                         return Ok(ready);
                     }
                     let idle = c.decode_queue_size() == 0
@@ -402,10 +430,16 @@ impl WebCodecsDecoder {
         //
         // Bump epoch first so a prior background warm-fill / stray pump stops
         // before this range starts (only one feeder on the decoder).
+        self.retarget_play_cursor(target_do, target_us);
         self.pump_epoch.set(self.pump_epoch.get().wrapping_add(1));
         let pump_epoch_now = self.pump_epoch.get();
         let signals = Rc::new(PumpSignals::default());
+        *self.live_pump.borrow_mut() = Some(LivePump {
+            signals: Rc::clone(&signals),
+            epoch: pump_epoch_now,
+        });
         let stop_on_return = PumpStopGuard(Rc::clone(&signals));
+        let cursor = Rc::clone(&self.play_cursor);
         spawn_local(
             FramePump {
                 core: Rc::clone(&core),
@@ -413,8 +447,7 @@ impl WebCodecsDecoder {
                 epoch: pump_epoch_now,
                 track: Rc::clone(track),
                 key_do,
-                target_do,
-                target_us,
+                cursor,
                 signals: Rc::clone(&signals),
                 warm_only: false,
             }
@@ -446,50 +479,31 @@ impl WebCodecsDecoder {
                 // backpressure and forced a cold pump every 1–2 frames
                 // (long-GOP ~0.75×). mediabunny keeps decoding while the consumer
                 // pulls (`src/media-sink.ts` mediaSamplesInRange).
+                // Aim follows later takes via `play_cursor` (retarget, no respawn).
                 let core_bg = Rc::clone(&core);
                 let signals_bg = Rc::clone(&signals);
                 let pump_epoch_bg = Rc::clone(&self.pump_epoch);
+                let cursor_bg = Rc::clone(&self.play_cursor);
                 spawn_local(async move {
+                    // Wait until warm-ahead is parked, then leave the feeder
+                    // alive (parked). Do **not** `stop` — that killed the
+                    // continuous mediabunny-style range loop under Play.
                     let want_ahead = core_bg.borrow().warm_ahead;
                     for _ in 0..80 {
                         if pump_epoch_bg.get() != pump_epoch_now || signals_bg.stop.get() {
                             return;
                         }
-                        let can_stop = {
+                        let aim_us = cursor_bg.target_us.get();
+                        let warm = {
                             let mut c = core_bg.borrow_mut();
-                            if c.collect_and_prune_held(target_us).is_err() {
-                                signals_bg.stop.set(true);
+                            if c.collect_and_prune_held(aim_us).is_err() {
                                 return;
                             }
-                            let ahead = c.held.iter().filter(|h| h.pts_us > target_us).count();
-                            let idle = c.decode_queue_size() == 0
-                                && !c.raw_outputs_pending()
-                                && c.input_timestamps.is_empty();
-                            ahead >= want_ahead || (signals_bg.done.get() && idle)
+                            c.held.iter().filter(|h| h.pts_us > aim_us).count() >= want_ahead
+                                || signals_bg.done.get()
                         };
-                        if can_stop {
-                            break;
-                        }
-                        wait_for_frame_progress(&core_bg).await;
-                    }
-                    if pump_epoch_bg.get() != pump_epoch_now {
-                        return;
-                    }
-                    signals_bg.stop.set(true);
-                    for _ in 0..12 {
-                        if pump_epoch_bg.get() != pump_epoch_now {
+                        if warm {
                             return;
-                        }
-                        if await_outputs_if_pending(&core_bg).await.is_err() {
-                            return;
-                        }
-                        let idle = {
-                            let mut c = core_bg.borrow_mut();
-                            let _ = c.collect_and_prune_held(target_us);
-                            c.decode_queue_size() == 0 && !c.raw_outputs_pending()
-                        };
-                        if idle {
-                            break;
                         }
                         wait_for_frame_progress(&core_bg).await;
                     }
@@ -655,17 +669,28 @@ impl WebCodecsDecoder {
     /// Background packet pump to refill `held` after a warm take (cross-GOP).
     ///
     /// Early `take_held` used to return with no feeder — Play then drained held
-    /// and underran at the next GOP. Bumps `pump_epoch` so only one feeder runs.
-    fn spawn_warm_pump(
+    /// and underran at the next GOP. **Retarget** a live feeder when possible;
+    /// only bump `pump_epoch` when the previous pump is dead.
+    /// mediabunny: `src/media-sink.ts` `mediaSamplesInRange` — one packet loop
+    /// while the consumer pulls (no respawn per sample).
+    fn ensure_warm_pump(
         &self,
         track: Rc<Mp4VideoTrack>,
         key_do: usize,
         target_do: usize,
         target_us: i64,
     ) {
+        self.retarget_play_cursor(target_do, target_us);
+        if self.pump_is_live() {
+            return;
+        }
         self.pump_epoch.set(self.pump_epoch.get().wrapping_add(1));
         let pump_epoch_now = self.pump_epoch.get();
         let signals = Rc::new(PumpSignals::default());
+        *self.live_pump.borrow_mut() = Some(LivePump {
+            signals: Rc::clone(&signals),
+            epoch: pump_epoch_now,
+        });
         spawn_local(
             FramePump {
                 core: Rc::clone(&self.core),
@@ -673,13 +698,25 @@ impl WebCodecsDecoder {
                 epoch: pump_epoch_now,
                 track,
                 key_do,
-                target_do,
-                target_us,
+                cursor: Rc::clone(&self.play_cursor),
                 signals,
                 warm_only: true,
             }
             .run(),
         );
+    }
+
+    fn retarget_play_cursor(&self, target_do: usize, target_us: i64) {
+        self.play_cursor.target_do.set(target_do);
+        self.play_cursor.target_us.set(target_us);
+    }
+
+    fn pump_is_live(&self) -> bool {
+        let epoch = self.pump_epoch.get();
+        self.live_pump
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.epoch == epoch && !p.signals.stop.get() && !p.signals.done.get())
     }
 
     /// Decode every presentation frame in the GOP starting at sync `key_frame`.

@@ -226,18 +226,44 @@ pub fn Video(
                     return;
                 }
 
-                // Session is armed only after prime + clock start. Skip present while
-                // priming / if a stale `playing` flag has no session — otherwise
-                // `DuePresent::Ended` → `stop_playback` can bump async_id mid-PlayPrime.
-                let restarting = {
+                // Session is armed only after prime (+ deferred silent clock on
+                // first tick). Skip present while priming / if a stale `playing`
+                // flag has no session — otherwise `DuePresent::Ended` →
+                // `stop_playback` can bump async_id mid-PlayPrime.
+                let (restarting, pending_clock, media_origin) = {
                     let borrow = session.borrow();
                     let Some(s) = borrow.as_ref() else {
                         return;
                     };
-                    s.restarting
+                    (s.restarting, s.pending_clock_start, s.media_origin)
                 };
                 if restarting {
                     return;
+                }
+
+                // No-AAC: paint presentation front then arm PlaybackClock / wall
+                // (mediabunny: startVideoIterator draw → play / audioContextStartTime).
+                if pending_clock {
+                    if let Some(s) = session.borrow_mut().as_mut() {
+                        s.pending_clock_start = false;
+                    }
+                    if let Ok(borrow) = player.try_borrow()
+                        && let Some(p) = borrow.as_ref()
+                    {
+                        match p.finish_silent_play_prime() {
+                            Ok(origin) => {
+                                if let Some(s) = session.borrow_mut().as_mut() {
+                                    s.media_origin = origin;
+                                }
+                            }
+                            Err(e) => {
+                                web_sys::console::warn_1(
+                                    &format!("webmedia: silent play prime present: {e}").into(),
+                                );
+                                p.arm_silent_play_clock(media_origin);
+                            }
+                        }
+                    }
                 }
 
                 // Tab hidden: clock soft-held — do not present_due (would skip-catch).

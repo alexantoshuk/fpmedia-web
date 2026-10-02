@@ -385,8 +385,9 @@ impl VideoPlayer {
 
     /// Snap live play clock back to the committed playhead (shuttle clock race).
     ///
-    /// Wall / muted shuttle: reset `MediaClock` + `wall_origin`. Audio-driven
-    /// shuttle: soft-hold then `restart_warm` so `media_time()` follows again.
+    /// AAC: soft-hold then `restart_warm`. Silent [`PlaybackClock`] / wall: reset
+    /// origins. Audio-driven shuttle: soft-hold then `restart_warm` so
+    /// `media_time()` follows again.
     pub(super) fn snap_playing_clock_to_playhead(&self) {
         let playhead = self.state().frame;
         let Ok(t) = self.frame_timestamp_seconds(playhead) else {
@@ -411,6 +412,10 @@ impl VideoPlayer {
                     );
                 }
             });
+        } else if let Some(c) = self.shared.playback_clock.as_ref() {
+            self.shared.clock.borrow_mut().start(t);
+            self.shared.wall_origin.set(None);
+            c.start(t);
         } else {
             self.shared.clock.borrow_mut().start(t);
             if let Some(now) = performance_now_ms() {
@@ -480,6 +485,7 @@ impl VideoPlayer {
         }
 
         let mut did_draw = false;
+        let mut skipped_any = false;
         loop {
             let front_frame = self.shared.presentation.borrow().front().map(|q| q.frame);
             let Some(front_frame) = front_frame else {
@@ -502,7 +508,13 @@ impl VideoPlayer {
                 .borrow_mut()
                 .pop_front()
                 .expect("front checked");
+            // Drop overdue queued frames so Play stays on the clock (smoothness).
+            // Product: Exact = seek/Pause; Play ≠ paint every frame (`product.md`).
+            // mediabunny `updateNextFrame`: overdue samples are drawn in a tight
+            // loop (only the last is visible) — equivalent to skip-to-latest here.
+            // Do **not** soft-pace / catch-up burst (micro-stutter).
             if next_also_due {
+                skipped_any = true;
                 let lag_ms = ((media_time_secs - start) * 1000.0).max(0.0);
                 self.shared.last_behind_ms.set(Some(lag_ms));
                 self.shared
@@ -523,6 +535,22 @@ impl VideoPlayer {
             self.shared.player.borrow_mut().commit_frame(queued.frame)?;
             did_draw = true;
             break;
+        }
+
+        // Silent PlaybackClock only: after skip-to-latest, realign the driver to
+        // the painted playhead so the next rAF is not still overdue (ChG full
+        // multi-second skip storm while decode catches up). AAC keeps audio as
+        // master — do not snap. mediabunny: updateNextFrame draws overdue then
+        // waits for a future sample; no separate skip meter.
+        if skipped_any
+            && did_draw
+            && self
+                .shared
+                .playback_clock
+                .as_ref()
+                .is_some_and(|c| c.is_running())
+        {
+            self.snap_playing_clock_to_playhead();
         }
 
         Ok(DuePresent::Playing { did_draw })

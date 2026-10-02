@@ -30,11 +30,13 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 ## Invariants
 
 - **Primary position** = presentation `FrameId` (0-based), not `time * fps`.
-- Exact frame N uses keyframe cascade (nearest sync → decode → target), including B-frame / decode-order windows.
+- **Exact vs Play (agreed):** “Frame-accurate” means **seek / step / scrub settle / Pause** — Exact decode to the aimed `FrameId`, and the paused canvas is that frame. **Continuous Play prioritizes smoothness** (steady cadence, A/V sync, no micro-stutter) over painting every presentation frame. Do **not** invent Play-only “show every frame” / soft-pace / catch-up pipelines that fight realtime; prefer mediabunny media-player present+clock patterns (`examples/media-player/media-player.ts`). Shuttle (≥2×) may drop overdue frames.
+- Exact frame N uses keyframe cascade (nearest sync → decode → target), including B-frame / decode-order windows — for **seek / settle / step / Pause**, not as a Play smoothness tax.
 - Player layout/state must allow **1–2 media sources** later (compare) — never hard-assume a single source forever.
 - `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, source metadata via `VideoRef::metadata` / `VideoPlayer::metadata()`.
-- Continuous play uses a **wall-clock** media timeline until an audio track exists; then video slaves to audio
-  (`AudioContext` clock — mediabunny media-player pattern).
+- Continuous play timeline: mediabunny always drives `getPlaybackTime` from **`AudioContext`**
+  (even with no audio track). We use AAC `AudioOutput` when present; otherwise silent
+  `PlaybackClock` — wall `performance` only for shuttle `>4×` / fallback.
 - Audio decode/output lives in the **`webmedia` engine** (`audio/` module), not inside `VideoRef`. UI hosts stay thin
   (volume/mute/transport **API** only — no keyboard bindings). A future pure-**`<Audio>` / `AudioRef`** reuses the same
   engine modules without a video track or canvas.
@@ -42,10 +44,10 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
   progress-bar chrome math for caches live in **`media_components::helpers`**; demo transport /
   keyboard stay in **`app`**.
 - **Hover thumbs:** Frame.io-style timeline preview. **Agreed UX:** Play **and** Pause, not while scrubbing; must not drive densify (buffer / Covered / Exact). **Shipped:** feature/`ThumbPolicy`/lazy `ThumbPreview` (3rd decoder → ThumbCache) + `HoverThumbPreview`.
-- **Play first, scrub second:** smooth **1× play with audio** must work for any supported clip (incl. 4K via
-  `PlayPolicy`). Scrub/densify yields while playing (`EngineMode::Play`). Full-HD play+scrub knobs stay on
+- **Play first, scrub second:** smooth **1× play** (cadence + audio when present) must work for any supported clip (incl. 4K via
+  `PlayPolicy`). Exactness is Pause/seek/step — not a reason to slow Play. Scrub/densify yields while playing (`EngineMode::Play`). Full-HD play+scrub knobs stay on
   the historical Hd defaults — do not retune them when adding Uhd play ahead/HW.
-- **Play vs scrub residency (agreed):** Play stays mediabunny-light (tiny `VideoFrame` pool, densify off). Scrub densify critical path = **decode → `ImageBitmap` → canvas** (`mediabunny:` CanvasSink-style). `ScrubChunkStore` holds **resident markers** only (gap geometry). Demo strip: dim green = marker coverage, bright green = blit window (two CSS gradient overlays; kept on Play for markers). **Seek / settle** paint decode `VideoFrame`. **Next / Prev** prefer VF ring, else warm blit, else soft warm decode (densify keeps running). Resize/fullscreen keeps scrub trail; canvas buffer wipe → repaint from `displayed` (else warm blit).
+- **Play vs scrub residency (agreed):** Play stays mediabunny-light (tiny `VideoFrame` pool, densify off). Scrub densify critical path = **decode → `ImageBitmap` → canvas** (`mediabunny:` CanvasSink-style). `ScrubChunkStore` holds **resident markers** only (gap geometry). Demo scrubber: gray = FetchMap bytes, dim green = marker coverage, bright green = blit window (two CSS overlays; markers kept on Play). No separate buffer meter bars — live decode numbers live in `pipeline` / hidden `pipeline-json`. **Seek / settle** paint decode `VideoFrame`. **Next / Prev** prefer VF ring, else warm blit, else soft warm decode (densify keeps running). Resize/fullscreen keeps scrub trail; canvas buffer wipe → repaint from `displayed` (else warm blit).
 - **Playback rate:** review slider `0.25…1.75` (demo UI); API allows up to **8×**. Demo **JKL** (forward only): ladder `1, 2, 4, 8` — **J** slower, **L** faster, **K** → **1×** + play/pause (unlike **Space**, which toggles without resetting rate). Fixed-pitch audio through **4×** (WSOLA ≈ HTML `preservesPitch`); **8×** silent. Shuttle present policy still starts at **2×**. **Reverse playback removed** (notes in `skills/media.md`).
 
 ---

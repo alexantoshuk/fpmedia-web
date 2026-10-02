@@ -832,17 +832,7 @@ impl Mp4VideoTrack {
         if from_do > to_do {
             return Ok(Vec::new());
         }
-        let frames: Vec<FrameId> = {
-            let index = self.index.borrow();
-            let mut entries: Vec<_> = index
-                .frames()
-                .iter()
-                .filter(|e| e.decode_order >= from_do && e.decode_order <= to_do)
-                .map(|e| (e.decode_order, e.frame))
-                .collect();
-            entries.sort_by_key(|(d, _)| *d);
-            entries.into_iter().map(|(_, f)| f).collect()
-        };
+        let frames = self.index.borrow().frames_in_decode_range(from_do, to_do);
         let mut out = Vec::with_capacity(frames.len());
         for f in frames {
             out.push(self.encoded_sample(f).await?);
@@ -860,27 +850,10 @@ impl Mp4VideoTrack {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let frames: Vec<FrameId> = {
-            let index = self.index.borrow();
-            let next_key_do = index
-                .frames()
-                .iter()
-                .filter(|e| e.is_sync && e.decode_order > key_do)
-                .map(|e| e.decode_order)
-                .min();
-            let mut entries: Vec<_> = index
-                .frames()
-                .iter()
-                .filter(|e| {
-                    e.decode_order > after_do
-                        && next_key_do.map(|nk| e.decode_order < nk).unwrap_or(true)
-                })
-                .map(|e| (e.decode_order, e.frame))
-                .collect();
-            entries.sort_by_key(|(d, _)| *d);
-            entries.truncate(limit);
-            entries.into_iter().map(|(_, f)| f).collect()
-        };
+        let frames = self
+            .index
+            .borrow()
+            .frames_after_in_gop(key_do, after_do, limit);
         let mut out = Vec::with_capacity(frames.len());
         for f in frames {
             out.push(self.encoded_sample(f).await?);
@@ -889,6 +862,9 @@ impl Mp4VideoTrack {
     }
 
     /// Next `limit` samples after `after_do` in **track** decode order (crosses GOPs).
+    ///
+    /// Uses [`FrameIndex::frames_after_decode`] (O(limit)) — a full-index
+    /// filter+sort here was ChG full Play judder (45k× per packet).
     pub async fn samples_after_decode(
         &self,
         after_do: usize,
@@ -897,18 +873,7 @@ impl Mp4VideoTrack {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let frames: Vec<FrameId> = {
-            let index = self.index.borrow();
-            let mut entries: Vec<_> = index
-                .frames()
-                .iter()
-                .filter(|e| e.decode_order > after_do)
-                .map(|e| (e.decode_order, e.frame))
-                .collect();
-            entries.sort_by_key(|(d, _)| *d);
-            entries.truncate(limit);
-            entries.into_iter().map(|(_, f)| f).collect()
-        };
+        let frames = self.index.borrow().frames_after_decode(after_do, limit);
         let mut out = Vec::with_capacity(frames.len());
         for f in frames {
             out.push(self.encoded_sample(f).await?);

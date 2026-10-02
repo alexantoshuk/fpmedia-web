@@ -368,28 +368,41 @@ pub(super) async fn run_play_prime(
     }
 
     let media_origin = p.state().timestamp.seconds;
-    // Pause button / scrub soft-held the AudioDecoder — warm restart (no
-    // isConfigSupported). Open / EOF / abort-prime stay on cold start_media_clock.
-    // mediabunny: examples/media-player play() → buffers(t) after pause.
-    let clock = if p.take_audio_warm_resume() {
-        web_sys::console::log_1(&"webmedia: play clock warm resume".into());
-        p.resume_media_clock(media_origin).await
+    // No AAC: defer silent PlaybackClock / wall arm to the first present rAF.
+    // Arming here (after long prime on ChG-class masters) lets AudioContext run
+    // ahead of the first `present_due` → skip-to-latest storm.
+    // mediabunny: `play` sets `audioContextStartTime` while `render` already loops.
+    // AAC: still warm/cold start here so schedule has headroom before rAF.
+    let defer_silent_clock = !p.has_audio();
+    let pending_clock_start = if defer_silent_clock {
+        let _ = p.take_audio_warm_resume();
+        web_sys::console::log_1(&"webmedia: play clock defer silent→first rAF".into());
+        true
     } else {
-        p.start_media_clock(media_origin).await
+        // Pause button / scrub soft-held the AudioDecoder — warm restart (no
+        // isConfigSupported). Open / EOF / abort-prime stay on cold start_media_clock.
+        // mediabunny: examples/media-player play() → buffers(t) after pause.
+        let clock = if p.take_audio_warm_resume() {
+            web_sys::console::log_1(&"webmedia: play clock warm resume".into());
+            p.resume_media_clock(media_origin).await
+        } else {
+            p.start_media_clock(media_origin).await
+        };
+        if let Err(e) = clock {
+            if still_queued() {
+                error.set(Some(e.to_string()));
+                park_failed_prime();
+            }
+            return false;
+        }
+        if !still_queued() {
+            if p.is_playing() {
+                p.pause();
+            }
+            return false;
+        }
+        false
     };
-    if let Err(e) = clock {
-        if still_queued() {
-            error.set(Some(e.to_string()));
-            park_failed_prime();
-        }
-        return false;
-    }
-    if !still_queued() {
-        if p.is_playing() {
-            p.pause();
-        }
-        return false;
-    }
     let last_ui_ms = performance_now_ms().unwrap_or(0.0);
 
     *session.borrow_mut() = Some(PlaySession {
@@ -399,6 +412,7 @@ pub(super) async fn run_play_prime(
         restarting: false,
         holding_for_buffer: false,
         resuming_clock: false,
+        pending_clock_start,
     });
     playing.set(true);
 

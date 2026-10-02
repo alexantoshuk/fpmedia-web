@@ -239,8 +239,10 @@ pub(crate) fn build_audio_track(
     }
 
     let stsd = &track.trak(mp4).mdia.minf.stbl.stsd.contents;
+    // Only AAC `mp4a` today — PCM / other audio sample entries: ignore track
+    // (do not fail open). Local re_mp4 PCM FourCC work stays out of this pin.
     let StsdBoxContent::Mp4a(mp4a) = stsd else {
-        return Err(MediaError::UnsupportedCodec);
+        return Ok(None);
     };
 
     let sample_rate = u32::from(mp4a.samplerate.value()).max(1);

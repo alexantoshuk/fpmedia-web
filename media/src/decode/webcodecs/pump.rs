@@ -38,6 +38,24 @@ pub(super) struct PumpSignals {
     pub(super) error: RefCell<Option<MediaError>>,
 }
 
+/// Playhead the live packet pump aims past (updated on each consumer take).
+///
+/// mediabunny `mediaSamplesInRange` keeps one feeder while the iterator pulls;
+/// we retarget this cursor instead of bumping `pump_epoch` on every thin-ahead
+/// take (ChG B-frame: respawn thrash → ~20 paint fps).
+#[derive(Default)]
+pub(super) struct PumpPlayCursor {
+    pub(super) target_us: Cell<i64>,
+    pub(super) target_do: Cell<usize>,
+}
+
+/// Active feeder handle — `epoch` must still match [`super::WebCodecsDecoder`]'s
+/// `pump_epoch` or the task is a zombie exiting after a hard bump.
+pub(super) struct LivePump {
+    pub(super) signals: Rc<PumpSignals>,
+    pub(super) epoch: u64,
+}
+
 /// Stops the pump on every consumer exit path (`?`, cancel, success).
 pub(super) struct PumpStopGuard(pub(super) Rc<PumpSignals>);
 
@@ -56,10 +74,11 @@ pub(super) struct FramePump {
     pub(super) epoch: u64,
     pub(super) track: Rc<Mp4VideoTrack>,
     pub(super) key_do: usize,
-    pub(super) target_do: usize,
-    pub(super) target_us: i64,
+    /// Shared play cursor — reread each turn so consumer takes retarget without
+    /// respawning (`PumpPlayCursor`).
+    pub(super) cursor: Rc<PumpPlayCursor>,
     pub(super) signals: Rc<PumpSignals>,
-    /// Consumer already took `target_us` — only refill ahead (do not wait for
+    /// Consumer already took the aim PTS — only refill ahead (do not wait for
     /// target in `held`, or we feed to EOF and pin thousands of frames).
     pub(super) warm_only: bool,
 }
@@ -75,36 +94,45 @@ impl FramePump {
         let max_feeds = (self.track.frame_count() as usize)
             .saturating_add(32)
             .max(64);
+        let mut feeds = 0usize;
         let mut saw_target = self.warm_only;
         let warm_ahead = self.core.borrow().warm_ahead;
-        for _ in 0..max_feeds {
+        loop {
             if stopped() {
                 break;
             }
+            let target_us = self.cursor.target_us.get();
+            let target_do = self.cursor.target_do.get();
             let (fed, ahead, has_target) = {
                 let c = self.core.borrow();
                 let fed = c.fed_through_order.unwrap_or(self.key_do);
-                let ahead = c.held.iter().filter(|h| h.pts_us > self.target_us).count();
-                let has_target = c.held.iter().any(|h| h.pts_us == self.target_us);
+                let ahead = c.held.iter().filter(|h| h.pts_us > target_us).count();
+                let has_target = c.held.iter().any(|h| h.pts_us == target_us);
                 (fed, ahead, has_target)
             };
             if has_target {
                 saw_target = true;
             }
-            // After the target has appeared in `held` (or was taken), park
+            // After the target has appeared in `held` (or was taken), keep
             // `warm_ahead` frames past it — may cross the next GOP.
             // Requiring `has_target` forever made the pump run to EOF once the
             // consumer took the frame (1080p held≈3200). Stopping before
             // `saw_target` would break seek (B-frames with pts>target first).
+            //
+            // When ahead is full: **park** (do not exit). Exiting forced
+            // `ensure_warm_pump` respawns and broke mediabunny's continuous
+            // `mediaSamplesInRange` feeder on long-GOP B-frame play (~20fps).
             if saw_target && ahead >= warm_ahead {
-                break;
+                self.core.borrow().wake_not_empty_waiters();
+                // Wake on consumer `take_held` (dequeue), not only outputs.
+                wait_for_capacity_progress(&self.core).await;
+                continue;
             }
-            if saw_target
-                && fed
-                    >= self
-                        .target_do
-                        .saturating_add(REORDER_FEED_SLACK + warm_ahead)
-            {
+            if saw_target && fed >= target_do.saturating_add(REORDER_FEED_SLACK + warm_ahead) {
+                wait_for_capacity_progress(&self.core).await;
+                continue;
+            }
+            if feeds >= max_feeds {
                 break;
             }
             let next = match self.track.samples_after_decode(fed, 1).await {
@@ -122,14 +150,8 @@ impl FramePump {
             }
             // Prune before/during backpressure so a long key→target cascade (PREV)
             // does not pin dozens of VideoFrames and wedge decodeQueueSize.
-            match await_decode_capacity(
-                &self.core,
-                Some(self.target_us),
-                None,
-                Some(&stopped),
-                true,
-            )
-            .await
+            match await_decode_capacity(&self.core, Some(target_us), None, Some(&stopped), true)
+                .await
             {
                 Ok(()) => {}
                 Err(MediaError::Cancelled) => break,
@@ -148,6 +170,7 @@ impl FramePump {
                 *self.signals.error.borrow_mut() = Some(e);
                 break;
             }
+            feeds = feeds.saturating_add(1);
             if is_key {
                 self.core.borrow_mut().key_order = Some(sample_do);
             }

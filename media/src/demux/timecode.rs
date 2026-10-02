@@ -212,7 +212,9 @@ pub fn read_tmcd_start_sample_blocking(
     moov: &[u8],
     source: &dyn MediaSource,
 ) -> Result<Option<Timecode>, MediaError> {
-    read_tmcd_start_from_info(mp4, moov, |offset, len| block_on(source.read(offset, len)))
+    read_tmcd_start_from_info(mp4, moov, |offset, len| {
+        block_on(source.read(offset, len)).map(|b| b.to_vec())
+    })
 }
 
 /// Async variant for progressive / Blob / URL opens.

@@ -11,6 +11,10 @@ pub(super) struct PlaySession {
     pub(super) holding_for_buffer: bool,
     /// `start_media_clock` after hold in flight — do not stack resumes.
     pub(super) resuming_clock: bool,
+    /// No-AAC PlayPrime: arm silent [`webmedia::VideoPlayer::arm_silent_play_clock`]
+    /// on the first present rAF (not in the prime async turn).
+    /// `mediabunny: media-player play` / `audioContextStartTime`.
+    pub(super) pending_clock_start: bool,
 }
 
 /// Rolling window of canvas presents → measured display FPS.

@@ -280,9 +280,7 @@ fn note_local_gray(fetch_map: &Option<Arc<FetchMap>>, offset: u64, len: usize, f
     if len <= NO_PREFETCH_MAX || offset >= file_size {
         return;
     }
-    let end = offset
-        .saturating_add(len as u64)
-        .min(file_size);
+    let end = offset.saturating_add(len as u64).min(file_size);
     if end > offset {
         map.note_window(offset, end);
     }
@@ -802,12 +800,8 @@ mod tests {
     fn fetch_map_mirrors_resident_windows() {
         let data: Vec<u8> = (0u8..128).collect();
         let map = Arc::new(FetchMap::new());
-        let cached = CachedSource::with_budget(
-            CountingSource::new(data),
-            32,
-            256,
-            Some(Arc::clone(&map)),
-        );
+        let cached =
+            CachedSource::with_budget(CountingSource::new(data), 32, 256, Some(Arc::clone(&map)));
 
         let _ = poll_ready(&cached, 0, 8).unwrap();
         assert!(map.file_fractions(128).is_empty());
@@ -983,12 +977,7 @@ mod tests {
         let data = vec![9u8; 256];
         let map = Arc::new(FetchMap::new());
         let counting = CountingSource::new(data);
-        let cached = CachedSource::with_budget(
-            counting.clone(),
-            64,
-            256,
-            Some(Arc::clone(&map)),
-        );
+        let cached = CachedSource::with_budget(counting.clone(), 64, 256, Some(Arc::clone(&map)));
         cached.prefetch(32, 64);
         assert_eq!(counting.reads.load(Ordering::SeqCst), 0);
         assert!(map.covers_range(32, 96), "wins={:?}", map.windows());

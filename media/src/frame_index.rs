@@ -229,6 +229,58 @@ impl FrameIndex {
         Some(ids)
     }
 
+    /// Next `limit` presentation frames after `after_do` in track decode order.
+    ///
+    /// O(`limit`) via dense [`Self::by_decode`] — do **not** scan/sort all
+    /// remaining frames (Play pump calls this every packet; ChG-class ~45k
+    /// frames made the filter+sort path a main-thread skip storm).
+    pub fn frames_after_decode(&self, after_do: usize, limit: usize) -> Vec<FrameId> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let start = after_do.saturating_add(1);
+        if start >= self.by_decode.len() {
+            return Vec::new();
+        }
+        let end = start.saturating_add(limit).min(self.by_decode.len());
+        self.by_decode[start..end].to_vec()
+    }
+
+    /// Inclusive decode-order range `from_do..=to_do` → presentation FrameIds.
+    pub fn frames_in_decode_range(&self, from_do: usize, to_do: usize) -> Vec<FrameId> {
+        if from_do > to_do || from_do >= self.by_decode.len() {
+            return Vec::new();
+        }
+        let end = to_do.saturating_add(1).min(self.by_decode.len());
+        self.by_decode[from_do..end].to_vec()
+    }
+
+    /// Next `limit` frames after `after_do` within the GOP that starts at `key_do`.
+    ///
+    /// O(`limit` + log k) — sync binary search for the next key, then `by_decode`.
+    pub fn frames_after_in_gop(
+        &self,
+        key_do: usize,
+        after_do: usize,
+        limit: usize,
+    ) -> Vec<FrameId> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let start = after_do.saturating_add(1);
+        if start >= self.by_decode.len() {
+            return Vec::new();
+        }
+        let gop_end = self.sync_by_decode.partition_point(|(d, _)| *d <= key_do);
+        let next_key_do = self.sync_by_decode.get(gop_end).map(|(d, _)| *d);
+        let end_cap = next_key_do.unwrap_or(self.by_decode.len());
+        if start >= end_cap {
+            return Vec::new();
+        }
+        let end = start.saturating_add(limit).min(end_cap);
+        self.by_decode[start..end].to_vec()
+    }
+
     /// Decode-order window from nearest keyframe through `frame` (inclusive).
     ///
     /// Samples are ordered by `decode_order` so a decoder can be fed correctly
@@ -401,6 +453,11 @@ mod tests {
         assert_eq!(index.gop_frame_ids(0), Some(vec![0, 1, 2]));
         assert_eq!(index.gop_frame_ids(3), Some(vec![3, 4]));
         assert_eq!(index.sync_frame_ids(), vec![0, 3]);
+        assert_eq!(index.frames_after_decode(0, 2), vec![1, 2]);
+        assert_eq!(index.frames_after_decode(2, 10), vec![3, 4]);
+        assert_eq!(index.frames_after_in_gop(0, 0, 10), vec![1, 2]);
+        assert_eq!(index.frames_after_in_gop(0, 1, 10), vec![2]);
+        assert_eq!(index.frames_in_decode_range(1, 3), vec![1, 2, 3]);
         assert!(index.is_sequential_next_sync_do(0, 3));
         assert!(!index.is_sequential_next_sync_do(0, 6)); // no such sync
         assert!(!index.is_sequential_next_sync_do(3, 0));

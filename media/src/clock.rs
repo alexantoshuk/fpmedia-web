@@ -1,9 +1,10 @@
 //! Shared media timeline for continuous play.
 //!
-//! Until an audio track drives playback, the clock is wall time
-//! ([`performance.now`](https://developer.mozilla.org/en-US/docs/Web/API/Performance/now)).
-//! With audio, the host/engine uses [`AudioContext.currentTime`](https://developer.mozilla.org/en-US/docs/Web/API/BaseAudioContext/currentTime)
-//! (mediabunny `examples/media-player` `getPlaybackTime`).
+//! Driver order (mediabunny `getPlaybackTime`):
+//! 1. AAC [`crate::audio::AudioOutput`] while its pump is playing.
+//! 2. Else silent [`crate::audio::PlaybackClock`] (`AudioContext`) when no track.
+//! 3. Else wall [`performance.now`](https://developer.mozilla.org/en-US/docs/Web/API/Performance/now)
+//!    (shuttle `>4×` / fallback).
 //!
 //! Playback rate multiplies driver elapsed time. Public API: forward `0.25…8`
 //! (review slider typically `0.25…1.75`).

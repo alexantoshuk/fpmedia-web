@@ -4,13 +4,15 @@
 
 ---
 
-## Handoff (2026-10-02) — scrubber strips on canvas
+## Handoff (2026-10-02) — Play lag (ChG)
 
-**Landed:** gray/Covered/Exact strips = 1 px `<canvas>` + integer `fillRect` (CSS gradients removed). Soft-merge + paint latch kept as run source. Covered `#1f5742`. User OK on BBB-class long clips.
+**Focus:** plain **Play judder** (ChG full VO). **Hover deferred.**
 
-**Still dirty (not this commit):** Play-clock / `playback_clock.rs` / demux / decode / e2e baselines / product.md / ChG probe.
+**Landed:** silent `PlaybackClock` + live pump; `finish_silent_play_prime` + skip-snap; host `pending_clock_start` (paint→arm); **`samples_after_decode` → `by_decode` O(limit)**; bg sync park 1 s on Play.
 
-**Also open — ChG Play judder:** full ~30 min FAIL series (`skip/s`≈0.22). 20 min OK. Do not upload ChG. Probe: `e2e/_chg_play_probe.mjs`.
+**Series ChG full ~45 s (after by_decode):** skip/s **0.09**, skip@t2 **1**, fps_min **23.5**, held_min **1**, holds **0**. Probe exit **0** (`skip/s`<0.15 ∧ holds=0). Strict VERDICT still FAIL (`held_min≥2` / `fps_min≥24` — `pres` healthy).
+
+**Cite:** `FrameIndex::by_decode` (local); `mediabunny: verifyKeyPackets` on retrieve. Local probe: `e2e/_chg_series_probe.mjs` (untracked).
 
 ---
 
@@ -18,7 +20,12 @@
 
 ### Play lag
 
-1. Dig remaining ChG full gap — **cite before edit**.
+1. Optional: relax series `held_min` → `pres_min`, or chase residual fps_min 23.5.
+2. Optional mb same-wall series.
+
+### Deferred
+
+1. Play hover thumb aim-decode contention.
 
 ### Also open
 
