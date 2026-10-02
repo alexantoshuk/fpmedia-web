@@ -1,65 +1,100 @@
 //! Shared UI math for media chrome (not engine decode / not keyboard bindings).
 //!
-//! Converts engine marks / fetch fractions into CSS `%` and `linear-gradient`
-//! strings for scrubber overlays. Hosts (`app`, future players) call these;
-//! they do not depend on Leptos.
+//! Converts engine marks / fetch fractions into scrubber strip pixel runs.
+//! Hosts paint with a 1 px-tall canvas + integer `fillRect` (Chrome blurs
+//! many-stop CSS gradients on long clips). mediabunny: no meter.
 
 use crate::video::{ReadyFrameKind, ReadyFrameMark, VideoMetadata};
-use webmedia::{soft_merge_frame_runs, strip_merge_gap_frames};
+use wasm_bindgen::JsCast;
+use webmedia::frame_runs_to_width;
+use webmedia::strip_merge_gap_frames;
 
-/// Hard-stop `linear-gradient` for coalesced densify / covered runs (O(1) DOM).
-///
-/// Soft-merges same-kind runs whose hole is ≤ ~1 px of `max` so Covered/Exact
-/// strips do not antialias into blurry gaps on long clips. Engine marks stay
-/// exact (`coalesce_frame_runs` / densify geometry unchanged).
-pub fn cache_strip_gradient(
+pub use webmedia::{
+    STRIP_PAINT_STICKY_PX, StripPaintLatch, StripPxRun, fetch_strip_px_runs,
+    fetch_strip_px_runs_for_width, frame_runs_to_px, snap_pct_runs_to_px, snap_pct_runs_to_width,
+    stabilize_strip_segments, strip_raster_diff_px,
+};
+
+/// Dim Covered solid ≈ `#34d399` @ 0.35 over `#141414` (ready track).
+pub const COVERED_STRIP_COLOR: &str = "#1f5742";
+
+/// Bright Exact (full `#34d399`).
+pub const EXACT_STRIP_COLOR: &str = "#34d399";
+
+/// Gray FetchMap solid.
+pub const FETCH_STRIP_COLOR: &str = "#6b7280";
+
+/// Frame marks → snapped pixel runs on `width_px` (Covered soft-merges; Exact hard).
+pub fn cache_strip_px_runs_for_width(
     marks: &[ReadyFrameMark],
     kind: ReadyFrameKind,
     max: f64,
-    color: &str,
-) -> String {
+    width_px: u16,
+) -> Vec<StripPxRun> {
     let max = max.max(1.0);
-    let merge_gap = strip_merge_gap_frames(max);
+    let merge_gap = match kind {
+        ReadyFrameKind::Covered => strip_merge_gap_frames(max).saturating_mul(2),
+        ReadyFrameKind::Exact => 0,
+    };
     let mut runs: Vec<(u64, u64)> = marks
         .iter()
         .filter(|m| m.kind == kind)
         .map(|m| (m.frame, m.end.max(m.frame)))
         .collect();
     runs.sort_by_key(|&(lo, _)| lo);
-    let merged = soft_merge_frame_runs(&runs, merge_gap);
-    if merged.is_empty() {
-        return "none".into();
-    }
-    let mut stops = String::from("linear-gradient(90deg, transparent 0%");
-    for &(lo, hi) in &merged {
-        let start = (lo as f64 / max) * 100.0;
-        let end = ((hi as f64 + 1.0) / max) * 100.0;
-        let start = start.clamp(0.0, 100.0);
-        let end = end.clamp(0.0, 100.0).max(start);
-        stops.push_str(&format!(
-            ", transparent {start:.3}%, {color} {start:.3}%, {color} {end:.3}%, transparent {end:.3}%"
-        ));
-    }
-    stops.push_str(", transparent 100%)");
-    stops
+    frame_runs_to_width(&runs, max, merge_gap, width_px)
 }
 
-/// File-byte fetch coverage (`FetchMap` fractions) → scrubber `%` gradient.
-/// Approximate; not sample-accurate.
-pub fn fetch_strip_gradient(ranges: &[(f32, f32)], color: &str) -> String {
-    if ranges.is_empty() {
-        return "none".into();
+/// Assumed-800 snap (tests / soft-merge parity).
+pub fn cache_strip_px_runs(
+    marks: &[ReadyFrameMark],
+    kind: ReadyFrameKind,
+    max: f64,
+) -> Vec<StripPxRun> {
+    cache_strip_px_runs_for_width(marks, kind, max, 800)
+}
+
+/// Device-pixel buffer width for a 1 px-tall strip canvas (`css_w × dpr`).
+pub fn strip_canvas_buffer_width(css_width: f64, device_pixel_ratio: f64) -> u16 {
+    let dpr = device_pixel_ratio.max(1.0);
+    let w = (css_width.max(0.0) * dpr).round();
+    (w as u16).max(1)
+}
+
+/// Paint opaque runs into a **1 px-tall** canvas with integer `fillRect`.
+/// Stretch the canvas in CSS to the strip height. `runs` must already be in
+/// `buffer_width` space. Returns `false` if the 2d context is unavailable.
+#[cfg(target_arch = "wasm32")]
+pub fn paint_strip_canvas_1px(
+    canvas: &web_sys::HtmlCanvasElement,
+    buffer_width: u16,
+    runs: &[StripPxRun],
+    color: &str,
+) -> bool {
+    let w = u32::from(buffer_width.max(1));
+    if canvas.width() != w || canvas.height() != 1 {
+        canvas.set_width(w);
+        canvas.set_height(1);
     }
-    let mut stops = String::from("linear-gradient(90deg, transparent 0%");
-    for &(a, b) in ranges {
-        let start = (a as f64 * 100.0).clamp(0.0, 100.0);
-        let end = (b as f64 * 100.0).clamp(0.0, 100.0).max(start);
-        stops.push_str(&format!(
-            ", transparent {start:.3}%, {color} {start:.3}%, {color} {end:.3}%, transparent {end:.3}%"
-        ));
+    let Ok(Some(ctx_obj)) = canvas.get_context("2d") else {
+        return false;
+    };
+    let Ok(ctx) = ctx_obj.dyn_into::<web_sys::CanvasRenderingContext2d>() else {
+        return false;
+    };
+    let wf = f64::from(w);
+    ctx.clear_rect(0.0, 0.0, wf, 1.0);
+    ctx.set_fill_style_str(color);
+    for &(lo, hi) in runs {
+        if hi <= lo {
+            continue;
+        }
+        // Integer device pixels only — no subpixel fillRect.
+        let x = f64::from(lo);
+        let rw = f64::from(hi.saturating_sub(lo));
+        ctx.fill_rect(x, 0.0, rw, 1.0);
     }
-    stops.push_str(", transparent 100%)");
-    stops
+    true
 }
 
 /// Playhead as a CSS width percentage of the scrubber (`0…100`).
@@ -91,8 +126,6 @@ pub fn scrub_frame_from_x(
 }
 
 /// Clamp hover-thumb left so the preview stays inside the scrubber track.
-///
-/// `x` = pointer X relative to track left; `thumb_w` = preview CSS width.
 pub fn hover_thumb_left(x: f64, track_width: f64, thumb_w: f64) -> f64 {
     let thumb_w = thumb_w.max(0.0);
     (x - thumb_w / 2.0).clamp(0.0, (track_width - thumb_w).max(0.0))
@@ -142,12 +175,46 @@ mod tests {
     }
 
     #[test]
-    fn empty_strips_are_none() {
-        assert_eq!(
-            cache_strip_gradient(&[], ReadyFrameKind::Exact, 10.0, "#fff"),
-            "none"
-        );
-        assert_eq!(fetch_strip_gradient(&[], "#fff"), "none");
+    fn empty_strips_are_empty_runs() {
+        assert!(cache_strip_px_runs(&[], ReadyFrameKind::Exact, 10.0).is_empty());
+        assert!(fetch_strip_px_runs(&[]).is_empty());
+    }
+
+    #[test]
+    fn fetch_runs_snap_to_pixel_grid() {
+        let runs = fetch_strip_px_runs(&[(0.0, 0.5)]);
+        assert_eq!(runs, vec![(0, 400)]);
+    }
+
+    #[test]
+    fn strip_buffer_width_scales_dpr() {
+        assert_eq!(strip_canvas_buffer_width(800.0, 1.0), 800);
+        assert_eq!(strip_canvas_buffer_width(800.0, 2.0), 1600);
+        assert_eq!(strip_canvas_buffer_width(0.0, 2.0), 1);
+    }
+
+    #[test]
+    fn exact_does_not_soft_merge_holes() {
+        use crate::video::ReadyFrameMark;
+        let marks = [
+            ReadyFrameMark::run(0, 0, ReadyFrameKind::Exact),
+            ReadyFrameMark::run(100, 100, ReadyFrameKind::Exact),
+        ];
+        let exact = cache_strip_px_runs(&marks, ReadyFrameKind::Exact, 8000.0);
+        assert_eq!(exact.len(), 2, "Exact keeps holes: {exact:?}");
+        let covered = [
+            ReadyFrameMark::run(0, 0, ReadyFrameKind::Covered),
+            ReadyFrameMark::run(100, 100, ReadyFrameKind::Covered),
+        ];
+        let c = cache_strip_px_runs(&covered, ReadyFrameKind::Covered, 8000.0);
+        // soft-merge gap = 2*floor(8000/800)=20; hole 99 > 20 → two segments.
+        assert_eq!(c.len(), 2, "Covered keeps real holes: {c:?}");
+        let covered_close = [
+            ReadyFrameMark::run(0, 0, ReadyFrameKind::Covered),
+            ReadyFrameMark::run(15, 15, ReadyFrameKind::Covered),
+        ];
+        let c2 = cache_strip_px_runs(&covered_close, ReadyFrameKind::Covered, 8000.0);
+        assert_eq!(c2.len(), 1, "Covered soft-merges ≤2px gap: {c2:?}");
     }
 
     #[test]

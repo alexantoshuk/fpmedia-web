@@ -11,9 +11,10 @@
 //! - **Url** (`network_min_load`): [`DEFAULT_CACHE_BUDGET`] **512 MiB** (we keep
 //!   more than mediabunny’s 64 MiB — high-RTT `/proxy` thrash).
 //! - **Blob / Memory**: [`LOCAL_CACHE_BUDGET`] **8 MiB** — match mediabunny
-//!   BlobSource size; **no** bg quantum / margin / explicit multi-MiB
-//!   `prefetch` into WASM (sample `want` only + `FetchMap`). Copying 8 MiB
-//!   windows on top of the browser Blob skip-stormed ChG full VO Play.
+//!   BlobSource size; **no** bg quantum / margin / multi-MiB WASM `prefetch`
+//!   (sample `want` only). Gray [`FetchMap`] **accumulates** on insert; quantum
+//!   expand is **prefetch-only** (densify/scrub) — per-sample expand rebuilt the
+//!   strip every NAL → flicker. Densify cold gate still skips FetchMap for local.
 //!
 //! Fill quantum 8 MiB (URL); sequential misses extend like
 //! `PREFETCH_PROFILES.network`; **hit-path** margin prefetch loads the next
@@ -246,7 +247,13 @@ fn margin_prefetch_job(
     (fill_len > 0).then_some((fill_start, fill_len))
 }
 
-fn sync_fetch_map(fetch_map: &Option<Arc<FetchMap>>, state: &CacheState) {
+/// Push cache residency into [`FetchMap`] for the gray scrubber strip.
+///
+/// - **Url** (`replace`): exact LRU mirror via [`FetchMap::set_windows`].
+/// - **Local** (`!replace`): [`FetchMap::note_window`] accumulate — want-only
+///   WASM windows must not replace the meter with one-NAL stripes / punch holes
+///   on eviction (`mediabunny: BlobSource` is fully sliceable in JS).
+fn sync_fetch_map(fetch_map: &Option<Arc<FetchMap>>, state: &CacheState, replace: bool) {
     let Some(map) = fetch_map else {
         return;
     };
@@ -256,7 +263,29 @@ fn sync_fetch_map(fetch_map: &Option<Arc<FetchMap>>, state: &CacheState) {
         .filter(|w| w.bytes.len() > NO_PREFETCH_MAX)
         .map(|w| (w.offset, w.end()))
         .collect();
-    map.set_windows(&windows);
+    if replace {
+        map.set_windows(&windows);
+    } else {
+        for &(start, end) in &windows {
+            map.note_window(start, end);
+        }
+    }
+}
+
+/// Gray-strip expand for local Blob without copying into WASM (quantum window).
+fn note_local_gray(fetch_map: &Option<Arc<FetchMap>>, offset: u64, len: usize, file_size: u64) {
+    let Some(map) = fetch_map else {
+        return;
+    };
+    if len <= NO_PREFETCH_MAX || offset >= file_size {
+        return;
+    }
+    let end = offset
+        .saturating_add(len as u64)
+        .min(file_size);
+    if end > offset {
+        map.note_window(offset, end);
+    }
 }
 
 struct Shared {
@@ -348,7 +377,10 @@ impl<S> CachedSource<S> {
     ///
     /// Skips tiny ISOBMFF header peeks (≤[`NO_PREFETCH_MAX`]) — same rule as miss fill —
     /// then syncs [`FetchMap`] so the gray scrubber strip covers `ftyp`/`moov` at open.
-    pub fn seed_windows(&self, windows: impl IntoIterator<Item = (u64, Vec<u8>)>) {
+    pub fn seed_windows(&self, windows: impl IntoIterator<Item = (u64, Vec<u8>)>)
+    where
+        S: MediaSource,
+    {
         let Ok(mut state) = self.shared.state.lock() else {
             return;
         };
@@ -364,7 +396,12 @@ impl<S> CachedSource<S> {
                 self.shared.budget,
             );
         }
-        sync_fetch_map(&self.shared.fetch_map, &state);
+        // Local accumulates; URL replaces with seed set (only moov so far).
+        sync_fetch_map(
+            &self.shared.fetch_map,
+            &state,
+            self.inner.network_min_load(),
+        );
     }
 
     #[cfg(test)]
@@ -384,6 +421,7 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
         let inner = Arc::clone(&self.inner);
         let shared = Arc::clone(&self.shared);
         let run = async move {
+            let replace = inner.network_min_load();
             let result = inner.read(start, len).await;
             if let Ok(mut state) = shared.state.lock() {
                 state.prefetch_inflight = false;
@@ -396,7 +434,7 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
                             },
                             shared.budget,
                         );
-                        sync_fetch_map(&shared.fetch_map, &state);
+                        sync_fetch_map(&shared.fetch_map, &state, replace);
                     }
                     _ => {}
                 }
@@ -431,6 +469,7 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
         let inner = Arc::clone(&self.inner);
         let shared = Arc::clone(&self.shared);
         let run = async move {
+            let replace = inner.network_min_load();
             let result = inner.read(start, len).await;
             if let Ok(mut state) = shared.state.lock()
                 && let Ok(bytes) = result
@@ -443,7 +482,7 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
                     },
                     shared.budget,
                 );
-                sync_fetch_map(&shared.fetch_map, &state);
+                sync_fetch_map(&shared.fetch_map, &state, replace);
             }
         };
 
@@ -565,7 +604,10 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
                     },
                     self.shared.budget,
                 );
-                sync_fetch_map(&self.shared.fetch_map, &state);
+                sync_fetch_map(&self.shared.fetch_map, &state, network);
+                // Local gray expand is **prefetch-only** (densify / scrub kick) —
+                // per-sample note_local_gray during Play rebuilt the strip every
+                // NAL → flicker + soft-merge blur on ChG-class files.
                 // Finish the planned quantum behind the consumer (URL only).
                 if network
                     && fill_len > blocking
@@ -584,10 +626,17 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
     }
 
     fn prefetch(&self, offset: u64, len: usize) {
-        // Local Blob/Memory: browser already holds the file; multi-MiB WASM
-        // mirrors (play `kick_prefetch_samples`, margin fills) copy-tax Play.
-        // Sample reads pull `want` on demand. `mediabunny: BlobSource` orch is JS.
+        // Local Blob/Memory: do not copy multi-MiB into WASM (Play copy-tax).
+        // Still advance the gray meter — Blob is sliceable (`mediabunny: BlobSource`).
         if !self.inner.network_min_load() {
+            let size = self.inner.size();
+            let available = size.saturating_sub(offset) as usize;
+            note_local_gray(
+                &self.shared.fetch_map,
+                offset,
+                len.min(available).min(self.shared.quantum),
+                size,
+            );
             return;
         }
         if len <= NO_PREFETCH_MAX {
@@ -754,7 +803,7 @@ mod tests {
         let data: Vec<u8> = (0u8..128).collect();
         let map = Arc::new(FetchMap::new());
         let cached = CachedSource::with_budget(
-            MemorySource::from_vec(data),
+            CountingSource::new(data),
             32,
             256,
             Some(Arc::clone(&map)),
@@ -895,6 +944,54 @@ mod tests {
             want,
             "local must not bg-finish MiB quantum"
         );
+    }
+
+    #[test]
+    fn local_sample_miss_does_not_expand_gray_quantum() {
+        // Play-path sample misses stay want-sized on FetchMap — quantum expand
+        // is prefetch-only (densify/scrub) to avoid every-NAL strip flicker.
+        let data = vec![7u8; MIN_LOAD + 4096];
+        let map = Arc::new(FetchMap::new());
+        let counting = CountingSource::new(data);
+        let cached = CachedSource::with_budget(
+            counting.clone(),
+            MIN_LOAD,
+            MIN_LOAD * 2,
+            Some(Arc::clone(&map)),
+        );
+        let _ = poll_ready(&cached, 0, 100).unwrap();
+        assert_eq!(
+            counting.bytes_fetched.load(Ordering::SeqCst),
+            100,
+            "WASM must stay want-only"
+        );
+        assert_eq!(
+            map.windows(),
+            vec![(0, 100)],
+            "sample miss must not quantum-expand gray (prefetch owns that)"
+        );
+        cached.prefetch(0, MIN_LOAD);
+        assert!(
+            map.covers_range(0, MIN_LOAD as u64),
+            "prefetch still expands gray without WASM copy, wins={:?}",
+            map.windows()
+        );
+    }
+
+    #[test]
+    fn local_prefetch_notes_gray_without_read() {
+        let data = vec![9u8; 256];
+        let map = Arc::new(FetchMap::new());
+        let counting = CountingSource::new(data);
+        let cached = CachedSource::with_budget(
+            counting.clone(),
+            64,
+            256,
+            Some(Arc::clone(&map)),
+        );
+        cached.prefetch(32, 64);
+        assert_eq!(counting.reads.load(Ordering::SeqCst), 0);
+        assert!(map.covers_range(32, 96), "wins={:?}", map.windows());
     }
 
     #[test]

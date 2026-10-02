@@ -25,6 +25,7 @@ web-sys = { workspace = true, features = [
     "Document",
     "HtmlElement",
     "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
     "CssStyleDeclaration",
     "AudioContext",
     "BaseAudioContext",

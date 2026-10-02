@@ -1,12 +1,14 @@
 //! Demo controls over [`media_components::Video`] — not production chrome.
 
 use leptos::ev;
-use leptos::html::{Div, Input};
+use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
-use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
+use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_resize_observer, use_timeout_fn};
 use media_components::helpers::{
-    cache_strip_gradient, fetch_strip_gradient, format_metadata, format_timecode_at,
-    playhead_width_css, scrub_frame_from_x,
+    COVERED_STRIP_COLOR, EXACT_STRIP_COLOR, FETCH_STRIP_COLOR, StripPaintLatch,
+    cache_strip_px_runs_for_width, fetch_strip_px_runs_for_width, format_metadata,
+    format_timecode_at, paint_strip_canvas_1px, playhead_width_css, scrub_frame_from_x,
+    strip_canvas_buffer_width,
 };
 use media_components::{
     HoverThumbApi, HoverThumbPreview, PipelineStats, ReadyFrameKind, Video, VideoRef,
@@ -59,13 +61,15 @@ fn pipeline_stats_json(stats: Option<PipelineStats>) -> String {
         s.decode_queue_size.to_string()
     };
     format!(
-        "{{\"fetch_file_ranges\":[{ranges}],\"ready_frames\":[{ready}],\"last_behind_ms\":{behind},\"underrun_holds\":{},\"underrun_hold_ms\":{:.3},\"frames_skipped\":{},\"held_len\":{held},\"decode_queue_size\":{dq},\"scrub_busy\":{},\"cache_frames\":{},\"cache_chunks\":{}}}",
+        "{{\"fetch_file_ranges\":[{ranges}],\"ready_frames\":[{ready}],\"last_behind_ms\":{behind},\"underrun_holds\":{},\"underrun_hold_ms\":{:.3},\"frames_skipped\":{},\"held_len\":{held},\"decode_queue_size\":{dq},\"scrub_busy\":{},\"cache_frames\":{},\"cache_chunks\":{},\"presentation_len\":{},\"presentation_cap\":{}}}",
         s.underrun_holds,
         s.underrun_hold_ms,
         s.frames_skipped,
         s.scrub_busy,
         s.cache_frames,
         s.cache_chunks,
+        s.presentation_len,
+        s.presentation_cap,
     )
 }
 
@@ -293,7 +297,6 @@ pub fn DemoPlayer() -> impl IntoView {
                 }
             >
                 <Scrubber video=video/>
-                <BufferMeters video=video/>
                 <p class="wm-meta" data-testid="meta">
                     {move || {
                         let mut s = video
@@ -754,8 +757,11 @@ pub fn DemoPlayer() -> impl IntoView {
                         } else {
                             String::new()
                         };
+                        let dense = if s.scrub_busy { " · dense" } else { "" };
                         format!(
-                            "held {} · decodeQ {} · skipped {}{}{}{}",
+                            "q {}/{} · held {} · decodeQ {} · skipped {}{}{}{}{}",
+                            s.presentation_len,
+                            s.presentation_cap,
                             if s.held_len == usize::MAX {
                                 "busy".into()
                             } else {
@@ -770,6 +776,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             range,
                             lag,
                             holds,
+                            dense,
                         )
                     }}
                 </p>
@@ -826,9 +833,83 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
         defer_scrub_pointer(video, frame, ScrubPointerPhase::Up);
     };
 
+    // Canvas strips (1 px tall, CSS-stretched): many-stop CSS gradients blur on
+    // long clips (Chrome/Skia). Integer fillRect only. mediabunny: no meter.
+    let fetch_canvas = NodeRef::<Canvas>::new();
+    let covered_canvas = NodeRef::<Canvas>::new();
+    let exact_canvas = NodeRef::<Canvas>::new();
+    let scrubber_ref = NodeRef::<Div>::new();
+    let css_width = RwSignal::new(800.0_f64);
+    let fetch_latch = StoredValue::new_local(StripPaintLatch::new());
+    let covered_latch = StoredValue::new_local(StripPaintLatch::new());
+    let exact_latch = StoredValue::new_local(StripPaintLatch::new());
+
+    use_resize_observer(scrubber_ref, move |entries, _| {
+        let Some(entry) = entries.first() else {
+            return;
+        };
+        let w = entry.content_rect().width();
+        if w > 0.0 {
+            css_width.set(w);
+        }
+    });
+
+    let dpr = move || {
+        window()
+            .and_then(|w| Some(w.device_pixel_ratio()))
+            .unwrap_or(1.0)
+            .max(1.0)
+    };
+
+    let paint_all = move || {
+        let css_w = css_width.get();
+        let buf_w = strip_canvas_buffer_width(css_w, dpr());
+        let pipe = video.pipeline.get();
+        let ranges = pipe
+            .as_ref()
+            .map(|s| s.fetch_file_ranges.as_slice())
+            .unwrap_or(&[]);
+        let marks = pipe
+            .as_ref()
+            .map(|s| s.ready_frames.as_slice())
+            .unwrap_or(&[]);
+        let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
+
+        if let Some(canvas) = fetch_canvas.get() {
+            let cand = fetch_strip_px_runs_for_width(ranges, buf_w);
+            let mut runs = Vec::new();
+            fetch_latch.update_value(|latch| {
+                runs = latch.resolve(&cand, buf_w).to_vec();
+            });
+            let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, FETCH_STRIP_COLOR);
+        }
+        if let Some(canvas) = covered_canvas.get() {
+            let cand =
+                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Covered, max, buf_w);
+            let mut runs = Vec::new();
+            covered_latch.update_value(|latch| {
+                runs = latch.resolve(&cand, buf_w).to_vec();
+            });
+            let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, COVERED_STRIP_COLOR);
+        }
+        if let Some(canvas) = exact_canvas.get() {
+            let cand = cache_strip_px_runs_for_width(marks, ReadyFrameKind::Exact, max, buf_w);
+            let mut runs = Vec::new();
+            exact_latch.update_value(|latch| {
+                runs = latch.resolve(&cand, buf_w).to_vec();
+            });
+            let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, EXACT_STRIP_COLOR);
+        }
+    };
+
+    Effect::new(move |_| {
+        paint_all();
+    });
+
     view! {
         <div
             class="wm-scrubber"
+            node_ref=scrubber_ref
             data-testid="scrubber"
             role="slider"
             attr:aria-valuemin="0"
@@ -893,19 +974,12 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
         >
             <HoverThumbPreview video=video api=thumb_api />
             <div class="wm-scrubber-track">
-                <div
+                <canvas
                     class="wm-scrubber-fetched"
+                    node_ref=fetch_canvas
                     data-testid="scrubber-fetched"
                     aria-hidden="true"
                     title="Resident byte cache (recent ~8 MiB windows, bounded) — not densify"
-                    style:background-image=move || {
-                        let ranges = video
-                            .pipeline
-                            .get()
-                            .map(|s| s.fetch_file_ranges)
-                            .unwrap_or_default();
-                        fetch_strip_gradient(&ranges, "#6b7280")
-                    }
                 />
                 <div
                     class="wm-scrubber-progress"
@@ -920,125 +994,13 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 aria-hidden="true"
                 title="Decode densify: dim=markers (kept on Play), bright=blit ImageBitmap"
             >
-                {move || {
-                    let marks = video
-                        .pipeline
-                        .get()
-                        .map(|s| s.ready_frames)
-                        .unwrap_or_default();
-                    let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
-                    let covered = cache_strip_gradient(&marks, ReadyFrameKind::Covered, max, "#34d399");
-                    let exact = cache_strip_gradient(&marks, ReadyFrameKind::Exact, max, "#34d399");
-                    view! {
-                        <div
-                            class="wm-ready-strip is-covered"
-                            style:background-image=covered
-                        />
-                        <div
-                            class="wm-ready-strip is-exact"
-                            style:background-image=exact
-                        />
-                    }
-                }}
-            </div>
-        </div>
-    }
-}
-
-/// Separate buffer meters under the scrubber (not overlaid on the timeline).
-#[component]
-fn BufferMeters(video: VideoRef) -> impl IntoView {
-    view! {
-        <div class="wm-buffer-meters" data-testid="buffer-meters">
-            <MeterRow
-                label="Prefetch queue"
-                detail=Signal::derive(move || {
-                    let Some(s) = video.pipeline.get() else {
-                        return String::new();
-                    };
-                    format!("{}/{}", s.presentation_len, s.presentation_cap)
-                })
-                fill_pct=Signal::derive(move || {
-                    let Some(s) = video.pipeline.get() else {
-                        return 0.0;
-                    };
-                    if s.presentation_cap == 0 {
-                        return 0.0;
-                    }
-                    (s.presentation_len as f64 / s.presentation_cap as f64) * 100.0
-                })
-            />
-            <MeterRow
-                label="Prefetch ahead"
-                detail=Signal::derive(move || {
-                    let Some(s) = video.pipeline.get() else {
-                        return String::new();
-                    };
-                    match (s.presentation_from, s.presentation_to) {
-                        (Some(a), Some(b)) if a == b => format!("frame {a}"),
-                        (Some(a), Some(b)) => format!("{a}–{b}"),
-                        _ => "—".into(),
-                    }
-                })
-                fill_pct=Signal::derive(move || {
-                    let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
-                    let Some(s) = video.pipeline.get() else {
-                        return 0.0;
-                    };
-                    let tip = s
-                        .presentation_to
-                        .unwrap_or(video.frame.get() as u64)
-                        .max(video.frame.get() as u64);
-                    (tip as f64 / max) * 100.0
-                })
-            />
-            <MeterRow
-                label="Frame cache"
-                detail=Signal::derive(move || {
-                    let Some(s) = video.pipeline.get() else {
-                        return String::new();
-                    };
-                    let phase = if s.scrub_busy { " · dense" } else { "" };
-                    let solid = if s.cache_no_gaps { " · no_gaps" } else { "" };
-                    let win = match (s.scrub_window_from, s.scrub_window_to) {
-                        (Some(a), Some(b)) => format!(" · win {a}–{b}"),
-                        _ => String::new(),
-                    };
-                    format!("{}f / {}c{phase}{solid}{win}", s.cache_frames, s.cache_chunks)
-                })
-                fill_pct=Signal::derive(move || {
-                    let Some(s) = video.pipeline.get() else {
-                        return 0.0;
-                    };
-                    let cap = s.cache_cap.max(1) as f64;
-                    ((s.cache_frames as f64 / cap) * 100.0).min(100.0)
-                })
-            />
-        </div>
-    }
-}
-
-#[component]
-fn MeterRow(label: &'static str, detail: Signal<String>, fill_pct: Signal<f64>) -> impl IntoView {
-    let test_id = match label {
-        "Prefetch queue" => "meter-prefetch-queue",
-        "Prefetch ahead" => "meter-prefetch-ahead",
-        "Frame cache" => "meter-frame-cache",
-        _ => "meter",
-    };
-    view! {
-        <div class="wm-meter" data-testid=test_id>
-            <div class="wm-meter-label">
-                <span>{label}</span>
-                <span class="wm-meter-detail" data-testid=format!("{test_id}-detail")>
-                    {move || detail.get()}
-                </span>
-            </div>
-            <div class="wm-meter-track">
-                <div
-                    class="wm-meter-fill"
-                    data-testid=format!("{test_id}-fill")
-                    style:width=move || format!("{:.3}%", fill_pct.get())
+                <canvas
+                    class="wm-ready-strip is-covered"
+                    node_ref=covered_canvas
+                />
+                <canvas
+                    class="wm-ready-strip is-exact"
+                    node_ref=exact_canvas
                 />
             </div>
         </div>

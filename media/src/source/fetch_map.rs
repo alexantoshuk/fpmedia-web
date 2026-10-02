@@ -1,6 +1,9 @@
 //! Resident file-byte coverage for the demo scrubber gray strip.
 //!
-//! Mirrored from [`super::CachedSource`] LRU windows (not a historical union).
+//! **UrlSource:** mirrored from [`super::CachedSource`] LRU windows (exact
+//! replace on sync — eviction punches the meter).
+//! **Blob/Memory:** historical union; quantum expand is prefetch-only
+//! (densify/scrub — not per-sample). Blob is already sliceable in JS.
 //! File offset → timeline % (not sample-accurate). mediabunny: no equivalent meter.
 //!
 //! **Display soft-merge:** [`Self::file_fractions`] closes gaps ≤
@@ -21,13 +24,14 @@ pub const FETCH_MAP_DISPLAY_MERGE_GAP: u64 = 8 * 1024;
 const ASSUMED_SCRUBBER_PX: u64 = 800;
 
 /// Paint-only merge threshold: at least [`FETCH_MAP_DISPLAY_MERGE_GAP`], else
-/// ~one scrubber pixel of `file_size` so sub‑pixel holes do not antialias.
+/// ~**two** scrubber pixels of `file_size` so sub‑pixel holes stay closed and
+/// 1‑px-threshold flicker (merge↔split every rAF) does not swim the gray edge.
 pub fn display_merge_gap(file_size: u64) -> u64 {
     if file_size == 0 {
         return FETCH_MAP_DISPLAY_MERGE_GAP;
     }
     let pixel = (file_size / ASSUMED_SCRUBBER_PX).max(1);
-    FETCH_MAP_DISPLAY_MERGE_GAP.max(pixel)
+    FETCH_MAP_DISPLAY_MERGE_GAP.max(pixel.saturating_mul(2))
 }
 
 /// Half-open `[start, end)` intervals, merged, file-absolute.
@@ -142,7 +146,8 @@ impl FetchMap {
     }
 
     /// Coverage as fractions of `file_size` in `0.0..1.0` for the scrubber.
-    /// Soft-merges holes ≤ [`display_merge_gap`] (moof floor or ~1 px).
+    /// Soft-merges holes ≤ [`display_merge_gap`], then snaps to an integer
+    /// scrubber pixel so f32 noise / sub‑byte edges do not jitter the CSS stops.
     pub fn file_fractions(&self, file_size: u64) -> Vec<(f32, f32)> {
         if file_size == 0 {
             return Vec::new();
@@ -151,17 +156,42 @@ impl FetchMap {
             return Vec::new();
         };
         let merged = soft_merge_windows(&ranges, display_merge_gap(file_size));
-        merged
-            .iter()
-            .filter_map(|&(s, e)| {
-                if e <= s {
-                    return None;
-                }
-                let a = (s as f64 / file_size as f64) as f32;
-                let b = (e as f64 / file_size as f64) as f32;
-                Some((a.clamp(0.0, 1.0), b.clamp(0.0, 1.0).max(a)))
-            })
-            .collect()
+        let pixel = (file_size / ASSUMED_SCRUBBER_PX).max(1);
+        let snap = |off: u64, round_up: bool| -> u64 {
+            if round_up {
+                let q = off.div_ceil(pixel);
+                q.saturating_mul(pixel).min(file_size)
+            } else {
+                (off / pixel).saturating_mul(pixel)
+            }
+        };
+        let mut out: Vec<(f32, f32)> = Vec::new();
+        for &(s, e) in &merged {
+            if e <= s {
+                continue;
+            }
+            let s = snap(s, false);
+            let e = snap(e, true).max(s.saturating_add(pixel).min(file_size));
+            if e <= s {
+                continue;
+            }
+            let a = s as f64 / file_size as f64;
+            let b = e as f64 / file_size as f64;
+            let a = ((a * ASSUMED_SCRUBBER_PX as f64).round() / ASSUMED_SCRUBBER_PX as f64)
+                .clamp(0.0, 1.0);
+            let b = ((b * ASSUMED_SCRUBBER_PX as f64).round() / ASSUMED_SCRUBBER_PX as f64)
+                .clamp(0.0, 1.0)
+                .max(a);
+            // Coalesce after snap (adjacent pixel bands → one stop pair).
+            if let Some((_, prev_b)) = out.last_mut()
+                && a <= f64::from(*prev_b) + 0.5 / ASSUMED_SCRUBBER_PX as f64
+            {
+                *prev_b = (b as f32).max(*prev_b);
+                continue;
+            }
+            out.push((a as f32, b as f32));
+        }
+        out
     }
 
     fn set_only(&self, start: u64, end: u64) {
@@ -320,7 +350,7 @@ mod tests {
     fn display_merge_gap_scales_with_file() {
         assert_eq!(display_merge_gap(0), FETCH_MAP_DISPLAY_MERGE_GAP);
         assert_eq!(display_merge_gap(800_000), FETCH_MAP_DISPLAY_MERGE_GAP); // 1 KiB < floor
-        assert_eq!(display_merge_gap(800 * 1024 * 1024), 1024 * 1024); // 1 MiB/px
+        assert_eq!(display_merge_gap(800 * 1024 * 1024), 2 * 1024 * 1024); // 2 px × 1 MiB/px
     }
 
     #[test]

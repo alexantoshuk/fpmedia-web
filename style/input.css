@@ -105,7 +105,6 @@ body {
 .wm-player:fullscreen .wm-status,
 .wm-player:fullscreen .wm-pipeline,
 .wm-player:fullscreen .wm-error,
-.wm-player:fullscreen .wm-buffer-meters,
 .wm-player:fullscreen .wm-volume,
 .wm-player:fullscreen .wm-rate {
   color: #d4d4d4;
@@ -207,12 +206,15 @@ body {
   flex: 0 0 auto;
 }
 
-/* File-byte fetch coverage (behind playhead). Not densify — see .wm-scrubber-ready. */
+/* File-byte fetch coverage (behind playhead). 1px canvas, CSS-stretched. */
 .wm-scrubber-fetched {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
-  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
 .wm-scrubber-progress {
@@ -239,53 +241,20 @@ body {
   right: 0;
   top: 2px;
   bottom: 2px;
+  width: 100%;
+  /* Replaced element: top+bottom alone leaves intrinsic 1px — force stretch. */
+  height: calc(100% - 4px);
   pointer-events: none;
-  /* background-image set inline from coalesced cache runs */
-  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
 .wm-ready-strip.is-covered {
-  opacity: 0.35;
   z-index: 0;
 }
 
 .wm-ready-strip.is-exact {
-  opacity: 0.95;
   z-index: 1;
-}
-
-.wm-buffer-meters {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-  margin-top: 0.65rem;
-}
-
-.wm-meter-label {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  font-size: 0.8rem;
-  color: var(--wm-muted);
-  font-variant-numeric: tabular-nums;
-  margin-bottom: 0.15rem;
-}
-
-.wm-meter-detail {
-  opacity: 0.9;
-}
-
-.wm-meter-track {
-  height: 8px;
-  background: #ddd6c8;
-  overflow: hidden;
-}
-
-.wm-meter-fill {
-  height: 100%;
-  width: 0%;
-  background: rgba(37, 99, 235, 0.2);
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35);
 }
 
 .wm-meta {

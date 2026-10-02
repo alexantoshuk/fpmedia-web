@@ -4,25 +4,13 @@
 
 ---
 
-## Handoff (2026-10-02) — ChG Play judder (not holds)
+## Handoff (2026-10-02) — scrubber strips on canvas
 
-**Symptom (user):** local ChG full ~30 min VO still judders / micro-lags. **Do not upload ChG.**
+**Landed:** gray/Covered/Exact strips = 1 px `<canvas>` + integer `fillRect` (CSS gradients removed). Soft-merge + paint latch kept as run source. Covered `#1f5742`. User OK on BBB-class long clips.
 
-**Ladder:** ChG 20 min ≈OK (skip=0); full still FAIL; synth OK after prime; mb full VO smooth (prior).
+**Still dirty (not this commit):** Play-clock / `playback_clock.rs` / demux / decode / e2e baselines / product.md / ChG probe.
 
-**Series 45 s progression (ChG full):**
-
-| step | skip/s | fps_min | holds |
-|------|--------|---------|-------|
-| pre (512 MiB + bg quantum) | 1.51 | 8 | 4 |
-| `LOCAL_CACHE_BUDGET` 8 MiB | 0.51 | ~17 | 0 |
-| + want-only (no bg/margin/`prefetch`) | **0.22** | ~20 | 0 |
-
-Still FAIL (`skip/s`≥0.15, `held_min` 0). Most full skips in first ~2 s after probe discard; mid-play quieter.
-
-**In tree (uncommitted):** Blob local cache port (`LOCAL_CACHE_BUDGET` + want-only) + prior dirty Play-clock/`Bytes`/`sync_source` — **split commits**. Probe: `e2e/_chg_series_probe.mjs`.
-
-**Cite:** `mediabunny: src/source.ts BlobSource` (`maxCacheSize ?? 8MiB`, JS orch `Uint8Array`).
+**Also open — ChG Play judder:** full ~30 min FAIL series (`skip/s`≈0.22). 20 min OK. Do not upload ChG. Probe: `e2e/_chg_play_probe.mjs`.
 
 ---
 
@@ -30,8 +18,7 @@ Still FAIL (`skip/s`≥0.15, `held_min` 0). Most full skips in first ~2 s afte
 
 ### Play lag
 
-1. Dig remaining full gap (prime skip / thin held / `warm_sample_bytes` 0.5 MiB WASM tiles) — **cite before edit**; or commit cache port now as partial.
-2. Optional mb same-wall series.
+1. Dig remaining ChG full gap — **cite before edit**.
 
 ### Also open
 

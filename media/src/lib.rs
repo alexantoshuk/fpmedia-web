@@ -102,7 +102,10 @@ pub use types::{
     exact_frames_to_free_for_play_vram, hover_thumb_dims, nearer_gap_with_dir,
     next_missing_sync_key, scrub_blit_cap_during_play, scrub_blit_frame_budget,
     scrub_cache_frame_budget, scrub_edge_margins, scrub_gap_fill_armed, scrub_preview_choice,
-    soft_merge_frame_runs, strip_merge_gap_frames,
+    soft_merge_frame_runs, stabilize_strip_segments, strip_merge_gap_frames,
+    strip_raster_diff_px, snap_pct_runs_to_px, snap_pct_runs_to_width,
+    fetch_strip_px_runs, fetch_strip_px_runs_for_width, frame_runs_to_px, frame_runs_to_width,
+    StripPaintLatch, StripPxRun, STRIP_PAINT_STICKY_PX,
 };
 pub use workload::{
     FRAGMENT_BACKFILL_IDLE_AHEAD, PLAY_THUMB_AIM_DECODE_MIN_MS, WorkloadHints, WorkloadMode,
