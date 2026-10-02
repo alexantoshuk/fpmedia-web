@@ -823,23 +823,6 @@ impl Mp4VideoTrack {
         Ok(out)
     }
 
-    /// Copy only samples with `decode_order` in `from_do..=to_do` (inclusive), decode order.
-    pub async fn samples_decode_range(
-        &self,
-        from_do: usize,
-        to_do: usize,
-    ) -> Result<Vec<EncodedSample>, MediaError> {
-        if from_do > to_do {
-            return Ok(Vec::new());
-        }
-        let frames = self.index.borrow().frames_in_decode_range(from_do, to_do);
-        let mut out = Vec::with_capacity(frames.len());
-        for f in frames {
-            out.push(self.encoded_sample(f).await?);
-        }
-        Ok(out)
-    }
-
     /// Next `limit` samples after `after_do` within the GOP that starts at `key_do`.
     pub async fn samples_after_in_gop(
         &self,

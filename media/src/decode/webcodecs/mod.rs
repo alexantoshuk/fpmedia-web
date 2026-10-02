@@ -30,13 +30,14 @@ use crate::error::MediaError;
 use crate::types::{FrameId, GopProfile, PlayPolicy, VideoMetadata};
 
 use self::core::{
-    DecoderConfig, DecoderCore, PruneInterim, REORDER_FEED_SLACK, ensure_webcodecs_available,
+    DecoderConfig, DecoderCore, PruneFloorGuard, PruneInterim, REORDER_FEED_SLACK,
+    ensure_webcodecs_available,
 };
 use self::pump::{
     FramePump, LivePump, PumpPlayCursor, PumpSignals, PumpStopGuard, await_outputs_if_pending,
     feed_sample, feed_sample_gop, finish_gop_for_target, flush_with_timeout, flush_with_timeout_ms,
     holds_target, is_sequential_next_key, now_ms, poll_for_target, progress_signature,
-    sleep_promise_ms, ticks_to_micros, wait_for_frame_progress,
+    pts_aim_hole, sleep_promise_ms, ticks_to_micros, wait_for_frame_progress,
 };
 
 /// Hard backstop for the consumer pull loop when no clock is available.
@@ -310,6 +311,8 @@ impl WebCodecsDecoder {
                 key_do,
             )
         };
+        // Protect aim from live-cursor prune races (Chrome: near=83333 wiped 41666).
+        let _prune_floor = PruneFloorGuard::arm(&core, target_us);
 
         {
             let mut c = core.borrow_mut();
@@ -327,6 +330,28 @@ impl WebCodecsDecoder {
                 } else {
                     self.retarget_play_cursor(target_do, target_us);
                 }
+                return Ok(ready);
+            }
+        }
+
+        // Warm trail has later PTS but not the aim (often after continuous ChG
+        // park + wiped `fed`) — hard-recreate before a range pump feeds to EOF.
+        // mediabunny: seekToTime → await videoFrameIterator?.return() then new range.
+        if pts_aim_hole(&core.borrow(), target_us, target_do) {
+            self.run_key_cascade(
+                track,
+                frame,
+                key_id,
+                key_do,
+                target_us,
+                true,
+                false,
+                is_cancelled,
+            )
+            .await?;
+            let mut c = core.borrow_mut();
+            c.collect_and_prune_held(target_us)?;
+            if let Some(ready) = c.take_held(target_us) {
                 return Ok(ready);
             }
         }
@@ -366,7 +391,9 @@ impl WebCodecsDecoder {
                 wait_for_frame_progress(&core).await;
             }
             if !holds_target(&core, target_us)
-                && fed_order.is_some_and(|fed| fed.saturating_sub(target_do) >= REORDER_FEED_SLACK)
+                && (pts_aim_hole(&core.borrow(), target_us, target_do)
+                    || fed_order
+                        .is_some_and(|fed| fed.saturating_sub(target_do) >= REORDER_FEED_SLACK))
             {
                 self.run_key_cascade(
                     track,
@@ -390,11 +417,20 @@ impl WebCodecsDecoder {
         // Restart when the GOP changes, or when the target was already emitted and
         // discarded (e.g. presentation queue cleared after prefetch) — WebCodecs
         // cannot re-emit a consumed frame without cascading from the key again.
+        // Also treat idle later-only `held` as consumed when `fed` was wiped
+        // (continuous park); otherwise needs_cascade stays false and the pump
+        // EOFs the short B-frame clip (`flush/idle` held=N-2).
         let (needs_cascade, target_consumed, sequential_next) = {
             let c = core.borrow();
-            let consumed = c
-                .fed_through_order
-                .is_some_and(|fed| target_do <= fed && !c.input_timestamps.contains(&target_us));
+            let hole = pts_aim_hole(&c, target_us, target_do);
+            let consumed = hole
+                || c.fed_through_order.is_some_and(|fed| {
+                    target_do <= fed
+                        && !c
+                            .input_timestamps
+                            .iter()
+                            .any(|&t| t == target_us || (t - target_us).abs() <= 1)
+                });
             let sequential = c
                 .key_order
                 .is_some_and(|prev| is_sequential_next_key(track, prev, key_do));
@@ -420,6 +456,40 @@ impl WebCodecsDecoder {
             c.collect_and_prune_held(target_us)?;
             if let Some(ready) = c.take_held(target_us) {
                 return Ok(ready);
+            }
+        }
+
+        // Before dual-async: if we already fed past the aim without holding it,
+        // hard-cascade again — a mid-GOP resume EOFs without the PTS.
+        if !holds_target(&core, target_us) {
+            let must_rewind = {
+                let c = core.borrow();
+                pts_aim_hole(&c, target_us, target_do)
+                    || c.fed_through_order.is_some_and(|fed| {
+                        fed >= target_do
+                            && !c
+                                .input_timestamps
+                                .iter()
+                                .any(|&t| t == target_us || (t - target_us).abs() <= 1)
+                    })
+            };
+            if must_rewind {
+                self.run_key_cascade(
+                    track,
+                    frame,
+                    key_id,
+                    key_do,
+                    target_us,
+                    true,
+                    false,
+                    is_cancelled,
+                )
+                .await?;
+                let mut c = core.borrow_mut();
+                c.collect_and_prune_held(target_us)?;
+                if let Some(ready) = c.take_held(target_us) {
+                    return Ok(ready);
+                }
             }
         }
 
@@ -518,11 +588,22 @@ impl WebCodecsDecoder {
                     return Ok(ready);
                 }
                 return Err(MediaError::WebCodecs(format!(
-                    "flush/idle without pts={target_us}µs (held={}, q={}, fed={:?}, stamps={})",
+                    "flush/idle without pts={target_us}µs (held={}, q={}, fed={:?}, stamps={}, near={:?})",
                     core.borrow().held.len(),
                     core.borrow().decode_queue_size(),
                     core.borrow().fed_through_order,
                     core.borrow().input_timestamps.len(),
+                    {
+                        let c = core.borrow();
+                        let mut nearest: Option<(i64, i64)> = None;
+                        for h in &c.held {
+                            let d = (h.pts_us - target_us).abs();
+                            if nearest.map_or(true, |(_, best)| d < best) {
+                                nearest = Some((h.pts_us, d));
+                            }
+                        }
+                        nearest.map(|(pts, _)| pts)
+                    },
                 )));
             }
 
@@ -589,7 +670,10 @@ impl WebCodecsDecoder {
                         c.check_error()?;
                         let _ = c.collect_and_prune_held(target_us);
                         // Already have the next-GOP target from a prior pump — done.
-                        if c.held.iter().any(|h| h.pts_us == target_us) {
+                        if c.held
+                            .iter()
+                            .any(|h| h.pts_us == target_us || (h.pts_us - target_us).abs() <= 1)
+                        {
                             c.key_order = Some(key_do);
                             return Ok(());
                         }
@@ -621,7 +705,31 @@ impl WebCodecsDecoder {
         if poll_for_target(&core, target_us, 32, is_cancelled).await? {
             return Ok(());
         }
+        // Non-key aim: feed decode-order through the aim before handing off to
+        // the dual-async pump. Early return after key-only left a stale
+        // `fed_through` past the aim → pump resumed mid-GOP and EOF-filled
+        // without PTS (Resolve B-frame frame1 / 41666µs, held≈N-2).
+        // mediabunny: mediaSamplesInRange walks packets until the pull timestamp.
         if key_id != frame {
+            let mut after = key_do;
+            let aim_do = {
+                let index = track.index();
+                index.get(frame).map(|e| e.decode_order).unwrap_or(key_do)
+            };
+            while after < aim_do {
+                if is_cancelled() {
+                    return Err(MediaError::Cancelled);
+                }
+                let next = track.samples_after_decode(after, 1).await?;
+                let Some(sample) = next.into_iter().next() else {
+                    break;
+                };
+                after = sample.decode_order;
+                feed_sample(&core, &sample, false, target_us, is_cancelled).await?;
+                if poll_for_target(&core, target_us, 16, is_cancelled).await? {
+                    return Ok(());
+                }
+            }
             return Ok(());
         }
 

@@ -597,7 +597,7 @@ pub const UHD_MIN_HEIGHT: u32 = 2160;
 pub const PLAY_PRESENTATION_CAP_HD: usize = 4;
 /// Play presentation ahead — Uhd (local invention; absorb 4K decode latency).
 pub const PLAY_PRESENTATION_CAP_UHD: usize = 10;
-/// Decode warm-ahead — Hd (= historical `DECODE_WARM_AHEAD`).
+/// Decode warm-ahead — Hd ([`PlayPolicy::hd`] / `decode_warm_ahead`).
 pub const PLAY_WARM_AHEAD_HD: usize = 4;
 /// Decode warm-ahead — Uhd.
 pub const PLAY_WARM_AHEAD_UHD: usize = 8;

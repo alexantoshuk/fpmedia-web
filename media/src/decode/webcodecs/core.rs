@@ -28,6 +28,31 @@ use super::pump::{
     is_chromium, promise_race, sleep_promise_ms, ticks_to_micros, wake_waiters_deferred,
 };
 
+/// Restores [`DecoderCore::prune_floor_us`] when a consumer decode returns
+/// (including cancel / early Ok).
+pub(super) struct PruneFloorGuard {
+    core: Rc<RefCell<DecoderCore>>,
+    prev: Option<i64>,
+}
+
+impl PruneFloorGuard {
+    pub(super) fn arm(core: &Rc<RefCell<DecoderCore>>, floor_us: i64) -> Self {
+        let prev = core.borrow().prune_floor_us.replace(Some(floor_us));
+        Self {
+            core: Rc::clone(core),
+            prev,
+        }
+    }
+}
+
+impl Drop for PruneFloorGuard {
+    fn drop(&mut self) {
+        if let Ok(c) = self.core.try_borrow() {
+            c.prune_floor_us.set(self.prev);
+        }
+    }
+}
+
 /// WebCodecs is `SecureContext`-only. LAN `http://192.168.x.x` (phone → desktop
 /// `cargo leptos watch`) leaves `VideoDecoder` undefined; calling
 /// `isConfigSupported` then panics the open task and freezes status on
@@ -63,12 +88,6 @@ const MAX_DECODE_QUEUE_EMPTY: u32 = 40;
 /// when the consumer returns (PumpStopGuard). Seek still feeds to GOP end when
 /// the target is not yet held (`holds_target` gate on early stop).
 pub(super) const REORDER_FEED_SLACK: usize = 8;
-/// Presentation-order frames to keep ahead of the current target in `held`
-/// while the Play/prefetch pump runs (cross-GOP). Too small → underrun hold
-/// every GOP on 1080p (~0.93×). Hd default = [`crate::PLAY_WARM_AHEAD_HD`]; live
-/// value is [`DecoderCore::warm_ahead`] from [`crate::types::PlayPolicy`].
-#[allow(dead_code)]
-const DECODE_WARM_AHEAD: usize = crate::PLAY_WARM_AHEAD_HD;
 /// Only salvage pruned frames within this PTS gap of the seek target. Farther
 /// frames are closed immediately — keeping every key→N VideoFrame alive exhausts
 /// Chromium's pool and wedges at `decodeQ≈41, held=0` (long-GOP seek/settle).
@@ -198,6 +217,10 @@ pub(super) struct DecoderCore {
     pub(super) all_intra: bool,
     /// Optional: salvage pruned early frames during key→N into the host dense cache.
     pub(super) prune_interim: RefCell<Option<PruneInterim>>,
+    /// While a consumer waits for an exact aim PTS, never prune that PTS away
+    /// even if the live play cursor races ahead (Chrome: `held=225 near=83333`
+    /// while aim=`41666`). Soft floor = `min(prune_target, floor)`.
+    pub(super) prune_floor_us: Cell<Option<i64>>,
     _on_output: Closure<dyn FnMut(JsValue)>,
     _on_error: Closure<dyn FnMut(JsValue)>,
     _on_dequeue: Closure<dyn FnMut(JsValue)>,
@@ -306,6 +329,7 @@ impl DecoderCore {
             rasl_skipped: false,
             all_intra,
             prune_interim: RefCell::new(None),
+            prune_floor_us: Cell::new(None),
             _on_output: on_output,
             _on_error: on_error,
             _on_dequeue: on_dequeue,
@@ -448,6 +472,13 @@ impl DecoderCore {
     /// PTS for a decoded frame: prefer the chunk timestamp retained on the
     /// `VideoFrame` when it matches a fed stamp; otherwise FIFO (mediabunny
     /// non-WebKit). Do not drop the FIFO head on an unmatched chunk PTS.
+    ///
+    /// Chromium **HW** may regenerate presentation timestamps with ±1 µs vs
+    /// truncating `ticks_to_micros` (24 fps @ timescale 12288: 512 ticks →
+    /// trunc 41666, round 41667). Exact match then fails → FIFO on B-frame
+    /// reorder desyncs the whole trail (`flush/idle` aim missing, held≈N-2).
+    /// Firefox / many Edge paths keep the chunk timestamp. Match ±1 µs and
+    /// **keep our fed stamp** so `take_held` still finds the aim.
     fn assign_output_pts(&mut self, frame: &OwnedVideoFrame) -> Option<i64> {
         let chunk_pts = {
             let ts = frame.as_web_sys().timestamp();
@@ -457,11 +488,19 @@ impl DecoderCore {
                 None
             }
         };
-        if let Some(pts) = chunk_pts
-            && let Some(i) = self.input_timestamps.iter().position(|&t| t == pts)
-        {
-            self.input_timestamps.remove(i);
-            return Some(pts);
+        if let Some(pts) = chunk_pts {
+            if let Some(i) = self.input_timestamps.iter().position(|&t| t == pts) {
+                self.input_timestamps.remove(i);
+                return Some(pts);
+            }
+            // ±1 µs: Chromium HW round vs trunc (see above).
+            if let Some(i) = self
+                .input_timestamps
+                .iter()
+                .position(|&t| (t - pts).abs() <= 1)
+            {
+                return Some(self.input_timestamps.remove(i));
+            }
         }
         let pts = self.input_timestamps.first().copied()?;
         self.input_timestamps.remove(0);
@@ -469,7 +508,16 @@ impl DecoderCore {
     }
 
     pub(super) fn take_held(&mut self, target_us: i64) -> Option<OwnedVideoFrame> {
-        let idx = self.held.iter().position(|h| h.pts_us == target_us)?;
+        let idx = self
+            .held
+            .iter()
+            .position(|h| h.pts_us == target_us)
+            .or_else(|| {
+                // Belt for any path that parked Chrome's rounded PTS as-is.
+                self.held
+                    .iter()
+                    .position(|h| (h.pts_us - target_us).abs() <= 1)
+            })?;
         let frame = self.held.remove(idx).frame;
         // Consumer took a sample — unblock the packet pump (mediabunny
         // `onQueueDequeue`; the dual-async split is what makes this reachable).
@@ -491,6 +539,12 @@ impl DecoderCore {
     /// When [`Self::prune_interim`] is set, pruned PTS `< target` go to the host
     /// dense cache instead of close — one cascade warms near-target cache.
     pub(super) fn collect_and_prune_held(&mut self, target_us: i64) -> Result<(), MediaError> {
+        // Live cursor may sit ahead of a still-waiting consumer aim — never drop
+        // that aim (Chrome race: prune@83333 wiped 41666 → held≈N-2 near=83333).
+        let drop_before = match self.prune_floor_us.get() {
+            Some(floor) => target_us.min(floor),
+            None => target_us,
+        };
         let before = self.held.len();
         let mut dropped = false;
         let pending: Vec<_> = self.frames.borrow_mut().drain(..).collect();
@@ -499,7 +553,7 @@ impl DecoderCore {
                 drop(frame);
                 continue;
             };
-            if pts_us < target_us {
+            if pts_us < drop_before {
                 self.deliver_or_drop_pruned(pts_us, frame);
                 dropped = true;
             } else {
@@ -509,10 +563,10 @@ impl DecoderCore {
         if self.held.len() > before {
             self.wake_not_empty_waiters();
         }
-        // Drop any previously held frames that are now before the (new) target.
+        // Drop any previously held frames that are now before the (floored) target.
         let mut i = 0;
         while i < self.held.len() {
-            if self.held[i].pts_us < target_us {
+            if self.held[i].pts_us < drop_before {
                 let h = self.held.swap_remove(i);
                 self.deliver_or_drop_pruned(h.pts_us, h.frame);
                 dropped = true;

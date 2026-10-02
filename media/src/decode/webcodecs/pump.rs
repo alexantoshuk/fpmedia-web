@@ -95,7 +95,13 @@ impl FramePump {
             .saturating_add(32)
             .max(64);
         let mut feeds = 0usize;
+        // `warm_only`: aim was already taken at spawn — do not wait for that PTS.
+        // When Play retargets the live cursor to the next frame, clear this so we
+        // feed until the *new* aim appears (B-frame: ahead of old aim can park
+        // before do=N for the next PTS is fed → flush/idle held≈N-2).
         let mut saw_target = self.warm_only;
+        let spawn_aim_us = self.cursor.target_us.get();
+        let mut saw_for_us = spawn_aim_us;
         let warm_ahead = self.core.borrow().warm_ahead;
         loop {
             if stopped() {
@@ -103,11 +109,30 @@ impl FramePump {
             }
             let target_us = self.cursor.target_us.get();
             let target_do = self.cursor.target_do.get();
+            if target_us != saw_for_us {
+                // Live retarget (ChG continuous feeder) — require the new aim in
+                // `held` before parking again. mediabunny range keeps one loop
+                // but still emits every pulled timestamp.
+                saw_target = false;
+                saw_for_us = target_us;
+            }
             let (fed, ahead, has_target) = {
-                let c = self.core.borrow();
+                let mut c = self.core.borrow_mut();
+                // Consumer ranges (!warm_only): prune at spawn aim so a live
+                // cursor jump cannot wipe the waiting PTS (Chrome held=225
+                // near=83333 aim=41666). Warm refill uses the live cursor.
+                let prune_us = if self.warm_only {
+                    target_us
+                } else {
+                    spawn_aim_us
+                };
+                let _ = c.collect_and_prune_held(prune_us);
                 let fed = c.fed_through_order.unwrap_or(self.key_do);
                 let ahead = c.held.iter().filter(|h| h.pts_us > target_us).count();
-                let has_target = c.held.iter().any(|h| h.pts_us == target_us);
+                let has_target = c
+                    .held
+                    .iter()
+                    .any(|h| h.pts_us == target_us || (h.pts_us - target_us).abs() <= 1);
                 (fed, ahead, has_target)
             };
             if has_target {
@@ -122,6 +147,7 @@ impl FramePump {
             // When ahead is full: **park** (do not exit). Exiting forced
             // `ensure_warm_pump` respawns and broke mediabunny's continuous
             // `mediaSamplesInRange` feeder on long-GOP B-frame play (~20fps).
+            // ChG Play lag depends on this park — do not revert to `break`.
             if saw_target && ahead >= warm_ahead {
                 self.core.borrow().wake_not_empty_waiters();
                 // Wake on consumer `take_held` (dequeue), not only outputs.
@@ -131,6 +157,21 @@ impl FramePump {
             if saw_target && fed >= target_do.saturating_add(REORDER_FEED_SLACK + warm_ahead) {
                 wait_for_capacity_progress(&self.core).await;
                 continue;
+            }
+            // Aim PTS missing while later frames already sit in `held` and the
+            // decoder is idle — further feeds only run to EOF (short B-frame
+            // Resolve ~227 → `held=225` + `flush/idle` on pts=41666). B-frames
+            // that emit pts>target first still have the aim stamp pending, so
+            // they are not idle.
+            // mediabunny: seekToTime → iterator.return() before a new range.
+            let hole = pts_aim_hole(&self.core.borrow(), target_us, target_do);
+            if hole && !self.warm_only {
+                break;
+            }
+            // Warm feeder after live retarget: spawn aim was taken (not a hole);
+            // a *new* aim that is missing amid later PTS must not EOF-fill.
+            if hole && self.warm_only && target_us != spawn_aim_us {
+                break;
             }
             if feeds >= max_feeds {
                 break;
@@ -150,7 +191,12 @@ impl FramePump {
             }
             // Prune before/during backpressure so a long key→target cascade (PREV)
             // does not pin dozens of VideoFrames and wedge decodeQueueSize.
-            match await_decode_capacity(&self.core, Some(target_us), None, Some(&stopped), true)
+            let prune_us = if self.warm_only {
+                target_us
+            } else {
+                spawn_aim_us
+            };
+            match await_decode_capacity(&self.core, Some(prune_us), None, Some(&stopped), true)
                 .await
             {
                 Ok(()) => {}
@@ -207,7 +253,43 @@ pub(super) fn progress_signature(
 }
 
 pub(super) fn holds_target(core: &Rc<RefCell<DecoderCore>>, target_us: i64) -> bool {
-    core.borrow().held.iter().any(|h| h.pts_us == target_us)
+    core.borrow()
+        .held
+        .iter()
+        .any(|h| h.pts_us == target_us || (h.pts_us - target_us).abs() <= 1)
+}
+
+/// Aim PTS is absent from `held`, but later PTS are parked and nothing is
+/// in flight — the aim was consumed/dropped; feeding ahead cannot recreate it.
+///
+/// B-frames often emit pts>aim **before** the aim's decode-order packet is fed
+/// (`do=1` may be pts 166666 while aim is `do=3` / 41666). That is **not** a
+/// hole while `fed < target_do` — keep feeding. Once `fed >= target_do` and we
+/// are idle without the aim PTS, the sample was skipped/dropped; further feeds
+/// only EOF-fill (Resolve short clip → `held≈N-2`). `fed=None` + later trail =
+/// stale wipe after continuous warm.
+/// mediabunny: `seekToTime` → `videoFrameIterator.return()` before a new range.
+pub(super) fn pts_aim_hole(core: &DecoderCore, target_us: i64, target_do: usize) -> bool {
+    if core
+        .held
+        .iter()
+        .any(|h| h.pts_us == target_us || (h.pts_us - target_us).abs() <= 1)
+    {
+        return false;
+    }
+    if !core.held.iter().any(|h| h.pts_us > target_us) {
+        return false;
+    }
+    let idle = core.decode_queue_size() == 0
+        && !core.raw_outputs_pending()
+        && core.input_timestamps.is_empty();
+    if !idle {
+        return false;
+    }
+    match core.fed_through_order {
+        None => true,
+        Some(fed) => fed >= target_do,
+    }
 }
 
 /// True when `new_key_do` is the sync that immediately follows `prev_key_do`
@@ -237,7 +319,10 @@ pub(super) async fn poll_for_target(
         let idle = {
             let mut c = core.borrow_mut();
             c.collect_and_prune_held(target_us)?;
-            if c.held.iter().any(|h| h.pts_us == target_us) {
+            if c.held
+                .iter()
+                .any(|h| h.pts_us == target_us || (h.pts_us - target_us).abs() <= 1)
+            {
                 return Ok(true);
             }
             // Only stop early when nothing is in-flight — empty queue alone can
