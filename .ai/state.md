@@ -25,7 +25,7 @@
 
 ### Deferred
 
-1. Play hover thumb aim-decode contention.
+1. Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).
 
 ### Also open
 

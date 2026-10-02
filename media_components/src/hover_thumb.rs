@@ -23,6 +23,10 @@ use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
 pub const DEFAULT_HOVER_THUMB_MAX_W: u32 = 160;
 pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = 90;
 
+/// Coalesce window before deferred `paint_hover_thumb` (ms). Engine aim-decode
+/// floor is separate (`PLAY_THUMB_AIM_DECODE_MIN_MS` = 800).
+const DEFER_HOVER_PAINT_MS: i32 = 150;
+
 /// Scrubber-facing handle — call from track `pointermove` / leave / scrub start.
 #[derive(Clone)]
 pub struct HoverThumbApi {
@@ -67,8 +71,10 @@ fn defer_hover_paint(video: VideoRef, frame: u32, dest: HtmlCanvasElement, max_w
             let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(
                 &mut |resolve, _reject| {
                     if let Some(w) = window() {
-                        let _ =
-                            w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 80);
+                        let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                            &resolve,
+                            DEFER_HOVER_PAINT_MS,
+                        );
                     } else {
                         let _ = resolve.call0(&wasm_bindgen::JsValue::UNDEFINED);
                     }
