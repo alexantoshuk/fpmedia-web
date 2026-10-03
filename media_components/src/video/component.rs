@@ -732,9 +732,12 @@ pub fn Video(
             // count 0→N as a new clip and would restore the old playhead.
             let retiring = player.borrow_mut().take();
             if let Some(p) = retiring {
+                // Bump thumb epoch while the sink still exists; Drop clears it.
+                p.cancel_hover_thumb();
                 p.pause();
             }
             // `retiring` drops here → decoder/caches + UrlSource orch.dispose.
+            // `ready=false` also hides HoverThumbPreview (Effect on ready).
             ready.set(false);
             ended.set(false);
             error.set(None);
@@ -1170,6 +1173,7 @@ pub fn Video(
             // Drop VideoPlayer (decoder + caches); cancel_ops via Drop.
             let retiring = player.borrow_mut().take();
             if let Some(p) = retiring {
+                p.cancel_hover_thumb();
                 p.pause();
             }
             fps_meter.borrow_mut().reset();

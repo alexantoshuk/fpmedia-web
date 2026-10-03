@@ -1960,8 +1960,13 @@ impl Drop for VideoPlayer {
         if let Some(c) = self.shared.playback_clock.as_ref() {
             c.close();
         }
+        // Cancel epoch + drop decoder/cache before releasing the sink Rc so
+        // in-flight aim/fill see generation bump (not only Shared.disposed).
         #[cfg(feature = "thumbs")]
         if let Ok(mut slot) = self.shared.thumb.try_borrow_mut() {
+            if let Some(thumbs) = slot.as_ref() {
+                thumbs.clear();
+            }
             *slot = None;
         }
         self.clear_loop_prime();

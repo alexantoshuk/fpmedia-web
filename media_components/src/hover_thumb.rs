@@ -45,8 +45,25 @@ impl HoverThumbApi {
     }
 }
 
+#[cfg(feature = "thumbs")]
+thread_local! {
+    static HOVER_PAINT_PENDING: std::cell::RefCell<Option<(u32, HtmlCanvasElement, u32, u32)>> =
+        const { std::cell::RefCell::new(None) };
+    static HOVER_PAINT_SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Drop coalesced aim so clip switch / leave cannot paint a stale frame.
+fn clear_deferred_hover_paint() {
+    #[cfg(feature = "thumbs")]
+    {
+        HOVER_PAINT_PENDING.with(|p| {
+            *p.borrow_mut() = None;
+        });
+    }
+}
+
 /// Coalesce Exact downscales: debounce then one aim. Do **not** cancel on every
-/// pointermove — only [`VideoRef::cancel_hover_thumb`] on leave / scrub.
+/// pointermove — only [`VideoRef::cancel_hover_thumb`] on leave / scrub / open.
 fn defer_hover_paint(video: VideoRef, frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32) {
     #[cfg(not(feature = "thumbs"))]
     {
@@ -55,18 +72,13 @@ fn defer_hover_paint(video: VideoRef, frame: u32, dest: HtmlCanvasElement, max_w
     }
     #[cfg(feature = "thumbs")]
     {
-        thread_local! {
-            static PENDING: std::cell::RefCell<Option<(u32, HtmlCanvasElement, u32, u32)>> =
-                const { std::cell::RefCell::new(None) };
-            static SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-        }
-        PENDING.with(|p| {
+        HOVER_PAINT_PENDING.with(|p| {
             *p.borrow_mut() = Some((frame, dest, max_w, max_h));
         });
-        if SCHEDULED.with(|s| s.get()) {
+        if HOVER_PAINT_SCHEDULED.with(|s| s.get()) {
             return;
         }
-        SCHEDULED.with(|s| s.set(true));
+        HOVER_PAINT_SCHEDULED.with(|s| s.set(true));
         spawn_local(async move {
             let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(
                 &mut |resolve, _reject| {
@@ -81,11 +93,18 @@ fn defer_hover_paint(video: VideoRef, frame: u32, dest: HtmlCanvasElement, max_w
                 },
             ))
             .await;
-            if let Some((frame, dest, max_w, max_h)) = PENDING.with(|p| p.borrow_mut().take()) {
-                video.paint_hover_thumb(frame, dest, max_w, max_h);
+            let pending = HOVER_PAINT_PENDING.with(|p| p.borrow_mut().take());
+            if let Some((frame, dest, max_w, max_h)) = pending {
+                // Clip switch sets ready=false — do not paint into a retiring sink.
+                if video.ready.get_untracked() {
+                    video.paint_hover_thumb(frame, dest, max_w, max_h);
+                }
             }
-            SCHEDULED.with(|s| s.set(false));
-            if let Some((frame, dest, max_w, max_h)) = PENDING.with(|p| p.borrow().clone()) {
+            HOVER_PAINT_SCHEDULED.with(|s| s.set(false));
+            if video.ready.get_untracked()
+                && let Some((frame, dest, max_w, max_h)) =
+                    HOVER_PAINT_PENDING.with(|p| p.borrow().clone())
+            {
                 defer_hover_paint(video, frame, dest, max_w, max_h);
             }
         });
@@ -110,6 +129,7 @@ pub fn HoverThumbPreview(
 
     let hide: Rc<dyn Fn()> = Rc::new(move || {
         visible.set(false);
+        clear_deferred_hover_paint();
         let e = epoch.get_value().wrapping_add(1);
         epoch.set_value(e);
         video.cancel_hover_thumb();
@@ -148,12 +168,27 @@ pub fn HoverThumbPreview(
         })
     };
 
+    // Clip switch / close: `retire_clip` clears ready — hide without waiting for
+    // pointerleave (stale preview canvas otherwise stays visible).
+    Effect::new({
+        let hide = Rc::clone(&hide);
+        move |_| {
+            if !video.ready.get() {
+                hide();
+            }
+        }
+    });
+
     api.set_value(Some(HoverThumbApi {
         hide: Rc::clone(&hide),
         update,
     }));
 
     on_cleanup(move || {
+        // `hide` is `Rc` (not Send) — clear TLS + engine cancel without capturing it.
+        clear_deferred_hover_paint();
+        visible.set(false);
+        video.cancel_hover_thumb();
         api.set_value(None);
     });
 
