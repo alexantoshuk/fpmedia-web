@@ -13,6 +13,7 @@
 | Open never finishes / console stops at `open_blob start` | File-input `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
 | Play / Next / Prev disabled or silent no-op | UI-owned `playing`; recover when session is `None`; cold scrub → `Settling`+Play Preempt (`skills/media.md`) |
 | New clip: Play stays disabled (hard refresh of same file OK) | Open teardown | `retire_clip`: `Closed` + `cancel_all` + drop player (UrlSource dispose); no `busy` across URL resolve — `skills/media.md` |
+| After several URL opens: silent / laggy (refresh OK) | Engine clip dispose | `VideoPlayer` Drop sets `Shared.disposed` + closes `AudioContext` — `skills/media.md` |
 | Minimize tab: audio silent, video races then snaps | `visibilitychange` → `HoldHidden` / resume | `Video` host + `hold_media_clock_for_hidden` (`skills/media.md`) |
 | Play after scrub does nothing (esp. after EOF) | Transport FSM + `ScrubRelease { then_play }` | `webmedia::transport` / `skills` — atomic release; do not reintroduce demo `resume_after_scrub` / TLS play latch; **PlayPrime fail must soft-park (no `stop_playback` bump) + `(PlayPriming, PlayPressed)` retries** |
 | EOF with `loop` off — host never notified | `VideoRef::ended`; clear on open/close/seek/play |

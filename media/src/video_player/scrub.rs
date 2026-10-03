@@ -700,6 +700,9 @@ impl VideoPlayer {
     /// decode instead — no fill chain.
     #[cfg(feature = "thumbs")]
     pub(super) fn schedule_thumb_key_fill(&self) {
+        if self.shared.is_disposed() {
+            return;
+        }
         if !allows_thumb_key_fill(self.shared.workload_hints()) {
             return;
         }
@@ -726,6 +729,9 @@ impl VideoPlayer {
 
     #[cfg(feature = "thumbs")]
     pub(super) fn kick_thumb_key_fill(&self) {
+        if self.shared.is_disposed() {
+            return;
+        }
         if !allows_thumb_key_fill(self.shared.workload_hints()) {
             return;
         }
@@ -741,9 +747,13 @@ impl VideoPlayer {
         let shared = Rc::clone(&self.shared);
         let sink = Rc::clone(&thumbs);
         wasm_bindgen_futures::spawn_local(async move {
+            if shared.is_disposed() {
+                return;
+            }
             let track = shared.player.borrow().track_rc();
             let meta = shared.player.borrow().metadata().clone();
-            let yield_play = || !allows_thumb_key_fill(shared.workload_hints());
+            let yield_play =
+                || shared.is_disposed() || !allows_thumb_key_fill(shared.workload_hints());
             let next_gap = || {
                 if yield_play() {
                     return None;
@@ -1281,7 +1291,8 @@ impl VideoPlayer {
     pub(super) fn schedule_scrub_cache_fill(&self) {
         // Gate on play mode / densify-off policy (All-Intra).
         // Settle/seek: latch pending while ExactHold owns HW.
-        if self.shared.engine.get().is_play()
+        if self.shared.is_disposed()
+            || self.shared.engine.get().is_play()
             || self.is_playing()
             || !self.scrub_policy().densify
             || self.shared.scrub_densify_blocked.get()
@@ -1296,13 +1307,14 @@ impl VideoPlayer {
     }
 
     pub(super) fn kick_scrub_cache_fill(&self) {
-        if self.shared.engine.get().is_play()
+        if self.shared.is_disposed()
+            || self.shared.engine.get().is_play()
             || self.is_playing()
             || !self.scrub_policy().densify
             || self.shared.scrub_densify_blocked.get()
             || self.shared.engine.get().holds_exact()
         {
-            if self.shared.engine.get().holds_exact() {
+            if !self.shared.is_disposed() && self.shared.engine.get().holds_exact() {
                 self.shared.scrub_pending.set(true);
             }
             return;
@@ -1335,6 +1347,10 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
     let result = async {
         let mut idle_passes = 0u8;
         loop {
+            // Clip switch: exit permanently (do not adopt scrub_epoch like pause abort).
+            if shared.is_disposed() {
+                return Ok(());
+            }
             if shared.engine.get().is_play()
                 || shared.player.borrow().state().playing
                 || !shared.player.borrow().metadata().scrub_policy().densify
@@ -1350,7 +1366,10 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             }
             // Pause/play bumped the fill epoch — adopt it and keep going if still scrubbing.
             if shared.scrub_epoch.get() != scrub_epoch {
-                if !shared.engine.get().allows_densify() || shared.player.borrow().state().playing {
+                if shared.is_disposed()
+                    || !shared.engine.get().allows_densify()
+                    || shared.player.borrow().state().playing
+                {
                     return Ok(());
                 }
                 scrub_epoch = shared.scrub_epoch.get();
@@ -1448,6 +1467,10 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
     .await;
     shared.scrub_busy.set(false);
 
+    if shared.is_disposed() {
+        shared.scrub_pending.set(false);
+        return result;
+    }
     // While exact settle/seek holds densify, leave `scrub_pending` latched and do
     // **not** respawn — a spawn_local spin froze the tab (long-GOP cold scrub).
     if shared.engine.get().holds_exact() {
@@ -1465,6 +1488,10 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
         let again = Rc::clone(&shared);
         wasm_bindgen_futures::spawn_local(async move {
             yield_event_loop().await;
+            if again.is_disposed() {
+                again.scrub_busy.set(false);
+                return;
+            }
             let _ = scrub_cache_fill_task(again).await;
         });
     }
@@ -1774,7 +1801,8 @@ pub(super) async fn fill_one_gap(
         .unwrap_or(target);
 
     let cancelled = || {
-        shared.scrub_epoch.get() != scrub_epoch
+        shared.is_disposed()
+            || shared.scrub_epoch.get() != scrub_epoch
             || shared.engine.get().is_play()
             || shared.player.borrow().state().playing
             || shared.engine.get().holds_exact()
@@ -1799,6 +1827,10 @@ pub(super) async fn fill_one_gap(
     let track = shared.player.borrow().track_rc();
 
     // Short borrow for take — never hold scrub_decoder RefMut across await/reset.
+    // After clip dispose the slot is empty — do not recreate a scrub decoder.
+    if shared.is_disposed() {
+        return Err(MediaError::Cancelled);
+    }
     let taken = shared.scrub_decoder.borrow_mut().take();
     let mut decoder = match taken {
         Some(d) => d,
@@ -1835,7 +1867,11 @@ pub(super) async fn fill_one_gap(
         .await;
     match decoded {
         Ok(()) => {
-            *shared.scrub_decoder.borrow_mut() = Some(decoder);
+            if shared.is_disposed() {
+                drop(decoder);
+            } else {
+                *shared.scrub_decoder.borrow_mut() = Some(decoder);
+            }
             let got_target = shared
                 .scrub_chunks
                 .try_borrow()
@@ -1845,12 +1881,16 @@ pub(super) async fn fill_one_gap(
         }
         Err(MediaError::Cancelled) => {
             let _ = decoder.reset();
-            *shared.scrub_decoder.borrow_mut() = Some(decoder);
+            if !shared.is_disposed() {
+                *shared.scrub_decoder.borrow_mut() = Some(decoder);
+            }
             Err(MediaError::Cancelled)
         }
         Err(e) => {
             let _ = decoder.reset();
-            *shared.scrub_decoder.borrow_mut() = Some(decoder);
+            if !shared.is_disposed() {
+                *shared.scrub_decoder.borrow_mut() = Some(decoder);
+            }
             Err(e)
         }
     }

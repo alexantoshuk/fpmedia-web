@@ -400,7 +400,7 @@ impl VideoPlayer {
             self.shared.wall_origin.set(None);
             let shared = Rc::clone(&self.shared);
             wasm_bindgen_futures::spawn_local(async move {
-                if !shared.player.borrow().state().playing {
+                if shared.is_disposed() || !shared.player.borrow().state().playing {
                     return;
                 }
                 let audio = shared.audio.borrow().as_ref().map(Rc::clone);

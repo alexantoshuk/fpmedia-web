@@ -151,6 +151,9 @@ struct Shared {
     /// File-byte fetch coverage (demo scrubber gray strip).
     fetch_map: std::sync::Arc<crate::FetchMap>,
     file_size: u64,
+    /// Clip teardown latch — densify / backfill / thumb must exit (not adopt epoch).
+    /// `mediabunny: examples/media-player` `asyncId++` before new `Input`.
+    disposed: Cell<bool>,
 }
 
 impl Shared {
@@ -162,6 +165,11 @@ impl Shared {
             self.clock_state.get().blocks_bg_sync_verify(),
             self.scrub_busy.get(),
         )
+    }
+
+    #[inline]
+    fn is_disposed(&self) -> bool {
+        self.disposed.get()
     }
 }
 
@@ -445,6 +453,7 @@ impl VideoPlayer {
             wall_origin: Cell::new(None),
             fetch_map,
             file_size,
+            disposed: Cell::new(false),
         });
         apply_clip_budgets(&shared);
         if let Some(a) = shared.audio.borrow().as_ref() {
@@ -487,11 +496,30 @@ impl VideoPlayer {
             .into(),
         );
         let track = track.clone();
-        let shared = Rc::clone(shared);
+        // Weak — must not pin `Shared` (AudioContext) across clip switch.
+        let weak = Rc::downgrade(shared);
         wasm_bindgen_futures::spawn_local(async move {
             loop {
+                let Some(shared) = weak.upgrade() else {
+                    break;
+                };
+                if shared.is_disposed() {
+                    if let Some(out) = shared.audio.borrow().as_ref() {
+                        out.set_expect_more_samples(false);
+                    }
+                    break;
+                }
                 match track.run_fragment_backfill_step().await {
                     Ok((more, audio)) => {
+                        let Some(shared) = weak.upgrade() else {
+                            break;
+                        };
+                        if shared.is_disposed() {
+                            if let Some(out) = shared.audio.borrow().as_ref() {
+                                out.set_expect_more_samples(false);
+                            }
+                            break;
+                        }
                         if let Some(fresh) = audio.as_ref()
                             && let Some(out) = shared.audio.borrow().as_ref()
                         {
@@ -532,10 +560,13 @@ impl VideoPlayer {
                         ) {
                             continue;
                         }
+                        drop(shared);
                         crate::util::yield_now().await;
                     }
                     Err(e) => {
-                        if let Some(out) = shared.audio.borrow().as_ref() {
+                        if let Some(shared) = weak.upgrade()
+                            && let Some(out) = shared.audio.borrow().as_ref()
+                        {
                             out.set_expect_more_samples(false);
                         }
                         web_sys::console::error_1(
@@ -566,6 +597,9 @@ impl VideoPlayer {
                 let Some(shared) = weak.upgrade() else {
                     break;
                 };
+                if shared.is_disposed() {
+                    break;
+                }
                 // Yield while Play / Seek own the network, on underrun / scrub
                 // soft-hold, or while densify is busy (avoid GitHub/proxy 502 +
                 // sample-sized Range storms). HoldHidden does not block verify.
@@ -699,7 +733,8 @@ impl VideoPlayer {
                     wasm_bindgen_futures::spawn_local(async move {
                         // Host may have paused after rate snap (K: pause then 1×,
                         // or rate→pause race). Do not restart audio into a stop.
-                        if !shared.player.borrow().state().playing
+                        if shared.is_disposed()
+                            || !shared.player.borrow().state().playing
                             || crate::is_wall_clock_rate(shared.clock.borrow().playback_rate())
                         {
                             return;
@@ -1268,7 +1303,8 @@ impl VideoPlayer {
             let shared = Rc::clone(&self.shared);
             wasm_bindgen_futures::spawn_local(async move {
                 yield_event_loop().await;
-                if shared.engine.get().holds_exact()
+                if shared.is_disposed()
+                    || shared.engine.get().holds_exact()
                     || shared.engine.get().is_play()
                     || shared.player.borrow().state().playing
                     || !shared.player.borrow().metadata().scrub_policy().densify
@@ -1906,14 +1942,34 @@ impl VideoPlayer {
 
 impl Drop for VideoPlayer {
     fn drop(&mut self) {
+        // Hard clip teardown — densify used to adopt scrub_epoch bumps and keep
+        // `Shared` (+ AudioContext) alive across open_url; Chrome then goes silent
+        // after ~6 contexts and lag compounds.
+        // mediabunny: initMediaPlayer pause → iterator.return → asyncId++ / UrlSource._dispose.
+        self.shared.disposed.set(true);
         self.cancel_ops();
+        self.shared.scrub_pending.set(false);
+        // Stop AAC pump + drop sink so `AudioContext.close` runs even if a late
+        // densify turn still holds `Shared` for a moment.
+        if let Ok(mut slot) = self.shared.audio.try_borrow_mut()
+            && let Some(a) = slot.take()
+        {
+            let _ = a.stop();
+            drop(a);
+        }
+        if let Some(c) = self.shared.playback_clock.as_ref() {
+            c.close();
+        }
+        #[cfg(feature = "thumbs")]
+        if let Ok(mut slot) = self.shared.thumb.try_borrow_mut() {
+            *slot = None;
+        }
         self.clear_loop_prime();
         self.clear_presentation();
         self.clear_step_ring();
+        // Bumps scrub_epoch + drops scrub decoder + clears Covered/Exact.
         self.clear_scrub_store();
-        // Abort Range workers now — densify/backfill may keep `Shared` (and the
-        // source Arc) alive a few turns after this Drop.
-        // mediabunny: Input.dispose / UrlSource._dispose on clip switch.
+        // Abort Range workers now — densify/backfill may keep `Shared` a few turns.
         if let Ok(p) = self.shared.player.try_borrow() {
             p.track_rc().source().dispose();
         }

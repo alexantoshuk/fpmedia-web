@@ -96,4 +96,16 @@ impl PlaybackClock {
     pub fn hold(&self) -> f64 {
         self.stop()
     }
+
+    /// Eager teardown (clip switch) — Chrome caps concurrent `AudioContext`s.
+    /// Idempotent; [`Drop`] also closes.
+    pub fn close(&self) {
+        let _ = self.context.close();
+    }
+}
+
+impl Drop for PlaybackClock {
+    fn drop(&mut self) {
+        let _ = self.context.close();
+    }
 }

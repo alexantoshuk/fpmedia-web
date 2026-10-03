@@ -598,7 +598,7 @@ impl WebCodecsDecoder {
                         let mut nearest: Option<(i64, i64)> = None;
                         for h in &c.held {
                             let d = (h.pts_us - target_us).abs();
-                            if nearest.map_or(true, |(_, best)| d < best) {
+                            if nearest.is_none_or(|(_, best)| d < best) {
                                 nearest = Some((h.pts_us, d));
                             }
                         }
