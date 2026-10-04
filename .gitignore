@@ -22,6 +22,7 @@ blob-report/
 playwright/.cache/
 e2e/.cache/
 e2e/stress-reports/
+e2e/stress-reports-*/
 
 # Editor
 .idea/

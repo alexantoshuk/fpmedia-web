@@ -17,7 +17,7 @@ impl VideoPlayer {
         // Exact VF — abort densify and hold so scrub HW cannot starve the cascade.
         // Densify blit is for scrub/step warm hits; seek always decodes VF.
         self.abort_scrub_fill(true);
-        self.await_scrub_densify_yield().await;
+        self.await_scrub_densify_yield(true).await;
         let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
         self.shared.engine.set(next);
         self.apply_session_event(crate::SessionEvent::BeginRestart);

@@ -149,6 +149,11 @@ fn clear_redirect(state: &AppState, original: &str) {
     }
 }
 
+/// Upstream OK for media Range proxy (full or partial).
+fn proxy_upstream_ok(code: u16) -> bool {
+    matches!(code, 200 | 206)
+}
+
 async fn media_proxy(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
@@ -175,18 +180,22 @@ async fn media_proxy(
         Err(e) => return Err(e),
     };
 
-    // Signed CDN URLs expire; cached redirect → 401/403/404. Drop cache + retry once.
-    if used_cache && matches!(resp.status().as_u16(), 401 | 403 | 404) {
+    // Signed CDN URLs expire or flake (GitHub release-assets has returned HTTP
+    // 618 on open-ended Range). Retry was only 401/403/404 — widen to any
+    // non-200/206 so stale cache cannot stick e2e open.
+    if used_cache && !proxy_upstream_ok(resp.status().as_u16()) {
         clear_redirect(&state, &original_s);
         resp = proxy_fetch(&state, method.clone(), original.clone(), range.as_ref()).await?;
     }
 
-    store_redirect(&state, &original_s, resp.url().as_str());
-
-    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    if matches!(status.as_u16(), 401 | 403 | 404) {
+    let upstream_code = resp.status().as_u16();
+    if proxy_upstream_ok(upstream_code) {
+        store_redirect(&state, &original_s, resp.url().as_str());
+    } else {
         clear_redirect(&state, &original_s);
     }
+
+    let status = StatusCode::from_u16(upstream_code).unwrap_or(StatusCode::BAD_GATEWAY);
 
     let upstream_cl = resp
         .headers()
@@ -400,5 +409,16 @@ mod tests {
         assert_eq!(content_range_span_len("bytes 0-0/1"), Some(1));
         assert_eq!(content_range_span_len("bytes */200"), None);
         assert_eq!(content_range_span_len("invalid"), None);
+    }
+
+    #[test]
+    fn proxy_upstream_ok_accepts_200_206_only() {
+        assert!(proxy_upstream_ok(200));
+        assert!(proxy_upstream_ok(206));
+        assert!(!proxy_upstream_ok(304));
+        assert!(!proxy_upstream_ok(403));
+        assert!(!proxy_upstream_ok(404));
+        assert!(!proxy_upstream_ok(618));
+        assert!(!proxy_upstream_ok(502));
     }
 }

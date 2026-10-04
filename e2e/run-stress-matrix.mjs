@@ -9,7 +9,7 @@
  * Env:
  *   WEBMEDIA_STRESS_CODEC  avc (default) | hevc  (or argv: `node … hevc`)
  *   WEBMEDIA_STRESS_OUT    default e2e/stress-reports or …-hevc
- *   TESTVIDEO_BASE         default …/download/v0.1.0
+ *   TESTVIDEO_BASE         default …/download/v0.3.0
  *   WEBMEDIA_STRESS_FORCE=1  re-run clips that already have a .json
  *
  * Note: do not write under test-results/ — Playwright wipes that dir each run.
@@ -18,26 +18,30 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 
+/** testvideo v0.3.0 AAC mp4 matrix (no HEVC, no PCM .mov). */
 const AVC_CLIPS = [
-  "avc_1080p_24_fmp4_gop12_bf0",
-  "avc_1080p_24_gop12_bf0",
-  "avc_1080p_24_gop12_bf2",
-  "avc_1080p_24_gop48_bf0",
-  "avc_1080p_24_scenecut_bf0",
+  "avc_1080p_25_fmp4_gop12_bf0",
+  "avc_1080p_25_gop12_bf0",
+  "avc_1080p_25_gop12_bf2",
+  "avc_1080p_25_gop33_bf2",
+  "avc_1080p_25_gop48_bf0",
+  "avc_1080p_25_scenecut_bf0",
   "avc_1080p_2997_fmp4_gop12_bf0",
   "avc_1080p_2997_gop12_bf0",
   "avc_1080p_2997_gop12_bf2",
+  "avc_1080p_2997_gop33_bf2",
   "avc_1080p_2997_gop48_bf0",
   "avc_1080p_2997_scenecut_bf0",
   "avc_1080p_60_fmp4_gop12_bf0",
   "avc_1080p_60_gop12_bf0",
   "avc_1080p_60_gop12_bf2",
+  "avc_1080p_60_gop33_bf2",
   "avc_1080p_60_gop48_bf0",
   "avc_1080p_60_scenecut_bf0",
 ];
 
 const HEVC_CLIPS = [
-  "hevc_1080p_24_gop12_bf0",
+  "hevc_1080p_25_gop12_bf0",
   "hevc_1080p_2997_gop12_bf0",
   "hevc_1080p_60_gop12_bf0",
 ];
@@ -61,7 +65,7 @@ const OUT =
   (CODEC === "hevc" ? "e2e/stress-reports-hevc" : "e2e/stress-reports");
 const BASE = (
   process.env.TESTVIDEO_BASE ??
-  "https://github.com/alexantoshuk/testvideo/releases/download/v0.1.0"
+  "https://github.com/alexantoshuk/testvideo/releases/download/v0.3.0"
 ).replace(/\/$/, "");
 const FORCE = process.env.WEBMEDIA_STRESS_FORCE === "1";
 

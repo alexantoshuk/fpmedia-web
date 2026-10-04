@@ -219,6 +219,16 @@ impl VideoPlayer {
         if !self.is_playing() {
             return Ok(());
         }
+        // `play()` aborts densify without awaiting. Soft-cold settle leaves
+        // `scrub_busy` true → fill hangs on long-GOP URL (stress 2997/60
+        // gop33/gop48: Play disabled / ensurePlaying timeout).
+        // mediabunny: examples/media-player seekToTime →
+        // `await videoFrameIterator?.return()` before play / startVideoIterator.
+        self.abort_scrub_fill(false);
+        self.await_scrub_densify_yield(false).await;
+        if !self.is_playing() {
+            return Ok(());
+        }
         let epoch = self.shared.op_epoch.get();
         // Exact settle seeds play_prime_frames (mediabunny `startVideoIterator`).
         // Soft Pause leaves Warm audio. Either way: skip blocking byte-warm and
@@ -227,15 +237,20 @@ impl VideoPlayer {
         let settle = self.metadata().settle_policy();
         let prime_target = settle.play_prime_frames.min(self.play_presentation_cap());
         let presentation_primed = self.presentation_len() >= prime_target;
-        let skip_byte_warm = self.audio_warm_resume() || presentation_primed;
+        // Skip byte-warm only when Exact/settle already seeded the presentation
+        // queue. Soft Pause alone must not skip: soft-cold settle leaves Warm
+        // audio + empty queue mid-GOP → fill blocked on cold key Ranges.
+        // mediabunny: first samples for seek `t` (key→target), not pause latch.
+        let skip_byte_warm = presentation_primed;
         // fMP4: arm a long index lead in bg, but only *await* one urgent batch
         // past the current index so Play click / PlayPrime cannot stall for
         // many RTTs (`mediabunny: first samples before play` — not the whole
         // warm→lead gap on the click turn).
         let play_index_lead = settle.play_index_lead;
         let play_index_await_batch = settle.play_index_await_batch;
-        // Unprimed cold PlayPrime: await one GOP at head (not fixed 24) so
-        // soft-cold→Play does not re-open a 7–16s `warm_sample_bytes` stall.
+        // Unprimed cold PlayPrime: await one GOP from the keyframe (not from
+        // head mid-GOP) so soft-cold→Play can cascade. Warm from `head` left
+        // key samples cold → decode hung (stress 60/2997 long-GOP).
         // mediabunny: first samples for seek `t`, not a long timeline warm.
         let head = self.state().frame;
         {
@@ -265,14 +280,21 @@ impl VideoPlayer {
             track.prefetch_samples_ahead(head, play_index_lead);
         } else {
             let warm_t0 = performance_now_ms().unwrap_or(0.0);
-            let warm_secs = {
+            let (warm_secs, warm_key) = {
                 let track = self.shared.player.borrow().track_rc();
                 let key = track.index().nearest_keyframe(head).unwrap_or(head);
-                let await_lead = super::scrub::gop_sample_lead(&track, key).min(play_index_lead);
-                track.warm_sample_bytes(head, await_lead).await?;
+                let gop_lead = super::scrub::gop_sample_lead(&track, key).min(play_index_lead);
+                // Cover key→head (cascade) + small play-ahead. Clamped gop_lead
+                // alone (≤24) misses late frames in GOP48 mid-GOP soft-cold.
+                let await_span = head
+                    .saturating_sub(key)
+                    .saturating_add(gop_lead.min(8))
+                    .max(gop_lead)
+                    .max(1);
+                track.warm_sample_bytes(key, await_span).await?;
                 track.prefetch_samples_ahead(head, play_index_lead);
                 let last = head
-                    .saturating_add(await_lead)
+                    .saturating_add(gop_lead.min(8))
                     .min(track.indexed_frame_count().saturating_sub(1));
                 let secs = track
                     .index()
@@ -281,14 +303,21 @@ impl VideoPlayer {
                     .unwrap_or(0.0);
                 let warm_ms = performance_now_ms().unwrap_or(warm_t0) - warm_t0;
                 web_sys::console::log_1(
-                    &format!("webmedia: play prime warm lead={await_lead} {warm_ms:.0}ms").into(),
+                    &format!(
+                        "webmedia: play prime warm key={key} span={await_span} {warm_ms:.0}ms"
+                    )
+                    .into(),
                 );
-                secs
+                (secs, key)
             };
             if !self.is_current(epoch) || !self.is_playing() {
                 return Err(MediaError::Cancelled);
             }
-            if warm_secs > 0.0 {
+            // Audio bulk warm is 0..t (up to 8 MiB). Fine near start; mid-clip
+            // soft-cold→Play stalled for seconds on URL Ranges. Pump primes at
+            // origin instead (`start_spawned` / `restart_warm`).
+            // mediabunny: first samples around playhead, not full prefix.
+            if warm_secs > 0.0 && warm_key == 0 {
                 let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
                 if let Some(a) = audio {
                     a.warm_bytes_through(warm_secs).await?;

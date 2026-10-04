@@ -23,6 +23,7 @@
 | URL open hangs / CORS / slow full download | `VideoRef::open_url` → same-origin `/proxy?url=` (demo server, **loopback peer only**) then `UrlSource` (Range) or blob fallback; status shows `No HTTP Range — downloading full file…` |
 | `/proxy` 403 from phone / LAN IP | Demo proxy refuses non-loopback peers — use `http://127.0.0.1:3000` (`adb reverse`) not `http://192.168.x.x` |
 | `/proxy` `ERR_CONTENT_LENGTH_MISMATCH` 206 | Demo proxy buffers ≤16 MiB Ranges (exact CL); large bodies chunked without CL; stale signed redirect → clear+retry |
+| `/proxy` HTTP 618 / open fail on large GitHub Range | Cached signed CDN redirect | retry clear on **any** non-200/206 (not only 401/403/404); do not store redirect on error |
 | Gray scrubber bar vs green densify strips | 1 px `<canvas>` + integer `fillRect` (`paint_strip_canvas_1px`); gray=`FetchMap`, green=Covered/Exact. Not CSS `linear-gradient` (many holes → Chrome blur) |
 | Hover thumb during Play / scrub | `HoverThumbPreview` + engine cancel | Play+Pause OK; far interim → defer refine (same sync key = done); far refine floor 800 ms Pause+Play; UI defer 150 ms; Play no key-fill |
 | Hover thumb lags cursor until frame paints | Sync DOM `transform` first; ThumbCache try-paint; coalesce Exact downscale (read-only — no decode) |

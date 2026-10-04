@@ -831,9 +831,11 @@ impl VideoPlayer {
     /// not Drop/close — that raced densify `decode()` → closed codec). When
     /// densify has it checked out, only bump epoch; densify aborts via cancel.
     pub(super) fn abort_scrub_fill(&self, rearm: bool) {
+        // Latch `scrub_pending` *before* bumping the epoch so densify's adopt
+        // check (`!scrub_pending` → exit for Play) cannot race a settle rearm.
+        self.shared.scrub_pending.set(rearm);
         let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
         self.shared.scrub_epoch.set(scrub);
-        self.shared.scrub_pending.set(rearm);
         // Take under a short borrow — do not `if let … borrow_mut().take()` (RefMut
         // spans the body; `reset` / Drop re-entry panics).
         let taken = self.shared.scrub_decoder.borrow_mut().take();
@@ -845,13 +847,16 @@ impl VideoPlayer {
 
     /// After [`Self::abort_scrub_fill`], wait until densify clears `scrub_busy`.
     ///
-    /// Exact/seek must not start while `decode_gop` still feeds the scrub
+    /// Exact/seek/PlayPrime must not start while `decode_gop` still feeds the scrub
     /// decoder (`mediabunny: seekToTime` → `startVideoIterator` terminates the
     /// prior iterator immediately — no densify plane). Local dual-decoder: brief
-    /// yield then Exact; long URL Range stalls must not block settle for seconds.
+    /// yield then Exact/fill; long URL Range stalls must not block for seconds.
     /// Poison recovery: Exact soft-cold / recreate + PlayPrime fill recreate.
     /// If still busy after the first window, bump abort again and drain once more.
-    pub(super) async fn await_scrub_densify_yield(&self) {
+    ///
+    /// `rearm`: settle/seek → `true` (densify resumes after Exact); PlayPrime →
+    /// `false` (Play must not keep filling gaps).
+    pub(super) async fn await_scrub_densify_yield(&self, rearm: bool) {
         let policy = self.metadata().settle_policy();
         let budget_ms = policy.densify_yield_ms;
         let retry_ms = policy.densify_yield_retry_ms;
@@ -867,7 +872,7 @@ impl VideoPlayer {
             return;
         }
         web_sys::console::warn_1(&"webmedia: densify still busy after yield — re-abort".into());
-        self.abort_scrub_fill(true);
+        self.abort_scrub_fill(rearm);
         let start2 = performance_now_ms().unwrap_or(0.0);
         while self.shared.scrub_busy.get() {
             let now = performance_now_ms().unwrap_or(start2);
@@ -954,7 +959,7 @@ impl VideoPlayer {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
             self.abort_scrub_fill(true);
             let yield_t0 = performance_now_ms().unwrap_or(0.0);
-            self.await_scrub_densify_yield().await;
+            self.await_scrub_densify_yield(true).await;
             let yield_ms = performance_now_ms().unwrap_or(yield_t0) - yield_t0;
             let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
             self.shared.engine.set(next);
@@ -1364,11 +1369,16 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                 shared.scrub_pending.set(true);
                 return Ok(());
             }
-            // Pause/play bumped the fill epoch — adopt it and keep going if still scrubbing.
+            // Epoch bump from `abort_scrub_fill`. `rearm=false` (Play) clears
+            // `scrub_pending` — exit so `scrub_busy` drops for PlayPrime fill.
+            // `rearm=true` (settle/seek) keeps pending → adopt and continue.
+            // mediabunny: seekToTime → iterator.return() ends the prior range.
             if shared.scrub_epoch.get() != scrub_epoch {
                 if shared.is_disposed()
-                    || !shared.engine.get().allows_densify()
+                    || shared.engine.get().is_play()
                     || shared.player.borrow().state().playing
+                    || !shared.engine.get().allows_densify()
+                    || !shared.scrub_pending.get()
                 {
                     return Ok(());
                 }
@@ -1446,7 +1456,14 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                         shared.scrub_pending.set(true);
                         return Ok(());
                     }
-                    // scrub_epoch bump (abort) — adopt and keep densifying while scrubbing.
+                    // Play / abort(false): do not adopt — clear busy for PlayPrime.
+                    if shared.engine.get().is_play()
+                        || shared.player.borrow().state().playing
+                        || !shared.scrub_pending.get()
+                    {
+                        return Ok(());
+                    }
+                    // scrub_epoch bump with rearm — adopt and keep densifying.
                     idle_passes = 0;
                     sleep_ms(0).await;
                 }
