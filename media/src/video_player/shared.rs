@@ -30,7 +30,7 @@ use crate::workload::WorkloadHints;
 /// Chromium's pool on long-GOP play (`flush/idle` mid-GOP with `decodeQ≈12`).
 /// Pair with [`STEP_BEHIND_CAP`] (ring ≈ 1 displayed + 8 behind + 4 ahead).
 /// Hd default = [`crate::PLAY_PRESENTATION_CAP_HD`]; Uhd uses [`PlayPolicy`].
-pub const PRESENTATION_QUEUE_CAP: usize = crate::PLAY_PRESENTATION_CAP_HD;
+pub(crate) const PRESENTATION_QUEUE_CAP: usize = crate::PLAY_PRESENTATION_CAP_HD;
 /// Ahead depth while shuttling forward (`rate >= 2`) — keep decode light.
 pub(super) const SHUTTLE_PRESENTATION_QUEUE_CAP: usize = 2;
 /// Live VF older than the playhead for Prev without key→N (step/scrub ring).
@@ -39,7 +39,7 @@ pub(super) const SHUTTLE_PRESENTATION_QUEUE_CAP: usize = 2;
 /// **Play must not keep this ring** — 1+8+4 + held≈8 pins ~21 VideoFrames and
 /// starves Chromium's pool (underrun hold ≈0.77× realtime on long-GOP). Forward play
 /// uses cap 0; Pause/scrub restores [`STEP_BEHIND_CAP`].
-pub const STEP_BEHIND_CAP: usize = 8;
+pub(crate) const STEP_BEHIND_CAP: usize = 8;
 /// Behind ring while play mode — drop aged VF immediately.
 pub(super) const STEP_BEHIND_CAP_PLAY: usize = 0;
 /// Extra in-flight / held VF beyond displayed + presentation queue when sizing

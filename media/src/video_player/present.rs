@@ -144,7 +144,7 @@ impl VideoPlayer {
         Ok(entry.duration_ticks as f64 / entry.timescale as f64)
     }
 
-    pub fn frame_timestamp_seconds(&self, frame: FrameId) -> Result<f64, MediaError> {
+    pub(super) fn frame_timestamp_seconds(&self, frame: FrameId) -> Result<f64, MediaError> {
         let player = self.shared.player.borrow();
         let index = player.track().index();
         let entry = index.get(frame).ok_or(MediaError::FrameOutOfRange(

@@ -42,12 +42,12 @@ impl VideoPlayer {
             .unwrap_or(true)
     }
 
-    pub fn playback_rate(&self) -> f64 {
+    pub(super) fn playback_rate(&self) -> f64 {
         self.shared.clock.borrow().playback_rate()
     }
 
     /// True when current rate uses shuttle policy (`|rate| >= 2`).
-    pub fn is_shuttle(&self) -> bool {
+    pub(super) fn is_shuttle(&self) -> bool {
         self.shared.clock.borrow().is_shuttle()
     }
 
@@ -296,7 +296,7 @@ impl VideoPlayer {
     }
 
     /// Snap the media clock (pause / seek). Stops audio nodes if attached.
-    pub fn stop_media_clock(&self) -> f64 {
+    pub(super) fn stop_media_clock(&self) -> f64 {
         self.apply_clock_event(ClockEvent::Stop);
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.stop()
@@ -320,7 +320,7 @@ impl VideoPlayer {
     /// [`Self::start_media_clock`]). Open / EOF / abort-prime still use
     /// [`Self::stop_media_clock`].
     /// `mediabunny: examples/media-player/media-player.ts` `pause`.
-    pub fn hold_media_clock_for_scrub(&self) -> f64 {
+    pub(super) fn hold_media_clock_for_scrub(&self) -> f64 {
         self.apply_clock_event(ClockEvent::HoldScrub);
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.hold_underrun()

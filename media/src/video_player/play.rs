@@ -118,7 +118,7 @@ impl VideoPlayer {
         blit.set_max(scrub_blit_cap_during_play(full, reserve));
     }
 
-    pub async fn step_playback(&self) -> Result<bool, MediaError> {
+    pub(super) async fn step_playback(&self) -> Result<bool, MediaError> {
         if !self.is_playing() {
             return Ok(false);
         }

@@ -27,7 +27,7 @@ mod shared;
 mod util;
 
 pub use api::{DuePresent, PipelineStats, ReadyFrameKind, ReadyFrameMark};
-pub use shared::{PRESENTATION_QUEUE_CAP, STEP_BEHIND_CAP};
+pub(crate) use shared::PRESENTATION_QUEUE_CAP;
 // Private imports — child mods (`play` / `scrub` / `seek`) see these via `super::`.
 use api::ready_kind_paint_order;
 use shared::{

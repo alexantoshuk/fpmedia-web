@@ -188,7 +188,7 @@ impl VideoPlayer {
     }
 
     /// Cancel decode **and** background dense fill (play / hard abort).
-    pub fn cancel_ops_and_scrub_fill(&self) {
+    pub(super) fn cancel_ops_and_scrub_fill(&self) {
         self.cancel_ops();
         self.abort_scrub_fill(true);
         self.clear_scrub_direction();

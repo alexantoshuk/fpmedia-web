@@ -805,7 +805,7 @@ impl VideoPlayer {
     ///
     /// While [`EngineMode::ExactHold`] (scrub settle / sync seek), densify
     /// is deferred so exact `goto_frame` owns HW; soft-drag scrub keeps densify on.
-    pub fn enter_scrub_cache_pipeline(&self, focus: FrameId) {
+    pub(super) fn enter_scrub_cache_pipeline(&self, focus: FrameId) {
         self.aim_scrub_cache(focus);
         if self.scrub_policy().densify {
             self.schedule_scrub_cache_fill();
