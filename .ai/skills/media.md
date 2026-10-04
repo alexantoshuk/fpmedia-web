@@ -44,7 +44,7 @@ bitstream/     AVC + HEVC packet type / sanitize
 source/        MediaSource, CachedSource, FetchMap, ReadOrchestrator (+ wasm Blob/Url)
 audio/         demux, stretch (WSOLA), output, PlaybackClock
 demux/         boxes, coalesce, mp4, tmcd
-video_player/  mod · shared · util · clock_ctrl · present · decode_ops · open · control · play · scrub · scrub_gap · scrub_cold · seek
+video_player/  mod · api · shared · util · open · control · clock_ctrl · present · decode_ops · play · scrub · scrub_gap · scrub_cold · seek
 scrub_plan.rs  pure densify gap / cold-commit (native tests)
 decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
 ```

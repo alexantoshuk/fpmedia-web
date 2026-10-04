@@ -4,11 +4,11 @@
 //! `mediabunny:` CanvasSink-style present; play vs scrub ingest paths.
 
 use crate::decode::canvas::{configure_canvas_for_video, draw_frame_with_context};
-use crate::decode::owned_video_frame::{AsVideoFrame, OwnedVideoFrame};
+use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::error::MediaError;
 use crate::types::{FrameId, coalesce_frame_runs};
 
-use super::scrub::{apply_clip_budgets, ingest_scrub_bitmap_only, ingest_scrub_frame_shared};
+use super::scrub::{apply_clip_budgets, ingest_scrub_bitmap_only};
 use super::shared::{QueuedFrame, STEP_BEHIND_CAP, STEP_BEHIND_CAP_PLAY};
 use super::{
     PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoPlayer, ready_kind_paint_order,

@@ -7,12 +7,14 @@ use std::rc::Rc;
 
 use web_sys::HtmlCanvasElement;
 
+use crate::clock_state::ClockEvent;
 use crate::engine_mode::{EngineEvent, reduce as engine_reduce};
 use crate::player::PlayerState;
 use crate::session::{SessionEvent, reduce as session_reduce};
 use crate::types::{AudioMetadata, FrameId, VideoMetadata};
 
 use super::scrub::scrub_cache_fill_task;
+use super::scrub_cold;
 use super::scrub_gap::next_gap_target;
 use super::{VideoPlayer, yield_event_loop};
 
