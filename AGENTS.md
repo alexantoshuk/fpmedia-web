@@ -66,6 +66,7 @@ Before **any** write to the repo (code, config, docs, generated assets):
 4. **Do not edit until the user explicitly consents** (e.g. `ok`, `go`, `да`, `approve`).
 5. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
 6. **Exception:** only if the user explicitly says to skip approval for that task or session.
+7. **Commits are separate** — edit/`go` approval is **not** commit consent. See [Commits](#commits).
 
 If the plan changes mid-work (scope creep, different files), stop and re-approve before further edits.
 
@@ -114,7 +115,7 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 | Topic | Canonical home | Elsewhere |
 | ----- | -------------- | --------- |
 | Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
-| Approve-before-edit | `AGENTS.md` | Do not restate |
+| Approve-before-edit / ask-before-commit | `AGENTS.md` | Do not restate |
 | Doc write gate / skill budgets | `AGENTS.md` | Do not restate |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
@@ -170,7 +171,9 @@ Do **not** only “append to `media.md`” without choosing a canonical slot.
 
 ## Commits
 
-Follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for commit message format, size limits, and mandatory pre-commit / pre-push gates (including `cargo clippy … -- -D warnings`). Do not restate those rules here.
+**Ask first (hard):** never create a git commit unless the user explicitly asks (e.g. `commit`, `commi`, «закоммить», «сделай коммит»). Finishing a task, `go` / `ok` on an edit plan, or “impl …” is **not** consent to commit. Do not push unless asked.
+
+When the user does ask to commit: follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for message format, size limits, and mandatory pre-commit / pre-push gates (including `cargo clippy … -- -D warnings`). Do not restate those rules here.
 
 ## Dev commands
 
