@@ -6,17 +6,26 @@
 
 ## Handoff (2026-10-04)
 
-**Docs:** `AGENTS.md` documentation write gate + skill budgets. Canonical cleanup: `product` / `architecture` / `state` / `skills/*` (no code changes this handoff).
+**Goal of the VideoPlayer split (shipped):** navigation-only extracts — **no playback behavior change**. Empty `video_player/mod.rs` into focused modules; host API stays what `media_components` calls.
 
-**Engine (prior, on `main`):** short B-frame `flush/idle` after ChG park — `saw_target` clear, `pts_aim_hole`, cascade through aim, `prune_floor_us`. Main play still probes `prefer-hardware` (Hd+Uhd); scrub/thumb never steal HW. Gotchas → `.ai/skills/media.md`.
+**Shipped on `main` (P0–P6 + API pass):**  
+`shared` · `util` · `scrub_plan` (+ wasm `scrub_gap` / `scrub_cold`) · `clock_ctrl` · `present` · `decode_ops` · `open` · `control` · `api`. `mod.rs` = thin façade. Sibling-only helpers → `pub(super)`; `PRESENTATION_QUEUE_CAP` / `STEP_BEHIND_CAP` not re-exported from `lib.rs`. Module map + host-vs-engine note → `.ai/skills/media.md`.
+
+**Agent workflow:** write gate / skill budgets; portable docs (no `.cursor/` tree); **ask-before-commit** — edit/`go` ≠ commit consent (`AGENTS.md` § Commits). Agent does **not** force-push `main`.
+
+**Checks:** wasm player code needs `--features webcodecs` (or check via `media_components`). Prefer `cargo check` while iterating; Clippy `-D warnings` only at commit time (`CONTRIBUTING.md`).
+
+**Engine (prior, unchanged by the split):** short B-frame `flush/idle` after ChG park — `saw_target` / `pts_aim_hole` / cascade / `prune_floor_us`. Main play `prefer-hardware` (Hd+Uhd); scrub/thumb never steal HW. Gotchas → `.ai/skills/media.md`.
+
+**If local `main` still diverged after commit-message amend:** `git push --force-with-lease origin main` (human only).
 
 ---
 
 ## Next up
 
-### Docs (if needed after review)
+### Maintainability (refactor remainder)
 
-1. Spot-check skills against write-gate budgets after real media fixes.
+1. Optional navigation-only splits (same rules as P0–P6): `scrub.rs` (~1.6k lines) then `play.rs` (~0.9k). No behavior change; cite mediabunny only if a fix sneaks in.
 
 ### Play / decode
 
