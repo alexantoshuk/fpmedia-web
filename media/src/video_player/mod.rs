@@ -35,14 +35,16 @@ use crate::workload::{
 
 mod play;
 mod scrub;
+mod scrub_cold;
+mod scrub_gap;
 mod seek;
 mod shared;
 mod util;
 
 use scrub::{
-    apply_clip_budgets, ingest_scrub_bitmap_only, ingest_scrub_frame_shared, next_gap_target,
-    scrub_cache_fill_task,
+    apply_clip_budgets, ingest_scrub_bitmap_only, ingest_scrub_frame_shared, scrub_cache_fill_task,
 };
+use scrub_gap::next_gap_target;
 
 pub use shared::{PRESENTATION_QUEUE_CAP, STEP_BEHIND_CAP};
 // Private imports — child mods (`play` / `scrub` / `seek`) see these via `super::`.
@@ -1036,7 +1038,7 @@ impl VideoPlayer {
     ///
     /// Host PlayPrime snaps playhead here when UI aim is still gray/unindexed.
     pub fn frame_exact_ready(&self, frame: FrameId) -> bool {
-        scrub::exact_scrub_ready(&self.shared, frame)
+        scrub_cold::exact_scrub_ready(&self.shared, frame)
     }
 
     pub fn canvas(&self) -> &HtmlCanvasElement {

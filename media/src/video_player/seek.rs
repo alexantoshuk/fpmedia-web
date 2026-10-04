@@ -7,9 +7,8 @@ use crate::types::FrameId;
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 
 use super::VideoPlayer;
-use super::scrub::{
-    exact_scrub_ready, gop_sample_lead, soft_cold_scrub_settle, warm_scrub_gop_bytes,
-};
+use super::scrub_cold::{exact_scrub_ready, soft_cold_scrub_settle, warm_scrub_gop_bytes};
+use super::scrub_gap::gop_sample_lead;
 
 impl VideoPlayer {
     pub async fn seek_frame(&self, frame: FrameId) -> Result<(), MediaError> {

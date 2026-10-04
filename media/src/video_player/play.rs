@@ -283,7 +283,7 @@ impl VideoPlayer {
             let (warm_secs, warm_key) = {
                 let track = self.shared.player.borrow().track_rc();
                 let key = track.index().nearest_keyframe(head).unwrap_or(head);
-                let gop_lead = super::scrub::gop_sample_lead(&track, key).min(play_index_lead);
+                let gop_lead = super::scrub_gap::gop_sample_lead(&track, key).min(play_index_lead);
                 // Cover key→head (cascade) + small play-ahead. Clamped gop_lead
                 // alone (≤24) misses late frames in GOP48 mid-GOP soft-cold.
                 let await_span = head
