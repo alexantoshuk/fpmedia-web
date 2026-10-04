@@ -44,7 +44,7 @@ bitstream/     AVC + HEVC packet type / sanitize
 source/        MediaSource, CachedSource, FetchMap, ReadOrchestrator (+ wasm Blob/Url)
 audio/         demux, stretch (WSOLA), output, PlaybackClock
 demux/         boxes, coalesce, mp4, tmcd
-video_player/  mod (façade) · play · scrub · seek
+video_player/  mod (façade) · shared · util · play · scrub · seek
 decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
 ```
 
