@@ -1,106 +1,49 @@
-# Leptos 0.8.x skill notes
+# Leptos 0.8.x (`media_components` / `app`)
 
-> Read before touching any component, resource, or routing code.
-> Project pins **Leptos 0.8.x**. 0.6/0.7 examples **won't compile**.
-
----
+> Read before touching components, resources, or routing. Pins **Leptos 0.8.x**.
+> Engine decode/scrub hangs → `skills/media.md`. Stack/CSR/leptos-use → `architecture.md`.
 
 ## Triage
 
 | Symptom | Look first |
 | ------- | ---------- |
-| Browse / file picker does nothing on Android Chrome | `.wm-file input` must not be `display:none` — opacity overlay (see gotcha) |
-| Open never finishes / console stops at `open_blob start` | File-input `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
-| Play / Next / Prev disabled or silent no-op | UI-owned `playing`; recover when session is `None`; cold scrub → `Settling`+Play Preempt (`skills/media.md`) |
-| New clip: Play stays disabled (hard refresh of same file OK) | Open teardown | `retire_clip`: `Closed` + `cancel_all` + drop player (UrlSource dispose); no `busy` across URL resolve — `skills/media.md` |
-| After several URL opens: silent / laggy (refresh OK) | Engine clip dispose | `VideoPlayer` Drop sets `Shared.disposed` + closes `AudioContext` — `skills/media.md` |
-| Hover thumb stays up / paints after new URL open | `HoverThumbPreview` + ready | Effect hides on `!ready`; clear deferred TLS paint; `retire_clip` `cancel_hover_thumb` |
-| Minimize tab: audio silent, video races then snaps | `visibilitychange` → `HoldHidden` / resume | `Video` host + `hold_media_clock_for_hidden` (`skills/media.md`) |
-| Play after scrub does nothing (esp. after EOF) | Transport FSM + `ScrubRelease { then_play }` | `webmedia::transport` / `skills` — atomic release; do not reintroduce demo `resume_after_scrub` / TLS play latch; **PlayPrime fail must soft-park (no `stop_playback` bump) + `(PlayPriming, PlayPressed)` retries** |
-| EOF with `loop` off — host never notified | `VideoRef::ended`; clear on open/close/seek/play |
-| Decoder/cache leak after leaving a clip | `VideoRef::close()` (also on unmount) |
-| New clip: progress bar stays at old frame | Open must `player.take()` before `frame_count=0` | paused rAF `sync_ui` count 0→N restores playhead |
-| URL open hangs / CORS / slow full download | `VideoRef::open_url` → same-origin `/proxy?url=` (demo server, **loopback peer only**) then `UrlSource` (Range) or blob fallback; status shows `No HTTP Range — downloading full file…` |
-| `/proxy` 403 from phone / LAN IP | Demo proxy refuses non-loopback peers — use `http://127.0.0.1:3000` (`adb reverse`) not `http://192.168.x.x` |
-| `/proxy` `ERR_CONTENT_LENGTH_MISMATCH` 206 | Demo proxy buffers ≤16 MiB Ranges (exact CL); large bodies chunked without CL; stale signed redirect → clear+retry |
-| `/proxy` HTTP 618 / open fail on large GitHub Range | Cached signed CDN redirect | retry clear on **any** non-200/206 (not only 401/403/404); do not store redirect on error |
-| Gray scrubber bar vs green densify strips | 1 px `<canvas>` + integer `fillRect` (`paint_strip_canvas_1px`); gray=`FetchMap`, green=Covered/Exact. Not CSS `linear-gradient` (many holes → Chrome blur) |
-| Hover thumb during Play / scrub | `HoverThumbPreview` + engine cancel | Play+Pause OK; far interim → defer refine (same sync key = done); far refine floor 800 ms Pause+Play; UI defer 150 ms; Play no key-fill |
-| Hover thumb lags cursor until frame paints | Sync DOM `transform` first; ThumbCache try-paint; coalesce Exact downscale (read-only — no decode) |
-| `RefCell already borrowed` in Loop / sync_ui / tachys | No borrow across `.await`; defer scrub work off `on:pointer*`; engine: `skills/media.md` RefCell / WASM re-entry |
-| Start stutter / low measured fps after Play | Set wall-clock origins **after** `prime_playback` |
-| Play lag right after scrub (long GOP) | Soft audio + settle seed; do not `seek_frame` from `VideoRef::play` | densify only if no pending PlayPrime; `pause_for_scrub` → warm `resume_media_clock` |
-| Pause→Seek same / Prev→Next ≠ pause picture | Snap `playhead` to engine on leaving play (`stop_playback`) |
-| Scrub pointer jank / re-entrant park | Don’t `pause` every `pointermove` while paused; async scrub |
-| Scrubber bar lags cursor while dragging | Sync `playhead` on pointerdown/move before `defer_scrub` | Engine work stays deferred; bar must not wait on densify/URL |
-| Fullscreen scrub / Next·Prev flood stalls UI | Scrub drag throttle (~50 ms); Next/Prev: hold-safe playhead + OpQueue coalesce |
-| Next/Prev: lag then several frames jump | Hold key-repeat: hold-safe playhead (no Step→Seek); Step always VF; drain rAF |
-| Ops dropped / ignored while “busy” | OpQueue serialize — not `if busy { return }` | rules: `webmedia::host_op_coalesce` |
-
-Decode / densify / WebCodecs hangs → `skills/media.md` triage.
+| Android Browse / file picker dead | `.wm-file input` not `display:none` — opacity overlay |
+| Open stuck after `open_blob start` | `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
+| Play / Next / Prev disabled or no-op | UI-owned `playing`; recover when session `None`; Settling+Play Preempt |
+| New clip: Play disabled / silent after N URLs | `retire_clip`: Closed + cancel_all + drop player — engine dispose: `skills/media.md` |
+| Hover thumb stuck after new URL | hide on `!ready`; `cancel_hover_thumb` |
+| Tab hidden: audio dies / video races | `visibilitychange` → HoldHidden / resume — `skills/media.md` |
+| Play after scrub no-op | `transport` + `ScrubRelease { then_play }`; soft-park on PlayPrime fail; no demo TLS play latch |
+| EOF not observed / decoder leak | `VideoRef::ended`; `close()` on unmount / handoff |
+| Progress bar stuck on old frame | `player.take()` before zeroing counts; paused rAF `sync_ui` |
+| URL open CORS / `/proxy` 403 / CL mismatch | same-origin proxy, loopback only — `architecture.md` Progressive open |
+| Gray vs green strips blur | 1 px canvas `paint_strip_canvas_1px` — UX: `product.md` |
+| Hover jank on Play / lag until paint | UI defer; sync DOM transform first; engine thumb rules: `skills/media.md` |
+| `RefCell already borrowed` (tachys / Loop) | no borrow across await; defer scrub off `on:pointer*` |
+| Start stutter / Play lag after scrub | clock origins after prime; no `seek_frame` from `VideoRef::play` |
+| Scrub bar lags / pointer jank / hold jumps | sync playhead on move; don’t pause every move; hold-safe ±1 + OpQueue |
+| Ops dropped while busy | OpQueue coalesce — not `if busy { return }` (`host_op_coalesce`) |
 
 ## Quick reference
 
 | Need | Use |
 | ---- | --- |
-| Local mutable state | `RwSignal::new(val)` |
-| Derived value | `Memo::new(\|_\| expr)` |
-| Read / write signal | `sig.get()` / `sig.set(val)` |
-| Browser-only async | `LocalResource::new(\|\| async { … })` |
-| Shared state | `provide_context` / `use_context::<T>()` |
-| Navigation | `use_navigate()` |
-| DOM node | `NodeRef::<html::Canvas>` (etc.) |
-| Resize / observe / DOM events / rAF helpers | **`leptos-use`** (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) — not raw `web-sys` + `Closure` |
+| Local state | `RwSignal` / `Memo` |
+| Browser async | `LocalResource` / `wasm_bindgen_futures::spawn_local` |
+| DOM / rAF / resize / events | **`leptos-use`** — not raw `Closure` |
+| Canvas / Performance / File | raw `web-sys` OK |
 
-Prefer `leptos-use` whenever it covers the Web API. Raw `web-sys` in `media_components/` for media plumbing (canvas, `Performance`); in `app/` only for demo File / input element types.
+Tailwind: only literal class strings in `.rs`/`.css`; computed geometry → `style=`.
 
----
+## Host gotchas
 
-## Rendering model (CSR)
-
-The server serves a static `index.html` shell + WASM; `App` mounts via `mount_to_body`. There is **no** SSR HTML render. `HydrationScripts` in `shell()` is cargo-leptos' WASM loader. `frontend::hydrate()` calls `mount_to_body(App)`.
-
-### Mount stability
-
-Long-lived chrome (`<Video/>`, providers) must survive route changes — mount **outside** matched parametric route views, or keep a single-page demo without remounting children via `{move || match … => view! { <Child/> }}`.
-
-### Resources in CSR
-
-`resource.get()` in a reactive view closure is fine; show loading UI while `None`. Prefer `LocalResource` for File / fetch / open (no server fn).
-
----
-
-## Tailwind
-
-Only classes that appear **literally** in `.rs` / `.css` are emitted. Do not build class names with `format!()` for Tailwind utilities; use `style=` for computed geometry.
-
----
-
-## Video element gotchas (`media_components::video`)
-
-Layout: `component.rs` (`<Video>` view + rAF) · `host_ops.rs` (open/seek/play drain) · `open_url.rs` (proxy / Range / blob) · `session.rs` (PlaySession / FpsMeter) · `op_queue.rs`.
-
-1. Open / seek / play-prime are **async** and share `&mut`-equivalent `VideoPlayer` state — serialize them on one local **op queue** (`OpQueue`, mediabunny `CallSerializer` + demo `asyncId`). Do not gate with ad-hoc `if busy { return }` (that drops user input). `busy` means the queue is draining.
-2. Do not call `pause` / `is_playing` on the Rust player while another async method is awaiting (aliasing). Mirror play state in a Leptos signal for the UI. **Never hold `RefCell`/`borrow_mut` across `.await`** — clone the `Rc<VideoPlayer>`, await, then put it back (otherwise Loop/sync_ui panics: `RefCell already borrowed`).
-3. Canvas: pass `HtmlCanvasElement` from `NodeRef` after mount; open player once canvas exists.
-4. Status **fps** is measured display rate (presents / wall time over ~1s), not container/`1/duration` — that stays near source fps even when decode lags. Source fps / codec / size come from `VideoPlayer::metadata()` (shown in demo `.wm-meta`).
-5. **Playback pacing** — prefer [`VideoPlayer::media_time`] (engine `MediaClock`: wall until audio, then `AudioContext`). Not per-frame `setTimeout`; do not open `AudioContext` in the host. **`resume_audio_context` on Play before `prime_playback`** — priming can take hundreds of ms; late `resume()` leaves the context suspended → silent audio. Then arm the clock after prime. **No-AAC:** defer [`arm_silent_play_clock`] to the **first present rAF** (`pending_clock_start`) — arming in the PlayPrime async turn lets `AudioContext` run ahead on large local masters (ChG skip storm). `mediabunny: media-player play` / `audioContextStartTime`.
-6. **Prefetch + underrun hold** — prime on Play; background pump fills until `PRESENTATION_QUEUE_CAP` (ahead=4; step behind ring is separate). Play = smoothness (`product.md`): overdue may skip-to-latest; silent clips use `PlaybackClock`. Empty queue mid-play → freeze media clock (`holding_for_buffer`) until prefetch has a frame, then resume (not skip spirals). Prefetch keeps running while holding.
-7. **Play UI cost** — throttle `sync_ui` / fps (~100 ms). No `busy` toggles during the rAF loop.
-8. **Viewport layout** — `.wm-viewport` is a fixed media stage; canvas uses contain (`max-width/max-height: 100%` + source `aspect-ratio`). Call `VideoPlayer::relayout()` after open; `use_resize_observer` on the viewport NodeRef also calls `relayout` (try_borrow — skip if player RefCell is busy).
-9. **`leptos-use` playback** — present loop = `use_raf_fn_with_options(..., immediate: false)`; `resume()` only **after** `prime_playback` + media-clock origins. Pause/EOF clears a shared `playing` signal; an `Effect` calls `pause()` on the Pausable. Async `loop_to_start` sets a session `restarting` flag so rAF skips until origins reset. Prefetch stays a separate `spawn_local` with a thin await-rAF helper — `use_raf_fn` is callback-oriented and cannot `.await` WebCodecs.
-10. **Loop clock** — reset origins only **after** `loop_to_start`. Prefer `prepare_loop_if_needed` once EOF is queued (same decoder → `loop_prime`) so the seam is a swap; cold restart only if prepare missed. Engine near-EOF presentation cap scales with rate (see `skills/media.md` loop seam gotcha) so review rates finish prime before drain.
-11. **`VideoRef` ops** — non-`Send` callbacks live in `StoredValue::new_local`; do not put `Rc<dyn Fn>` in a default `RwSignal` / `StoredValue` (needs `Send + Sync`).
-12. **Cancel / epochs** — treat `MediaError::Cancelled` as soft (no error banner). One host `async_id` (`OpQueue::bump`) invalidates open / play-prime / prefetch (mediabunny player `asyncId`). Open and pause bump; seek/play enqueue without bumping so they can follow an in-flight open. `VideoPlayer::cancel_ops` still aborts decode. Prefetch rAF: use a `Closure` (no bare Promise `resolve`).
-13. **Op queue policy** — Open: bump + clear pending + enqueue. Seek/step: pause transport, coalesce pending seek/step/play (keep open), enqueue. Play-prime: replace pending PlayPrime only. Drain is a single `wasm_bindgen_futures::spawn_local` loop (file-input is outside a Leptos owner).
-14. **Open from file input** must use `wasm_bindgen_futures::spawn_local`, not `leptos::task::spawn_local` — the picker runs outside a Leptos reactive owner; leptos spawn can leave the future unscheduled (UI stuck after `open_blob start`).
-14b. **Android Chrome Browse** — do not `display:none` the demo `.wm-file input[type=file]`; Android ignores label activation on that. Keep the input in layout with `opacity: 0` covering the label (`style/input.css`).
-15. **Transport `playing` is UI-owned** — never `playing.set(engine.playing)` in `sync_ui`. After Pause, that clobber left `playing=true` with no session → Play/Next/Prev all `disabled` / silent no-op. Recover stale `playing` when session is `None`.
-16. **Quick Pause→Play** — cancelled prefetch may still hold the decoder slot; engine `decode_frame` must wait/yield (not fail `decoder busy`). Stale play tasks must not stop the new session unless `async_id` still matches.
-16b. **Play right after scrub** — host transport FSM (`webmedia::transport` + `HostOp::ScrubRelease { then_play }`) owns resume; demo only maps pointer → `VideoRef::scrub_pointer_*`. `VideoRef::play` must **not** `seek_frame` when settle is cascading. Soft-hold via `pause_for_scrub` / `resume_media_clock` (Pause button too); open/EOF/abort-prime still cold start. **Do not set UI `playing` until prime + clock + session.** Scrub drag throttle `trailing(false)`. Do **not** reintroduce demo `resume_after_scrub` / TLS play latches.
-17. **Scrub pointer events** — do not call `VideoPlayer::pause` / heavy park on every `pointermove` while already paused. Demo defers `VideoRef::scrub_pointer_*` via `spawn_local` (tachys `RefCell`). **Set `playhead` sync on pointerdown/move** before defer. Transport FSM owns resume (`ScrubRelease { then_play }`); play-scrub still **enqueues drag** so soft-blit / Exact-drag present (green cache) while the finger moves. **Throttle move only** (~50 ms, `trailing(false)`). Next/Prev: OpQueue coalesce + hold-safe playhead. **Step drain** — `wait_animation_frame` after each Step. **Hover thumb** — hide while scrubbing; Play+Pause OK.
-18. **UI playhead** — `VideoRef::playhead` is the potential frame (scrubber / Prev / Next / Seek / Play / Pause). Scrub updates it immediately and does not latch `busy`. Sync ops promote playhead and drive the engine from it (adjacent step uses `previous_frame`/`next_frame` when `frame` is next to playhead; otherwise `seek_frame`). **Hold ←/→** — do **not** `playhead += 1` on every key-repeat; that races ahead of `frame` and promotes Step→Seek (multi-frame jump). Aim at most `engine±1`, coalesce Step; after Step snap playhead to committed engine. `sync_ui` copies engine → playhead only while playing or when `frame_count` changes (new clip) — never clobber a paused scrub target. **Leaving play** (`stop_playback`): after `sync_ui`, snap `playhead = frame` — during play UI lags ~100ms, and `sync_ui` while already `!playing` would leave playhead stale → Pause→Seek/Prev/Next jump off the canvas frame. `VideoRef::pause` must not seek to that stale playhead when leaving play; only promote `playhead→seek` when already paused (scrub). **Open new clip** — `stop_playback` then `player.take()` **before** `playhead`/`frame_count`→0; otherwise paused rAF `sync_ui` sees count 0→old N as `count_changed` and paints the old playhead until `run_open` replaces the engine.
-19. **`ended` + `close`** — `DuePresent::Ended` (loop off) sets `VideoRef::ended` then `stop_playback`; pause alone must **not** set `ended`. Clear `ended` on open / close / play / seek / scrub / step. `close()` = `OpQueue::cancel_all` + drop `VideoPlayer` (decoder/caches) while keeping the canvas mounted; call from `on_cleanup` too. Hosts (playlist handoff) watch `ended` and call `close` on the retiring slot.
-20. **`open_url` / new clip** — remote `http(s):` → same-origin **`/proxy?url=`** then `UrlSource` / blob fallback (see prior). **Clip switch:** `retire_clip` notes `TransportEvent::Closed`, `cancel_all`, drops `VideoPlayer` (UrlSource orch dispose) before zeroing UI — mirror mediabunny `initMediaPlayer` dispose + `asyncId++`. Do not latch `busy` across URL resolve (only `enqueue_open`). Local files: file picker → `open_blob`.
-
-Decode / scrub / densify engine traps: `skills/media.md`.
+1. **OpQueue** — serialize open/seek/play-prime (CallSerializer + asyncId). `busy` = draining, not “drop input”.
+2. **No `RefCell` across `.await`** — clone `Rc<VideoPlayer>`, await, put back. Engine re-entry: `skills/media.md` RefCell.
+3. **`playing` is UI-owned** — never `playing.set(engine.playing)` in `sync_ui`. Set `playing` only after prime + clock + session.
+4. **Transport** — demo maps pointers → `VideoRef::scrub_pointer_*`; FSM owns resume (`ScrubRelease { then_play }`). Soft-hold via `pause_for_scrub`. PlayPrime fail → soft-park (no bump) so retry works.
+5. **Playhead** — sync on pointerdown/move before deferred engine work. `sync_ui` updates playhead only while playing or on new clip. Leaving play: snap playhead to engine. Hold ←/→: aim `engine±1`, not `playhead++`.
+6. **Clock** — `VideoPlayer::media_time()` only; `resume_audio_context` before long prime; no-AAC: defer silent clock arm to first present rAF when needed.
+7. **rAF** — `use_raf_fn` resume after prime; throttle `sync_ui`/fps ~10 Hz; prefetch = separate `spawn_local`.
+8. **Open / clip switch** — file input uses wasm spawn; `retire_clip` before zeroing UI; remote URL → `/proxy` then UrlSource/blob.
+9. **`ended` / `close`** — Ended only from engine EOF (loop off); clear on open/seek/play/scrub; `close` = cancel_all + drop player.
+10. **Cancelled** — soft (no error banner). Clear sticky `error` on Ok settle.

@@ -4,13 +4,19 @@
 
 ---
 
-## Handoff (2026-10-03)
+## Handoff (2026-10-04)
 
-**Landed (uncommitted):** short B-frame `flush/idle` after ChG — `saw_target` clear on retarget, `pts_aim_hole`, cascade through aim, `prune_floor_us` + consumer prune at spawn aim, Hd AVC no auto-prefer HW. Verified after Chrome hard-refresh. Gotcha → `.ai/skills/media.md`.
+**Docs:** `AGENTS.md` documentation write gate + skill budgets. Canonical cleanup: `product` / `architecture` / `state` / `skills/*` (no code changes this handoff).
+
+**Engine (prior, on `main`):** short B-frame `flush/idle` after ChG park — `saw_target` clear, `pts_aim_hole`, cascade through aim, `prune_floor_us`. Main play still probes `prefer-hardware` (Hd+Uhd); scrub/thumb never steal HW. Gotchas → `.ai/skills/media.md`.
 
 ---
 
 ## Next up
+
+### Docs (if needed after review)
+
+1. Spot-check skills against write-gate budgets after real media fixes.
 
 ### Play / decode
 
@@ -23,8 +29,8 @@
 ### Also open
 
 1. Drop `re_mp4` fork when upstream has #35 + #37.
-2. Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc`.
+2. Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting later.
 
 ### Later
 
-- Tab-hidden `AudioContinue`; pure `AudioPlayer`; thumb Worker; 4K loop residual; dual-source; publish crates; production chrome.
+- Tab-hidden `AudioContinue`; pure `AudioPlayer`; thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; publish crates; production chrome.

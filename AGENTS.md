@@ -9,7 +9,7 @@ Canonical project knowledge lives in **`AGENTS.md`** + **`.ai/`** (+ **`CONTRIBU
 - **Do not** create or use a `.cursor/` tree (no `.cursor/rules`, no editor-only RULE.md mirrors).
 - **Do not** duplicate `.ai/` content into editor-specific rule folders, Copilot instructions, or parallel “agent notes” files.
 - Editor/IDE config that is not documentation (e.g. debug launch) is fine if it does not restate product/architecture/skills.
-- New durable guidance → the table in [Documentation (`.ai/`)](#documentation-ai) / [One source of truth](#one-source-of-truth). One-line pointers elsewhere only.
+- New durable guidance → [Documentation write gate](#documentation-write-gate--hard-stop) + [One source of truth](#one-source-of-truth). One-line pointers elsewhere only.
 
 ## Start of session
 
@@ -62,9 +62,10 @@ Before **any** write to the repo (code, config, docs, generated assets):
 
 1. **Describe the plan first** — short: what, where, why (files/symbols if known).
 2. **Media changes:** plan must satisfy [Pre-edit gate (media)](#pre-edit-gate-media--hard-stop) (mediabunny cite or explicit no-equivalent).
-3. **Do not edit until the user explicitly consents** (e.g. `ok`, `go`, `да`, `approve`).
-4. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
-5. **Exception:** only if the user explicitly says to skip approval for that task or session.
+3. **`.ai/` / docs changes:** plan must satisfy [Documentation write gate](#documentation-write-gate--hard-stop) (canonical file + no duplicate prose).
+4. **Do not edit until the user explicitly consents** (e.g. `ok`, `go`, `да`, `approve`).
+5. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
+6. **Exception:** only if the user explicitly says to skip approval for that task or session.
 
 If the plan changes mid-work (scope creep, different files), stop and re-approve before further edits.
 
@@ -72,20 +73,41 @@ If the plan changes mid-work (scope creep, different files), stop and re-approve
 
 | File | Read before touching |
 | ---- | -------------------- |
-| `.ai/skills/media.md` | demux, frame index, player API, WebCodecs |
-| `.ai/skills/leptos.md` | Leptos UI / `<Video>` / CSR mount / resources |
+| `.ai/skills/media.md` | demux, frame index, player API, WebCodecs, engine audio/source |
+| `.ai/skills/leptos.md` | Leptos UI / `<Video>` / CSR mount / resources / host OpQueue |
 
-New gotcha → append to the relevant skill; add a skills-index row only if a new file is created.
+New trap → follow [Documentation write gate](#documentation-write-gate--hard-stop) (usually triage row + tight gotcha). Add a skills-index row only if a **new** skill file is created.
 Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, session logs) — extend the table above only when a new skill topic is real and recurring.
 
 ## Documentation (`.ai/`)
 
 | File | When to update | What goes there |
 | ---- | -------------- | ---------------- |
-| **`product.md`** | Domain or UX decision stabilises | Model, surfaces, business invariants. One row/paragraph per decision — no session notes. |
-| **`architecture.md`** | Stack, layers, or DB policy stabilises | Layout, layer rules, code conventions, ADRs. Point to skills for how-to. |
-| **`state.md`** | End of session; **chat handoff**; before commit if priorities shifted | **In progress** + **Next up** only (no Done list). Drop finished specs; don’t duplicate product/architecture. |
-| **`skills/*.md`** | Reusable trap or API mismatch fixed in code | Triage table + gotchas + patterns. Not backlog, workspace layout, or Dev commands. |
+| **`product.md`** | Domain or UX decision stabilises | Model, surfaces, business invariants. One row/paragraph per decision — no session notes, no store/policy knobs unless the user sees them. |
+| **`architecture.md`** | Stack, layers, or policy stabilises | Layout, layer rules, code conventions, ADRs, design tables (caches / Play·Scrub·Settle policy). Point to skills for failure modes. **No backlog / Still-open lists** — those live in `state.md`. |
+| **`state.md`** | End of session; **chat handoff**; before commit if priorities shifted | **In progress** + **Next up** (+ optional **Later**) only (no Done list). Drop finished specs; don’t duplicate product/architecture. |
+| **`skills/*.md`** | Reusable trap or API mismatch fixed in code | Triage + tight gotchas (+ optional one-crate module map). Not backlog, design essays, Dev commands, or session history. |
+
+### Documentation write gate — hard stop
+
+Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md` / `CONTRIBUTING.md`), the plan **must** name the **one** canonical file for each fact:
+
+| Kind of fact | Canonical file |
+| ------------ | -------------- |
+| UX / product invariant | `product.md` |
+| Stack, layers, ADR, policy/design table, FSM domain | `architecture.md` |
+| Backlog / parked / “later” / next-up | `state.md` |
+| Symptom → how not to re-break (engine) | `skills/media.md` |
+| Symptom → how not to re-break (host/UI) | `skills/leptos.md` |
+| Agent workflow / Mediabunny-first / approve / Dev cheat sheet | `AGENTS.md` |
+| Commit format / Clippy gates / PR size | `CONTRIBUTING.md` |
+
+**Hard rules:**
+
+1. **One home** — the same fact must not appear as prose in two files. Everywhere else: **one-line pointer** (`see product.md § …` / `skills/media.md` triage).
+2. **No essay append** — do not paste a session narrative into a skill “for safety”. Choose the row above; trim or move design upward.
+3. **Disagree → fix canonical** — if two files conflict, edit the home and **delete** the duplicate; do not add a third explanation.
+4. **Refuse doc edits** that only grow a skill/architecture without naming the canonical slot (same spirit as media pre-edit cite).
 
 ### One source of truth
 
@@ -93,38 +115,58 @@ Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, 
 | ----- | -------------- | --------- |
 | Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
 | Approve-before-edit | `AGENTS.md` | Do not restate |
+| Doc write gate / skill budgets | `AGENTS.md` | Do not restate |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
-| Crate layout, layers, ADRs | `architecture.md` | Skills may keep a **module map** for one crate |
+| Crate layout, layers, ADRs, cache/policy design | `architecture.md` | Skills: module map + traps only; pointer to design sections |
 | State machines over flag soup | `architecture.md` § State machines over flags | One-line pointer only — do not restate domain table in skills |
-| Backlog / priorities | `state.md` | Never a Done list; never copy into skills |
+| Backlog / Still open / priorities | `state.md` | Never a Done list; never in skills; never a Still-open section in architecture |
 | Chat handoff → refresh `state.md` | `AGENTS.md` § State hygiene | One-line pointer only |
-| Engine traps / decode / scrub | `skills/media.md` | UI host points here for decode hangs |
-| Leptos / `<Video>` host traps | `skills/leptos.md` | Engine skill points here for UI stuck |
-| Dev commands | `AGENTS.md` | Do not duplicate in skills |
+| Engine traps / decode / scrub / demux | `skills/media.md` | Host skill: one-line pointer only (no recipe copy) |
+| Leptos / `<Video>` host traps | `skills/leptos.md` | Engine skill: one-line pointer only (no recipe copy) |
+| Dev commands / npm scripts | `AGENTS.md` / `CONTRIBUTING.md` | Skills: **paths** under `e2e/` in triage Notes only — no command blocks |
 | Commits / PR size / pre-push gates | `CONTRIBUTING.md` | One-line pointer only — do not restate |
 | Editor-specific agent rules | **nowhere** | Forbidden — use `.ai/` + this file |
 
-If two files disagree, fix the canonical home and delete the duplicate prose.
-
 ### Skill hygiene
 
-- Every skill starts with a short **Triage** table: symptom → section / rule (agents read this first).
-- New gotcha format: **symptom → rule → symbol/file** (optional `mediabunny: src/…` cite). Prefer one tight bullet over a paragraph; expand only when the failure mode is subtle.
-- When a gotcha grows into a design section (e.g. scrub caches), keep the design once under a named heading and link it from triage — do not paste the same policy into three bullets.
-- After fixing a bug: update triage if the symptom is new; append/adjust the gotcha; remove obsolete claims (wrong clock, “planned” that shipped).
-- E2E / perf probes that guard a failure mode: list them in that skill’s triage (paths under `e2e/`). Do not invent a separate testing doc until probes outgrow a handful of lines.
+- Every skill starts with a short **Triage** table: symptom → section / symbol (agents read this first).
+- **Triage first:** new symptom → triage row; add a gotcha only if the failure mode is subtle (not already clear from the row).
+- Gotcha format: **symptom → rule → symbol/file** (optional `mediabunny: src/…` cite). **Target ≤ ~8 lines** per gotcha. Longer = design → move to `architecture.md`, leave a link.
+- **Do not** repeat the same policy in triage Notes **and** a gotcha **and** a design heading — one place + pointers.
+- **Forbidden in skills:** `Was:` / `Superseded:` / changelog; backlog (`Future:`, parked); Dev/npm command blocks; product Exact/Play essays; architecture FSM/orch shipped essays; full recipes that belong in the other skill.
+- **Probes:** triage Notes = `e2e/…` paths only (no `npm run …` lists).
+- **Module map:** at most one per engine skill; do not restate workspace layout from `architecture.md`.
+- **Soft size budgets** (trim/move before append): `skills/media.md` ≲ **200** lines; `skills/leptos.md` ≲ **80** lines. Oversized → cleanup in the same change, not “add a paragraph”.
+- After a fix: update/trim triage; tighten or replace the gotcha; **delete** obsolete claims (wrong clock, “planned” that shipped, reverted half-ports).
+
+### After-fix doc update
+
+For a skill-worthy fix, the plan or commit must state **one** of:
+
+- triage row added/updated; and/or gotcha tightened (not a new essay), or
+- durable design → `architecture.md`, or
+- UX decision → `product.md`, or
+- finished work dropped from `state.md`
+
+Do **not** only “append to `media.md`” without choosing a canonical slot.
+
+### Product / architecture hygiene
+
+- **`product.md`:** user-facing invariants. No decode-store / policy-field names unless the user observes them (strip colors, Exact vs Play, rate ladder).
+- **`architecture.md`:** shipped ADRs say **shipped** (not “future” / “half-port”). No **Still open** bullet lists — pointer to `state.md`. Design tables live here once; skills link, they do not fork.
 
 ### State hygiene
 
 - `state.md` = **In progress** + **Next up** (+ optional **Later**). Never **Done**.
 - Finished work: delete the bullet (durable knowledge → skill/product/architecture).
-- Keep Next up actionable and short; no session narrative.
-- **Chat handoff (hard):** when the user signals a move to another chat / session (e.g. «переходим в другой чат», «handoff», «new chat»), **refresh `.ai/state.md` before wrapping up** — accurate Handoff + Next up (what landed, what is unverified, what is still open). Do not leave a stale matrix or “re-verify” that already passed without saying so.
+- Keep Next up actionable and short; no session narrative; no paste of skill gotchas.
+- Handoff claims must not contradict `architecture.md` / skills — if they disagree, fix the canonical home.
+- **Chat handoff (hard):** when the user signals a move to another chat / session (e.g. «переходим в другой чат», «handoff», «new chat»), **refresh `.ai/state.md` before wrapping up** — accurate Handoff + Next up (what landed, what is unverified, what is still open). If skills were touched this session, **trim** obsolete/superseded skill lines in the same wrap-up. Do not leave a stale matrix or “re-verify” that already passed without saying so.
 
-**Before commit / PR push:** follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** (format, Clippy, checks, tests, size). Include `.ai/` when architecture, player UI, or a skill-worthy fix changed.
+**Before commit / PR push:** follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** (format, Clippy, checks, tests, size). Include `.ai/` when architecture, player UI, or a skill-worthy fix changed — and keep that `.ai/` diff compliant with the write gate (no duplicate essays).
 
-**End of session / chat handoff:** refresh `state.md` (drop finished items; update Handoff); append/trim skill triage + gotchas if any.
+**End of session / chat handoff:** refresh `state.md` (drop finished items; update Handoff); trim skill triage + gotchas if any (do not grow skills “for the log”).
 
 ## Commits
 

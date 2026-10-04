@@ -2,6 +2,7 @@
 
 > Stable stack and code-structure context. Read at start of every session.
 > Change only after a technical decision proves itself across sessions.
+> Backlog / Still open → `.ai/state.md` only (`AGENTS.md` doc write gate).
 
 ---
 
@@ -14,16 +15,16 @@
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — demo host (controls) + thin SSR shell |
-| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `helpers` (scrubber CSS math) + `HoverThumbPreview` chrome. Modules: `video`, `helpers`, `hover_thumb` (+ planned `audio`) |
+| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `helpers` (scrubber strip math) + `HoverThumbPreview`. Modules: `video`, `helpers`, `hover_thumb` (+ planned `audio`) |
 | Media engine | `webmedia` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `media_components/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
 
 ### Leptos UI rules
 
-Long-lived chrome lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Details: `skills/leptos.md`.
+Long-lived chrome lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Failure modes: `skills/leptos.md`.
 
-**Browser APIs in `media_components/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) (`use_resize_observer`, `use_event_listener`, `use_raf_fn`, …) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the media crate owns (WebCodecs / `AudioContext`). The **media clock** (wall or audio) is owned by `webmedia` (`MediaClock` / `AudioOutput`) — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
+**Browser APIs in `media_components/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the media crate owns (WebCodecs / `AudioContext`). Media clock is owned by `webmedia` — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
 
 ---
 
@@ -43,7 +44,7 @@ webmedia/
 └── .ai/                   ← product / architecture / state / skills
 ```
 
-`media/src` module map (engine triage): `.ai/skills/media.md`.
+Engine module map (file triage): `.ai/skills/media.md`.
 
 ### Layer rules
 
@@ -69,60 +70,49 @@ webmedia/
 | Isolated `webmedia` crate | Engine reusable without UI; no Leptos in demux/decode |
 | Isolated `media_components` crate | HTML `<video>` / `<audio>` analogs; reusable without demo chrome |
 | WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
-| `leptos-use` for browser helpers | Observers/events/rAF in `media_components/`; media crate stays free of Leptos |
+| `leptos-use` for browser helpers | Observers/events/rAF in UI crates; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
-| Progressive open via `MediaSource` | Ranged reads (`BlobSource` / `UrlSource` / `MemorySource` + `CachedSource`); parse `moov` (+ `moof` for single-file fMP4), fetch samples by offset. Keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
-| Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Stores, budgets, scrub pipeline, **`GopProfile`** / **`PlayPolicy`** / **`SettlePolicy`**: `.ai/skills/media.md`. |
-| Optional hover thumbs (`thumbs`) | Compile: cargo feature `thumbs` **default on**. Runtime: `ThumbPolicy::Off \| On`. Lazy `ThumbPreview` / `ThumbSink`: ThumbCache + 3rd decoder + sparse key fill in `decode/`; player Exact bridge. Pure size/gap helpers in `types`. UI: `HoverThumbPreview`. `mediabunny:` separate `CanvasSink` / `getCanvas` / `canvasesAtTimestamps`. |
-| Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA live in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` only volume/mute **API**. Keyboard/chrome stay in demo `app`. Future `<Audio>` shares `audio/` (no canvas). mediabunny: `AudioBufferSink` + `examples/media-player`. |
-| Component API like HTML media | Element crates expose open/play/seek/rate/volume — not host keybindings. Scrubber strip math: `media_components::helpers`. Demo owns JKL/Space/arrows. |
-| Domain schedulers, not one global async OS | Byte IO → future full mediabunny `ReadOrchestrator` (not half-ports — see `skills/media.md`). Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode` / policy knobs** (Play > Seek > Open > Bg) — **not** one priority queue for every `spawn_local`. |
-| Prefer explicit state machines over flag soup | Cross-turn playback / queue / decode control belongs in one **enum + reduce** (or a coalesce table), not scattered `bool` latches + Effects + TLS. See [State machines over flags](#state-machines-over-flags). **Shipped (host):** `webmedia::transport` + `HostOp::ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
+| Progressive open via `MediaSource` | Ranged reads; parse `moov` (+ `moof` for single-file fMP4); keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
+| Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Design: [Play / scrub residency](#play--scrub-residency). Traps: `skills/media.md`. |
+| Optional hover thumbs (`thumbs`) | Feature `thumbs` default on; runtime `ThumbPolicy`; 3rd decoder + `ThumbCache` / `ThumbPreview`; UI `HoverThumbPreview`. UX: `product.md`. |
+| Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. Future `<Audio>` shares `audio/` (no canvas). |
+| Component API like HTML media | Element crates: open/play/seek/rate/volume. Strip math: `media_components::helpers`. Demo owns JKL/Space/arrows. |
+| Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
+| Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `webmedia::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
 
 ---
 
 ## State machines over flags
 
-Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed by more `RwSignal<bool>` or thread-local “remember to play”. Rust `Send`/`Sync` also does not order JS turns.
+Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed by more `RwSignal<bool>` or TLS. Rust `Send`/`Sync` also does not order JS turns.
 
-**Prefer:**
+**Prefer:** one state enum per domain + sync `reduce(Event) -> (State, Cmds)`; illegal combos unrepresentable; coalesce in the scheduler; call sites only dispatch / run cmds.
 
-- One **state enum** per domain + a single sync `reduce(Event) -> (State, Cmds)`.
-- Illegal combinations unrepresentable (or `debug_assert` on bad transitions).
-- Queue invariants in the scheduler (`OpQueue` coalesce table / atomic ops like `ScrubRelease { then_play }`), not in demo chrome.
-- UI and engine call sites only **dispatch events** / run **cmds** — no parallel `pause` + `play` + `scrub` side paths.
+**Avoid:** sticky latches in demo + component + TLS; Effects that clear intent “when playing flips”; half-ported machines.
 
-**Avoid:** sticky latches mirrored in demo + component + TLS; Effects that clear intent “when playing flips”; half-ported orchestrators that implement only part of a machine (see UrlSource half-ports in `skills/media.md`).
+| Domain | Machine |
+| ------ | ------- |
+| Host transport | `webmedia::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*` |
+| OpQueue | `webmedia::apply_enqueue` / `EnqueueKind`; epochs preserved on survivors |
+| Engine mode | `webmedia::engine_mode` (`Play` / `Scrub` / `ExactHold` + `AudioResume`) |
+| Decoder slot | `webmedia::decoder_slot` (`Idle` / `CheckedOut` + `reset_pending`) |
+| WorkloadMode | `webmedia::workload` (Play > Seek > Open > Bg) |
+| Byte IO | `ReadOrchestrator` + `UrlSource` open-ended workers |
+| Open / backfill | `webmedia::open_phase` (`OpenPhase::label`) |
+| Media clock | `webmedia::clock_state` |
+| rAF session | `webmedia::session` |
 
-**Domains (same idea, separate machines — do not merge into one god-loop):**
-
-| Domain | Machine owns | Today’s smell → target |
-| ------ | ------------ | ---------------------- |
-| Host transport | play / scrub / settle / prime / ended | **`webmedia::transport`** + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*` (demo chrome only maps pointers) |
-| OpQueue | merge/drop pending ops | **`webmedia::apply_enqueue` / `EnqueueKind`** matrix; `OpQueue` preserves epochs on survivors |
-| Engine mode | play vs scrub densify / soft-hold audio | **`webmedia::engine_mode`** (`Play` / `Scrub` / `ExactHold` + `AudioResume`) |
-| Decoder slot | configure / feed / drain / reset | **`webmedia::decoder_slot`** (`Idle` / `CheckedOut` + `reset_pending`) |
-| WorkloadMode | Play > Seek > Open > Bg knobs | **`webmedia::workload`** (`classify` + bg verify / backfill yield policy) |
-| Byte IO | hole queue / workers / inner-slice | **`ReadOrchestrator`** + `UrlSource._runWorker` (open-ended stream) |
-| Open / backfill | probe → warm index → ready | **`webmedia::open_phase`** (`OpenPhase::label` for UI status) |
-| Media clock | stop / run / underrun hold / scrub hold | **`webmedia::clock_state`** (`ClockState` + `reduce`) |
-| rAF session | priming / running / loop restart | **`webmedia::session`** (`SessionModel` restarting + preparing_loop) |
-
-**Success bar:** a new race is fixed by a **transition or coalesce row**, not another flag. Typestate across `async` WASM is optional; a runtime enum + tested reduce is enough.
-
-Skills keep failure-mode gotchas; this section is the standing design rule.
+**Success bar:** a new race is fixed by a transition or coalesce row, not another flag. Failure modes: skills.
 
 ---
 
 ## Progressive open (MediaSource)
 
-**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` (`ReadOrchestrator` + open-ended Range workers) / `MemorySource` + `CachedSource` (512 MiB byte-budget LRU, 8 MiB quantum + hit-path margin prefetch / network grow; orch cache mediabunny-default 64 MiB); scrubber gray strip mirrors resident windows via `FetchMap`. Top-level `ftyp`+`moov` (+ full `moof` bodies for single-file fMP4) → `re_mp4`; `Mp4VideoTrack` async `encoded_sample`; UI `open_blob(File)` without whole-file `array_buffer()`; `open_url` rewrites remote `http(s)` to same-origin **`/proxy?url=`** (demo Axum forwards `Range`; bypasses GitHub Release / S3 CORS), then HTTP Range when the upstream supports `206` (else full-download fallback). Async AVC sync verify after moov (`verify_avc_sync: true`). `open_mp4_bytes` kept for fixtures/tests.
+**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` (`ReadOrchestrator` + open-ended Range workers) / `MemorySource` + `CachedSource` (512 MiB LRU, 8 MiB quantum; orch cache mediabunny-default 64 MiB); gray strip via `FetchMap`. Top-level `ftyp`+`moov` (+ full `moof` for single-file fMP4) → `re_mp4`. UI `open_blob` / `open_url` (remote → same-origin **`/proxy?url=`**). Async AVC sync verify after moov. `open_mp4_bytes` for fixtures/tests.
 
-**Demo `/proxy` policy (fixed):** localhost-only for local tests / e2e. TCP peer must be loopback (`127.0.0.1` / `::1`, incl. IPv4-mapped); otherwise **403**. Keep `site-addr` on loopback. Not a production CORS proxy — no DNS-resolve / allowlist hardening. Host apps that need remote media supply their own same-origin fetch path.
+**Demo `/proxy`:** localhost-only (loopback peer or **403**). Not a production CORS proxy. Host apps supply their own same-origin fetch path.
 
-**Still open** (see `.ai/state.md`): native `FileSource`; optional lazy/background sync-verify for huge files; no-Range → `ReadableStreamSource`; verify URL gray strip after full `ReadOrchestrator` port. Sample-span coalesce shipped: `demux/coalesce.rs`. `WorkloadMode` policy shipped: `webmedia::workload`. Open UI progress shipped: `webmedia::open_phase` (`OpenPhase::label`). Media clock phase shipped: `webmedia::clock_state`. Play-session latches shipped: `webmedia::session`.
-
-**Out of scope:** stream-only sources without random access; live / growing fMP4; DASH/HLS segment playlists; MSE remux; production open media proxy.
+**Out of scope:** stream-only / live fMP4; DASH/HLS; MSE remux; production open proxy. **Open work:** `.ai/state.md`.
 
 **Success bar:** 1080p progressive open to first paint without allocating the full media size in WASM.
 
@@ -133,7 +123,73 @@ Skills keep failure-mode gotchas; this section is the standing design rule.
 | Tiny unit/smoke MP4s | `media/tests/fixtures/` (+ copies in `public/` for e2e smoke) |
 | FullHD A/V sync plates | **[testvideo](https://github.com/alexantoshuk/testvideo)** Releases — catalog `e2e/helpers/testvideo.ts` |
 
-Do **not** document or wire probes to Downloads / third-party sample hosts. In skills/gotchas prefer **meta** (fps, GOP, resolution, bf) over ad-hoc filenames; when naming an asset, use the testvideo stem (`avc_1080p_24_gop48_bf0`, …).
+Do **not** wire probes to Downloads / third-party hosts. In skills prefer meta (fps, GOP, resolution, bf); asset names = testvideo stems.
+
+---
+
+## Play / scrub residency
+
+Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). UX strip colors: `product.md`.
+
+```text
+  Play path                          Scrub / pause path
+  main VideoDecoder                  scrub VideoDecoder
+       │                                    │
+  presentation queue                 densify → ImageBitmap (ScrubBlitLru)
+  (ahead small + behind on Pause)    + ScrubChunkStore (resident markers)
+       └──────────► canvas ◄────────────────┘
+```
+
+| Store | Role |
+| ----- | ---- |
+| Presentation queue | Play-ahead + Next hits (`PlayPolicy::presentation_cap`) |
+| Step behind ring | Prev hits; **Play cap 0**; Pause/scrub uses behind=8 |
+| `ScrubChunkStore` | Gap geometry — **markers only** |
+| `ScrubBlitLru` | Live densify bitmaps; cap from `scrub_blit_frame_budget` |
+| `ThumbCache` / `ThumbPreview` | Hover filmstrip (3rd decoder); feature `thumbs` |
+
+**Modes:** Play → densify off (epoch cancel). Scrub/paused → densify on when `ScrubPolicy::densify`. One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move. Eviction: farthest from aim. `mediabunny:` CanvasSink pool idea — no still-encode store.
+
+### Predictive densify
+
+Local invention (no mediabunny equivalent). Unit of work = one GOP; drag sets `scrub_dir` (±1) so `next_gap` prefers along direction; settle/play clears to neutral.
+
+### Policies
+
+**`GopProfile`** (scrub only, from frame index):
+
+| Profile | When | Densify | Drag |
+| ------- | ---- | ------- | ---- |
+| `AllIntra` | every sample sync | off | soft |
+| `ShortFixed { len }` | max GOP ≤ 30 | on | soft |
+| `Long { median, max }` | max GOP > 30 | on | exact |
+
+**`PlayPolicy`** (from coded height):
+
+| Class | Cap / warm | `prefer_hardware` field | Notes |
+| ----- | ---------- | ----------------------- | ----- |
+| `Hd` (&lt; 2160) | 4 / 4 | false (docs Hd knobs) | Do not retune when changing Uhd |
+| `Uhd` (≥ 2160) | 10 / 8 | true | EOF lead 1 s; larger loop prime |
+
+**Main play** always probes `prefer-hardware` when supported (`WebCodecsDecoder::create` `allow_hw=true`) — Hd and Uhd. **Scrub/thumb** always `PlayPolicy::hd()` + `allow_hw=false` (sole HW session on main). `optimizeForLatency` = false for VOD.
+
+**`ScrubPolicy`** (from `GopProfile`): `drag` / `densify` / `blit_mib` / `scrub_cache_mib` / edge margins. Soft-drag = blit preview only; exact on settle. Long may decode while dragging.
+
+**`SettlePolicy`** (clip-invariant defaults): densify yield `250+250 ms`, `gop_sample_lead` 8…24, `play_prime_frames=2`, index warm leads. Soft-cold / poison are named recovery helpers, not policy fields. Do not retune Settle when changing Play Uhd or Scrub MiB.
+
+Traps (flush/idle, cold settle, dual-HW): `skills/media.md`.
+
+### Audio + media clock
+
+```text
+  audio::Mp4AudioTrack ──► audio::AudioOutput
+                                    │
+  MediaClock ◄── AudioContext (AAC) or silent PlaybackClock
+       ▼
+  VideoPlayer::media_time() ──► present_due / host rAF
+```
+
+Hosts never open `AudioContext` as a disposable clock. Rate/pitch: WSOLA ≤4× (`audio::TimeStretcher`); mediabunny has no rate API equivalent. UX rates: `product.md`.
 
 ---
 
@@ -144,4 +200,4 @@ Do **not** document or wire probes to Downloads / third-party sample hosts. In s
 - Errors: `thiserror`; no `.unwrap()`/`.expect()` in production paths.
 - WebCodecs needs `web_sys_unstable_apis` (`.cargo/config.toml`).
 - **WebCodecs / media resources:** RAII owners + borrow helpers (`OwnedVideoFrame` / `AsVideoFrame`); **move into caches**, **borrow to draw**. Gotchas: `skills/media.md`.
-- **Mediabunny reference:** before demux / decode / seek / playback work, check [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny); reimplement in Rust (`AGENTS.md`).
+- **Mediabunny reference:** `AGENTS.md` Mediabunny-first — do not restate here.
