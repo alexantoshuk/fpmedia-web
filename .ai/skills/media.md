@@ -18,6 +18,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
 | Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only (no densify); PreferSoftware fill after settle/Pause |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
+| Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Hover CPU / freeze / stuck far | ThumbPreview isolation | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
 | Play freeze / flush/idle / underrun | presentation cap / `clock_state` | Hd cap 4; HoldUnderrun; prune floor + cascade — see Gotchas |
 | Cold scrub freezes tab / Play deaf | soft settle + transport | `pending_cold_exact`; Settling+Play Preempt — `e2e/player.scrub.cold-open.spec.ts` |

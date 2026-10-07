@@ -152,7 +152,7 @@ Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). U
 
 ### Predictive densify
 
-Local invention (no mediabunny equivalent). Unit of work = one GOP; drag sets `scrub_dir` (±1) so `next_gap` prefers along direction; settle/play clears to neutral.
+Local invention (no mediabunny equivalent). Unit of work = one GOP; `next_gap` is **distance-first** to aim (far/edge loses to budget eviction); `scrub_dir` (±1) only breaks equal-distance ties. Settle/play clears dir to neutral.
 
 ### Policies
 

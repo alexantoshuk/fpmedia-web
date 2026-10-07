@@ -358,9 +358,9 @@ pub fn next_missing_sync_key(
 
 /// Dense-cache gap pick for scrub densify.
 ///
-/// - `dir > 0` — hard prefer `ahead` (scrub right); fallback `behind`.
-/// - `dir < 0` — hard prefer `behind` (scrub left); fallback `ahead`.
-/// - `dir == 0` — min `|gap − playhead|`; tie → behind (PREV-friendly neutral).
+/// **Distance-first:** always the gap with smaller `|gap − playhead|`. Far/edge
+/// fills lose to budget eviction anyway — spending densify there first wastes
+/// work. `dir` only breaks ties (`>0` → ahead, else behind / PREV-friendly).
 ///
 /// Local invention (predictive densify); mediabunny has no equivalent.
 pub fn nearer_gap_with_dir(
@@ -369,20 +369,18 @@ pub fn nearer_gap_with_dir(
     ahead: Option<FrameId>,
     dir: i8,
 ) -> Option<FrameId> {
-    if dir > 0 {
-        return ahead.or(behind);
-    }
-    if dir < 0 {
-        return behind.or(ahead);
-    }
     match (behind, ahead) {
-        (Some(b), Some(a)) => {
-            if playhead.abs_diff(b) <= playhead.abs_diff(a) {
-                Some(b)
-            } else {
-                Some(a)
+        (Some(b), Some(a)) => match playhead.abs_diff(b).cmp(&playhead.abs_diff(a)) {
+            std::cmp::Ordering::Less => Some(b),
+            std::cmp::Ordering::Greater => Some(a),
+            std::cmp::Ordering::Equal => {
+                if dir > 0 {
+                    Some(a)
+                } else {
+                    Some(b)
+                }
             }
-        }
+        },
         (Some(b), None) => Some(b),
         (None, Some(a)) => Some(a),
         (None, None) => None,
@@ -1168,14 +1166,17 @@ mod tests {
     }
 
     #[test]
-    fn nearer_gap_with_dir_prefers_along_scrub() {
+    fn nearer_gap_with_dir_distance_first() {
+        // Closer behind wins even when scrubbing right (was: hard-prefer ahead).
+        assert_eq!(nearer_gap_with_dir(150, Some(149), Some(500), 1), Some(149));
+        assert_eq!(nearer_gap_with_dir(150, Some(0), Some(151), -1), Some(151));
+        // Equal distance — dir tie-break; neutral → behind.
         assert_eq!(nearer_gap_with_dir(150, Some(99), Some(201), 1), Some(201));
         assert_eq!(nearer_gap_with_dir(150, Some(99), Some(201), -1), Some(99));
-        // Equal distance — neutral still prefers behind.
         assert_eq!(nearer_gap_with_dir(150, Some(99), Some(201), 0), Some(99));
         assert_eq!(nearer_gap_with_dir(120, Some(99), Some(201), 0), Some(99));
         assert_eq!(nearer_gap_with_dir(180, Some(99), Some(201), 0), Some(201));
-        // Missing side along dir → fallback.
+        // One side only.
         assert_eq!(nearer_gap_with_dir(0, None, Some(8), -1), Some(8));
         assert_eq!(nearer_gap_with_dir(5, Some(3), None, 1), Some(3));
         let behind = 0u64.checked_sub(1);
