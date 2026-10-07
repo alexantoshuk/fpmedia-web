@@ -7,9 +7,7 @@ use std::rc::Rc;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::webcodecs::WebCodecsDecoder;
-use crate::decoder_slot::{
-    DecoderSlotCmd, DecoderSlotEvent, reduce as decoder_slot_reduce,
-};
+use crate::decoder_slot::{DecoderSlotCmd, DecoderSlotEvent, reduce as decoder_slot_reduce};
 use crate::error::MediaError;
 use crate::types::FrameId;
 
@@ -197,7 +195,11 @@ impl VideoPlayer {
     ///
     /// Canvas stays on the caller's static best cached/key preview until exact.
     /// One key→N pass warms the GOP so post-exact densify is cheap.
-    pub(super) async fn goto_frame_with_interim(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
+    pub(super) async fn goto_frame_with_interim(
+        &self,
+        frame: FrameId,
+        epoch: u64,
+    ) -> Result<(), MediaError> {
         let track = self.shared.player.borrow().track_rc();
         let shared = Rc::clone(&self.shared);
         let on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)> =
@@ -241,7 +243,11 @@ impl VideoPlayer {
     ///
     /// `mediabunny: mediaSamplesAtTimestamps` restarts from key on rewind — we keep
     /// a capped behind window so the next few Prev hits avoid another cascade.
-    pub(super) async fn goto_frame_fill_behind(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
+    pub(super) async fn goto_frame_fill_behind(
+        &self,
+        frame: FrameId,
+        epoch: u64,
+    ) -> Result<(), MediaError> {
         let track = self.shared.player.borrow().track_rc();
         let shared = Rc::clone(&self.shared);
         let target = frame;

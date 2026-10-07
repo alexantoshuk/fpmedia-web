@@ -121,6 +121,4 @@ pub use decode::{
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs", feature = "thumbs"))]
 pub use decode::{ThumbPreview, ThumbSink};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
-pub use video_player::{
-    DuePresent, PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoPlayer,
-};
+pub use video_player::{DuePresent, PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoPlayer};

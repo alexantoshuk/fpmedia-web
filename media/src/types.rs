@@ -618,7 +618,7 @@ pub const PLAY_EOF_LEAD_SECS_UHD: f64 = 1.0;
 /// Local invention for Uhd queue/warm/EOF (mediabunny has no resolution play
 /// profile). `prefer_hardware` on the policy documents Uhd intent; **main** play
 /// always probes HW when allowed (`WebCodecsDecoder::create`). Scrub/thumb keep
-/// [`PlayPolicy::hd`] with no HW (mediabunny `decoderOptions.hardwareAcceleration`,
+/// [`PlayPolicy::hd`] + PreferSoftware (mediabunny `decoderOptions.hardwareAcceleration`,
 /// PR #406 — dual HW stalls).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayPolicy {
@@ -627,8 +627,8 @@ pub struct PlayPolicy {
     pub presentation_cap: usize,
     /// Packet-pump warm frames past the consumer target.
     pub decode_warm_ahead: usize,
-    /// Uhd documents HW intent; scrub densify uses [`Self::hd`] (`false`) and
-    /// never steals HW. Main play probes HW via `create` regardless of Hd/Uhd.
+    /// Uhd documents HW intent; scrub densify uses [`Self::hd`] + PreferSoftware.
+    /// Main play probes HW via `create` regardless of Hd/Uhd.
     pub prefer_hardware: bool,
 }
 

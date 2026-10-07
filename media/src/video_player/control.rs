@@ -31,12 +31,10 @@ impl VideoPlayer {
         self.shared.audio.borrow().is_some()
     }
 
-
     pub(super) fn apply_session_event(&self, event: SessionEvent) {
         let next = session_reduce(self.shared.session.get(), event);
         self.shared.session.set(next);
     }
-
 
     pub fn state(&self) -> PlayerState {
         self.shared.player.borrow().state()
@@ -57,13 +55,6 @@ impl VideoPlayer {
     pub fn canvas(&self) -> &HtmlCanvasElement {
         &self.shared.canvas
     }
-
-    /// Recompute canvas buffer from current CSS layout × DPR (call on container resize).
-    ///
-    /// Changing `canvas.width`/`height` clears the bitmap (fullscreen ↔ windowed).
-    /// Keep scrub **markers** + **ImageBitmap** LRU — they scale via `drawImage` dw/dh
-    /// (old WebP still-store needed a wipe; blit does not). `mediabunny:` no densify
-    /// wipe on resize; CanvasSink-style present redraw.
 
     pub fn is_playing(&self) -> bool {
         self.state().playing
@@ -146,7 +137,13 @@ impl VideoPlayer {
         if self.shared.engine.get().holds_exact() {
             return;
         }
-        // Same pipeline as scrub drag / hold / release.
+        // Soft scrub-pause: aim only — PreferSoftware densify under the finger
+        // starves pointer/rAF. Hard Pause / settle / step arm densify.
+        if soft_audio {
+            self.aim_scrub_cache(self.state().frame);
+            return;
+        }
+        // Hard Pause: same pipeline as settle arm / step.
         self.enter_scrub_cache_pipeline(self.state().frame);
         if was_playing {
             // Cancelled fill may still have `scrub_busy` until its finally runs;
@@ -217,7 +214,6 @@ impl VideoPlayer {
     pub fn is_restarting(&self) -> bool {
         self.shared.session.get().is_restarting()
     }
-
 }
 
 impl Drop for VideoPlayer {
@@ -260,4 +256,3 @@ impl Drop for VideoPlayer {
         }
     }
 }
-

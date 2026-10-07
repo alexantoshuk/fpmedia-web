@@ -804,7 +804,9 @@ impl VideoPlayer {
     ///    visited frames still land in dense via `present_and_cache`)
     ///
     /// While [`EngineMode::ExactHold`] (scrub settle / sync seek), densify
-    /// is deferred so exact `goto_frame` owns HW; soft-drag scrub keeps densify on.
+    /// is deferred so exact `goto_frame` owns HW. Drag does **not** enter here —
+    /// PreferSoftware densify under the finger starves pointer/rAF; densify arms
+    /// after settle / hard Pause / step.
     pub(super) fn enter_scrub_cache_pipeline(&self, focus: FrameId) {
         self.aim_scrub_cache(focus);
         if self.scrub_policy().densify {
@@ -928,35 +930,43 @@ impl VideoPlayer {
         // the cache vanishing even when releasing on a warm region.
     }
 
-    /// Drag sample entry — clear ExactHold so densify can run under the finger.
+    /// Drag sample entry — clear ExactHold without re-arming densify.
     ///
     /// `prepare_scrub_settle` may have latched hold; if settle is superseded by a
-    /// new drag before `scrub_to` clears it, densify stayed dead until Pause.
+    /// new drag before `scrub_to` clears it, ExactHold would block densify until
+    /// Pause. Densify stays off for the drag (PreferSoftware under finger lags);
+    /// settle / hard Pause re-arms.
     pub fn clear_densify_hold(&self) {
         if !self.shared.engine.get().holds_exact() {
             return;
         }
         let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EndExact);
         self.shared.engine.set(next);
-        self.schedule_scrub_cache_fill();
     }
 
-    /// Scrub pointer sample (drag / hold). Same cache pipeline as pause + release.
+    /// Scrub pointer sample (drag / hold) — aim + direction only.
+    ///
+    /// Does **not** kick densify: PreferSoftware fill under the finger saturates
+    /// the JS thread so the bar lags the cursor. Abort any in-flight Pause densify
+    /// for this gesture; settle / hard Pause / step re-arm via
+    /// [`Self::enter_scrub_cache_pipeline`].
     pub fn note_scrub_frame(&self, frame: FrameId) {
         self.cancel_hover_thumb();
         self.note_scrub_direction(frame);
-        self.enter_scrub_cache_pipeline(frame);
+        self.aim_scrub_cache(frame);
+        if self.shared.scrub_busy.get() || self.shared.scrub_pending.get() {
+            self.abort_scrub_fill(false);
+        }
     }
 
     /// Async timeline scrub (local scrub policy; settle always exact VF).
     ///
-    /// - **Drag** (`settle=false`): densify while moving. [`ScrubDragMode::Soft`]
-    ///   (short-IP / All-Intra) paints warm blit only — no decode on the OpQueue.
-    ///   Exact drag (Long) may soft-decode preview then `goto_frame`.
+    /// - **Drag** (`settle=false`): aim + warm blit only — no densify kick.
+    ///   [`ScrubDragMode::Soft`] never `decode_frame` on the OpQueue; Exact drag
+    ///   (Long) may soft-decode preview then `goto_frame`.
     /// - **Settle** (`settle=true`, pointer up): abort densify, then one key→exact
     ///   cascade (`goto_frame_with_interim`) so canvas gets decode `VideoFrame`
-    ///   (not a soft still). Interim preview may blit cache; pruned frames fill
-    ///   densify markers without blit.
+    ///   (not a soft still). Host arms densify after Exact.
     pub async fn scrub_to(&self, frame: FrameId, settle: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         let soft_drag = self.scrub_policy().soft_drag();
@@ -973,14 +983,13 @@ impl VideoPlayer {
             self.aim_scrub_cache(frame);
             yield_ms
         } else {
-            // Drag: ExactHold → Scrub so densify can run under the finger.
+            // Drag: ExactHold → Scrub; aim + direction only (no densify under finger).
             let mut engine = self.shared.engine.get();
             engine.mode = crate::EngineMode::Scrub;
             self.shared.engine.set(engine);
             self.apply_session_event(crate::SessionEvent::BeginRestart);
             self.note_scrub_direction(frame);
-            // Drag: kick densify immediately so the strip fills while the finger moves.
-            self.enter_scrub_cache_pipeline(frame);
+            self.aim_scrub_cache(frame);
             0.0
         };
         let result = async {
@@ -1118,7 +1127,8 @@ impl VideoPlayer {
         if settle {
             // Densify is armed by the host *after* the drain loop can see a queued
             // PlayPrime — otherwise invalidate + scrub HW kick cause play-after-scrub
-            // lag on long GOPs (long-GOP). Drag still densifies below.
+            // lag on long GOPs. Drag never densifies here (PreferSoftware under
+            // finger lags the bar).
             // Do **not** `schedule_scrub_cache_fill` here when Play is pending — host
             // skips `arm_scrub_densify_after_exact` on purpose; Pause restarts fill.
             // Cold soft-settle: kick densify so Exact/`pending_cold_exact` can resolve
@@ -1126,9 +1136,8 @@ impl VideoPlayer {
             if self.shared.pending_cold_exact.get().is_some() {
                 self.enter_scrub_cache_pipeline(frame);
             }
-        } else {
-            self.enter_scrub_cache_pipeline(frame);
         }
+        // Drag: no densify kick — settle / hard Pause / step arm the pipeline.
         result?;
         self.snap_media_clock_to_playhead();
         Ok(())

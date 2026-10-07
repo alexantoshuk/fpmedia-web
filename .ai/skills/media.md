@@ -8,14 +8,15 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | ------- | ---------- | ----- |
 | Hang at `creating decoder…` (LAN HTTP) | `ensure_webcodecs_available` | HTTPS/`localhost` only |
 | `codec not supported` / HEVC | `classify_codec` / `create_with_policy` | default build: `hevc` off; with feature: HW retry **main only** |
-| Scrub flicker + Play dead (HEVC) | `create_scrub` | densify never HW; `scrub_densify_blocked` |
+| Scrub flicker + Play dead (HEVC) | `create_scrub` | densify PreferSoftware; `scrub_densify_blocked` |
+| After scrub: blink / hang + `Unsupported configuration` | `HwAccel` / `from_config` | scrub/thumb PreferSoftware; HW recreate → soft fallback |
 | New clip: Play disabled / audio dies | clip dispose | `Closed`+drop player; `Shared.disposed`; UrlSource orch abort |
 | Open locks until gray full / slow stss | open warm / `defer_avc_sync` | warm lead 96; bg verify + `ensure_key_verified` |
 | Local master judder ~25 fps | `frames_after_decode` + silent clock | ChG: skip gate + thin held; not holds |
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
 | Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact |
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
-| Soft-drag eng lags / bar lags cursor | ScrubPolicy + host playhead | soft = blit only; sync playhead on move; no `decode_frame` on drag |
+| Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only (no densify); PreferSoftware fill after settle/Pause |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Hover CPU / freeze / stuck far | ThumbPreview isolation | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
 | Play freeze / flush/idle / underrun | presentation cap / `clock_state` | Hd cap 4; HoldUnderrun; prune floor + cascade — see Gotchas |
@@ -71,7 +72,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 - **Secure context** → gate before `isConfigSupported` or UI freezes on create.
 - **First packet sanitize** → strip Chromium-hostile AVC NALs; HEVC NAL-order + drop RASL after CRA (`sanitize_*` / `has_hevc_rasl_picture`).
 - **Lifecycle** → feed-ahead over flush; soft sequential next-key on Play; after flush clear warm state; `take_decoder` ~5s wall-clock. All-Intra: never hard-recreate on every key when idle.
-- **Held / PTS** → park `PTS >= target`; prune_floor + cascade through aim; main HW prefer Hd+Uhd; scrub/thumb no HW; `optimizeForLatency: false`.
+- **Held / PTS** → park `PTS >= target`; prune_floor + cascade through aim; main HW prefer Hd+Uhd; scrub/thumb `PreferSoftware` (not no-preference); HW configure fail → PreferSoftware sticky; `optimizeForLatency: false`. `mediabunny: src/media-sink.ts` alpha prefer-software.
 - **Backpressure** → wait on new output/take (not buffered frames as progress); dual-async pump parks at `q==0` for consumer; densify cancel → hard reset, fill task returns.
 - **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout`.
 - **Op cancel** → `op_epoch`; Cancelled = soft; invalidate uses reset when checked out.
@@ -86,7 +87,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 ### Scrub / thumbs
 
 - Model: `architecture.md` § Play / scrub residency.
-- Soft-drag: blit only — no Exact decode on move. Settle: `prepare_scrub_settle` then Exact when warm; cold → soft path.
+- Soft-drag: blit + aim only — no Exact decode and no densify under finger (PreferSoftware fill starves pointer). Settle: Exact then host densify; hard Pause densify; soft scrub-pause aim-only.
 - Do not cancel in-flight GOP densify on aim move; do not blit interim; do not wipe markers on settle/Play; do not drop prune salvage “to clean the strip” (re-decodes GOP — `AGENTS.md` Suboptimal).
 - Step: ring → blit → soft goto without abort densify. Pause after Play: refill blit gaps (`next_gap` prefers blit holes). Exact `put` refuses far inserts at cap (no origin/EOF thrash).
 - **GopProfile** → Short on **max** GOP only (scene-cut spread must not force Long).

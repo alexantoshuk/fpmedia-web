@@ -103,6 +103,31 @@ pub(super) fn compute_max_queue_size(decoded_sample_queue_size: u32) -> u32 {
     }
 }
 
+/// WebCodecs `hardwareAcceleration` hint.
+///
+/// Scrub/thumb use [`Self::PreferSoftware`] so they never steal the main HW
+/// session (`no-preference` can still pick HW under load → Chrome
+/// `Unsupported configuration` on main recreate).
+/// mediabunny: `src/media-sink.ts` VideoDecoderWrapper alpha path
+/// `hardwareAcceleration: 'prefer-software'`; default docs leave
+/// `'no-preference'`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HwAccel {
+    NoPreference,
+    PreferHardware,
+    PreferSoftware,
+}
+
+impl HwAccel {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::NoPreference => "no-preference",
+            Self::PreferHardware => "prefer-hardware",
+            Self::PreferSoftware => "prefer-software",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct DecoderConfig {
     pub(super) codec: String,
@@ -127,24 +152,29 @@ impl DecoderConfig {
 
     /// Build a WebCodecs config.
     ///
-    /// Do **not** set `hardwareAcceleration: prefer-hardware` on the open
-    /// support check — many browsers report `supported: false` even when
-    /// software (or opportunistic HW) decode works, which blocks open.
-    /// Prefer-hardware is applied only at configure when the play policy
-    /// asked for it **and** a separate HW support probe passed
+    /// Main open probes [`HwAccel::NoPreference`] first — requiring
+    /// `prefer-hardware` on the support check falsely fails AVC on some hosts.
+    /// Prefer-hardware is applied only when the play policy asked for it **and**
+    /// a separate HW support probe passed
     /// (mediabunny: `decoderOptions.hardwareAcceleration`, PR #406).
     pub(super) fn to_web_config(
         &self,
         optimize_for_latency: bool,
-        prefer_hardware: bool,
+        hw: HwAccel,
     ) -> VideoDecoderConfig {
         let config = VideoDecoderConfig::new(&self.codec);
         config.set_coded_width(self.width);
         config.set_coded_height(self.height);
         config.set_description(&Uint8Array::from(self.description.as_slice()));
         config.set_optimize_for_latency(optimize_for_latency);
-        if prefer_hardware {
-            config.set_hardware_acceleration(web_sys::HardwareAcceleration::PreferHardware);
+        match hw {
+            HwAccel::NoPreference => {}
+            HwAccel::PreferHardware => {
+                config.set_hardware_acceleration(web_sys::HardwareAcceleration::PreferHardware);
+            }
+            HwAccel::PreferSoftware => {
+                config.set_hardware_acceleration(web_sys::HardwareAcceleration::PreferSoftware);
+            }
         }
         config
     }
@@ -185,8 +215,8 @@ pub(super) struct DecoderCore {
     pub(super) decoder: VideoDecoder,
     pub(super) config: DecoderConfig,
     pub(super) optimize_for_latency: bool,
-    /// `prefer-hardware` on configure (main play when HW probe ok; scrub never).
-    pub(super) prefer_hardware: bool,
+    /// HW hint last used on configure (main may PreferHardware; scrub/thumb PreferSoftware).
+    pub(super) hw_accel: HwAccel,
     /// Pump warm frames past consumer target
     /// ([`crate::types::PlayPolicy::decode_warm_ahead`]).
     pub(super) warm_ahead: usize,
@@ -230,13 +260,11 @@ impl DecoderCore {
     pub(super) fn from_config(
         config: DecoderConfig,
         optimize_for_latency: bool,
-        prefer_hardware: bool,
+        hw_accel: HwAccel,
         warm_ahead: usize,
         pump_epoch: Rc<Cell<u64>>,
         all_intra: bool,
     ) -> Result<Self, MediaError> {
-        let web_config = config.to_web_config(optimize_for_latency, prefer_hardware);
-
         let generation = Rc::new(Cell::new(0));
         let frames: Rc<RefCell<Vec<OwnedVideoFrame>>> = Rc::new(RefCell::new(Vec::new()));
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
@@ -306,13 +334,34 @@ impl DecoderCore {
         );
         let decoder = VideoDecoder::new(&init).map_err(MediaError::from)?;
         decoder.set_ondequeue(Some(on_dequeue.as_ref().unchecked_ref()));
-        decoder.configure(&web_config).map_err(MediaError::from)?;
+        // HW support can vanish under dual-decoder load (W3C: resources exhausted).
+        // Prefer-hardware recreate without re-probe → Chrome
+        // `Unsupported configuration` + poison. Fall back to PreferSoftware once.
+        let hw_accel = match decoder
+            .configure(&config.to_web_config(optimize_for_latency, hw_accel))
+        {
+            Ok(()) => hw_accel,
+            Err(e) if hw_accel == HwAccel::PreferHardware => {
+                web_sys::console::warn_1(
+                    &format!(
+                        "webmedia: prefer-hardware configure failed ({e:?}); prefer-software fallback"
+                    )
+                    .into(),
+                );
+                let soft = HwAccel::PreferSoftware;
+                decoder
+                    .configure(&config.to_web_config(optimize_for_latency, soft))
+                    .map_err(MediaError::from)?;
+                soft
+            }
+            Err(e) => return Err(MediaError::from(e)),
+        };
 
         Ok(Self {
             decoder,
             config,
             optimize_for_latency,
-            prefer_hardware,
+            hw_accel,
             warm_ahead: warm_ahead.max(1),
             generation,
             pump_epoch,
@@ -367,7 +416,7 @@ impl DecoderCore {
         self.detach_decoder();
         let config = self.config.clone();
         let optimize_for_latency = self.optimize_for_latency;
-        let prefer_hardware = self.prefer_hardware;
+        let hw_accel = self.hw_accel;
         let warm_ahead = self.warm_ahead;
         let pump_epoch = Rc::clone(&self.pump_epoch);
         // Retire Closures before `*self = …` Drop — JS may still invoke them.
@@ -381,7 +430,7 @@ impl DecoderCore {
         *self = Self::from_config(
             config,
             optimize_for_latency,
-            prefer_hardware,
+            hw_accel,
             warm_ahead,
             pump_epoch,
             all_intra,

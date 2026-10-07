@@ -28,6 +28,7 @@ pub struct NextGapDecision {
 /// - Clamp to `indexed_last` (fMP4 provisional length may exceed indexed samples).
 /// - Stalled at current playhead → no target (do not clear stall).
 /// - Blit holes win over marker `no_gaps` (Play trims Exact, keeps markers).
+#[allow(clippy::too_many_arguments)] // pure gap pick: playhead + blit/marker inputs
 pub fn decide_next_gap(
     playhead: FrameId,
     last: FrameId,

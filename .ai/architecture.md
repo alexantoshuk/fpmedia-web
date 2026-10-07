@@ -148,7 +148,7 @@ Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). U
 | `ScrubBlitLru` | Live densify bitmaps; cap from `scrub_blit_frame_budget` |
 | `ThumbCache` / `ThumbPreview` | Hover filmstrip (3rd decoder); feature `thumbs` |
 
-**Modes:** Play → densify off (epoch cancel). Scrub/paused → densify on when `ScrubPolicy::densify`. One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move. Eviction: farthest from aim. `mediabunny:` CanvasSink pool idea — no still-encode store.
+**Modes:** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify`. Soft-drag → aim+blit only (no densify under finger — PreferSoftware saturates JS). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Eviction: farthest from aim. `mediabunny:` CanvasSink pool idea — no still-encode store.
 
 ### Predictive densify
 
@@ -171,7 +171,7 @@ Local invention (no mediabunny equivalent). Unit of work = one GOP; drag sets `s
 | `Hd` (&lt; 2160) | 4 / 4 | false (docs Hd knobs) | Do not retune when changing Uhd |
 | `Uhd` (≥ 2160) | 10 / 8 | true | EOF lead 1 s; larger loop prime |
 
-**Main play** always probes `prefer-hardware` when supported (`WebCodecsDecoder::create` `allow_hw=true`) — Hd and Uhd. **Scrub/thumb** always `PlayPolicy::hd()` + `allow_hw=false` (sole HW session on main). `optimizeForLatency` = false for VOD.
+**Main play** always probes `prefer-hardware` when supported (`WebCodecsDecoder::create` `allow_hw=true`) — Hd and Uhd. **Scrub/thumb** always `PlayPolicy::hd()` + explicit `prefer-software` (sole HW session on main; `no-preference` can still grab HW). `optimizeForLatency` = false for VOD.
 
 **`ScrubPolicy`** (from `GopProfile`): `drag` / `densify` / `blit_mib` / `scrub_cache_mib` / edge margins. Soft-drag = blit preview only; exact on settle. Long may decode while dragging.
 

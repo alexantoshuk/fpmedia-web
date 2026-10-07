@@ -217,7 +217,7 @@ impl VideoRef {
 
     /// Async scrub drag — cancelable exact seek; rapid moves keep only the latest.
     /// Updates [`Self::playhead`] immediately; does not latch `busy`.
-    /// Densify runs while dragging so the cache warms under the finger.
+    /// Aim + blit only while dragging; densify arms after settle / hard Pause.
     pub fn scrub_frame(&self, frame: u32) {
         self.scrub_pointer_move(frame);
     }

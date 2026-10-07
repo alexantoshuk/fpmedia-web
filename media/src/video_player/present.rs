@@ -10,11 +10,15 @@ use crate::types::{FrameId, coalesce_frame_runs};
 
 use super::scrub::{apply_clip_budgets, ingest_scrub_bitmap_only};
 use super::shared::{QueuedFrame, STEP_BEHIND_CAP, STEP_BEHIND_CAP_PLAY};
-use super::{
-    PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoPlayer, ready_kind_paint_order,
-};
+use super::{PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoPlayer, ready_kind_paint_order};
 
 impl VideoPlayer {
+    /// Recompute canvas buffer from current CSS layout × DPR (call on container resize).
+    ///
+    /// Changing `canvas.width`/`height` clears the bitmap (fullscreen ↔ windowed).
+    /// Keep scrub **markers** + **ImageBitmap** LRU — they scale via `drawImage` dw/dh
+    /// (old WebP still-store needed a wipe; blit does not). `mediabunny:` no densify
+    /// wipe on resize; CanvasSink-style present redraw.
     pub fn relayout(&self) -> Result<(), MediaError> {
         let meta = self.metadata();
         let before = (self.shared.canvas.width(), self.shared.canvas.height());
@@ -258,7 +262,11 @@ impl VideoPlayer {
     }
 
     /// Draw `video`, keep it as displayed; retire prior displayed into behind.
-    pub(super) fn install_displayed(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
+    pub(super) fn install_displayed(
+        &self,
+        frame: FrameId,
+        video: OwnedVideoFrame,
+    ) -> Result<(), MediaError> {
         let prev = self.shared.displayed.borrow_mut().take();
         if let Some(old) = prev {
             if self.shared.engine.get().is_play() {
@@ -305,14 +313,22 @@ impl VideoPlayer {
     /// Draw and remember a visited frame in the step VF ring + scrub bitmap store.
     ///
     /// Keeps a live `VideoFrame` in `displayed` for Prev; densify mark via bitmap.
-    pub(super) fn present_and_cache(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
+    pub(super) fn present_and_cache(
+        &self,
+        frame: FrameId,
+        video: OwnedVideoFrame,
+    ) -> Result<(), MediaError> {
         self.install_displayed(frame, video)?;
         self.exact_ingest_displayed_borrow();
         Ok(())
     }
 
     /// Play present: draw + keep VF in ring; Exact ingest when frames age out of behind.
-    pub(super) fn present_play_frame(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
+    pub(super) fn present_play_frame(
+        &self,
+        frame: FrameId,
+        video: OwnedVideoFrame,
+    ) -> Result<(), MediaError> {
         self.install_displayed(frame, video)?;
         Ok(())
     }
@@ -344,7 +360,11 @@ impl VideoPlayer {
         }
     }
 
-    pub(super) fn present_for_mode(&self, frame: FrameId, video: OwnedVideoFrame) -> Result<(), MediaError> {
+    pub(super) fn present_for_mode(
+        &self,
+        frame: FrameId,
+        video: OwnedVideoFrame,
+    ) -> Result<(), MediaError> {
         if self.is_playing() && self.shared.engine.get().is_play() {
             self.present_play_frame(frame, video)
         } else {
