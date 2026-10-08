@@ -88,6 +88,11 @@ pub(super) struct Shared {
     /// Set while a fill is running so `schedule_scrub_cache_fill` can request another
     /// pass (avoids dropping work when pause/scrub bumps epoch mid-fill).
     pub(super) scrub_pending: Cell<bool>,
+    /// Independent FetchMap (gray strip) hole fill — must not latch `scrub_busy`
+    /// (densify abort / Exact yield must stay free of gray meter work).
+    pub(super) gray_fill_busy: Cell<bool>,
+    /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).
+    pub(super) scrub_gesture: Cell<bool>,
     /// Play vs scrub densify / exact hold + soft-hold audio.
     pub(super) engine: Cell<EngineModel>,
     /// Start frames decoded ahead of the loop seam (same decoder, while end plays).

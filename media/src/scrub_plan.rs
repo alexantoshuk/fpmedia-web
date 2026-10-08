@@ -82,6 +82,20 @@ pub fn gop_sample_lead_frames(gop_len: u64) -> u64 {
     SettlePolicy::default().clamp_gop_sample_lead(gop_len)
 }
 
+/// Pick the unread file-byte gap whose midpoint is nearest `focus_offset`.
+///
+/// Gray strip is file-absolute (`FetchMap`), not frame-index — densify alone
+/// never closes holes whose bytes sit far from the aimed GOP.
+pub fn next_fetchmap_gap(gaps: &[(u64, u64)], focus_offset: u64) -> Option<(u64, u64)> {
+    gaps.iter()
+        .copied()
+        .filter(|(s, e)| *e > *s)
+        .min_by_key(|(s, e)| {
+            let mid = s.saturating_add(e.saturating_sub(*s) / 2);
+            mid.abs_diff(focus_offset)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +163,14 @@ mod tests {
         assert_eq!(gop_sample_lead_frames(12), 12);
         assert_eq!(gop_sample_lead_frames(4), 8);
         assert_eq!(gop_sample_lead_frames(100), 24);
+    }
+
+    #[test]
+    fn next_fetchmap_gap_nearest_midpoint() {
+        let gaps = [(0, 100), (500, 800), (2000, 2100)];
+        assert_eq!(next_fetchmap_gap(&gaps, 600), Some((500, 800)));
+        assert_eq!(next_fetchmap_gap(&gaps, 50), Some((0, 100)));
+        assert_eq!(next_fetchmap_gap(&gaps, 2050), Some((2000, 2100)));
+        assert_eq!(next_fetchmap_gap(&[], 0), None);
     }
 }

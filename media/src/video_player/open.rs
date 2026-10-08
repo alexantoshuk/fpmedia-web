@@ -174,6 +174,8 @@ impl VideoPlayer {
             scrub_densify_blocked: Cell::new(false),
             scrub_epoch: Cell::new(0),
             scrub_busy: Cell::new(false),
+            gray_fill_busy: Cell::new(false),
+            scrub_gesture: Cell::new(false),
             scrub_pending: Cell::new(false),
             engine: Cell::new(EngineModel::new()),
             loop_prime: RefCell::new(None),

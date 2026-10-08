@@ -1,9 +1,9 @@
 //! Resident file-byte coverage for the demo scrubber gray strip.
 //!
-//! **UrlSource:** mirrored from [`super::CachedSource`] LRU windows (exact
-//! replace on sync — eviction punches the meter).
-//! **Blob/Memory:** historical union; quantum expand is prefetch-only
-//! (densify/scrub — not per-sample). Blob is already sliceable in JS.
+//! **Url + Blob/Memory:** accumulate fetched ranges (`note_window`) — gray =
+//! ever-fetched this session, not the current WASM LRU (URL eviction must not
+//! punch permanent holes). Blob quantum expand is prefetch-only (densify/scrub
+//! — not per-sample); Blob is already sliceable in JS.
 //! File offset → timeline % (not sample-accurate). mediabunny: no equivalent meter.
 //!
 //! **Display soft-merge:** [`Self::file_fractions`] closes gaps ≤

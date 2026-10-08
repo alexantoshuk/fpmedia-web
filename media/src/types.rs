@@ -491,17 +491,6 @@ impl GopProfile {
     }
 }
 
-/// Drag paint strategy during timeline scrub (`scrub_to(settle=false)`).
-///
-/// Local invention (mediabunny has no equivalent). Settle is always exact VF.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrubDragMode {
-    /// Blit / neighbor preview only — no key→N during drag (short-IP / All-Intra).
-    Soft,
-    /// May decode exact during drag (Long GOP exact-primary).
-    Exact,
-}
-
 /// Runtime gate for hover / filmstrip thumbs (`ThumbPreview` sink).
 ///
 /// Compile feature `thumbs` (default on) must also be enabled; `Off` drops the
@@ -520,9 +509,11 @@ pub enum ThumbPolicy {
 ///
 /// Local invention (mediabunny: no equivalent). Tune fields per profile; do not
 /// raise globals like [`SCRUB_BLIT_LRU`] from a single ShotGrid probe.
+///
+/// Drag is always blit/aim only for every profile; Exact decode runs on settle
+/// (Long key→N per drag tick froze the pointer).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScrubPolicy {
-    pub drag: ScrubDragMode,
     /// Gap-fill densify (VF → ImageBitmap). Off for All-Intra.
     pub densify: bool,
     /// GPU MiB budget for live densify `ImageBitmap`s (→ [`scrub_blit_frame_budget`]).
@@ -544,7 +535,6 @@ impl ScrubPolicy {
         };
         match profile {
             GopProfile::AllIntra => Self {
-                drag: ScrubDragMode::Soft,
                 densify: false,
                 blit_mib: DEFAULT_SCRUB_BLIT_MIB_SHORT,
                 scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
@@ -552,7 +542,6 @@ impl ScrubPolicy {
                 margin_right,
             },
             GopProfile::ShortFixed { .. } => Self {
-                drag: ScrubDragMode::Soft,
                 densify: true,
                 blit_mib: DEFAULT_SCRUB_BLIT_MIB_SHORT,
                 scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
@@ -560,7 +549,6 @@ impl ScrubPolicy {
                 margin_right,
             },
             GopProfile::Long { .. } => Self {
-                drag: ScrubDragMode::Exact,
                 densify: true,
                 blit_mib: DEFAULT_SCRUB_BLIT_MIB_LONG,
                 scrub_cache_mib: DEFAULT_SCRUB_CACHE_MIB,
@@ -568,10 +556,6 @@ impl ScrubPolicy {
                 margin_right,
             },
         }
-    }
-
-    pub fn soft_drag(self) -> bool {
-        matches!(self.drag, ScrubDragMode::Soft)
     }
 }
 
@@ -1265,7 +1249,6 @@ mod tests {
     #[test]
     fn scrub_policy_from_profile() {
         let short = ScrubPolicy::from_gop_profile(GopProfile::ShortFixed { len: 30 });
-        assert!(short.soft_drag());
         assert!(short.densify);
         assert_eq!(short.blit_mib, DEFAULT_SCRUB_BLIT_MIB_SHORT);
         assert_eq!(short.margin_left, EDGE_MARGIN_LEFT_MAX);
@@ -1279,14 +1262,12 @@ mod tests {
             median: 120,
             max: 250,
         });
-        assert_eq!(long.drag, ScrubDragMode::Exact);
         assert!(long.densify);
         assert_eq!(long.blit_mib, DEFAULT_SCRUB_BLIT_MIB_LONG);
         assert_eq!(long.margin_left, EDGE_MARGIN_LEFT_MAX);
         assert!(long.margin_left > long.margin_right);
 
         let intra = ScrubPolicy::from_gop_profile(GopProfile::AllIntra);
-        assert!(intra.soft_drag());
         assert!(!intra.densify);
         assert_eq!(intra.blit_mib, DEFAULT_SCRUB_BLIT_MIB_SHORT);
         assert_eq!(intra.margin_left, EDGE_MARGIN_LEFT_MIN);

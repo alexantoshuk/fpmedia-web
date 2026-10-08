@@ -63,6 +63,8 @@ impl VideoPlayer {
     pub fn play(&self) {
         let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EnterPlay);
         self.shared.engine.set(next);
+        // Release+then_play skips the cache pipeline — do not leave gray throttled.
+        self.shared.scrub_gesture.set(false);
         // Cancel densify hard — do **not** rearm `scrub_pending` (Play must not
         // keep filling gaps). Keep scrub *markers*; trim Exact (ImageBitmap) by
         // Play VF VRAM estimate — evict farthest from playhead, do not wipe all
@@ -163,9 +165,12 @@ impl VideoPlayer {
                 }
                 if shared.scrub_busy.get() {
                     shared.scrub_pending.set(true);
+                    // Green may already be saturated — still close gray holes.
+                    scrub_cold::schedule_fetchmap_gap_fill(&shared);
                     return;
                 }
                 if next_gap_target(&shared).is_none() {
+                    scrub_cold::schedule_fetchmap_gap_fill(&shared);
                     return;
                 }
                 shared.scrub_busy.set(true);

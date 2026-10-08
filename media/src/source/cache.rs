@@ -14,7 +14,8 @@
 //!   BlobSource size; **no** bg quantum / margin / multi-MiB WASM `prefetch`
 //!   (sample `want` only). Gray [`FetchMap`] **accumulates** on insert; quantum
 //!   expand is **prefetch-only** (densify/scrub) — per-sample expand rebuilt the
-//!   strip every NAL → flicker. Densify cold gate still skips FetchMap for local.
+//!   strip every NAL → flicker. Densify cold gate skips FetchMap for decode, but
+//!   still kicks `prefetch` so gray advances (`note_local_gray`).
 //!
 //! Fill quantum 8 MiB (URL); sequential misses extend like
 //! `PREFETCH_PROFILES.network`; **hit-path** margin prefetch loads the next
@@ -249,26 +250,22 @@ fn margin_prefetch_job(
 
 /// Push cache residency into [`FetchMap`] for the gray scrubber strip.
 ///
-/// - **Url** (`replace`): exact LRU mirror via [`FetchMap::set_windows`].
-/// - **Local** (`!replace`): [`FetchMap::note_window`] accumulate — want-only
-///   WASM windows must not replace the meter with one-NAL stripes / punch holes
-///   on eviction (`mediabunny: BlobSource` is fully sliceable in JS).
-fn sync_fetch_map(fetch_map: &Option<Arc<FetchMap>>, state: &CacheState, replace: bool) {
+/// Always **accumulate** (`note_window`) for Url and local — gray = bytes
+/// fetched this session (product), not the current WASM LRU. Replacing with
+/// `set_windows` punched permanent holes when URL eviction dropped a window
+/// that nothing re-read. WASM cache still LRU-evicts; the meter does not.
+/// Local: want-only inserts stay sample-sized; quantum gray is prefetch-only
+/// (`mediabunny: BlobSource` is fully sliceable in JS).
+fn sync_fetch_map(fetch_map: &Option<Arc<FetchMap>>, state: &CacheState) {
     let Some(map) = fetch_map else {
         return;
     };
-    let windows: Vec<(u64, u64)> = state
+    for w in state
         .windows
         .iter()
         .filter(|w| w.bytes.len() > NO_PREFETCH_MAX)
-        .map(|w| (w.offset, w.end()))
-        .collect();
-    if replace {
-        map.set_windows(&windows);
-    } else {
-        for &(start, end) in &windows {
-            map.note_window(start, end);
-        }
+    {
+        map.note_window(w.offset, w.end());
     }
 }
 
@@ -394,12 +391,8 @@ impl<S> CachedSource<S> {
                 self.shared.budget,
             );
         }
-        // Local accumulates; URL replaces with seed set (only moov so far).
-        sync_fetch_map(
-            &self.shared.fetch_map,
-            &state,
-            self.inner.network_min_load(),
-        );
+        // Seed / open ranges accumulate into gray (moov head, etc.).
+        sync_fetch_map(&self.shared.fetch_map, &state);
     }
 
     #[cfg(test)]
@@ -419,7 +412,6 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
         let inner = Arc::clone(&self.inner);
         let shared = Arc::clone(&self.shared);
         let run = async move {
-            let replace = inner.network_min_load();
             let result = inner.read(start, len).await;
             if let Ok(mut state) = shared.state.lock() {
                 state.prefetch_inflight = false;
@@ -432,7 +424,7 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
                             },
                             shared.budget,
                         );
-                        sync_fetch_map(&shared.fetch_map, &state, replace);
+                        sync_fetch_map(&shared.fetch_map, &state);
                     }
                     _ => {}
                 }
@@ -467,7 +459,6 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
         let inner = Arc::clone(&self.inner);
         let shared = Arc::clone(&self.shared);
         let run = async move {
-            let replace = inner.network_min_load();
             let result = inner.read(start, len).await;
             if let Ok(mut state) = shared.state.lock()
                 && let Ok(bytes) = result
@@ -480,7 +471,7 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
                     },
                     shared.budget,
                 );
-                sync_fetch_map(&shared.fetch_map, &state, replace);
+                sync_fetch_map(&shared.fetch_map, &state);
             }
         };
 
@@ -602,7 +593,7 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
                     },
                     self.shared.budget,
                 );
-                sync_fetch_map(&self.shared.fetch_map, &state, network);
+                sync_fetch_map(&self.shared.fetch_map, &state);
                 // Local gray expand is **prefetch-only** (densify / scrub kick) —
                 // per-sample note_local_gray during Play rebuilt the strip every
                 // NAL → flicker + soft-merge blur on ChG-class files.
@@ -865,6 +856,25 @@ mod tests {
         let _ = poll_ready(&cached, 16 * 1024 + 4, 4).unwrap();
         let _ = poll_ready(&cached, 32 * 1024 + 4, 4).unwrap();
         assert_eq!(counting.reads.load(Ordering::SeqCst), mid);
+    }
+
+    #[test]
+    fn network_eviction_keeps_fetch_map_coverage() {
+        // Gray = ever-fetched; WASM LRU may drop windows without punching the meter.
+        let data: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
+        let map = Arc::new(FetchMap::new());
+        let counting = CountingSource::new(data);
+        let cached =
+            CachedSource::with_budget(NetworkCounting(counting), 32, 64, Some(Arc::clone(&map)));
+        let _ = poll_ready(&cached, 0, 20).unwrap();
+        assert!(map.covers_range(0, 20), "wins={:?}", map.windows());
+        let _ = poll_ready(&cached, 128, 20).unwrap();
+        let _ = poll_ready(&cached, 256, 20).unwrap();
+        assert!(
+            map.covers_range(0, 20),
+            "URL eviction must not punch gray, wins={:?}",
+            map.windows()
+        );
     }
 
     #[test]

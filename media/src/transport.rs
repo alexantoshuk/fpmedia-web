@@ -189,7 +189,7 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
                     align_playhead: false,
                 },
                 C::SetPlayhead { frame },
-                // Present soft-blit / Exact-drag while finger moves (same as paused scrub).
+                // Present soft-blit while finger moves (same as paused scrub).
                 C::EnqueueDrag { frame },
             ],
         ),

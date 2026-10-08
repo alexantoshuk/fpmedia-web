@@ -16,13 +16,15 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
 | Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact |
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
-| Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only (no densify); PreferSoftware fill after settle/Pause |
+| Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only, all GOP profiles (no densify, no Long key→N); fill after settle/Pause |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Hover CPU / freeze / stuck far | ThumbPreview isolation | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
 | Play freeze / flush/idle / underrun | presentation cap / `clock_state` | Hd cap 4; HoldUnderrun; prune floor + cascade — see Gotchas |
 | Cold scrub freezes tab / Play deaf | soft settle + transport | `pending_cold_exact`; Settling+Play Preempt — `e2e/player.scrub.cold-open.spec.ts` |
 | Gray/green strip holes / blur | FetchMap + 1 px canvas | soft-merge; `paint_strip_canvas_1px` — host: `skills/leptos.md` |
+| Gray holes never fill (pause/URL) | `schedule_fetchmap_gap_fill` + FetchMap accumulate | own task (`gray_fill_busy`); not densify/`scrub_busy`; URL accumulate |
+| Gray fill floods drag / stays slow after | `scrub_gesture` + gray pace | drag: 1×quantum / 150 ms; idle: 2× / 16 ms; clear gesture on pipeline + `play` |
 | URL play ~0.6× / first-play lag | `CachedSource` sample miss | return `want` immediately; quantum fill bg |
 | Dense wiped / Next-Prev lag / Pause densify dead | Play trim + blit gaps | markers kept; Exact trim on Play; blit gaps refill |
 | Loop seam wipe / pause at 1.1–1.75× | loop_prime / SessionModel | keep Covered+Exact; BeginPrepareLoop only |

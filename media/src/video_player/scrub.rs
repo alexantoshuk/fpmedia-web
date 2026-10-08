@@ -20,7 +20,7 @@ use crate::workload::{
 };
 
 use super::scrub_cold::{
-    exact_scrub_ready, scrub_gop_bytes_warm, soft_cold_scrub_settle,
+    exact_scrub_ready, schedule_fetchmap_gap_fill, scrub_gop_bytes_warm, soft_cold_scrub_settle,
     try_resolve_pending_cold_exact, warm_scrub_gop_bytes,
 };
 use super::scrub_gap::{gop_sample_lead, next_gap_target, playhead_and_last};
@@ -808,10 +808,13 @@ impl VideoPlayer {
     /// PreferSoftware densify under the finger starves pointer/rAF; densify arms
     /// after settle / hard Pause / step.
     pub(super) fn enter_scrub_cache_pipeline(&self, focus: FrameId) {
+        self.shared.scrub_gesture.set(false);
         self.aim_scrub_cache(focus);
         if self.scrub_policy().densify {
             self.schedule_scrub_cache_fill();
         }
+        // Gray FetchMap plane — independent of densify / `scrub_busy`.
+        schedule_fetchmap_gap_fill(&self.shared);
         #[cfg(feature = "thumbs")]
         self.schedule_thumb_key_fill();
     }
@@ -952,6 +955,7 @@ impl VideoPlayer {
     /// [`Self::enter_scrub_cache_pipeline`].
     pub fn note_scrub_frame(&self, frame: FrameId) {
         self.cancel_hover_thumb();
+        self.shared.scrub_gesture.set(true);
         self.note_scrub_direction(frame);
         self.aim_scrub_cache(frame);
         if self.shared.scrub_busy.get() || self.shared.scrub_pending.get() {
@@ -961,15 +965,13 @@ impl VideoPlayer {
 
     /// Async timeline scrub (local scrub policy; settle always exact VF).
     ///
-    /// - **Drag** (`settle=false`): aim + warm blit only — no densify kick.
-    ///   [`ScrubDragMode::Soft`] never `decode_frame` on the OpQueue; Exact drag
-    ///   (Long) may soft-decode preview then `goto_frame`.
+    /// - **Drag** (`settle=false`): aim + warm blit only — no densify kick and
+    ///   never `decode_frame` on the OpQueue (all GOP profiles).
     /// - **Settle** (`settle=true`, pointer up): abort densify, then one key→exact
     ///   cascade (`goto_frame_with_interim`) so canvas gets decode `VideoFrame`
     ///   (not a soft still). Host arms densify after Exact.
     pub async fn scrub_to(&self, frame: FrameId, settle: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
-        let soft_drag = self.scrub_policy().soft_drag();
         let densify_yield_ms = if settle {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
             self.abort_scrub_fill(true);
@@ -1086,32 +1088,15 @@ impl VideoPlayer {
                     return Ok(());
                 }
 
-                if soft_drag {
-                    // Soft-drag: warm blit only (aim or nearer preview). Never
-                    // `decode_frame` here — that blocked OpQueue on URL (HEVC
-                    // key→N per pointer sample) while densify already fills Exact.
-                    // Settle does exact VF. mediabunny: CanvasSink pool present;
-                    // cascade on settle / samplesAtTimestamps, not every drag tick.
-                    if let Some(preview) = self.scrub_preview_frame(frame) {
-                        let _ = self.try_present_warm_blit(preview)?;
-                    }
-                    return Ok(());
+                // Warm blit only (aim or nearer preview). Never `decode_frame` here —
+                // key→N per pointer sample blocked the OpQueue (URL HEVC) and froze
+                // the pointer on Long GOPs. Settle does exact VF. mediabunny:
+                // CanvasSink pool present; cascade on settle / samplesAtTimestamps,
+                // not every drag tick.
+                if let Some(preview) = self.scrub_preview_frame(frame) {
+                    let _ = self.try_present_warm_blit(preview)?;
                 }
-
-                // Exact-drag (Long): may paint key/neighbor via decode, then goto.
-                if let Some(preview) = self.scrub_preview_frame(frame)
-                    && preview != frame
-                {
-                    self.draw_frame_unccommitted(preview, epoch).await?;
-                    if !self.is_current(epoch) {
-                        return Err(MediaError::Cancelled);
-                    }
-                    if self.present_from_cache(frame).await? {
-                        self.shared.player.borrow_mut().commit_frame(frame)?;
-                        return Ok(());
-                    }
-                }
-                self.goto_frame(frame, epoch).await
+                Ok(())
             }
         }
         .await;
@@ -1230,27 +1215,6 @@ impl VideoPlayer {
         let key = self.key_for(target);
         let cached = self.shared.scrub_chunks.borrow().nearest_frame(target);
         crate::scrub_preview_choice(target, key, cached)
-    }
-
-    /// Decode/draw `frame` for canvas preview without updating the committed playhead.
-    ///
-    /// Cache hits draw in place. Key (uncached) previews decode without inserting
-    /// into dense — orphan syncs must not punch holes outside the scrub window.
-    pub(super) async fn draw_frame_unccommitted(
-        &self,
-        frame: FrameId,
-        epoch: u64,
-    ) -> Result<(), MediaError> {
-        if self.present_from_cache(frame).await? {
-            return Ok(());
-        }
-        let track = self.shared.player.borrow().track_rc();
-        let video_frame = self.decode_frame(&track, frame, epoch).await?;
-        if !self.is_current(epoch) {
-            drop(video_frame);
-            return Err(MediaError::Cancelled);
-        }
-        self.present_only(video_frame)
     }
 
     /// Drop Covered + Exact + thumbs (open / close teardown only — **not** loop).
@@ -1410,6 +1374,8 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                     sleep_ms(0).await;
                     continue;
                 }
+                // Green saturated — gray is a separate task (must not hold `scrub_busy`).
+                schedule_fetchmap_gap_fill(&shared);
                 return Ok(());
             };
 
@@ -1425,8 +1391,11 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                 .index()
                 .nearest_keyframe(target)
                 .unwrap_or(target);
+            // Always kick prefetch: Blob cold-gate skips FetchMap for decode but
+            // gray advances only via `note_local_gray` on prefetch; URL no-ops
+            // when the GOP is already covered.
+            warm_scrub_gop_bytes(&shared, key);
             if !scrub_gop_bytes_warm(&shared, key) {
-                warm_scrub_gop_bytes(&shared, key);
                 idle_passes = 0;
                 wait_animation_frame().await;
                 continue;
@@ -1442,11 +1411,13 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                     } else {
                         idle_passes.saturating_add(1)
                     };
-                    // No progress repeatedly (oversized GOP / budget) — stop spinning.
+                    // No progress repeatedly (oversized GOP / budget) — fall through
+                    // to gray hole fill instead of exiting with frozen FetchMap gaps.
                     if idle_passes >= 3 {
                         shared
                             .fill_stalled_aim
                             .set(Some(playhead_and_last(&shared).0));
+                        schedule_fetchmap_gap_fill(&shared);
                         return Ok(());
                     }
                     if made_progress {

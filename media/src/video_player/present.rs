@@ -371,12 +371,4 @@ impl VideoPlayer {
             self.present_and_cache(frame, video)
         }
     }
-
-    /// Draw without inserting (scrub preview — presentation queue owns ahead frames).
-    pub(super) fn present_only(&self, video: OwnedVideoFrame) -> Result<(), MediaError> {
-        let result =
-            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys());
-        drop(video);
-        result
-    }
 }
