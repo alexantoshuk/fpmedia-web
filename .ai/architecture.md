@@ -15,7 +15,7 @@
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — demo host (controls) + thin SSR shell |
-| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `helpers` (scrubber strip math) + `HoverThumbPreview`. Modules: `video`, `helpers`, `hover_thumb` (+ planned `audio`) |
+| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `helpers` (scrubber strip math) + `HoverThumbPreview`. Modules: `video`, `helpers`, `hover_thumb` |
 | Media engine | `webmedia` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `media_components/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
@@ -33,7 +33,7 @@ Long-lived chrome lives **outside** matched routes when routes are added. **Reso
 ```
 webmedia/
 ├── media/                 ← crate name `webmedia`: demux + FrameIndex + Player + VideoPlayer
-├── media_components/      ← crate name `media_components`: Leptos <Video> (+ later <Audio>)
+├── media_components/      ← crate name `media_components`: Leptos <Video>
 ├── timecode/              ← crate name `timecode`: SMPTE frames ↔ HH:MM:SS:FF (DF/NDF)
 ├── app/                   ← demo host UI + shell()
 ├── frontend/              ← wasm mount (hydrate)
@@ -68,14 +68,14 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Full-stack Rust (Leptos) | One language for engine + UI |
 | CSR SPA | Simple mental model; static shell + WASM mount |
 | Isolated `webmedia` crate | Engine reusable without UI; no Leptos in demux/decode |
-| Isolated `media_components` crate | HTML `<video>` / `<audio>` analogs; reusable without demo chrome |
+| Isolated `media_components` crate | HTML `<video>` analog; reusable without demo chrome |
 | WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
 | `leptos-use` for browser helpers | Observers/events/rAF in UI crates; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
 | Progressive open via `MediaSource` | Ranged reads; parse `moov` (+ `moof` for single-file fMP4); keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Design: [Play / scrub residency](#play--scrub-residency). Traps: `skills/media.md`. |
 | Optional hover thumbs (`thumbs`) | Feature `thumbs` default on; runtime `ThumbPolicy`; 3rd decoder + `ThumbCache` / `ThumbPreview`; UI `HoverThumbPreview`. UX: `product.md`. |
-| Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. Future `<Audio>` shares `audio/` (no canvas). |
+| Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. `audio/` has no canvas dependency. |
 | Component API like HTML media | Element crates: open/play/seek/rate/volume. Strip math: `media_components::helpers`. Demo owns JKL/Space/arrows. |
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `webmedia::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
@@ -166,10 +166,10 @@ Local invention (no mediabunny equivalent). Unit of work = one GOP; `next_gap` i
 
 **`PlayPolicy`** (from coded height):
 
-| Class | Cap / warm | `prefer_hardware` field | Notes |
-| ----- | ---------- | ----------------------- | ----- |
-| `Hd` (&lt; 2160) | 4 / 4 | false (docs Hd knobs) | Do not retune when changing Uhd |
-| `Uhd` (≥ 2160) | 10 / 8 | true | EOF lead 1 s; larger loop prime |
+| Class | Cap / warm | Notes |
+| ----- | ---------- | ----- |
+| `Hd` (&lt; 2160) | 4 / 4 | Do not retune when changing Uhd |
+| `Uhd` (≥ 2160) | 10 / 8 | EOF lead 1 s; larger loop prime |
 
 **Main play** always probes `prefer-hardware` when supported (`WebCodecsDecoder::create` `allow_hw=true`) — Hd and Uhd. **Scrub/thumb** always `PlayPolicy::hd()` + explicit `prefer-software` (sole HW session on main; `no-preference` can still grab HW). `optimizeForLatency` = false for VOD.
 
@@ -197,7 +197,10 @@ Hosts never open `AudioContext` as a disposable clock. Rate/pitch: WSOLA ≤4× 
 
 - Gate server-only code: `#[cfg(feature = "ssr")]`.
 - Gate client UI: `#[cfg(feature = "csr")]`.
-- Errors: `thiserror`; no `.unwrap()`/`.expect()` in production paths.
+- Errors: `thiserror`. A panic kills the whole wasm instance (player + `AudioContext`) until reload, so:
+  - No panics on paths reachable from browser events, the environment (`window` / `document`) or external data (file bytes, network) — return `Err` / `let … else`.
+  - `.unwrap()` is forbidden outside tests (enforced: workspace Clippy `unwrap_used = "deny"`).
+  - `.expect("<invariant>")` only for an invariant proven in the same function, when a `let … else` / entry-API rewrite reads worse.
 - WebCodecs needs `web_sys_unstable_apis` (`.cargo/config.toml`).
 - **WebCodecs / media resources:** RAII owners + borrow helpers (`OwnedVideoFrame` / `AsVideoFrame`); **move into caches**, **borrow to draw**. Gotchas: `skills/media.md`.
 - **Mediabunny reference:** `AGENTS.md` Mediabunny-first — do not restate here.

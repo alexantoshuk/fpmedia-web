@@ -4,42 +4,50 @@
 
 ---
 
-## Handoff (2026-10-04)
+## In progress
 
-**Goal of the VideoPlayer split (shipped):** navigation-only extracts — **no playback behavior change**. Empty `video_player/mod.rs` into focused modules; host API stays what `media_components` calls.
-
-**Shipped on `main` (P0–P6 + API pass):**  
-`shared` · `util` · `scrub_plan` (+ wasm `scrub_gap` / `scrub_cold`) · `clock_ctrl` · `present` · `decode_ops` · `open` · `control` · `api`. `mod.rs` = thin façade. Sibling-only helpers → `pub(super)`; `PRESENTATION_QUEUE_CAP` / `STEP_BEHIND_CAP` not re-exported from `lib.rs`. Module map + host-vs-engine note → `.ai/skills/media.md`.
-
-**Agent workflow:** write gate / skill budgets; portable docs (no `.cursor/` tree); **ask-before-commit** — edit/`go` ≠ commit consent (`AGENTS.md` § Commits). Agent does **not** force-push `main`.
-
-**Checks:** wasm player code needs `--features webcodecs` (or check via `media_components`). Prefer `cargo check` while iterating; Clippy `-D warnings` only at commit time (`CONTRIBUTING.md`).
-
-**Engine (prior, unchanged by the split):** short B-frame `flush/idle` after ChG park — `saw_target` / `pts_aim_hole` / cascade / `prune_floor_us`. Main play `prefer-hardware` (Hd+Uhd); scrub/thumb never steal HW. Gotchas → `.ai/skills/media.md`.
-
-**If local `main` still diverged after commit-message amend:** `git push --force-with-lease origin main` (human only).
+- Docs + gates hygiene from the 2026-10-08 codebase review (uncommitted): workspace `unwrap_used = "deny"`, `.ai/` cleanup. `server` added to the Clippy gate.
 
 ---
 
 ## Next up
 
-### Maintainability (refactor remainder)
+Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep order. Groups 1–2 = no behavior change. Group 3 changes behavior → `AGENTS.md` Pre-edit gate (mediabunny cite) per PR. Update the matching `.ai/` row in the same PR (not ahead of code).
 
-1. Optional navigation-only splits (same rules as P0–P6): `scrub.rs` (~1.6k lines) then `play.rs` (~0.9k). No behavior change; cite mediabunny only if a fix sneaks in.
+### 1. Hygiene (no behavior change)
+
+1. Delete dead / legacy API: `HostOp::Scrub { settle }`, `VideoRef::scrub_frame` / `scrub_settle`, `Player::{seek_frame, next_frame, previous_frame, current_sample}`, `#[allow(dead_code)]` cache helpers in `decode/frame_cache.rs`.
+2. One host-op enum: merge `HostOp` / `HostOpKind` / `EnqueueKind`; drop the `panic!` in `OpQueue::enqueue_seek_or_step`.
+3. `media_components`: one `HostCtx` instead of 10–16-arg `run_open` / `dispatch_transport`; one reset for `close_fn` + `retire_clip`; `VideoRef` ops boilerplate.
+4. Split hover thumbs out of `video_player/scrub.rs` → `thumb.rs` (module-level `cfg(feature = "thumbs")`, no inline stubs).
+5. Split `types.rs` (policy / metadata); move strip pixel math to `media_components::helpers`.
+6. One JS timer module (sleep / macrotask / microtask / rAF / now) for engine + host; removes bare-`resolve` timers (`video_player/util.rs::sleep_ms`, `hover_thumb.rs`) and `expect("window")`.
+
+### 2. Structural, low risk
+
+1. Collapse `Player` into `Shared` (`Cell` frame / looping; `playing` from `EngineMode`); no `metadata().clone()` on hot paths.
+2. Shared aim-distance residency for `ScrubChunkStore` / `ScrubBlitLru` / `ThumbCache`.
+3. Typed decode faults instead of matching error strings (`decode_ops.rs`, `util::is_decoder_poison`).
+4. One `open_mp4(source, opts, progress)` entry instead of 8 `open_mp4_*` variants.
+5. Group `webmedia` root modules (`model/` · `host/` · `policy/`).
+
+### 3. Behavior-adjacent (mediabunny cite required)
+
+1. Apply `EngineCmd` from `engine_reduce` (8 sites discard it) instead of hand-coded side effects.
+2. Single-flight background task for densify / gray fill / thumb fill (replaces `scrub_busy` / `scrub_pending` / `gray_fill_busy` latches).
+3. Move the play session into `VideoPlayer` (prefetch loop, underrun hold/resume, loop, visibility, silent-clock arm); drop host `PlaySession` flags. `mediabunny: examples/media-player/media-player.ts` render / play / pause.
+4. Seek / Step through the transport FSM; derive `playing` from transport; rewrite `skills/leptos.md` “`playing` is UI-owned”.
+5. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant.
 
 ### Play / decode
 
-1. Optional: relax ChG series `held_min` → `pres_min`, or chase residual fps_min 23.5.
+1. Optional: ChG-class play residual fps_min ≈ 23.5 — idea “relax series `held_min` → `pres_min`”. Metrics are not defined in code / e2e: write the probe first.
 
-### Deferred
+---
 
-1. Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).
+## Later
 
-### Also open
-
-1. Drop `re_mp4` fork when upstream has #35 + #37.
-2. Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting later.
-
-### Later
-
-- Tab-hidden `AudioContinue`; pure `AudioPlayer`; thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; publish crates; production chrome.
+- Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).
+- Drop `re_mp4` fork when upstream has #35 + #37.
+- Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
+- Tab-hidden `AudioContinue`; pure `<Audio>` / `AudioPlayer` (reuses `webmedia::audio`); thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; publish crates; production chrome.

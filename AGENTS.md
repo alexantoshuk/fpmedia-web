@@ -125,7 +125,7 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 | Chat handoff → refresh `state.md` | `AGENTS.md` § State hygiene | One-line pointer only |
 | Engine traps / decode / scrub / demux | `skills/media.md` | Host skill: one-line pointer only (no recipe copy) |
 | Leptos / `<Video>` host traps | `skills/leptos.md` | Engine skill: one-line pointer only (no recipe copy) |
-| Dev commands / npm scripts | `AGENTS.md` / `CONTRIBUTING.md` | Skills: **paths** under `e2e/` in triage Notes only — no command blocks |
+| Dev (iteration) commands / npm scripts | `AGENTS.md` § Dev commands | `README.md`: one-line pointer. Skills: **paths** under `e2e/` in triage Notes only — no command blocks |
 | Commits / PR size / pre-push gates | `CONTRIBUTING.md` | One-line pointer only — do not restate |
 | Editor-specific agent rules | **nowhere** | Forbidden — use `.ai/` + this file |
 
@@ -177,9 +177,7 @@ When the user does ask to commit: follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)*
 
 ## Dev commands
 
-Cheat sheet (mandatory **commit** gates + flags → [`CONTRIBUTING.md`](CONTRIBUTING.md)).
-
-While coding: use `cargo check` / targeted crate checks. Run `cargo clippy … -- -D warnings` only immediately before commit or PR — not on every edit.
+Iteration cheat sheet. Mandatory **commit / PR** gates (Clippy, fmt check, build) live only in [`CONTRIBUTING.md`](CONTRIBUTING.md) — run them immediately before commit or PR, not on every edit.
 
 ```sh
 cargo fmt                                               # rustfmt
@@ -188,13 +186,10 @@ cargo leptos build                                      # build → target/site/
 cargo check -p server                                   # server (ssr) type check
 cargo check --target wasm32-unknown-unknown -p frontend # CSR WASM client + UI
 cargo check --target wasm32-unknown-unknown -p media_components # <Video> element crate
+cargo check --target wasm32-unknown-unknown -p webmedia --features webcodecs # engine wasm-only code
 # Opt-in HEVC: `cargo test -p webmedia --features hevc`; demo WASM →
 # `media_components` feature `hevc` (e.g. default = ["thumbs", "hevc"] while testing)
-# Pre-commit only (see CONTRIBUTING.md):
-cargo clippy -p webmedia --all-targets --all-features -- -D warnings
-cargo clippy --target wasm32-unknown-unknown -p frontend -- -D warnings
-cargo clippy --target wasm32-unknown-unknown -p media_components -- -D warnings
-cargo test -p webmedia                                  # media engine unit/integration tests
+cargo test -p webmedia                                  # engine tests (native; wasm-only modules not covered)
 npm install && npm run e2e:install                      # once: Playwright (+ Chromium if CDN ok)
 npm run e2e                                             # browser smoke (app up on :3000; Win uses system Chrome)
 # Scrub perf probes: e2e/perf.scrub.*.spec.ts — listed in skills/media.md Triage

@@ -20,7 +20,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Hover CPU / freeze / stuck far | ThumbPreview isolation | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
-| Play freeze / flush/idle / underrun | presentation cap / `clock_state` | Hd cap 4; HoldUnderrun; prune floor + cascade — see Gotchas |
+| Play freeze / flush/idle / underrun | presentation cap / `clock_state` | caps: `architecture.md` PlayPolicy; HoldUnderrun; prune floor + cascade — see Gotchas |
 | Cold scrub freezes tab / Play deaf | soft settle + transport | `pending_cold_exact`; Settling+Play Preempt — `e2e/player.scrub.cold-open.spec.ts` |
 | Gray/green strip holes / blur | FetchMap + 1 px canvas | soft-merge; `paint_strip_canvas_1px` — host: `skills/leptos.md` |
 | Gray holes never fill (pause/URL) | `schedule_fetchmap_gap_fill` + FetchMap accumulate | own task (`gray_fill_busy`); not densify/`scrub_busy`; URL accumulate |

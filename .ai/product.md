@@ -22,7 +22,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 
 | Surface | Purpose |
 | ------- | ------- |
-| **`media_components` crate** | Leptos `<Video>` + `VideoRef` — media element API only (HTML `<video>` analog). Modules: `video`, `helpers` (+ planned `audio`) |
+| **`media_components` crate** | Leptos `<Video>` + `VideoRef` — media element API only (HTML `<video>` analog) |
 | **Demo app** | `app` / `frontend` — file picker, transport buttons, **keyboard (JKL/Space/arrows)**, status (not production chrome) |
 | **Library API** | `webmedia` crate — demux + frame index + `Player` / `VideoPlayer`; audio under `audio/` |
 
@@ -34,13 +34,13 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - **Exact vs Play (agreed):** “Frame-accurate” means **seek / step / scrub settle / Pause** — Exact decode to the aimed frame; paused canvas is that frame. **Continuous Play prioritizes smoothness** (cadence, A/V sync, no micro-stutter) over painting every presentation frame. Do **not** invent Play-only “show every frame” / soft-pace pipelines that fight realtime. Shuttle (≥2×) may drop overdue frames. Prefer mediabunny media-player present+clock patterns.
 - Exact frame N uses keyframe cascade (nearest sync → decode → target), including B-frame / decode-order windows — for **seek / settle / step / Pause**, not as a Play smoothness tax.
 - Layout/state must allow **1–2 media sources** later (compare) — never hard-assume a single source forever.
-- `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain** canvas, metadata via `VideoRef` / `VideoPlayer`.
-- Continuous play timeline is driven by **`AudioContext`** when possible (AAC output, or silent playback clock with no audio track). Wall `performance` only for shuttle `>4×` / fallback. Audio decode lives in the **engine**, not `VideoRef` (volume/mute/transport API only). Future pure `<Audio>` reuses the same engine modules.
-- **Component vs demo:** element crates expose **API only**. Scrubber strip math in `media_components::helpers`; keyboard / transport chrome in `app`.
+- `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain**-fit picture, metadata via the element API.
+- Continuous play keeps **A/V sync** on an audio-driven clock — also for clips without an audio track. The element API exposes volume / mute; it does not expose the clock. Clock design: `architecture.md` § Audio + media clock.
+- **Component vs demo:** element crates expose **API only**; keyboard / transport chrome belongs to the host (demo `app`).
 - **Hover thumbs:** Frame.io-style timeline preview. **Agreed UX:** Play **and** Pause, not while scrubbing; must not drive densify / buffer strips.
 - **Play first, scrub second:** smooth **1× play** must work for any supported clip (incl. 4K). Exactness is Pause/seek/step — not a reason to slow Play. Scrub/densify yields while playing. Do not retune Full-HD play defaults when tuning 4K.
-- **Play vs scrub residency (agreed):** Play stays light (tiny live-frame pool, densify off). Scrub path = decode → bitmap → canvas. Demo scrubber: **gray** = fetched bytes, **dim green** = coverage, **bright green** = step-ready blit window — painted as 1 px-tall canvases + integer `fillRect` (not many-stop CSS gradients). No separate buffer meter bars; live decode numbers in `pipeline` / hidden `pipeline-json`. Seek/settle paint decode frames; Next/Prev prefer warm rings/blit. Resize/fullscreen keeps scrub trail.
-- **Playback rate:** review slider `0.25…1.75` (demo); API up to **8×**. Demo **JKL** (forward only): `1, 2, 4, 8` — **J** slower, **L** faster, **K** → **1×** + play/pause (**Space** toggles without resetting rate). Fixed-pitch audio through **4×**; **8×** silent. Shuttle present policy from **2×**. Reverse playback removed (open work: `state.md` Later if revisited).
+- **Play vs scrub residency (agreed):** Play stays light — no background scrub caching while playing. Demo scrubber strips: **gray** = fetched bytes, **dim green** = decoded coverage, **bright green** = instantly step-ready frames; strips stay crisp (no blur) on long clips. No separate buffer meter bars; live decode numbers live in the demo pipeline panel. Next/Prev near the playhead are instant when step-ready. Resize/fullscreen keeps the strips. Design: `architecture.md` § Play / scrub residency.
+- **Playback rate:** review slider `0.25…1.75` (demo); API up to **8×**. Demo **JKL** (forward only): `1, 2, 4, 8` — **J** slower, **L** faster, **K** → **1×** + play/pause (**Space** toggles without resetting rate). Fixed-pitch audio through **4×**; **8×** silent. Reverse playback removed (open work: `state.md` Later if revisited).
 
 ---
 
