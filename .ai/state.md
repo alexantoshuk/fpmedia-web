@@ -6,13 +6,24 @@
 
 ## In progress
 
-- Refactor plan below: group 3 next (e2e green after groups 1–2: 37 passed, 1 skipped).
+### Handoff (2026-10-08 chat → next)
+
+- **Branch:** `main`, ahead of `origin` (local commits through `7c67ef5`). Do not push unless asked.
+- **Groups 1–2 (structural):** landed. Layout now `media/src/model/` · `policy/` · `host/`; `residency::AimWindow`; typed `MediaError::DecodeStall` / `DecoderPoison`; one `open_mp4`; `webmedia::timer`; Player folded into `Shared`; strip math in `media_components::strip`.
+- **Group 3 started (behavior-adjacent):**
+  - `3f165ea` — `apply_engine_event` runs `EngineCmd` (soft `EnterScrub` = no densify; `EndExact { densify }`).
+  - `7c67ef5` — `model::bg_task::SingleFlight` ×3 (densify / gray / thumb); **not** one merged task.
+- **e2e:** full Playwright green **after groups 1–2 only** (37 passed, 1 skipped). **Not re-run** after EngineCmd / SingleFlight — re-run before trusting play-session work.
+- **Node:** portable LTS at `%LOCALAPPDATA%\Programs\node-v24.21.0-win-x64` (user PATH). Agent shells may still prefer Zed’s older node — prepend that dir. `winget` absent on this box.
+- **Dirty (leave):** `e2e/baselines/pre-decode-sink/avc_1080p_24_gop{12,48}_bf0.json` — pre-existing / probe noise; not part of refactor commits.
+- **Invariants still true:** `Shared.playing` is a separate `Cell` (`EngineMode` can be ExactHold/Scrub mid-play); approve-before-edit + mediabunny cite for media; no `.cursor/` docs tree.
+- **Next chat starts at:** group 3.1 below (play session → `VideoPlayer`). Cite: `mediabunny: examples/media-player/media-player.ts` render / play / pause.
 
 ---
 
 ## Next up
 
-Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep order. Groups 1–2 = no behavior change. Group 3 changes behavior → `AGENTS.md` Pre-edit gate (mediabunny cite) per PR. Update the matching `.ai/` row in the same PR (not ahead of code).
+Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep order. Group 3 → `AGENTS.md` Pre-edit gate (mediabunny cite) per PR. Update the matching `.ai/` row in the same PR (not ahead of code).
 
 ### 3. Behavior-adjacent (mediabunny cite required)
 
@@ -28,6 +39,7 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ## Later
 
+- Re-run `npm run e2e` after group 3.1–3.2 (EngineCmd + SingleFlight) before merging further play/transport work.
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
 - `ThumbCache` on `residency::AimWindow` (aim-distance instead of GOP LRU) — behavior change; probe hover first.
 - Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).
