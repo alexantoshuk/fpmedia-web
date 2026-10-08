@@ -24,6 +24,18 @@ pub(super) struct TransportHandle {
     scheduled: Rc<Cell<bool>>,
 }
 
+impl TransportHandle {
+    /// Finger on the scrubber (drag gesture, not settle).
+    pub(super) fn is_scrubbing(&self) -> bool {
+        self.inner.try_borrow().is_ok_and(|inner| {
+            matches!(
+                inner.model.state,
+                webmedia::TransportState::Scrubbing { .. }
+            )
+        })
+    }
+}
+
 pub(super) fn new_transport() -> TransportHandle {
     TransportHandle {
         inner: Rc::new(RefCell::new(TransportInner {

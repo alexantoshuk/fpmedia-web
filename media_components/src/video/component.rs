@@ -39,6 +39,8 @@ pub fn Video(
     let player: PlayerHandle = Rc::new(RefCell::new(None));
     let fps_meter = Rc::new(RefCell::new(FpsMeter::new()));
     let session: Rc<RefCell<Option<PlaySession>>> = Rc::new(RefCell::new(None));
+    // Paused rAF strip/`sync_ui` throttle (play uses `PlaySession::last_ui_ms`).
+    let last_paused_ui_ms = Rc::new(Cell::new(0.0_f64));
 
     let busy = video.busy;
     let ready = video.ready;
@@ -208,21 +210,28 @@ pub fn Video(
             let fps_meter = Rc::clone(&fps_meter);
             let sync_ui = Rc::clone(&sync_ui);
             let stop_playback = Rc::clone(&stop_playback);
+            let last_paused_ui_ms = Rc::clone(&last_paused_ui_ms);
             let transport = transport.clone();
             move |_| {
                 // Play path: normal present/prefetch UI.
                 // Pause path: still tick so gap-fill strip marks update (fill is async).
                 if !playing.get_untracked() {
-                    let Ok(borrow) = player.try_borrow() else {
-                        return;
+                    // Match play ~10 Hz — unthrottled paused rAF + strip Effect
+                    // starved pointer/playhead CSS (red bar lagged the finger).
+                    // Drag: ~150 ms (hover coalesce) so strips still grow.
+                    let interval_ms = if transport.is_scrubbing() {
+                        150.0
+                    } else {
+                        100.0
                     };
-                    if let Some(p) = borrow.as_ref() {
-                        // Refresh while filling and once more after busy clears.
-                        pipeline.set(Some(p.pipeline_stats()));
-                        // Fragment backfill / deferred sync may grow frame_count while
-                        // paused — sync_ui only overwrites playhead when count changes.
-                        sync_ui();
+                    let now = performance_now_ms().unwrap_or(0.0);
+                    if now - last_paused_ui_ms.get() < interval_ms {
+                        return;
                     }
+                    last_paused_ui_ms.set(now);
+                    // `sync_ui` refreshes pipeline + frame_count (playhead only when
+                    // count changes / playing — preserves scrub aim).
+                    sync_ui();
                     return;
                 }
 

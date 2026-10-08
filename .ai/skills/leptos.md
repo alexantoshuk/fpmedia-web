@@ -21,7 +21,7 @@
 | Hover jank on Play / lag until paint | UI defer; sync DOM transform first; engine thumb rules: `skills/media.md` |
 | `RefCell already borrowed` (tachys / Loop) | no borrow across await; defer scrub off `on:pointer*` |
 | Start stutter / Play lag after scrub | clock origins after prime; no `seek_frame` from `VideoRef::play` |
-| Scrub bar lags / pointer jank / hold jumps | sync playhead on move; don’t pause every move; hold-safe ±1 + OpQueue |
+| Scrub bar lags / pointer jank / hold jumps | sync playhead on move; paused rAF `sync_ui` ≤10 Hz (150 ms while `Scrubbing`) |
 | Ops dropped while busy | OpQueue coalesce — not `if busy { return }` (`host_op_coalesce`) |
 
 ## Quick reference
