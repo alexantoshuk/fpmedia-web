@@ -5,6 +5,9 @@ edition = "2024"
 description = "Frame-accurate media engine (demux + player API)"
 publish = false
 
+[lints]
+workspace = true
+
 [features]
 default = ["thumbs"]
 # Hover / filmstrip thumbs (ThumbPreview + ThumbCache). Soft stubs when off.

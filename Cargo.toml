@@ -2,6 +2,11 @@
 resolver = "2"
 members = ["media", "media_components", "timecode", "app", "frontend", "server"]
 
+[workspace.lints.clippy]
+# Production panics kill the whole wasm instance (player, AudioContext) until reload.
+# Tests are exempt via `clippy.toml` `allow-unwrap-in-tests`.
+unwrap_used = "deny"
+
 [profile.release]
 codegen-units = 1
 lto = true
