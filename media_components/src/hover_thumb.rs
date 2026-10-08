@@ -14,7 +14,7 @@ use leptos::html::Canvas;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{HtmlCanvasElement, HtmlElement, window};
+use web_sys::{HtmlCanvasElement, HtmlElement};
 
 use crate::VideoRef;
 use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
@@ -80,19 +80,7 @@ fn defer_hover_paint(video: VideoRef, frame: u32, dest: HtmlCanvasElement, max_w
         }
         HOVER_PAINT_SCHEDULED.with(|s| s.set(true));
         spawn_local(async move {
-            let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(
-                &mut |resolve, _reject| {
-                    if let Some(w) = window() {
-                        let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                            &resolve,
-                            DEFER_HOVER_PAINT_MS,
-                        );
-                    } else {
-                        let _ = resolve.call0(&wasm_bindgen::JsValue::UNDEFINED);
-                    }
-                },
-            ))
-            .await;
+            webmedia::timer::sleep_ms(DEFER_HOVER_PAINT_MS).await;
             let pending = HOVER_PAINT_PENDING.with(|p| p.borrow_mut().take());
             if let Some((frame, dest, max_w, max_h)) = pending {
                 // Clip switch sets ready=false — do not paint into a retiring sink.

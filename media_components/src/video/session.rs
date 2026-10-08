@@ -1,5 +1,7 @@
 //! Play-session clock state + measured display FPS.
 
+use webmedia::timer::now_ms;
+
 /// Media-clock + UI throttle state for an active play session.
 pub(super) struct PlaySession {
     pub(super) media_origin: f64,
@@ -34,7 +36,7 @@ impl FpsMeter {
     }
 
     pub(super) fn note_present(&mut self) -> Option<f64> {
-        let now = performance_now_ms()?;
+        let now = now_ms()?;
         self.presents.push(now);
         let cutoff = now - 1000.0;
         self.presents.retain(|&t| t >= cutoff);
@@ -48,8 +50,4 @@ impl FpsMeter {
         }
         Some((self.presents.len() - 1) as f64 * 1000.0 / span_ms)
     }
-}
-
-pub(super) fn performance_now_ms() -> Option<f64> {
-    web_sys::window()?.performance().map(|p| p.now())
 }

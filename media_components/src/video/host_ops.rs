@@ -3,16 +3,15 @@
 use std::rc::Rc;
 
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use webmedia::OpenPhase;
+use webmedia::timer::{next_animation_frame, now_ms};
 
 use super::VideoRef;
 use super::ctx::HostCtx;
 use super::op_queue::{HostOp, OpenArgs};
 use super::open_url::open_source_staged;
-use super::session::{PlaySession, performance_now_ms};
+use super::session::PlaySession;
 
 pub(super) fn enqueue_seek_step(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, op: HostOp) {
     let HostCtx {
@@ -388,11 +387,11 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
         }
         false
     };
-    let last_ui_ms = performance_now_ms().unwrap_or(0.0);
+    let last_ui_ms = now_ms().unwrap_or(0.0);
 
     *session.borrow_mut() = Some(PlaySession {
         media_origin,
-        wall_origin: performance_now_ms().map(|t| t / 1000.0).unwrap_or(0.0),
+        wall_origin: now_ms().map(|t| t / 1000.0).unwrap_or(0.0),
         last_ui_ms,
         restarting: false,
         holding_for_buffer: false,
@@ -464,7 +463,7 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
                         _ => {}
                     }
                 }
-                wait_animation_frame().await;
+                next_animation_frame().await;
             }
         });
     }
@@ -473,18 +472,4 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
         resume_raf();
     }
     still_queued() && playing.get_untracked()
-}
-
-/// Await one animation frame with a dedicated Closure (not Promise.resolve).
-pub(super) async fn wait_animation_frame() {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let window = web_sys::window().expect("window");
-        let resolve = resolve.clone();
-        let cb = Closure::once(move |_t: f64| {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
-        });
-        let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
-        cb.forget();
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }

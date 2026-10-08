@@ -15,14 +15,12 @@ use web_sys::HtmlCanvasElement;
 use webmedia::{BlobSource, DuePresent, MediaSource, OpenPhase, OpenSourceKind, TransportEvent};
 
 use super::ctx::HostCtx;
-use super::host_ops::{
-    SeekOrStep, enqueue_seek_step, run_open, run_play_prime, run_seek_or_step, wait_animation_frame,
-};
+use super::host_ops::{SeekOrStep, enqueue_seek_step, run_open, run_play_prime, run_seek_or_step};
 use super::op_queue::{HostOp, OpQueue, OpenArgs};
 use super::open_url::{resolve_url_source, same_origin_media_proxy_url};
-use super::session::performance_now_ms;
 use super::transport_apply::{dispatch_transport, new_transport, note_transport};
 use super::{VideoOps, VideoRef};
+use webmedia::timer::{next_animation_frame, now_ms};
 
 /// Frame-accurate media element (HTML `<video>` analog).
 ///
@@ -153,7 +151,7 @@ pub fn Video(
                     } else {
                         100.0
                     };
-                    let now = performance_now_ms().unwrap_or(0.0);
+                    let now = now_ms().unwrap_or(0.0);
                     if now - last_paused_ui_ms.get() < interval_ms {
                         return;
                     }
@@ -261,8 +259,7 @@ pub fn Video(
                                 Ok(()) => {
                                     if let Some(s) = ctx.session.borrow_mut().as_mut() {
                                         s.media_origin = 0.0;
-                                        s.wall_origin =
-                                            performance_now_ms().map(|n| n / 1000.0).unwrap_or(0.0);
+                                        s.wall_origin = now_ms().map(|n| n / 1000.0).unwrap_or(0.0);
                                         s.restarting = false;
                                     }
                                     // Warm audio restart — loop_prime already painted
@@ -284,18 +281,18 @@ pub fn Video(
                     }
                     Ok(DuePresent::Playing { did_draw }) => {
                         if did_draw && let Some(measured) = fps_meter.borrow_mut().note_present() {
-                            let now_ms = performance_now_ms();
+                            let ui_now = now_ms();
                             let should_publish = {
                                 let borrow = session.borrow();
                                 borrow.as_ref().is_some_and(|s| {
-                                    now_ms.is_some_and(|n| n - s.last_ui_ms >= 100.0)
+                                    ui_now.is_some_and(|n| n - s.last_ui_ms >= 100.0)
                                 })
                             };
                             if should_publish {
                                 fps.set(Some(measured));
                             }
                         }
-                        if let Some(now) = performance_now_ms() {
+                        if let Some(now) = now_ms() {
                             let mut borrow = session.borrow_mut();
                             if let Some(s) = borrow.as_mut()
                                 && now - s.last_ui_ms >= 100.0
@@ -501,7 +498,7 @@ pub fn Video(
                             // Cached steps can finish in one microtask; without a
                             // paint yield the drain chains several frames before
                             // the browser composites → lag then a burst.
-                            wait_animation_frame().await;
+                            next_animation_frame().await;
                         }
                         HostOp::PlayPrime => {
                             let ok = run_play_prime(&ctx, id, &resume_raf).await;
