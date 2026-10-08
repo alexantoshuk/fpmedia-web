@@ -9,7 +9,7 @@ use wasm_bindgen_futures::spawn_local;
 use webmedia::{TransportCmd, TransportEvent, TransportModel, transport_reduce};
 
 use super::host_ops::PlayerHandle;
-use super::op_queue::OpQueue;
+use super::op_queue::{HostOp, OpQueue};
 use super::session::PlaySession;
 
 struct TransportInner {
@@ -215,7 +215,7 @@ fn apply_engine_cmd(
             );
         }
         TransportCmd::EnqueuePlayPrime => {
-            if queue.enqueue_play() {
+            if queue.enqueue(HostOp::PlayPrime) {
                 kick_drain();
             }
         }
@@ -246,7 +246,7 @@ fn enqueue_scrub_drag(
         p.cancel_ops();
         p.note_scrub_frame(u64::from(frame));
     }
-    if queue.enqueue_scrub_drag(frame) {
+    if queue.enqueue(HostOp::ScrubDrag(frame)) {
         kick_drain();
     }
 }
@@ -276,7 +276,11 @@ pub(super) fn enqueue_scrub_release(
         }
         p.prepare_scrub_settle(u64::from(frame));
     }
-    if queue.enqueue_scrub_release(frame, then_play, settle_gen) {
+    if queue.enqueue(HostOp::ScrubRelease {
+        frame,
+        then_play,
+        settle_gen,
+    }) {
         kick_drain();
     }
 }

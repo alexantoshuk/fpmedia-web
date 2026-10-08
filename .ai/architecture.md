@@ -93,7 +93,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | Domain | Machine |
 | ------ | ------- |
 | Host transport | `webmedia::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*` |
-| OpQueue | `webmedia::apply_enqueue` / `EnqueueKind`; epochs preserved on survivors |
+| OpQueue | `webmedia::HostOp` / `apply_enqueue` (in place); epochs preserved on survivors |
 | Engine mode | `webmedia::engine_mode` (`Play` / `Scrub` / `ExactHold` + `AudioResume`) |
 | Decoder slot | `webmedia::decoder_slot` (`Idle` / `CheckedOut` + `reset_pending`) |
 | WorkloadMode | `webmedia::workload` (Play > Seek > Open > Bg) |

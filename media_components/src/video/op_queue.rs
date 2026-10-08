@@ -5,9 +5,9 @@
 //! Here: one FIFO queue + a single `async_id` epoch. Bumping the epoch aborts the
 //! in-flight command after its next `.await`; coalescing drops stale pending seeks.
 //!
-//! Coalesce *rules*: [`webmedia::apply_enqueue`] (keep in sync). This queue maps
-//! to [`webmedia::HostOpKind`], applies the matrix, then rebuilds pending while
-//! **preserving enqueue epochs** on survivors (Open / same-`settle_gen` release).
+//! Coalesce rules: [`webmedia::apply_enqueue`], applied in place so survivors keep
+//! their enqueue epoch. A replacement release with the same `settle_gen` inherits
+//! the epoch of the release it replaces.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -16,58 +16,30 @@ use std::sync::Arc;
 
 use leptos::prelude::*;
 use web_sys::HtmlCanvasElement;
-use webmedia::{EnqueueKind, HostOpKind, MediaSource, apply_enqueue};
+use webmedia::{MediaSource, apply_enqueue};
 
-/// Commands that must not overlap on the shared [`webmedia::VideoPlayer`].
 #[derive(Clone)]
-pub(crate) enum HostOp {
-    Open {
-        source: Arc<dyn MediaSource>,
-        canvas: HtmlCanvasElement,
-    },
-    /// Exact presentation frame (sync — waits in the drain queue).
-    Seek(u32),
-    /// Nearest sync at/before frame.
-    SeekKeyframe(u32),
-    /// Timeline drag — cancelable; latest target wins (does not latch `busy`).
-    /// Pointer-up uses [`HostOp::ScrubRelease`].
-    ScrubDrag(u32),
-    /// Atomic pointer-up: exact settle, then optional play-prime in the same op.
-    ScrubRelease {
-        frame: u32,
-        then_play: bool,
-        /// Transport settle generation — late Done must match.
-        settle_gen: u64,
-    },
-    Step(bool),
-    /// Prime presentation queue then start the play session / rAF.
-    PlayPrime,
+pub(crate) struct OpenArgs {
+    pub source: Arc<dyn MediaSource>,
+    pub canvas: HtmlCanvasElement,
 }
 
-impl HostOp {
-    fn to_kind(&self) -> HostOpKind {
-        match self {
-            Self::Open { .. } => HostOpKind::Open,
-            Self::Seek(t) => HostOpKind::Seek(*t),
-            Self::SeekKeyframe(t) => HostOpKind::SeekKeyframe(*t),
-            Self::ScrubDrag(frame) => HostOpKind::ScrubDrag { frame: *frame },
-            Self::ScrubRelease {
-                frame,
-                then_play,
-                settle_gen,
-            } => HostOpKind::ScrubRelease {
-                frame: *frame,
-                then_play: *then_play,
-                settle_gen: *settle_gen,
-            },
-            Self::Step(f) => HostOpKind::Step(*f),
-            Self::PlayPrime => HostOpKind::PlayPrime,
-        }
+/// Commands that must not overlap on the shared [`webmedia::VideoPlayer`].
+pub(crate) type HostOp = webmedia::HostOp<OpenArgs>;
+
+struct Pending {
+    epoch: u64,
+    op: HostOp,
+}
+
+impl AsRef<HostOp> for Pending {
+    fn as_ref(&self) -> &HostOp {
+        &self.op
     }
 }
 
 struct QueueState {
-    pending: VecDeque<(u64, HostOp)>,
+    pending: VecDeque<Pending>,
     /// Drain loop is scheduled / running.
     draining: bool,
     /// In-flight op is a cancelable scrub (sync step may preempt it).
@@ -107,66 +79,52 @@ impl OpQueue {
         self.async_id.get() == id
     }
 
-    /// Open always supersedes: bump, drop pending, enqueue.
+    /// Coalesce `op` into pending ([`apply_enqueue`]). Open bumps the epoch
+    /// (supersedes in-flight work); seek / step do not (open may still be in
+    /// flight). Scrub drag does not latch `busy`.
     /// Returns `true` if the caller should start the drain loop.
-    pub fn enqueue_open(&self, source: Arc<dyn MediaSource>, canvas: HtmlCanvasElement) -> bool {
-        let id = self.bump();
+    pub fn enqueue(&self, op: HostOp) -> bool {
+        let id = if op.is_open() {
+            self.bump()
+        } else {
+            self.async_id.get()
+        };
         let mut st = self.inner.borrow_mut();
-        st.pending.clear();
-        st.pending.push_back((id, HostOp::Open { source, canvas }));
-        self.busy.set(true);
-        self.begin_drain_locked(&mut st)
-    }
-
-    /// Async scrub drag. Rule: [`EnqueueKind::ScrubDrag`].
-    pub fn enqueue_scrub_drag(&self, frame: u32) -> bool {
-        let id = self.async_id.get();
-        let mut st = self.inner.borrow_mut();
-        coalesce_pending(&mut st.pending, id, EnqueueKind::ScrubDrag { frame });
-        self.begin_drain_locked(&mut st)
-    }
-
-    /// Atomic scrub release (settle ± play). Rule: [`EnqueueKind::ScrubRelease`].
-    pub fn enqueue_scrub_release(&self, frame: u32, then_play: bool, settle_gen: u64) -> bool {
-        let id = self.async_id.get();
-        let mut st = self.inner.borrow_mut();
-        coalesce_pending(
-            &mut st.pending,
-            id,
-            EnqueueKind::ScrubRelease {
-                frame,
+        let epoch = match &op {
+            HostOp::ScrubRelease {
                 then_play,
                 settle_gen,
-            },
-        );
-        self.busy.set(true);
+                ..
+            } => st
+                .pending
+                .iter()
+                .find_map(|p| match p.op {
+                    HostOp::ScrubRelease {
+                        settle_gen: g,
+                        then_play: tp,
+                        ..
+                    } if g == *settle_gen && tp == *then_play => Some(p.epoch),
+                    _ => None,
+                })
+                .unwrap_or(id),
+            _ => id,
+        };
+        if !matches!(op, HostOp::ScrubDrag(_)) {
+            self.busy.set(true);
+        }
+        apply_enqueue(&mut st.pending, Pending { epoch, op });
         self.begin_drain_locked(&mut st)
     }
 
     /// Drop pending scrub / scrub-release / play (PreemptScrub). Keeps Open.
     pub fn clear_pending_scrub_and_play(&self) {
-        self.inner.borrow_mut().pending.retain(|(_, o)| {
+        self.inner.borrow_mut().pending.retain(|p| {
             !matches!(
-                o,
+                p.op,
                 HostOp::ScrubDrag(_) | HostOp::ScrubRelease { .. } | HostOp::PlayPrime
             )
         });
         self.sync_busy();
-    }
-
-    /// Seek/step. Does **not** bump the epoch (open may still be in flight).
-    pub fn enqueue_seek_or_step(&self, op: HostOp) -> bool {
-        let kind = match &op {
-            HostOp::Seek(t) => EnqueueKind::Seek(*t),
-            HostOp::SeekKeyframe(t) => EnqueueKind::SeekKeyframe(*t),
-            HostOp::Step(f) => EnqueueKind::Step(*f),
-            _ => panic!("enqueue_seek_or_step: expected Seek/SeekKeyframe/Step"),
-        };
-        let id = self.async_id.get();
-        let mut st = self.inner.borrow_mut();
-        coalesce_pending(&mut st.pending, id, kind);
-        self.busy.set(true);
-        self.begin_drain_locked(&mut st)
     }
 
     pub fn scrub_inflight(&self) -> bool {
@@ -177,27 +135,13 @@ impl OpQueue {
         self.inner.borrow_mut().scrub_inflight = on;
     }
 
-    /// Play-prime. Rule: [`EnqueueKind::PlayPrime`].
-    pub fn enqueue_play(&self) -> bool {
-        let id = self.async_id.get();
-        let mut st = self.inner.borrow_mut();
-        coalesce_pending(&mut st.pending, id, EnqueueKind::PlayPrime);
-        self.busy.set(true);
-        self.begin_drain_locked(&mut st)
-    }
-
     /// True when a PlayPrime or `ScrubRelease { then_play }` is waiting.
     pub fn has_pending_play(&self) -> bool {
-        self.inner.borrow().pending.iter().any(|(_, o)| {
-            matches!(o, HostOp::PlayPrime)
-                || matches!(
-                    o,
-                    HostOp::ScrubRelease {
-                        then_play: true,
-                        ..
-                    }
-                )
-        })
+        self.inner
+            .borrow()
+            .pending
+            .iter()
+            .any(|p| p.op.starts_play())
     }
 
     /// Abort in-flight work and drop every pending op (close / unload).
@@ -216,7 +160,11 @@ impl OpQueue {
     }
 
     pub fn pop_next(&self) -> Option<(u64, HostOp)> {
-        self.inner.borrow_mut().pending.pop_front()
+        self.inner
+            .borrow_mut()
+            .pending
+            .pop_front()
+            .map(|p| (p.epoch, p.op))
     }
 
     pub fn try_end_drain(&self) -> bool {
@@ -242,58 +190,6 @@ impl OpQueue {
         let st = self.inner.borrow();
         if !st.draining && st.pending.is_empty() {
             self.busy.set(false);
-        }
-    }
-}
-
-/// Apply [`apply_enqueue`] while preserving epochs on Open and same-`settle_gen`
-/// ScrubRelease survivors.
-fn coalesce_pending(pending: &mut VecDeque<(u64, HostOp)>, id: u64, kind: EnqueueKind) {
-    let snapshot: Vec<(u64, HostOp)> = pending.iter().cloned().collect();
-    let open = snapshot
-        .iter()
-        .find(|(_, o)| matches!(o, HostOp::Open { .. }))
-        .cloned();
-    let mut kinds: VecDeque<HostOpKind> = snapshot.iter().map(|(_, o)| o.to_kind()).collect();
-    apply_enqueue(&mut kinds, kind);
-    pending.clear();
-    for k in kinds {
-        match k {
-            HostOpKind::Open => {
-                if let Some(entry) = open.clone() {
-                    pending.push_back(entry);
-                }
-            }
-            HostOpKind::ScrubDrag { frame } => pending.push_back((id, HostOp::ScrubDrag(frame))),
-            HostOpKind::ScrubRelease {
-                frame,
-                then_play,
-                settle_gen,
-            } => {
-                let eid = snapshot
-                    .iter()
-                    .find_map(|(e, o)| match o {
-                        HostOp::ScrubRelease {
-                            settle_gen: g,
-                            then_play: tp,
-                            ..
-                        } if *g == settle_gen && *tp == then_play => Some(*e),
-                        _ => None,
-                    })
-                    .unwrap_or(id);
-                pending.push_back((
-                    eid,
-                    HostOp::ScrubRelease {
-                        frame,
-                        then_play,
-                        settle_gen,
-                    },
-                ));
-            }
-            HostOpKind::Seek(t) => pending.push_back((id, HostOp::Seek(t))),
-            HostOpKind::SeekKeyframe(t) => pending.push_back((id, HostOp::SeekKeyframe(t))),
-            HostOpKind::Step(f) => pending.push_back((id, HostOp::Step(f))),
-            HostOpKind::PlayPrime => pending.push_back((id, HostOp::PlayPrime)),
         }
     }
 }

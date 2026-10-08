@@ -18,7 +18,7 @@ use super::host_ops::{
     PlayerHandle, SeekOrStep, enqueue_seek_step, run_open, run_play_prime, run_seek_or_step,
     wait_animation_frame,
 };
-use super::op_queue::{HostOp, OpQueue};
+use super::op_queue::{HostOp, OpQueue, OpenArgs};
 use super::open_url::{resolve_url_source, same_origin_media_proxy_url};
 use super::session::{FpsMeter, PlaySession, performance_now_ms};
 use super::transport_apply::{dispatch_transport, new_transport, note_transport};
@@ -544,7 +544,7 @@ pub fn Video(
                         continue;
                     }
                     match op {
-                        HostOp::Open { source, canvas } => {
+                        HostOp::Open(OpenArgs { source, canvas }) => {
                             run_open(
                                 &queue,
                                 id,
@@ -777,7 +777,7 @@ pub fn Video(
             web_sys::console::log_1(&format!("webmedia: open_blob start ~{size_kb} KB").into());
             let source: std::sync::Arc<dyn MediaSource> =
                 std::sync::Arc::new(BlobSource::new(blob));
-            if queue.enqueue_open(source, canvas) {
+            if queue.enqueue(HostOp::Open(OpenArgs { source, canvas })) {
                 kick_drain();
             }
         }) as Rc<dyn Fn(web_sys::Blob)>
@@ -804,7 +804,7 @@ pub fn Video(
             let fetch_id = queue.current_id();
             // Do **not** latch `busy` across resolve — cancelled fetch used to
             // leave busy=true forever when drain had already ended. `!ready`
-            // keeps Play disabled; enqueue_open sets busy for demux/seek.
+            // keeps Play disabled; Open enqueue sets busy for demux/seek.
             // Same-origin /proxy bypasses CDN CORS (GitHub Releases, S3, …).
             let url = same_origin_media_proxy_url(&url).unwrap_or(url);
             status.set(OpenPhase::OpeningUrl { url: url.clone() }.label());
@@ -821,7 +821,7 @@ pub fn Video(
                 }
                 match opened {
                     Ok(source) => {
-                        if queue.enqueue_open(source, canvas) {
+                        if queue.enqueue(HostOp::Open(OpenArgs { source, canvas })) {
                             kick_drain();
                         }
                     }

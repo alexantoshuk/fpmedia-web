@@ -37,7 +37,7 @@ pub(super) fn enqueue_seek_step(
         }
         p.pause();
     }
-    if queue.enqueue_seek_or_step(op) {
+    if queue.enqueue(op) {
         kick_drain();
     }
 }

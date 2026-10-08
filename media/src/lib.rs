@@ -67,10 +67,7 @@ pub use engine_mode::{
 };
 pub use error::MediaError;
 pub use frame_index::{FrameEntry, FrameIndex};
-pub use host_op_coalesce::{
-    EnqueueKind, HostOpKind, apply_enqueue, apply_play, apply_scrub_drag, apply_scrub_release,
-    apply_seek_or_step,
-};
+pub use host_op_coalesce::{HostOp, apply_enqueue};
 pub use open_phase::{OpenPhase, OpenSourceKind};
 pub use playback_policy::{
     EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
