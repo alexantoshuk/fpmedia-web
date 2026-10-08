@@ -1,7 +1,7 @@
 //! Seek / step orchestration for [`super::VideoPlayer`].
 
 use crate::error::MediaError;
-use crate::model::engine_mode::{EngineEvent, reduce as engine_reduce};
+use crate::model::engine_mode::EngineEvent;
 use crate::types::FrameId;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
@@ -15,10 +15,10 @@ impl VideoPlayer {
         let epoch = self.begin_op();
         // Exact VF — abort densify and hold so scrub HW cannot starve the cascade.
         // Densify blit is for scrub/step warm hits; seek always decodes VF.
+        // Abort before yield; BeginExact → AbortDensify { rearm: true } again.
         self.abort_scrub_fill(true);
         self.await_scrub_densify_yield(true).await;
-        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
-        self.shared.engine.set(next);
+        self.apply_engine_event(EngineEvent::BeginExact);
         self.apply_session_event(crate::SessionEvent::BeginRestart);
         let result = async {
             self.shared.playing.set(false);
@@ -102,14 +102,15 @@ impl VideoPlayer {
         }
         .await;
         self.apply_session_event(crate::SessionEvent::EndRestart);
-        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EndExact);
-        self.shared.engine.set(next);
         // Exact seek can leave main decodeQ elevated; idle before densify.
         if !self.is_current(epoch) {
             return Err(MediaError::Cancelled);
         }
         result?;
         self.snap_media_clock_to_playhead();
+        // Clear ExactHold without ScheduleDensify — densify aim may be
+        // `pending_cold_exact`, not `state().frame` (soft-committed prefix).
+        self.apply_engine_event(EngineEvent::EndExact { densify: false });
         // Prefer pending cold aim so densify walks toward the Seek target, not the
         // soft-committed prefix (was: arm at eng while aim≪far → eng never catches).
         let densify_aim = self

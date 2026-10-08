@@ -96,14 +96,20 @@ impl EngineModel {
 pub enum EngineEvent {
     EnterPlay,
     /// Leave play (or reinforce scrub). `soft_audio` → Warm + SoftHoldClock.
+    /// Soft scrub = aim/blit only (no densify under the finger). Hard Pause
+    /// schedules densify when mode becomes [`EngineMode::Scrub`].
     /// While [`EngineMode::ExactHold`], mode stays ExactHold (densify stays deferred).
     EnterScrub {
         soft_audio: bool,
     },
     /// Settle / sync seek — densify waits.
     BeginExact,
-    /// Clear exact hold → Scrub; densify may rearm.
-    EndExact,
+    /// Clear exact hold → Scrub. `densify` rearms fill when the caller is ready
+    /// (seek after Exact); drag supersede / scrub_to finally use `false` so the
+    /// host can arm after PlayPrime is visible.
+    EndExact {
+        densify: bool,
+    },
     /// Open / EOF / abort-prime — clear Warm.
     HardStopAudio,
 }
@@ -146,7 +152,9 @@ pub fn reduce(model: EngineModel, event: EngineEvent) -> (EngineModel, Vec<Engin
             } else {
                 cmds.push(C::HardStopClock);
             }
-            if mode == M::Scrub {
+            // Soft scrub-while-play / Pause-for-scrub: PreferSoftware densify under
+            // the finger saturates JS — aim+blit only. Hard Pause densifies.
+            if !soft_audio && mode == M::Scrub {
                 cmds.push(C::ScheduleDensify);
             }
             (EngineModel { mode, audio }, cmds)
@@ -160,16 +168,20 @@ pub fn reduce(model: EngineModel, event: EngineEvent) -> (EngineModel, Vec<Engin
             vec![C::AbortDensify { rearm: true }],
         ),
 
-        E::EndExact => {
+        E::EndExact { densify } => {
             if model.mode != M::ExactHold {
                 return (model, vec![]);
+            }
+            let mut cmds = Vec::new();
+            if densify {
+                cmds.push(C::ScheduleDensify);
             }
             (
                 EngineModel {
                     mode: M::Scrub,
                     audio: model.audio,
                 },
-                vec![C::ScheduleDensify],
+                cmds,
             )
         }
 
@@ -210,9 +222,23 @@ mod tests {
         assert_eq!(next.mode, EngineMode::Scrub);
         assert!(next.warm_audio());
         assert!(next.allows_densify());
+        assert_eq!(cmds, vec![EngineCmd::SoftHoldClock]);
+    }
+
+    #[test]
+    fn scrub_hard_schedules_densify() {
+        let (next, cmds) = reduce(
+            EngineModel {
+                mode: EngineMode::Play,
+                audio: AudioResume::Cold,
+            },
+            EngineEvent::EnterScrub { soft_audio: false },
+        );
+        assert_eq!(next.mode, EngineMode::Scrub);
+        assert!(!next.warm_audio());
         assert_eq!(
             cmds,
-            vec![EngineCmd::SoftHoldClock, EngineCmd::ScheduleDensify]
+            vec![EngineCmd::HardStopClock, EngineCmd::ScheduleDensify]
         );
     }
 
@@ -243,10 +269,21 @@ mod tests {
             mode: EngineMode::ExactHold,
             audio: AudioResume::Warm,
         };
-        let (next, cmds) = reduce(m, EngineEvent::EndExact);
+        let (next, cmds) = reduce(m, EngineEvent::EndExact { densify: true });
         assert_eq!(next.mode, EngineMode::Scrub);
         assert!(next.warm_audio());
         assert_eq!(cmds, vec![EngineCmd::ScheduleDensify]);
+    }
+
+    #[test]
+    fn end_exact_without_densify() {
+        let m = EngineModel {
+            mode: EngineMode::ExactHold,
+            audio: AudioResume::Warm,
+        };
+        let (next, cmds) = reduce(m, EngineEvent::EndExact { densify: false });
+        assert_eq!(next.mode, EngineMode::Scrub);
+        assert!(cmds.is_empty());
     }
 
     #[test]
@@ -255,7 +292,7 @@ mod tests {
             mode: EngineMode::Scrub,
             audio: AudioResume::Cold,
         };
-        let (next, cmds) = reduce(m, EngineEvent::EndExact);
+        let (next, cmds) = reduce(m, EngineEvent::EndExact { densify: true });
         assert_eq!(next, m);
         assert!(cmds.is_empty());
     }

@@ -6,7 +6,7 @@ use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::scrub_blit::draw_image_bitmap;
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
-use crate::model::engine_mode::{EngineEvent, reduce as engine_reduce};
+use crate::model::engine_mode::EngineEvent;
 use crate::policy::{
     GopProfile, ScrubPolicy, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
     scrub_blit_frame_budget,
@@ -164,9 +164,8 @@ impl VideoPlayer {
     /// on long-GOP long GOPs (playhead far, `eng` stuck at 0, `decodeQ≈10`).
     pub fn prepare_scrub_settle(&self, frame: FrameId) {
         self.cancel_hover_thumb();
-        self.abort_scrub_fill(true);
-        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
-        self.shared.engine.set(next);
+        // BeginExact → AbortDensify { rearm: true }.
+        self.apply_engine_event(EngineEvent::BeginExact);
         self.clear_scrub_direction();
         self.cancel_ops();
         // Drop in-flight main-decoder cascade from the preceding drag sample so
@@ -189,8 +188,8 @@ impl VideoPlayer {
         if !self.shared.engine.get().holds_exact() {
             return;
         }
-        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EndExact);
-        self.shared.engine.set(next);
+        // Clear ExactHold without densify — Drag keeps PreferSoftware fill off.
+        self.apply_engine_event(EngineEvent::EndExact { densify: false });
     }
 
     /// Scrub pointer sample (drag / hold) — aim + direction only.
@@ -220,12 +219,12 @@ impl VideoPlayer {
         let epoch = self.begin_op();
         let densify_yield_ms = if settle {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
+            // Abort before yield so densify can drain; BeginExact rearms AbortDensify.
             self.abort_scrub_fill(true);
             let yield_t0 = now_ms().unwrap_or(0.0);
             self.await_scrub_densify_yield(true).await;
             let yield_ms = now_ms().unwrap_or(yield_t0) - yield_t0;
-            let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
-            self.shared.engine.set(next);
+            self.apply_engine_event(EngineEvent::BeginExact);
             self.clear_scrub_direction();
             self.apply_session_event(crate::SessionEvent::BeginRestart);
             self.aim_scrub_cache(frame);
@@ -347,9 +346,8 @@ impl VideoPlayer {
         }
         .await;
         self.apply_session_event(crate::SessionEvent::EndRestart);
-        // End ExactHold after settle/drag op (densify arm is host-gated on settle).
-        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EndExact);
-        self.shared.engine.set(next);
+        // End ExactHold; densify arm is host-gated on settle (after PlayPrime visible).
+        self.apply_engine_event(EngineEvent::EndExact { densify: false });
         // Cancelled (superseded drag / seek): do not kick densify — a following
         // PlayPrime must keep a warm main decoder when possible.
         if !self.is_current(epoch) {

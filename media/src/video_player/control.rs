@@ -9,7 +9,7 @@ use web_sys::HtmlCanvasElement;
 
 use super::api::PlayerState;
 use crate::model::clock_state::ClockEvent;
-use crate::model::engine_mode::{EngineEvent, reduce as engine_reduce};
+use crate::model::engine_mode::{EngineCmd, EngineEvent, reduce as engine_reduce};
 use crate::model::session::{SessionEvent, reduce as session_reduce};
 use crate::types::{AudioMetadata, FrameId, VideoMetadata};
 
@@ -34,6 +34,43 @@ impl VideoPlayer {
     pub(super) fn apply_session_event(&self, event: SessionEvent) {
         let next = session_reduce(self.shared.session.get(), event);
         self.shared.session.set(next);
+    }
+
+    /// `engine_mode::reduce` → store model → run [`EngineCmd`]s.
+    ///
+    /// `run_clock_cmds`: Pause only soft/hard-stops the clock when leaving play
+    /// (`was_playing`); already-paused UI steps must not re-enter hold/stop.
+    /// `mediabunny: examples/media-player/media-player.ts` seekToTime → pause/play.
+    pub(super) fn apply_engine_event(&self, event: EngineEvent) {
+        self.apply_engine_event_gated(event, true);
+    }
+
+    pub(super) fn apply_engine_event_gated(&self, event: EngineEvent, run_clock_cmds: bool) {
+        let (next, cmds) = engine_reduce(self.shared.engine.get(), event);
+        self.shared.engine.set(next);
+        self.apply_engine_cmds(&cmds, run_clock_cmds);
+    }
+
+    pub(super) fn apply_engine_cmds(&self, cmds: &[EngineCmd], run_clock_cmds: bool) {
+        for cmd in cmds {
+            match *cmd {
+                EngineCmd::AbortDensify { rearm } => self.abort_scrub_fill(rearm),
+                EngineCmd::ScheduleDensify => {
+                    // ExactHold / Play must not densify — reduce already omits this
+                    // cmd there; `schedule_scrub_cache_fill` also refuses Play.
+                    if self.shared.engine.get().allows_densify() {
+                        self.enter_scrub_cache_pipeline(self.state().frame);
+                    }
+                }
+                EngineCmd::SoftHoldClock if run_clock_cmds => {
+                    let _ = self.hold_media_clock_for_scrub();
+                }
+                EngineCmd::HardStopClock if run_clock_cmds => {
+                    let _ = self.stop_media_clock();
+                }
+                EngineCmd::SoftHoldClock | EngineCmd::HardStopClock => {}
+            }
+        }
     }
 
     pub fn state(&self) -> PlayerState {
@@ -61,16 +98,14 @@ impl VideoPlayer {
     }
 
     pub fn play(&self) {
-        let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::EnterPlay);
-        self.shared.engine.set(next);
+        // EnterPlay → AbortDensify { rearm: false }.
+        self.apply_engine_event(EngineEvent::EnterPlay);
         // Release+then_play skips the cache pipeline — do not leave gray throttled.
         self.shared.scrub_gesture.set(false);
-        // Cancel densify hard — do **not** rearm `scrub_pending` (Play must not
-        // keep filling gaps). Keep scrub *markers*; trim Exact (ImageBitmap) by
-        // Play VF VRAM estimate — evict farthest from playhead, do not wipe all
-        // (was: full clear → cold Exact on every Pause).
+        // Keep scrub *markers*; trim Exact (ImageBitmap) by Play VF VRAM estimate —
+        // evict farthest from playhead, do not wipe all (was: full clear → cold
+        // Exact on every Pause).
         self.cancel_ops();
-        self.abort_scrub_fill(false);
         self.clear_scrub_direction();
         self.trim_exact_for_play();
         // Free Chromium VideoFrame pool for prefetch — step ring is Pause/Prev only.
@@ -116,21 +151,14 @@ impl VideoPlayer {
         // Leaving play: cancel decode + scrub fill epoch (pending latch restarts fill).
         // Already paused: do not bump scrub_epoch (UI steps call pause every time).
         let was_playing = self.shared.playing.get();
-        let (next, _) = engine_reduce(
-            self.shared.engine.get(),
-            EngineEvent::EnterScrub { soft_audio },
-        );
-        self.shared.engine.set(next);
         if was_playing {
             self.cancel_ops_and_scrub_fill();
-            if soft_audio {
-                let _ = self.hold_media_clock_for_scrub();
-            } else {
-                let _ = self.stop_media_clock();
-            }
         }
+        // Flip playing before ScheduleDensify — `schedule_scrub_cache_fill` refuses
+        // while playing. Clock cmds still gated by `was_playing`.
         self.shared.playing.set(false);
         self.clear_loop_prime();
+        self.apply_engine_event_gated(EngineEvent::EnterScrub { soft_audio }, was_playing);
         // `prepare_scrub_settle` latches ExactHold *before* the async scrub op;
         // `run_seek_or_step` always called `pause()` which used to clear that latch
         // and re-kick densify — exact settle then raced the scrub decoder
@@ -139,13 +167,11 @@ impl VideoPlayer {
             return;
         }
         // Soft scrub-pause: aim only — PreferSoftware densify under the finger
-        // starves pointer/rAF. Hard Pause / settle / step arm densify.
+        // starves pointer/rAF. Hard Pause densify already applied via ScheduleDensify.
         if soft_audio {
             self.aim_scrub_cache(self.state().frame);
             return;
         }
-        // Hard Pause: same pipeline as settle arm / step.
-        self.enter_scrub_cache_pipeline(self.state().frame);
         if was_playing {
             // Cancelled fill may still have `scrub_busy` until its finally runs;
             // schedule only latches pending then. Kick again after a turn so pause

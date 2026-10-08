@@ -16,11 +16,10 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ### 3. Behavior-adjacent (mediabunny cite required)
 
-1. Apply `EngineCmd` from `engine_reduce` (8 sites discard it) instead of hand-coded side effects.
-2. Single-flight background task for densify / gray fill / thumb fill (replaces `scrub_busy` / `scrub_pending` / `gray_fill_busy` latches).
-3. Move the play session into `VideoPlayer` (prefetch loop, underrun hold/resume, loop, visibility, silent-clock arm); drop host `PlaySession` flags. `mediabunny: examples/media-player/media-player.ts` render / play / pause.
-4. Seek / Step through the transport FSM; derive `playing` from transport (engine `Shared.playing` is a separate `Cell` today — `EngineMode` can be `ExactHold` / `Scrub` mid-play); rewrite `skills/leptos.md` “`playing` is UI-owned”.
-5. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant. `hover_thumb` defer → `leptos-use` `use_throttle_fn` (trailing) in `HoverThumbPreview` scope.
+1. Single-flight background task for densify / gray fill / thumb fill (replaces `scrub_busy` / `scrub_pending` / `gray_fill_busy` latches).
+2. Move the play session into `VideoPlayer` (prefetch loop, underrun hold/resume, loop, visibility, silent-clock arm); drop host `PlaySession` flags. `mediabunny: examples/media-player/media-player.ts` render / play / pause.
+3. Seek / Step through the transport FSM; derive `playing` from transport (engine `Shared.playing` is a separate `Cell` today — `EngineMode` can be `ExactHold` / `Scrub` mid-play); rewrite `skills/leptos.md` “`playing` is UI-owned”.
+4. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant. `hover_thumb` defer → `leptos-use` `use_throttle_fn` (trailing) in `HoverThumbPreview` scope.
 
 ### Play / decode
 
