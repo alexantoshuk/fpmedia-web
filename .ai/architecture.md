@@ -108,7 +108,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 
 ## Progressive open (MediaSource)
 
-**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` (`ReadOrchestrator` + open-ended Range workers) / `MemorySource` + `CachedSource` (512 MiB LRU, 8 MiB quantum; orch cache mediabunny-default 64 MiB); gray strip via `FetchMap` (**accumulate** ever-fetched ranges — not a live LRU mirror). Top-level `ftyp`+`moov` (+ full `moof` for single-file fMP4) → `re_mp4`. UI `open_blob` / `open_url` (remote → same-origin **`/proxy?url=`**). Async AVC sync verify after moov. `open_mp4_bytes` for fixtures/tests.
+**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` (`ReadOrchestrator` + open-ended Range workers) / `MemorySource` + `CachedSource` (512 MiB LRU, 8 MiB quantum; orch cache mediabunny-default 64 MiB); gray strip via `FetchMap` (**accumulate** ever-fetched ranges — not a live LRU mirror). Top-level `ftyp`+`moov` (+ full `moof` for single-file fMP4) → `re_mp4`. UI `open_blob` / `open_url` (remote → same-origin **`/proxy?url=`**). Async AVC sync verify after moov. One progressive entry `open_mp4(source, options, progress)` → `OpenedMp4` (always `CachedSource`; `mediabunny: src/input.ts Input`); sync `open_mp4_bytes` for fixtures/tests.
 
 **Demo `/proxy`:** localhost-only (loopback peer or **403**). Not a production CORS proxy. Host apps supply their own same-origin fetch path.
 

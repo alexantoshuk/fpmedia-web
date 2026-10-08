@@ -5,8 +5,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{HtmlCanvasElement, Response};
 use webmedia::{
     BlobSource, MediaError, MediaSource, OPEN_URL_PARALLELISM, OpenMp4Options, OpenPhase,
-    OpenSourceKind, UrlSource, UrlSourceOptions, VideoPlayer, is_no_http_range,
-    open_mp4_media_source_cached_with_progress,
+    OpenSourceKind, UrlSource, UrlSourceOptions, VideoPlayer, is_no_http_range, open_mp4,
 };
 
 /// Resolve `https:` via [`UrlSource`] (HTTP Range); `blob:` / no-Range hosts via
@@ -153,7 +152,7 @@ pub(super) async fn open_source_staged(
 ) -> Result<VideoPlayer, String> {
     on_status(OpenPhase::StartingDemux);
     web_sys::console::log_1(&"webmedia: demux start".into());
-    let opened = open_mp4_media_source_cached_with_progress(
+    let opened = open_mp4(
         source,
         OpenMp4Options {
             // Deferred AVC sync — play on-demand; scrub settle waits for full verify.

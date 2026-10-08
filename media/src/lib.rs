@@ -60,10 +60,8 @@ pub use decoder_slot::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use demux::open_mp4_path;
 pub use demux::{
-    Mp4VideoTrack, OpenMp4Options, OpenedMp4, TopLevelBox, load_ftyp_moov, open_mp4_bytes,
-    open_mp4_media_bytes, open_mp4_media_source_cached, open_mp4_media_source_cached_with_progress,
-    open_mp4_source, open_mp4_source_cached, open_mp4_source_cached_with_progress,
-    open_mp4_source_with_progress, parse_mp4_progressive, parse_mp4_progressive_with_progress,
+    Mp4VideoTrack, OpenMp4Options, OpenedMp4, TopLevelBox, load_ftyp_moov, open_mp4,
+    open_mp4_bytes, parse_mp4_progressive, parse_mp4_progressive_with_progress,
     read_ftyp_moov_stub, scan_top_level,
 };
 pub use engine_mode::{

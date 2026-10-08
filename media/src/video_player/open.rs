@@ -36,7 +36,7 @@ impl VideoPlayer {
         bytes: Vec<u8>,
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
-        let opened = crate::open_mp4_media_bytes(bytes)?;
+        let opened = crate::open_mp4_bytes(bytes)?;
         let video = opened.video.ok_or(MediaError::NoVideoTrack)?;
         Self::from_tracks_with_fetch(video, opened.audio, canvas, opened.fetch_map).await
     }
@@ -46,12 +46,13 @@ impl VideoPlayer {
         source: std::sync::Arc<dyn crate::MediaSource>,
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
-        let opened = crate::open_mp4_media_source_cached(
+        let opened = crate::open_mp4(
             source,
             crate::OpenMp4Options {
                 verify_avc_sync: true,
                 defer_avc_sync: true,
             },
+            |_| {},
         )
         .await?;
         let video = opened.video.ok_or(MediaError::NoVideoTrack)?;

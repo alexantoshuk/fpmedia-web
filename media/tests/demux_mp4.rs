@@ -6,13 +6,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use webmedia::{
-    GopProfile, MediaSource, MemorySource, OpenMp4Options, PacketType, ReadFuture, VideoCodec,
-    avc_nal_length_size, determine_avc_packet_type, open_mp4_media_source_cached, open_mp4_path,
-    open_mp4_source,
+    GopProfile, MediaSource, MemorySource, Mp4VideoTrack, OpenMp4Options, OpenPhase, OpenedMp4,
+    PacketType, ReadFuture, VideoCodec, avc_nal_length_size, determine_avc_packet_type, open_mp4,
+    open_mp4_path,
 };
 
 #[cfg(feature = "hevc")]
 use webmedia::{determine_hevc_packet_type, hevc_nal_length_size, open_mp4_bytes};
+
+/// Progressive cached open, video only.
+async fn open_video_source(
+    source: Arc<dyn MediaSource>,
+    options: OpenMp4Options,
+) -> Result<Mp4VideoTrack, webmedia::MediaError> {
+    open_mp4(source, options, |_| {}).await?.require_video()
+}
 
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -159,7 +167,7 @@ fn progressive_source_open_matches_bytes_offsets() {
     let bytes = std::fs::read(&path).expect("read");
     let full = open_mp4_path(&path).expect("full open");
     let source: Arc<dyn webmedia::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
-    let progressive = block_on(open_mp4_source(
+    let progressive = block_on(open_video_source(
         source,
         OpenMp4Options {
             verify_avc_sync: true,
@@ -196,12 +204,13 @@ fn progressive_cached_open_seeds_fetch_map_at_file_head() {
     let bytes = std::fs::read(&path).expect("read");
     let file_size = bytes.len() as u64;
     let source: Arc<dyn webmedia::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
-    let opened = block_on(open_mp4_media_source_cached(
+    let opened = block_on(open_mp4(
         source,
         OpenMp4Options {
             verify_avc_sync: false,
             defer_avc_sync: false,
         },
+        |_| {},
     ))
     .expect("cached progressive open");
 
@@ -275,9 +284,11 @@ impl MediaSource for CountingSource {
 }
 
 fn assert_progressive_fmp4_matches_full(bytes: Vec<u8>) {
-    let full = webmedia::open_mp4_bytes(bytes.clone()).expect("full open");
+    let full = webmedia::open_mp4_bytes(bytes.clone())
+        .and_then(OpenedMp4::require_video)
+        .expect("full open");
     let source: Arc<dyn webmedia::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
-    let progressive = block_on(open_mp4_source(
+    let progressive = block_on(open_video_source(
         source,
         OpenMp4Options {
             verify_avc_sync: true,
@@ -328,18 +339,29 @@ fn progressive_fmp4_from_url() {
         reads: AtomicUsize::new(0),
         max_len: AtomicUsize::new(0),
     });
+    // Snapshot at `WarmingMediaBytes`: demux + backfill run on the raw source;
+    // the playback warm that follows reads `CachedSource` windows by design.
+    let demux_reads = std::cell::Cell::new(None);
     let t_open = Instant::now();
-    let progressive = block_on(open_mp4_source(
+    let progressive = block_on(open_mp4(
         counted.clone() as Arc<dyn MediaSource>,
         OpenMp4Options {
             verify_avc_sync: false,
             defer_avc_sync: false,
         },
+        |phase| {
+            if phase == OpenPhase::WarmingMediaBytes && demux_reads.get().is_none() {
+                demux_reads.set(Some((
+                    counted.reads.load(Ordering::Relaxed),
+                    counted.max_len.load(Ordering::Relaxed),
+                )));
+            }
+        },
     ))
+    .and_then(OpenedMp4::require_video)
     .expect("progressive fMP4 open");
     let open_s = t_open.elapsed().as_secs_f64();
-    let reads = counted.reads.load(Ordering::Relaxed);
-    let max_len = counted.max_len.load(Ordering::Relaxed);
+    let (reads, max_len) = demux_reads.get().expect("open reached WarmingMediaBytes");
     eprintln!("progressive open {open_s:.3}s; reads={reads} max_len={max_len}");
     assert!(
         open_s < 5.0,
@@ -367,7 +389,7 @@ fn deferred_avc_sync_verify_on_demand() {
     }
     let bytes = std::fs::read(&path).expect("read");
     let source: Arc<dyn webmedia::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
-    let track = block_on(open_mp4_source(
+    let track = block_on(open_video_source(
         source,
         OpenMp4Options {
             verify_avc_sync: true,
@@ -394,7 +416,7 @@ fn deferred_avc_sync_verify_on_demand() {
 
 #[test]
 fn demux_with_audio_track() {
-    use webmedia::{AudioCodec, open_mp4_media_bytes};
+    use webmedia::{AudioCodec, open_mp4_bytes};
 
     let path = fixture("with_audio.mp4");
     if !path.exists() {
@@ -402,7 +424,7 @@ fn demux_with_audio_track() {
         return;
     }
     let bytes = std::fs::read(&path).expect("read fixture");
-    let opened = open_mp4_media_bytes(bytes).expect("open media");
+    let opened = open_mp4_bytes(bytes).expect("open media");
     let video = opened.video.expect("video");
     let audio = opened.audio.expect("audio");
 
@@ -439,7 +461,9 @@ const DEFAULT_HEVC_URL: &str = "https://github.com/alexantoshuk/testvideo/releas
 fn hevc_bitstream_sync_verify_irap_keys() {
     let url = std::env::var("WEBMEDIA_HEVC_URL").unwrap_or_else(|_| DEFAULT_HEVC_URL.into());
     let bytes = fetch_url_bytes(&url).unwrap_or_else(|e| panic!("download {url}: {e}"));
-    let track = open_mp4_bytes(bytes).expect("open hevc");
+    let track = open_mp4_bytes(bytes)
+        .and_then(OpenedMp4::require_video)
+        .expect("open hevc");
     let meta = track.metadata();
     assert_eq!(meta.codec.codec, VideoCodec::Hevc);
     let length_size =

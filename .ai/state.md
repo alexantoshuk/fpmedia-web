@@ -16,8 +16,7 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ### 2. Structural, low risk
 
-1. One `open_mp4(source, opts, progress)` entry instead of 8 `open_mp4_*` variants.
-2. Group `webmedia` root modules (`model/` · `host/` · `policy/`).
+1. Group `webmedia` root modules (`model/` · `host/` · `policy/`).
 
 ### 3. Behavior-adjacent (mediabunny cite required)
 
