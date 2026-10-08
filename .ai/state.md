@@ -6,7 +6,7 @@
 
 ## In progress
 
-- Refactor plan below: group 3 next. Groups 1–2 landed without e2e (no Node.js on the dev box) — run `e2e/` smoke before group 3.
+- Refactor plan below: group 3 next (e2e green after groups 1–2: 37 passed, 1 skipped).
 
 ---
 
