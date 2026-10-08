@@ -157,6 +157,7 @@ impl VideoPlayer {
         // Flip playing before ScheduleDensify — `schedule_scrub_cache_fill` refuses
         // while playing. Clock cmds still gated by `was_playing`.
         self.shared.playing.set(false);
+        self.clear_play_session();
         self.clear_loop_prime();
         self.apply_engine_event_gated(EngineEvent::EnterScrub { soft_audio }, was_playing);
         // `prepare_scrub_settle` latches ExactHold *before* the async scrub op;

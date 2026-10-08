@@ -3,30 +3,21 @@
 use std::rc::Rc;
 
 use leptos::prelude::*;
-use wasm_bindgen_futures::spawn_local;
 use webmedia::OpenPhase;
-use webmedia::timer::{next_animation_frame, now_ms};
 
 use super::VideoRef;
 use super::ctx::HostCtx;
 use super::op_queue::{HostOp, OpenArgs};
 use super::open_url::open_source_staged;
-use super::session::PlaySession;
 
 pub(super) fn enqueue_seek_step(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, op: HostOp) {
-    let HostCtx {
-        queue,
-        player,
-        session,
-        ..
-    } = ctx;
+    let HostCtx { queue, player, .. } = ctx;
     let playing = ctx.video.playing;
     if player.borrow().as_ref().is_none() {
         return;
     }
     // Mirror Pause: clear stale playing so controls stay usable.
     playing.set(false);
-    let _ = session.borrow_mut().take();
     if let Some(p) = player.borrow().as_ref().cloned() {
         // Sync Prev/Next/Seek wait for each other, but preempt async scrub.
         if queue.scrub_inflight() {
@@ -128,12 +119,7 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
 }
 
 pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> bool {
-    let HostCtx {
-        queue,
-        player,
-        session,
-        ..
-    } = ctx;
+    let HostCtx { queue, player, .. } = ctx;
     let VideoRef {
         error,
         playing,
@@ -146,7 +132,6 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
     let Some(p) = player.borrow().as_ref().cloned() else {
         return false;
     };
-    let _ = session.borrow_mut().take();
     playing.set(false);
     // Scrub settle: host already soft-paused on pointerdown and `prepare_scrub_settle`
     // latched densify hold. Calling hard `pause()` cleared that hold and re-kicked
@@ -232,7 +217,6 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     let HostCtx {
         queue,
         player,
-        session,
         fps_meter,
         ..
     } = ctx;
@@ -318,7 +302,6 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     // stays deaf in `PlayPriming` (stress: Play did not start after scrub).
     // mediabunny: examples/media-player play() after seekToTime — no priming trap.
     let park_failed_prime = || {
-        let _ = session.borrow_mut().take();
         playing.set(false);
         if p.is_playing() {
             p.pause();
@@ -354,11 +337,11 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     let media_origin = p.state().timestamp.seconds;
     // No AAC: defer silent PlaybackClock / wall arm to the first present rAF.
     // Arming here (after long prime on ChG-class masters) lets AudioContext run
-    // ahead of the first `present_due` → skip-to-latest storm.
+    // ahead of the first present → skip-to-latest storm.
     // mediabunny: `play` sets `audioContextStartTime` while `render` already loops.
     // AAC: still warm/cold start here so schedule has headroom before rAF.
     let defer_silent_clock = !p.has_audio();
-    let pending_clock_start = if defer_silent_clock {
+    let pending_silent = if defer_silent_clock {
         let _ = p.take_audio_warm_resume();
         web_sys::console::log_1(&"webmedia: play clock defer silent→first rAF".into());
         true
@@ -387,86 +370,10 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
         }
         false
     };
-    let last_ui_ms = now_ms().unwrap_or(0.0);
 
-    *session.borrow_mut() = Some(PlaySession {
-        media_origin,
-        wall_origin: now_ms().map(|t| t / 1000.0).unwrap_or(0.0),
-        last_ui_ms,
-        restarting: false,
-        holding_for_buffer: false,
-        resuming_clock: false,
-        pending_clock_start,
-    });
+    // Engine owns prefetch / underrun / loop / silent-clock arm from here.
+    p.begin_play_session(pending_silent);
     playing.set(true);
-
-    {
-        let ctx = ctx.clone();
-        let HostCtx {
-            player,
-            session,
-            queue,
-            ..
-        } = ctx.clone();
-        spawn_local(async move {
-            while playing.get_untracked() && queue.is_current(id) {
-                let pause_prefetch = session
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|s| s.restarting || s.resuming_clock);
-                let need = {
-                    let borrow = player.borrow();
-                    borrow.as_ref().is_some_and(|p| {
-                        !p.is_restarting() && !pause_prefetch && p.wants_play_prefetch()
-                    })
-                };
-                if need {
-                    let decoded = {
-                        let Some(p) = player.borrow().as_ref().cloned() else {
-                            break;
-                        };
-                        p.prefetch_one().await
-                    };
-                    match decoded {
-                        Ok(true) => continue,
-                        Ok(false) => {}
-                        Err(e) if e.is_cancelled() => break,
-                        Err(e) => {
-                            if queue.is_current(id) {
-                                error.set(Some(e.to_string()));
-                                ctx.stop_playback();
-                            }
-                            break;
-                        }
-                    }
-                }
-                {
-                    let prepare = {
-                        let Some(p) = player.borrow().as_ref().cloned() else {
-                            break;
-                        };
-                        if p.is_looping() {
-                            Some(p.prepare_loop_if_needed().await)
-                        } else {
-                            None
-                        }
-                    };
-                    match prepare {
-                        Some(Err(e)) if e.is_cancelled() => break,
-                        Some(Err(e)) => {
-                            if queue.is_current(id) {
-                                error.set(Some(e.to_string()));
-                                ctx.stop_playback();
-                            }
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                next_animation_frame().await;
-            }
-        });
-    }
 
     if still_queued() && playing.get_untracked() {
         resume_raf();

@@ -27,7 +27,7 @@ mod shared;
 #[cfg_attr(not(feature = "thumbs"), path = "thumb_off.rs")]
 mod thumb;
 
-pub use api::{DuePresent, PipelineStats, PlayerState, ReadyFrameKind, ReadyFrameMark};
+pub use api::{DuePresent, PipelineStats, PlayTick, PlayerState, ReadyFrameKind, ReadyFrameMark};
 pub(crate) use shared::PRESENTATION_QUEUE_CAP;
 // Private imports — child mods (`play` / `scrub` / `seek`) see these via `super::`.
 use crate::timer::{next_animation_frame, now_ms, sleep_ms, yield_microtask};

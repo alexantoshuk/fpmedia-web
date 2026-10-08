@@ -30,7 +30,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Loop seam wipe / pause at 1.1–1.75× | loop_prime / SessionModel | keep Covered+Exact; BeginPrepareLoop only |
 | Pause→Play / scrub→Play lag or no-op | seed + `ScrubRelease{then_play}` | host: `skills/leptos.md`; probes gray-first / cold-resume / stress |
 | Sticky error after Ok settle | `host_ops` clear error on Ok | `e2e/player.scrub.sticky-error.spec.ts` |
-| A/V desync / tab-hidden race | `media_time` / HoldHidden | never host wall clock; HoldHidden ∉ underrun_holding |
+| A/V desync / tab-hidden race | `media_time` / HoldHidden | never host wall clock; HoldHidden ∉ underrun_holding; play session: `play_raf_tick` |
 | Rate / shuttle / JKL wrong | `normalize_playback_rate` / eof_wall | ≤4× WSOLA; >4 wall+mute; K pauses before 1× |
 | `RefCell already borrowed` | [RefCell](#refcell--wasm-re-entry) | bind then work; no borrow across await |
 | fMP4 / URL open hang / Range stampede | mfra warm + orch | moof-only parallel; never bulk 0..mfra; settle ≠ await full sync verify |
@@ -50,7 +50,7 @@ bitstream/     AVC + HEVC packet type / sanitize
 source/        MediaSource, CachedSource, FetchMap, ReadOrchestrator (+ wasm Blob/Url)
 audio/         demux, stretch (WSOLA), output, PlaybackClock
 demux/         boxes, coalesce, mp4, tmcd
-video_player/  mod · api · shared · open · control · clock_ctrl · present · decode_ops · play · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
+video_player/  mod · api · shared · open · control · clock_ctrl · present · decode_ops · play (`begin_play_session` / `play_raf_tick`) · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
 decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
 ```
 

@@ -122,3 +122,20 @@ pub enum DuePresent {
     NeedsLoop,
     Ended,
 }
+
+/// Host rAF outcome after [`super::VideoPlayer::play_raf_tick`].
+///
+/// Engine owns silent-clock arm, underrun hold/resume, and loop seam; the host
+/// only paints UI / stops on EOF. `mediabunny: examples/media-player/media-player.ts`
+/// `render` / `play` / `pause`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlayTick {
+    /// Restarting, hidden hold, or session not live — skip UI this frame.
+    Skipped,
+    /// EOF with loop off — host should stop transport.
+    Ended,
+    /// Normal present turn.
+    Presented { did_draw: bool },
+    /// Prefetch / loop driver failed — host should surface and stop.
+    Failed(String),
+}

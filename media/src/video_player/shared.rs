@@ -122,6 +122,24 @@ pub(super) struct Shared {
     pub(super) clock_state: Cell<ClockState>,
     /// Prefetch / seek-loop gates ([`SessionModel`]).
     pub(super) session: Cell<SessionModel>,
+    /// PlayPrime succeeded and host may present — mirrors former host `PlaySession`.
+    /// Cleared on pause / soft-hold / teardown.
+    pub(super) play_session_live: Cell<bool>,
+    /// No-AAC: arm silent [`crate::audio::PlaybackClock`] on first present tick.
+    /// `mediabunny: media-player play` / `audioContextStartTime`.
+    pub(super) pending_silent_clock: Cell<bool>,
+    /// Warm clock resume in flight — do not stack; pause prefetch.
+    pub(super) resuming_clock: Cell<bool>,
+    /// Present/prefetch frozen across `loop_to_start` + clock resume (outer seam;
+    /// distinct from [`SessionModel::restarting`] cold-decode latch).
+    pub(super) play_loop_seam: Cell<bool>,
+    /// Media time snapped at underrun / hidden hold for warm resume.
+    pub(super) held_media_origin: Cell<Option<f64>>,
+    /// Bumped each [`super::VideoPlayer::begin_play_session`] so prior prefetch
+    /// drivers exit.
+    pub(super) play_prefetch_gen: Cell<u64>,
+    /// Prefetch / loop async failure for the next [`super::VideoPlayer::play_raf_tick`].
+    pub(super) play_driver_error: RefCell<Option<String>>,
     /// Bumped to cancel in-flight decode (mediabunny dispose / asyncId).
     pub(super) op_epoch: Cell<u64>,
     /// Exclusive main-decoder checkout + reset-pending ([`DecoderSlotModel`]).

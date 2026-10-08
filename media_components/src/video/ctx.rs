@@ -8,18 +8,17 @@ use webmedia::{TransportEvent, VideoPlayer};
 
 use super::VideoRef;
 use super::op_queue::OpQueue;
-use super::session::{FpsMeter, PlaySession};
+use super::session::FpsMeter;
 use super::transport_apply::{TransportHandle, note_transport};
 
 pub(super) type PlayerHandle = Rc<RefCell<Option<Rc<VideoPlayer>>>>;
 
-/// Player + session + queue + transport + UI signals. Clone is cheap (`Rc`s +
-/// `Copy` signals) — clone into each callback instead of cloning fields.
+/// Player + queue + transport + UI signals. Clone is cheap (`Rc`s + `Copy`
+/// signals) — clone into each callback instead of cloning fields.
 #[derive(Clone)]
 pub(super) struct HostCtx {
     pub video: VideoRef,
     pub player: PlayerHandle,
-    pub session: Rc<RefCell<Option<PlaySession>>>,
     pub fps_meter: Rc<RefCell<FpsMeter>>,
     pub queue: OpQueue,
     pub transport: TransportHandle,
@@ -30,7 +29,6 @@ impl HostCtx {
         Self {
             video,
             player: Rc::new(RefCell::new(None)),
-            session: Rc::new(RefCell::new(None)),
             fps_meter: Rc::new(RefCell::new(FpsMeter::new())),
             queue,
             transport,
@@ -68,7 +66,7 @@ impl HostCtx {
             }
             // Do NOT sync `playing` from the engine. UI owns transport state;
             // overwriting after Pause (e.g. pause missed try_borrow, then
-            // sync_ui) left playing=true with no session → Play/Next/Prev dead.
+            // sync_ui) left playing=true with no live session → Play dead.
             v.looping.set(st.looping);
             v.pipeline.set(Some(p.pipeline_stats()));
         }
@@ -81,7 +79,6 @@ impl HostCtx {
         self.queue.clear_pending_scrub_and_play();
         let leaving_play = v.playing.get_untracked();
         v.playing.set(false);
-        let _ = self.session.borrow_mut().take();
         let p = self.player.borrow().as_ref().cloned();
         if let Some(p) = p {
             p.pause();
@@ -109,7 +106,6 @@ impl HostCtx {
         note_transport(&self.transport, TransportEvent::Closed);
         self.queue.cancel_all();
         v.playing.set(false);
-        let _ = self.session.borrow_mut().take();
         // Drop *before* zeroing frame_count — paused rAF sync_ui treats
         // count 0→N as a new clip and would restore the old playhead.
         let retiring = self.player.borrow_mut().take();

@@ -243,10 +243,10 @@ impl VideoPlayer {
 
     /// Sync-arm silent [`PlaybackClock`] / wall on the first play rAF (no AAC).
     ///
-    /// Host PlayPrime sets `pending_clock_start` and calls
-    /// [`Self::finish_silent_play_prime`] from rAF so the first canvas present
-    /// lands **before** the driver runs (mediabunny `startVideoIterator` draw
-    /// then `play` / `audioContextStartTime`).
+    /// PlayPrime sets `pending_silent_clock`; [`Self::play_raf_tick`] calls
+    /// [`Self::finish_silent_play_prime`] so the first canvas present lands
+    /// **before** the driver runs (mediabunny `startVideoIterator` draw then
+    /// `play` / `audioContextStartTime`).
     pub fn arm_silent_play_clock(&self, media_time_secs: f64) {
         self.apply_clock_event(ClockEvent::Start);
         self.shared.clock.borrow_mut().start(media_time_secs);
@@ -269,7 +269,7 @@ impl VideoPlayer {
     /// Presentation holds frames **after** the committed playhead (canvas already
     /// shows it). Drawing the front here is mediabunny `startVideoIterator`'s
     /// first canvas; clock arm matches `play` / `audioContextStartTime`.
-    /// Returns the media origin used for the driver (caller stores on session).
+    /// Returns the media origin used for the driver.
     pub fn finish_silent_play_prime(&self) -> Result<f64, MediaError> {
         let origin = if let Some(queued) = self.shared.presentation.borrow_mut().pop_front() {
             let frame = queued.frame;
@@ -354,8 +354,8 @@ impl VideoPlayer {
     ///
     /// Prefer this over `skip_behind` when Chromium decode briefly lags the
     /// audio clock (long-GOP: skip spiral → `skipped≈242` then End before EOF).
-    /// Keeps `playing` true; host resumes via [`Self::resume_media_clock`] once
-    /// prefetch has frames again.
+    /// Keeps `playing` true; [`Self::play_raf_tick`] resumes via
+    /// [`Self::resume_media_clock`] once prefetch has frames again.
     ///
     /// Soft-holds audio ([`AudioOutput::hold_underrun`]) — silence without
     /// `AudioDecoder` reset — so resume is not a cold reconfigure gap.
@@ -370,12 +370,13 @@ impl VideoPlayer {
         };
         self.shared.wall_origin.set(None);
         self.shared.clock.borrow_mut().snap(t);
+        self.shared.held_media_origin.set(Some(t));
         t
     }
 
     /// Freeze while the tab / window is hidden (browser suspends `AudioContext`
     /// and throttles rAF). Keeps UI `playing`; on `visibilitychange` → visible the
-    /// host calls [`Self::resume_audio_context`] then [`Self::resume_media_clock`].
+    /// host calls [`Self::resume_audio_context`] then [`Self::resume_after_hold`].
     ///
     /// No-op when not playing, already hidden-held, or scrub soft-hold owns the
     /// clock. `mediabunny: examples/media-player` — **no** visibility handler;
@@ -386,7 +387,12 @@ impl VideoPlayer {
         }
         let cs = self.shared.clock_state.get();
         if cs.hidden_holding() {
-            return Some(self.shared.clock.borrow().media_time(None));
+            return Some(
+                self.shared
+                    .held_media_origin
+                    .get()
+                    .unwrap_or_else(|| self.shared.clock.borrow().media_time(None)),
+            );
         }
         if matches!(
             cs,
@@ -398,6 +404,8 @@ impl VideoPlayer {
         if !self.shared.clock_state.get().hidden_holding() {
             return None;
         }
+        // Drop in-flight underrun resume — tab freeze owns the clock.
+        self.shared.resuming_clock.set(false);
         let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.hold_underrun()
         } else if let Some(c) = self.shared.playback_clock.as_ref() {
@@ -407,7 +415,20 @@ impl VideoPlayer {
         };
         self.shared.wall_origin.set(None);
         self.shared.clock.borrow_mut().snap(t);
+        self.shared.held_media_origin.set(Some(t));
         Some(t)
+    }
+
+    /// Warm resume after underrun / hidden hold using the snapped hold origin.
+    pub async fn resume_after_hold(&self) -> Result<(), MediaError> {
+        let t = self
+            .shared
+            .held_media_origin
+            .get()
+            .unwrap_or_else(|| self.state().timestamp.seconds);
+        self.resume_media_clock(t).await?;
+        self.shared.held_media_origin.set(None);
+        Ok(())
     }
 
     /// True while [`Self::hold_media_clock_for_hidden`] latched the clock.

@@ -12,7 +12,7 @@ use leptos_use::{
 };
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
-use webmedia::{BlobSource, DuePresent, MediaSource, OpenPhase, OpenSourceKind, TransportEvent};
+use webmedia::{BlobSource, MediaSource, OpenPhase, OpenSourceKind, PlayTick, TransportEvent};
 
 use super::ctx::HostCtx;
 use super::host_ops::{SeekOrStep, enqueue_seek_step, run_open, run_play_prime, run_seek_or_step};
@@ -34,8 +34,9 @@ pub fn Video(
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let viewport_ref = NodeRef::<Div>::new();
-    // Paused rAF strip/`sync_ui` throttle (play uses `PlaySession::last_ui_ms`).
+    // Paused / play rAF strip/`sync_ui` throttle (~10 Hz).
     let last_paused_ui_ms = Rc::new(Cell::new(0.0_f64));
+    let last_play_ui_ms = Rc::new(Cell::new(0.0_f64));
 
     let VideoRef {
         ready,
@@ -62,11 +63,9 @@ pub fn Video(
             .and_then(|w| w.document())
             .expect("document");
         use_event_listener(document.clone(), leptos::ev::visibilitychange, move |_| {
-            let HostCtx {
-                player, session, ..
-            } = &ctx;
+            let player = &ctx.player;
             if document.hidden() {
-                if !playing.get_untracked() || session.borrow().is_none() {
+                if !playing.get_untracked() {
                     return;
                 }
                 let Ok(borrow) = player.try_borrow() else {
@@ -75,13 +74,10 @@ pub fn Video(
                 let Some(p) = borrow.as_ref() else {
                     return;
                 };
-                if let Some(t) = p.hold_media_clock_for_hidden() {
-                    drop(borrow);
-                    if let Some(s) = session.borrow_mut().as_mut() {
-                        s.media_origin = t;
-                        s.holding_for_buffer = false;
-                        s.resuming_clock = false;
-                    }
+                if !p.play_session_live() {
+                    return;
+                }
+                if p.hold_media_clock_for_hidden().is_some() {
                     visibility_held.set(true);
                     web_sys::console::log_1(&"webmedia: visibility hold".into());
                 }
@@ -91,26 +87,23 @@ pub fn Video(
                 return;
             }
             visibility_held.set(false);
-            if !playing.get_untracked() || session.borrow().is_none() {
+            if !playing.get_untracked() {
                 return;
             }
             let player = Rc::clone(player);
-            let session = Rc::clone(session);
             spawn_local(async move {
                 let Some(p) = player.borrow().as_ref().cloned() else {
                     return;
                 };
+                if !p.play_session_live() {
+                    return;
+                }
                 if let Err(e) = p.resume_audio_context().await {
                     web_sys::console::warn_1(
                         &format!("webmedia: visibility audio resume: {e}").into(),
                     );
                 }
-                let t = session
-                    .borrow()
-                    .as_ref()
-                    .map(|s| s.media_origin)
-                    .unwrap_or_else(|| p.state().timestamp.seconds);
-                match p.resume_media_clock(t).await {
+                match p.resume_after_hold().await {
                     Ok(()) => {
                         web_sys::console::log_1(&"webmedia: visibility resume".into());
                     }
@@ -132,15 +125,15 @@ pub fn Video(
         {
             let ctx = ctx.clone();
             let last_paused_ui_ms = Rc::clone(&last_paused_ui_ms);
+            let last_play_ui_ms = Rc::clone(&last_play_ui_ms);
             move |_| {
                 let HostCtx {
                     player,
-                    session,
                     fps_meter,
                     transport,
                     ..
                 } = &ctx;
-                // Play path: normal present/prefetch UI.
+                // Play path: engine present tick + UI throttle.
                 // Pause path: still tick so gap-fill strip marks update (fill is async).
                 if !playing.get_untracked() {
                     // Match play ~10 Hz — unthrottled paused rAF + strip Effect
@@ -162,234 +155,47 @@ pub fn Video(
                     return;
                 }
 
-                // Session is armed only after prime (+ deferred silent clock on
-                // first tick). Skip present while priming / if a stale `playing`
-                // flag has no session — otherwise `DuePresent::Ended` →
-                // `stop_playback` can bump async_id mid-PlayPrime.
-                let (restarting, pending_clock, media_origin) = {
-                    let borrow = session.borrow();
-                    let Some(s) = borrow.as_ref() else {
-                        return;
-                    };
-                    (s.restarting, s.pending_clock_start, s.media_origin)
-                };
-                if restarting {
-                    return;
-                }
-
-                // No-AAC: paint presentation front then arm PlaybackClock / wall
-                // (mediabunny: startVideoIterator draw → play / audioContextStartTime).
-                if pending_clock {
-                    if let Some(s) = session.borrow_mut().as_mut() {
-                        s.pending_clock_start = false;
-                    }
-                    if let Ok(borrow) = player.try_borrow()
-                        && let Some(p) = borrow.as_ref()
-                    {
-                        match p.finish_silent_play_prime() {
-                            Ok(origin) => {
-                                if let Some(s) = session.borrow_mut().as_mut() {
-                                    s.media_origin = origin;
-                                }
-                            }
-                            Err(e) => {
-                                web_sys::console::warn_1(
-                                    &format!("webmedia: silent play prime present: {e}").into(),
-                                );
-                                p.arm_silent_play_clock(media_origin);
-                            }
-                        }
-                    }
-                }
-
-                // Tab hidden: clock soft-held — do not present_due (would skip-catch).
-                if let Ok(borrow) = player.try_borrow()
-                    && borrow.as_ref().is_some_and(|p| p.is_hidden_hold())
-                {
-                    return;
-                }
-
                 {
                     let want = looping.get_untracked();
                     ctx.with_player(|p| p.set_loop(want));
                 }
 
-                let t = {
-                    let borrow = player.borrow();
-                    match borrow.as_ref() {
-                        Some(p) => p.media_time(),
-                        None => {
-                            drop(borrow);
-                            ctx.stop_playback();
-                            return;
-                        }
-                    }
+                let Some(p) = player.borrow().as_ref().cloned() else {
+                    ctx.stop_playback();
+                    return;
                 };
+                // Armed only after prime — skip while priming so Ended cannot
+                // bump async_id mid-PlayPrime.
+                if !p.play_session_live() {
+                    return;
+                }
 
-                let outcome = {
-                    let borrow = player.borrow();
-                    match borrow.as_ref() {
-                        Some(p) => p.present_due(t),
-                        None => {
-                            drop(borrow);
-                            ctx.stop_playback();
-                            return;
-                        }
-                    }
-                };
-
-                match outcome {
-                    Ok(DuePresent::Ended) => {
+                match p.play_raf_tick() {
+                    Ok(PlayTick::Skipped) => {}
+                    Ok(PlayTick::Ended) => {
                         ended.set(true);
                         note_transport(transport, TransportEvent::Ended);
                         ctx.stop_playback();
                         status.set("Ended.".into());
                     }
-                    Ok(DuePresent::NeedsLoop) => {
-                        if let Some(s) = session.borrow_mut().as_mut() {
-                            s.restarting = true;
+                    Ok(PlayTick::Presented { did_draw }) => {
+                        let now = now_ms();
+                        if did_draw
+                            && let Some(measured) = fps_meter.borrow_mut().note_present()
+                            && now.is_some_and(|n| n - last_play_ui_ms.get() >= 100.0)
+                        {
+                            fps.set(Some(measured));
                         }
-                        let ctx = ctx.clone();
-                        spawn_local(async move {
-                            let Some(p) = ctx.player.borrow().as_ref().cloned() else {
-                                ctx.stop_playback();
-                                return;
-                            };
-                            match p.loop_to_start().await {
-                                Ok(()) => {
-                                    if let Some(s) = ctx.session.borrow_mut().as_mut() {
-                                        s.media_origin = 0.0;
-                                        s.wall_origin = now_ms().map(|n| n / 1000.0).unwrap_or(0.0);
-                                        s.restarting = false;
-                                    }
-                                    // Warm audio restart — loop_prime already painted
-                                    // video; hard `start_media_clock` tore down the
-                                    // AudioDecoder and felt like audio-only lag.
-                                    let _ = p.resume_media_clock(0.0).await;
-                                }
-                                Err(e) if e.is_cancelled() => {
-                                    if let Some(s) = ctx.session.borrow_mut().as_mut() {
-                                        s.restarting = false;
-                                    }
-                                }
-                                Err(e) => {
-                                    error.set(Some(e.to_string()));
-                                    ctx.stop_playback();
-                                }
-                            }
-                        });
+                        if let Some(n) = now
+                            && n - last_play_ui_ms.get() >= 100.0
+                        {
+                            last_play_ui_ms.set(n);
+                            ctx.sync_ui();
+                        }
                     }
-                    Ok(DuePresent::Playing { did_draw }) => {
-                        if did_draw && let Some(measured) = fps_meter.borrow_mut().note_present() {
-                            let ui_now = now_ms();
-                            let should_publish = {
-                                let borrow = session.borrow();
-                                borrow.as_ref().is_some_and(|s| {
-                                    ui_now.is_some_and(|n| n - s.last_ui_ms >= 100.0)
-                                })
-                            };
-                            if should_publish {
-                                fps.set(Some(measured));
-                            }
-                        }
-                        if let Some(now) = now_ms() {
-                            let mut borrow = session.borrow_mut();
-                            if let Some(s) = borrow.as_mut()
-                                && now - s.last_ui_ms >= 100.0
-                            {
-                                s.last_ui_ms = now;
-                                drop(borrow);
-                                ctx.sync_ui();
-                            }
-                        }
-                        // True underrun only: next frame already due + empty queue.
-                        // Holding on every empty-between-presents thrashed audio and
-                        // broke short-clip play/pause smoke.
-                        let underrun = ctx
-                            .with_player(|p| p.is_playing() && p.play_underrun_hold())
-                            .unwrap_or(false);
-                        if underrun {
-                            let should_hold = {
-                                let hidden =
-                                    ctx.with_player(|p| p.is_hidden_hold()).unwrap_or(false);
-                                let mut borrow = session.borrow_mut();
-                                borrow.as_mut().is_some_and(|s| {
-                                    if hidden
-                                        || s.holding_for_buffer
-                                        || s.resuming_clock
-                                        || s.restarting
-                                    {
-                                        false
-                                    } else {
-                                        s.holding_for_buffer = true;
-                                        true
-                                    }
-                                })
-                            };
-                            if should_hold
-                                && let Some(t) =
-                                    ctx.with_player(|p| p.hold_media_clock_for_underrun())
-                                && let Some(s) = session.borrow_mut().as_mut()
-                            {
-                                s.media_origin = t;
-                            }
-                        } else {
-                            let should_resume = {
-                                let has_frames = ctx
-                                    .with_player(|p| p.presentation_len() > 0)
-                                    .unwrap_or(false);
-                                let mut borrow = session.borrow_mut();
-                                borrow.as_mut().is_some_and(|s| {
-                                    if s.holding_for_buffer
-                                        && !s.resuming_clock
-                                        && !s.restarting
-                                        && has_frames
-                                    {
-                                        s.holding_for_buffer = false;
-                                        s.resuming_clock = true;
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                })
-                            };
-                            if should_resume {
-                                let ctx = ctx.clone();
-                                spawn_local(async move {
-                                    let session = &ctx.session;
-                                    let Some(p) = ctx.player.borrow().as_ref().cloned() else {
-                                        if let Some(s) = session.borrow_mut().as_mut() {
-                                            s.resuming_clock = false;
-                                        }
-                                        return;
-                                    };
-                                    let t = session
-                                        .borrow()
-                                        .as_ref()
-                                        .map(|s| s.media_origin)
-                                        .unwrap_or(0.0);
-                                    match p.resume_media_clock(t).await {
-                                        Ok(()) => {
-                                            if let Some(s) = session.borrow_mut().as_mut() {
-                                                s.resuming_clock = false;
-                                            }
-                                        }
-                                        Err(e) if e.is_cancelled() => {
-                                            if let Some(s) = session.borrow_mut().as_mut() {
-                                                s.resuming_clock = false;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            if let Some(s) = session.borrow_mut().as_mut() {
-                                                s.resuming_clock = false;
-                                            }
-                                            error.set(Some(e.to_string()));
-                                            ctx.stop_playback();
-                                        }
-                                    }
-                                });
-                            }
-                        }
+                    Ok(PlayTick::Failed(msg)) => {
+                        error.set(Some(msg));
+                        ctx.stop_playback();
                     }
                     Err(e) => {
                         error.set(Some(e.to_string()));
@@ -616,9 +422,14 @@ pub fn Video(
                 web_sys::console::log_1(&"webmedia: play ignored (not ready)".into());
                 return;
             }
-            // Stale `playing` with no session (Pause race) blocked all transport.
+            // Stale UI `playing` without a live engine session (Pause race).
             if playing.get_untracked() {
-                if ctx.session.borrow().is_some() {
+                let live = ctx
+                    .player
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|p| p.play_session_live());
+                if live {
                     web_sys::console::log_1(&"webmedia: play ignored (already playing)".into());
                     return;
                 }

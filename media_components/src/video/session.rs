@@ -1,23 +1,6 @@
-//! Play-session clock state + measured display FPS.
+//! Measured display FPS for the demo pipeline panel.
 
 use webmedia::timer::now_ms;
-
-/// Media-clock + UI throttle state for an active play session.
-pub(super) struct PlaySession {
-    pub(super) media_origin: f64,
-    pub(super) wall_origin: f64,
-    pub(super) last_ui_ms: f64,
-    /// `loop_to_start` in flight — skip presents until origins reset.
-    pub(super) restarting: bool,
-    /// Media clock frozen while presentation queue is empty (underrun hold).
-    pub(super) holding_for_buffer: bool,
-    /// `start_media_clock` after hold in flight — do not stack resumes.
-    pub(super) resuming_clock: bool,
-    /// No-AAC PlayPrime: arm silent [`webmedia::VideoPlayer::arm_silent_play_clock`]
-    /// on the first present rAF (not in the prime async turn).
-    /// `mediabunny: media-player play` / `audioContextStartTime`.
-    pub(super) pending_clock_start: bool,
-}
 
 /// Rolling window of canvas presents → measured display FPS.
 pub(super) struct FpsMeter {

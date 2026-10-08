@@ -101,12 +101,7 @@ fn schedule_cmd_drain(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>) {
 }
 
 fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd) {
-    let HostCtx {
-        queue,
-        player,
-        session,
-        ..
-    } = ctx;
+    let HostCtx { queue, player, .. } = ctx;
     let playing = ctx.video.playing;
     let playhead = ctx.video.playhead;
     match cmd {
@@ -114,7 +109,6 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd)
         TransportCmd::SoftPause { align_playhead } => {
             if playing.get_untracked() {
                 playing.set(false);
-                let _ = session.borrow_mut().take();
             }
             if let Some(p) = player.borrow().as_ref().cloned() {
                 if align_playhead {
@@ -167,14 +161,13 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd)
     }
 }
 
-/// Leave play for a scrub op: drop the session, soft-hold the engine.
+/// Leave play for a scrub op: soft-hold the engine.
 /// Returns the live player, or `None` when nothing is open.
 fn leave_play_for_scrub(ctx: &HostCtx) -> Option<Rc<webmedia::VideoPlayer>> {
     let p = ctx.player.borrow().as_ref().cloned()?;
     let playing = ctx.video.playing;
     if playing.get_untracked() {
         playing.set(false);
-        let _ = ctx.session.borrow_mut().take();
         p.pause_for_scrub();
     }
     Some(p)

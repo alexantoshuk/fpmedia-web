@@ -6,18 +6,17 @@
 
 ## In progress
 
-### Handoff (2026-10-08 chat → next)
+### Handoff (2026-10-08 → next)
 
-- **Branch:** `main`, ahead of `origin` (local commits through `7c67ef5`). Do not push unless asked.
-- **Groups 1–2 (structural):** landed. Layout now `media/src/model/` · `policy/` · `host/`; `residency::AimWindow`; typed `MediaError::DecodeStall` / `DecoderPoison`; one `open_mp4`; `webmedia::timer`; Player folded into `Shared`; strip math in `media_components::strip`.
-- **Group 3 started (behavior-adjacent):**
-  - `3f165ea` — `apply_engine_event` runs `EngineCmd` (soft `EnterScrub` = no densify; `EndExact { densify }`).
-  - `7c67ef5` — `model::bg_task::SingleFlight` ×3 (densify / gray / thumb); **not** one merged task.
-- **e2e:** full Playwright green **after groups 1–2 only** (37 passed, 1 skipped). **Not re-run** after EngineCmd / SingleFlight — re-run before trusting play-session work.
-- **Node:** portable LTS at `%LOCALAPPDATA%\Programs\node-v24.21.0-win-x64` (user PATH). Agent shells may still prefer Zed’s older node — prepend that dir. `winget` absent on this box.
-- **Dirty (leave):** `e2e/baselines/pre-decode-sink/avc_1080p_24_gop{12,48}_bf0.json` — pre-existing / probe noise; not part of refactor commits.
-- **Invariants still true:** `Shared.playing` is a separate `Cell` (`EngineMode` can be ExactHold/Scrub mid-play); approve-before-edit + mediabunny cite for media; no `.cursor/` docs tree.
-- **Next chat starts at:** group 3.1 below (play session → `VideoPlayer`). Cite: `mediabunny: examples/media-player/media-player.ts` render / play / pause.
+- **Branch:** `main`, ahead of `origin` (local commits through prior group-3 work + uncommitted **3.1 play session → VideoPlayer**). Do not push unless asked.
+- **Groups 1–2 (structural):** landed earlier.
+- **Group 3:**
+  - EngineCmd + SingleFlight (prior commits).
+  - **3.1 landed (this session, uncommitted):** play session in `VideoPlayer` — `begin_play_session` / `play_raf_tick` / prefetch driver / underrun / loop seam / silent-clock; host `PlaySession` removed. Cite: `mediabunny: examples/media-player/media-player.ts` render / play / pause.
+- **e2e:** full Playwright green after 3.1 (**38 passed**). Baselines JSON rewritten by probe — leave out of refactor commit.
+- **Dirty (leave):** `e2e/baselines/pre-decode-sink/avc_1080p_24_gop{12,48}_bf0.json` — probe noise.
+- **Invariants:** `Shared.playing` still a separate `Cell`; UI `playing` still host-owned until 3.2; approve-before-edit + mediabunny cite for media.
+- **Next chat starts at:** group 3.2 — Seek / Step through transport FSM; derive `playing` from transport.
 
 ---
 
@@ -27,9 +26,8 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ### 3. Behavior-adjacent (mediabunny cite required)
 
-1. Move the play session into `VideoPlayer` (prefetch loop, underrun hold/resume, loop, visibility, silent-clock arm); drop host `PlaySession` flags. `mediabunny: examples/media-player/media-player.ts` render / play / pause.
-2. Seek / Step through the transport FSM; derive `playing` from transport (engine `Shared.playing` is a separate `Cell` today — `EngineMode` can be `ExactHold` / `Scrub` mid-play); rewrite `skills/leptos.md` “`playing` is UI-owned”.
-3. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant. `hover_thumb` defer → `leptos-use` `use_throttle_fn` (trailing) in `HoverThumbPreview` scope.
+1. Seek / Step through the transport FSM; derive `playing` from transport (engine `Shared.playing` is a separate `Cell` today — `EngineMode` can be `ExactHold` / `Scrub` mid-play); rewrite `skills/leptos.md` “`playing` is UI-owned”.
+2. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant. `hover_thumb` defer → `leptos-use` `use_throttle_fn` (trailing) in `HoverThumbPreview` scope.
 
 ### Play / decode
 
@@ -39,7 +37,6 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ## Later
 
-- Re-run `npm run e2e` after group 3.1–3.2 (EngineCmd + SingleFlight) before merging further play/transport work.
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
 - `ThumbCache` on `residency::AimWindow` (aim-distance instead of GOP LRU) — behavior change; probe hover first.
 - Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).

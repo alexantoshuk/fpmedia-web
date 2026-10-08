@@ -9,7 +9,7 @@
 | ------- | ---------- |
 | Android Browse / file picker dead | `.wm-file input` not `display:none` — opacity overlay |
 | Open stuck after `open_blob start` | `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
-| Play / Next / Prev disabled or no-op | UI-owned `playing`; recover when session `None`; Settling+Play Preempt |
+| Play / Next / Prev disabled or no-op | UI-owned `playing`; recover when `!play_session_live`; Settling+Play Preempt |
 | New clip: Play disabled / silent after N URLs | `retire_clip`: Closed + cancel_all + drop player — engine dispose: `skills/media.md` |
 | Hover thumb stuck after new URL | hide on `!ready`; `cancel_hover_thumb` |
 | Tab hidden: audio dies / video races | `visibilitychange` → HoldHidden / resume — `skills/media.md` |
@@ -39,11 +39,11 @@ Tailwind: only literal class strings in `.rs`/`.css`; computed geometry → `sty
 
 1. **OpQueue** — serialize open/seek/play-prime (CallSerializer + asyncId). `busy` = draining, not “drop input”.
 2. **No `RefCell` across `.await`** — clone `Rc<VideoPlayer>`, await, put back. Engine re-entry: `skills/media.md` RefCell.
-3. **`playing` is UI-owned** — never `playing.set(engine.playing)` in `sync_ui`. Set `playing` only after prime + clock + session.
+3. **`playing` is UI-owned** — never `playing.set(engine.playing)` in `sync_ui`. Set `playing` only after prime + clock + `begin_play_session`.
 4. **Transport** — demo maps pointers → `VideoRef::scrub_pointer_*`; FSM owns resume (`ScrubRelease { then_play }`). Soft-hold via `pause_for_scrub`. PlayPrime fail → soft-park (no bump) so retry works.
 5. **Playhead** — sync on pointerdown/move before deferred engine work. `sync_ui` updates playhead only while playing or on new clip. Leaving play: snap playhead to engine. Hold ←/→: aim `engine±1`, not `playhead++`.
-6. **Clock** — `VideoPlayer::media_time()` only; `resume_audio_context` before long prime; no-AAC: defer silent clock arm to first present rAF when needed.
-7. **rAF** — `use_raf_fn` resume after prime; throttle `sync_ui`/fps ~10 Hz; prefetch = separate `spawn_local`.
+6. **Clock / play session** — `VideoPlayer::media_time()` only; engine owns prefetch, underrun, loop seam, silent-clock arm (`play_raf_tick` / `begin_play_session`). Host: OpQueue prime + rAF tick + visibility → hold/resume APIs.
+7. **rAF** — `use_raf_fn` resume after prime; throttle `sync_ui`/fps ~10 Hz; call `play_raf_tick` (not host underrun/loop).
 8. **Open / clip switch** — file input uses wasm spawn; `retire_clip` before zeroing UI; remote URL → `/proxy` then UrlSource/blob.
 9. **`ended` / `close`** — Ended only from engine EOF (loop off); clear on open/seek/play/scrub; `close` = cancel_all + drop player.
 10. **Cancelled** — soft (no error banner). Clear sticky `error` on Ok settle.

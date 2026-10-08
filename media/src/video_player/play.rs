@@ -14,8 +14,8 @@ use crate::types::FrameId;
 
 use super::{
     BIG_LAG_SECONDS, DuePresent, LOOP_NEAR_END_PRESENTATION_CAP_MAX, PLAY_EXACT_VRAM_VF_SLACK,
-    PREFETCH_DEADLINE_SLACK_MS, QueuedFrame, SHUTTLE_PRESENTATION_QUEUE_CAP, VideoPlayer, now_ms,
-    sleep_ms,
+    PREFETCH_DEADLINE_SLACK_MS, PlayTick, QueuedFrame, SHUTTLE_PRESENTATION_QUEUE_CAP, VideoPlayer,
+    next_animation_frame, now_ms, sleep_ms,
 };
 
 impl VideoPlayer {
@@ -101,8 +101,207 @@ impl VideoPlayer {
     /// True when the play prefetch loop should decode another ahead/behind frame.
     pub fn wants_play_prefetch(&self) -> bool {
         self.is_playing()
+            && self.shared.play_session_live.get()
+            && !self.shared.play_loop_seam.get()
+            && !self.shared.resuming_clock.get()
             && !self.shared.session.get().blocks_prefetch()
             && self.presentation_len() < self.play_presentation_cap()
+    }
+
+    /// PlayPrime finished (clock armed or deferred silent) — host may present.
+    ///
+    /// Starts the prefetch / loop-prepare driver. `mediabunny: examples/media-player`
+    /// `play` after `startVideoIterator` while `render` already loops.
+    pub fn begin_play_session(self: &Rc<Self>, pending_silent_clock: bool) {
+        self.shared.play_session_live.set(true);
+        self.shared.pending_silent_clock.set(pending_silent_clock);
+        self.shared.resuming_clock.set(false);
+        self.shared.play_loop_seam.set(false);
+        self.shared.held_media_origin.set(None);
+        *self.shared.play_driver_error.borrow_mut() = None;
+        let driver = self.shared.play_prefetch_gen.get().wrapping_add(1);
+        self.shared.play_prefetch_gen.set(driver);
+        self.spawn_play_prefetch_loop(driver);
+    }
+
+    /// True after [`Self::begin_play_session`] until pause / soft-hold / teardown.
+    pub fn play_session_live(&self) -> bool {
+        self.shared.play_session_live.get()
+    }
+
+    pub(super) fn clear_play_session(&self) {
+        self.shared.play_session_live.set(false);
+        self.shared.pending_silent_clock.set(false);
+        self.shared.resuming_clock.set(false);
+        self.shared.play_loop_seam.set(false);
+        self.shared.held_media_origin.set(None);
+        *self.shared.play_driver_error.borrow_mut() = None;
+        // Invalidate in-flight prefetch drivers.
+        let driver = self.shared.play_prefetch_gen.get().wrapping_add(1);
+        self.shared.play_prefetch_gen.set(driver);
+    }
+
+    fn spawn_play_prefetch_loop(self: &Rc<Self>, driver: u64) {
+        let player = Rc::clone(self);
+        wasm_bindgen_futures::spawn_local(async move {
+            while player.shared.play_prefetch_gen.get() == driver
+                && player.is_playing()
+                && player.play_session_live()
+            {
+                if player.wants_play_prefetch() {
+                    match player.prefetch_one().await {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(e) if e.is_cancelled() => break,
+                        Err(e) => {
+                            if player.shared.play_prefetch_gen.get() == driver {
+                                *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+                                player.pause();
+                            }
+                            break;
+                        }
+                    }
+                }
+                if player.is_looping() {
+                    match player.prepare_loop_if_needed().await {
+                        Ok(()) => {}
+                        Err(e) if e.is_cancelled() => break,
+                        Err(e) => {
+                            if player.shared.play_prefetch_gen.get() == driver {
+                                *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+                                player.pause();
+                            }
+                            break;
+                        }
+                    }
+                }
+                next_animation_frame().await;
+            }
+        });
+    }
+
+    /// One play rAF: silent-clock arm, present, underrun hold/resume, loop seam.
+    ///
+    /// `mediabunny: examples/media-player/media-player.ts` `render` + deferred
+    /// `audioContextStartTime` on no-AAC (`finish_silent_play_prime`).
+    pub fn play_raf_tick(self: &Rc<Self>) -> Result<PlayTick, MediaError> {
+        if let Some(msg) = self.shared.play_driver_error.borrow_mut().take() {
+            return Ok(PlayTick::Failed(msg));
+        }
+        if !self.play_session_live() || !self.is_playing() {
+            return Ok(PlayTick::Skipped);
+        }
+        if self.shared.play_loop_seam.get() || self.is_restarting() {
+            return Ok(PlayTick::Skipped);
+        }
+
+        if self.shared.pending_silent_clock.get() {
+            self.shared.pending_silent_clock.set(false);
+            let media_origin = self
+                .shared
+                .held_media_origin
+                .get()
+                .unwrap_or_else(|| self.state().timestamp.seconds);
+            match self.finish_silent_play_prime() {
+                Ok(_) => {}
+                Err(e) => {
+                    web_sys::console::warn_1(
+                        &format!("webmedia: silent play prime present: {e}").into(),
+                    );
+                    self.arm_silent_play_clock(media_origin);
+                }
+            }
+        }
+
+        if self.is_hidden_hold() {
+            return Ok(PlayTick::Skipped);
+        }
+
+        let t = self.media_time();
+        match self.present_due(t)? {
+            DuePresent::Ended => Ok(PlayTick::Ended),
+            DuePresent::NeedsLoop => {
+                self.start_loop_seam();
+                Ok(PlayTick::Skipped)
+            }
+            DuePresent::Playing { did_draw } => {
+                self.tick_underrun_hold_resume();
+                Ok(PlayTick::Presented { did_draw })
+            }
+        }
+    }
+
+    fn start_loop_seam(self: &Rc<Self>) {
+        if self.shared.play_loop_seam.get() {
+            return;
+        }
+        self.shared.play_loop_seam.set(true);
+        let player = Rc::clone(self);
+        wasm_bindgen_futures::spawn_local(async move {
+            match player.loop_to_start().await {
+                Ok(()) => {
+                    let _ = player.resume_media_clock(0.0).await;
+                    player.shared.play_loop_seam.set(false);
+                }
+                Err(e) if e.is_cancelled() => {
+                    player.shared.play_loop_seam.set(false);
+                }
+                Err(e) => {
+                    *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+                    player.shared.play_loop_seam.set(false);
+                    player.pause();
+                }
+            }
+        });
+    }
+
+    fn tick_underrun_hold_resume(self: &Rc<Self>) {
+        if self.play_underrun_hold() {
+            let cs = self.shared.clock_state.get();
+            if cs.hidden_holding()
+                || cs.underrun_holding()
+                || self.shared.resuming_clock.get()
+                || self.shared.play_loop_seam.get()
+                || self.is_restarting()
+            {
+                return;
+            }
+            let t = self.hold_media_clock_for_underrun();
+            self.shared.held_media_origin.set(Some(t));
+            return;
+        }
+
+        let should_resume = self.shared.clock_state.get().underrun_holding()
+            && !self.shared.resuming_clock.get()
+            && !self.shared.play_loop_seam.get()
+            && !self.is_restarting()
+            && self.presentation_len() > 0;
+        if !should_resume {
+            return;
+        }
+        self.shared.resuming_clock.set(true);
+        let player = Rc::clone(self);
+        wasm_bindgen_futures::spawn_local(async move {
+            let t = player
+                .shared
+                .held_media_origin
+                .get()
+                .unwrap_or_else(|| player.state().timestamp.seconds);
+            match player.resume_media_clock(t).await {
+                Ok(()) => {
+                    player.shared.held_media_origin.set(None);
+                    player.shared.resuming_clock.set(false);
+                }
+                Err(e) if e.is_cancelled() => {
+                    player.shared.resuming_clock.set(false);
+                }
+                Err(e) => {
+                    player.shared.resuming_clock.set(false);
+                    *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+                    player.pause();
+                }
+            }
+        });
     }
 
     /// Shrink Exact to leave GPU headroom for Play VF pool; keep near-playhead bitmaps.
@@ -737,7 +936,12 @@ impl VideoPlayer {
     /// No-ops while restarting or preparing a loop prime — those paths own the
     /// decoder (`prime_presentation` / `fill_loop_prime`).
     pub async fn prefetch_one(&self) -> Result<bool, MediaError> {
-        if !self.is_playing() || self.shared.session.get().blocks_prefetch() {
+        if !self.is_playing()
+            || !self.shared.play_session_live.get()
+            || self.shared.play_loop_seam.get()
+            || self.shared.resuming_clock.get()
+            || self.shared.session.get().blocks_prefetch()
+        {
             return Ok(false);
         }
         let epoch = self.shared.op_epoch.get();
