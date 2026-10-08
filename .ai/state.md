@@ -6,17 +6,17 @@
 
 ## In progress
 
-### Handoff (2026-10-08 → next)
+### Handoff (2026-10-08 → next chat)
 
-- **Branch:** `main`, ahead of `origin` (local commits through prior group-3 work + uncommitted **3.1 play session → VideoPlayer**). Do not push unless asked.
-- **Groups 1–2 (structural):** landed earlier.
-- **Group 3:**
-  - EngineCmd + SingleFlight (prior commits).
-  - **3.1 landed (this session, uncommitted):** play session in `VideoPlayer` — `begin_play_session` / `play_raf_tick` / prefetch driver / underrun / loop seam / silent-clock; host `PlaySession` removed. Cite: `mediabunny: examples/media-player/media-player.ts` render / play / pause.
-- **e2e:** full Playwright green after 3.1 (**38 passed**). Baselines JSON rewritten by probe — leave out of refactor commit.
-- **Dirty (leave):** `e2e/baselines/pre-decode-sink/avc_1080p_24_gop{12,48}_bf0.json` — probe noise.
-- **Invariants:** `Shared.playing` still a separate `Cell`; UI `playing` still host-owned until 3.2; approve-before-edit + mediabunny cite for media.
-- **Next chat starts at:** group 3.2 — Seek / Step through transport FSM; derive `playing` from transport.
+- **Branch:** `main`, ahead of `origin` (through **3.2**). Do not push unless asked.
+- **Group 3 landed:**
+  - 3.1 — play session in `VideoPlayer` (`10869fc`).
+  - 3.2 — Seek/Step via transport FSM; UI `playing` ← `TransportState::ui_playing`; SoftPause always `pause_for_scrub`. Cite: `mediabunny: examples/media-player/media-player.ts` `seekToTime`.
+  - Loop seam: `ResetForPlay` → HoldScrub across `loop_to_start`, warm-prefetch before resume (eof-loop `holdsB` 0). See `skills/media.md` triage.
+- **e2e:** full suite green (38 passed) after 3.2.
+- **Dirty (leave):** `e2e/baselines/pre-decode-sink/avc_1080p_24_gop{12,48}_bf0.json` — probe noise; `e2e-*.log` untracked.
+- **Invariants:** engine `Shared.playing` still a separate `Cell`; approve-before-edit + mediabunny cite for media.
+- **Next chat starts at:** group 3.3 — drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`).
 
 ---
 
@@ -26,8 +26,7 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ### 3. Behavior-adjacent (mediabunny cite required)
 
-1. Seek / Step through the transport FSM; derive `playing` from transport (engine `Shared.playing` is a separate `Cell` today — `EngineMode` can be `ExactHold` / `Scrub` mid-play); rewrite `skills/leptos.md` “`playing` is UI-owned”.
-2. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant. `hover_thumb` defer → `leptos-use` `use_throttle_fn` (trailing) in `HoverThumbPreview` scope.
+1. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant. `hover_thumb` defer → `leptos-use` `use_throttle_fn` (trailing) in `HoverThumbPreview` scope.
 
 ### Play / decode
 

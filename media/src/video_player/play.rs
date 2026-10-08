@@ -236,12 +236,32 @@ impl VideoPlayer {
             return;
         }
         self.shared.play_loop_seam.set(true);
+        // Freeze the timeline while loop owns the decoder — leaving the clock
+        // running through `loop_to_start` skips/underruns on resume (~1 s hold
+        // on GOP12 loop probes). Soft-hold via HoldScrub (not HoldUnderrun).
+        // If already HoldUnderrun, HoldScrub would FinishUnderrunTimer and
+        // pollute holdsB — abandon first. mediabunny: no loop; local adaptation.
+        self.apply_clock_event(crate::ClockEvent::ResetForPlay);
+        let t = self.hold_media_clock_for_scrub();
+        self.shared.held_media_origin.set(Some(t));
         let player = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
             match player.loop_to_start().await {
                 Ok(()) => {
-                    let _ = player.resume_media_clock(0.0).await;
+                    // Clock still soft-held — seed ahead frames before resume so
+                    // the first post-wrap present does not re-enter HoldUnderrun.
                     player.shared.play_loop_seam.set(false);
+                    for _ in 0..8 {
+                        if !player.wants_play_prefetch() {
+                            break;
+                        }
+                        match player.prefetch_one().await {
+                            Ok(true) => {}
+                            _ => break,
+                        }
+                    }
+                    let _ = player.resume_media_clock(0.0).await;
+                    player.shared.held_media_origin.set(None);
                 }
                 Err(e) if e.is_cancelled() => {
                     player.shared.play_loop_seam.set(false);

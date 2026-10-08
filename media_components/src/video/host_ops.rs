@@ -9,15 +9,14 @@ use super::VideoRef;
 use super::ctx::HostCtx;
 use super::op_queue::{HostOp, OpenArgs};
 use super::open_url::open_source_staged;
+use super::transport_apply::sync_playing_from_transport;
 
 pub(super) fn enqueue_seek_step(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, op: HostOp) {
     let HostCtx { queue, player, .. } = ctx;
-    let playing = ctx.video.playing;
     if player.borrow().as_ref().is_none() {
         return;
     }
-    // Mirror Pause: clear stale playing so controls stay usable.
-    playing.set(false);
+    // Transport already left Playing; pause the engine (hard — Exact seek/step).
     if let Some(p) = player.borrow().as_ref().cloned() {
         // Sync Prev/Next/Seek wait for each other, but preempt async scrub.
         if queue.scrub_inflight() {
@@ -121,10 +120,7 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
 pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> bool {
     let HostCtx { queue, player, .. } = ctx;
     let VideoRef {
-        error,
-        playing,
-        playhead,
-        ..
+        error, playhead, ..
     } = ctx.video;
     if !queue.is_current(id) {
         return false;
@@ -132,7 +128,6 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
     let Some(p) = player.borrow().as_ref().cloned() else {
         return false;
     };
-    playing.set(false);
     // Scrub settle: host already soft-paused on pointerdown and `prepare_scrub_settle`
     // latched densify hold. Calling hard `pause()` cleared that hold and re-kicked
     // densify under exact goto → `decoder busy` / resume Play no-op (URL fMP4).
@@ -209,7 +204,6 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
         let engine = p.state().frame.min(u32::MAX as u64) as u32;
         playhead.set(engine);
     }
-    playing.set(false);
     result.is_ok()
 }
 
@@ -222,7 +216,6 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     } = ctx;
     let VideoRef {
         ready,
-        playing,
         playhead,
         error,
         fps,
@@ -280,10 +273,9 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     p.play();
     fps_meter.borrow_mut().reset();
     fps.set(None);
-    // Defer UI `playing` until after prime + media clock. Setting it earlier lets
-    // rAF call `present_due` with a scrub-stale clock (often still at EOF after
-    // Ended→scrub); that returns `DuePresent::Ended` → `stop_playback` bumps
-    // async_id and silently aborts this PlayPrime.
+    // UI `playing` flips only on transport PlayPrimeDone / ScrubReleaseDone
+    // (`TransportState::Playing`). Keep it false during prime so rAF cannot
+    // End→stop_playback mid-PlayPrime.
     let still_queued = || queue.is_current(id);
 
     // Unlock AudioContext during the Play click turn — before long prime awaits.
@@ -302,7 +294,6 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     // stays deaf in `PlayPriming` (stress: Play did not start after scrub).
     // mediabunny: examples/media-player play() after seekToTime — no priming trap.
     let park_failed_prime = || {
-        playing.set(false);
         if p.is_playing() {
             p.pause();
         }
@@ -373,10 +364,12 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
 
     // Engine owns prefetch / underrun / loop / silent-clock arm from here.
     p.begin_play_session(pending_silent);
-    playing.set(true);
+    // Arm UI `playing` now (PlayPriming/Settling+session live) so rAF presents
+    // before PlayPrimeDone — otherwise the clock runs with no presents → underrun.
+    sync_playing_from_transport(ctx);
 
-    if still_queued() && playing.get_untracked() {
+    if still_queued() && ctx.video.playing.get_untracked() {
         resume_raf();
     }
-    still_queued() && playing.get_untracked()
+    still_queued() && p.play_session_live()
 }

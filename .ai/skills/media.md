@@ -27,7 +27,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Gray fill floods drag / stays slow after | `scrub_gesture` + gray pace | drag: 1×quantum / 150 ms; idle: 2× / 16 ms; clear gesture on pipeline + `play` |
 | URL play ~0.6× / first-play lag | `CachedSource` sample miss | return `want` immediately; quantum fill bg |
 | Dense wiped / Next-Prev lag / Pause densify dead | Play trim + blit gaps | markers kept; Exact trim on Play; blit gaps refill |
-| Loop seam wipe / pause at 1.1–1.75× | loop_prime / SessionModel | keep Covered+Exact; BeginPrepareLoop only |
+| Loop seam wipe / ~1 s underrun hold | loop_prime / `play_loop_seam` | `ResetForPlay`→HoldScrub across `loop_to_start`; warm-prefetch before resume; keep Covered+Exact; BeginPrepareLoop only |
 | Pause→Play / scrub→Play lag or no-op | seed + `ScrubRelease{then_play}` | host: `skills/leptos.md`; probes gray-first / cold-resume / stress |
 | Sticky error after Ok settle | `host_ops` clear error on Ok | `e2e/player.scrub.sticky-error.spec.ts` |
 | A/V desync / tab-hidden race | `media_time` / HoldHidden | never host wall clock; HoldHidden ∉ underrun_holding; play session: `play_raf_tick` |

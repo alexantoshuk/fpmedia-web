@@ -15,7 +15,7 @@ use web_sys::HtmlCanvasElement;
 use webmedia::{BlobSource, MediaSource, OpenPhase, OpenSourceKind, PlayTick, TransportEvent};
 
 use super::ctx::HostCtx;
-use super::host_ops::{SeekOrStep, enqueue_seek_step, run_open, run_play_prime, run_seek_or_step};
+use super::host_ops::{SeekOrStep, run_open, run_play_prime, run_seek_or_step};
 use super::op_queue::{HostOp, OpQueue, OpenArgs};
 use super::open_url::{resolve_url_source, same_origin_media_proxy_url};
 use super::transport_apply::{dispatch_transport, new_transport, note_transport};
@@ -174,7 +174,7 @@ pub fn Video(
                     Ok(PlayTick::Skipped) => {}
                     Ok(PlayTick::Ended) => {
                         ended.set(true);
-                        note_transport(transport, TransportEvent::Ended);
+                        note_transport(&ctx, TransportEvent::Ended);
                         ctx.stop_playback();
                         status.set("Ended.".into());
                     }
@@ -250,7 +250,7 @@ pub fn Video(
                         HostOp::Open(args) => {
                             run_open(&ctx, id, args).await;
                             if queue.is_current(id) && ready.get_untracked() {
-                                note_transport(&ctx.transport, TransportEvent::OpenReady);
+                                note_transport(&ctx, TransportEvent::OpenReady);
                             }
                         }
                         HostOp::Seek(target) => {
@@ -285,13 +285,9 @@ pub fn Video(
                             // Always note Done — reduce ignores stale `settle_gen`.
                             // Skipping when `!is_current` left transport in Settling
                             // after bump-without-Preempt (Play ignored / busy stuck).
-                            let ok_final = if then_play {
-                                played_ok && playing.get_untracked()
-                            } else {
-                                ok
-                            };
+                            let ok_final = if then_play { played_ok } else { ok };
                             note_transport(
-                                &ctx.transport,
+                                &ctx,
                                 TransportEvent::ScrubReleaseDone {
                                     settle_gen,
                                     then_play,
@@ -310,7 +306,7 @@ pub fn Video(
                             let ok = run_play_prime(&ctx, id, &resume_raf).await;
                             if queue.is_current(id) {
                                 note_transport(
-                                    &ctx.transport,
+                                    &ctx,
                                     if ok {
                                         TransportEvent::PlayPrimeDone
                                     } else {
@@ -408,12 +404,6 @@ pub fn Video(
         Rc::new(move |event: TransportEvent| dispatch_transport(&ctx, &kick_drain, event))
             as Rc<dyn Fn(TransportEvent)>
     };
-    let enqueue_op = {
-        let ctx = ctx.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move |op: HostOp| enqueue_seek_step(&ctx, &kick_drain, op)) as Rc<dyn Fn(HostOp)>
-    };
-
     let play_fn = {
         let ctx = ctx.clone();
         let dispatch = Rc::clone(&dispatch);
@@ -422,22 +412,19 @@ pub fn Video(
                 web_sys::console::log_1(&"webmedia: play ignored (not ready)".into());
                 return;
             }
-            // Stale UI `playing` without a live engine session (Pause race).
-            if playing.get_untracked() {
-                let live = ctx
-                    .player
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|p| p.play_session_live());
+            // Transport already in a live play session (Pause race / double Play).
+            let live = ctx
+                .player
+                .borrow()
+                .as_ref()
+                .is_some_and(|p| p.play_session_live());
+            if ctx.transport.state().ui_playing(live) {
                 if live {
                     web_sys::console::log_1(&"webmedia: play ignored (already playing)".into());
                     return;
                 }
-                web_sys::console::log_1(&"webmedia: recover stale playing flag".into());
-                playing.set(false);
-                if let Some(p) = ctx.player.borrow().as_ref().cloned() {
-                    p.pause();
-                }
+                web_sys::console::log_1(&"webmedia: recover stale transport playing".into());
+                ctx.stop_playback();
             }
             if ctx.player.borrow().as_ref().is_none() {
                 web_sys::console::log_1(&"webmedia: play ignored (no player)".into());
@@ -482,13 +469,19 @@ pub fn Video(
         scrub_pointer_move_throttled(target);
     }) as Rc<dyn Fn(u32)>;
 
-    let seek_fn = |to_op: fn(u32) -> HostOp| {
-        let enqueue_op = Rc::clone(&enqueue_op);
-        Rc::new(move |frame: u32| enqueue_op(to_op(frame))) as Rc<dyn Fn(u32)>
+    let seek_frame_fn = {
+        let dispatch = Rc::clone(&dispatch);
+        Rc::new(move |frame: u32| dispatch(TransportEvent::SeekRequested { frame }))
+            as Rc<dyn Fn(u32)>
+    };
+    let seek_keyframe_fn = {
+        let dispatch = Rc::clone(&dispatch);
+        Rc::new(move |frame: u32| dispatch(TransportEvent::SeekKeyframeRequested { frame }))
+            as Rc<dyn Fn(u32)>
     };
     let step_fn = |forward: bool| {
-        let enqueue_op = Rc::clone(&enqueue_op);
-        Rc::new(move || enqueue_op(HostOp::Step(forward))) as Rc<dyn Fn()>
+        let dispatch = Rc::clone(&dispatch);
+        Rc::new(move || dispatch(TransportEvent::StepRequested { forward })) as Rc<dyn Fn()>
     };
 
     let set_loop_fn = {
@@ -582,8 +575,8 @@ pub fn Video(
         play: play_fn,
         pause: pause_fn,
         close: Rc::clone(&close_fn),
-        seek_frame: seek_fn(HostOp::Seek),
-        seek_keyframe: seek_fn(HostOp::SeekKeyframe),
+        seek_frame: seek_frame_fn,
+        seek_keyframe: seek_keyframe_fn,
         scrub_pointer_down: scrub_pointer_down_fn,
         scrub_pointer_move: scrub_pointer_move_fn,
         scrub_pointer_up: scrub_pointer_up_fn,

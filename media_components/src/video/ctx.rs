@@ -9,7 +9,7 @@ use webmedia::{TransportEvent, VideoPlayer};
 use super::VideoRef;
 use super::op_queue::OpQueue;
 use super::session::FpsMeter;
-use super::transport_apply::{TransportHandle, note_transport};
+use super::transport_apply::{TransportHandle, note_transport, sync_playing_from_transport};
 
 pub(super) type PlayerHandle = Rc<RefCell<Option<Rc<VideoPlayer>>>>;
 
@@ -64,9 +64,8 @@ impl HostCtx {
             if count_changed {
                 v.metadata.set(Some(p.metadata()));
             }
-            // Do NOT sync `playing` from the engine. UI owns transport state;
-            // overwriting after Pause (e.g. pause missed try_borrow, then
-            // sync_ui) left playing=true with no live session → Play dead.
+            // Do NOT sync `playing` from the engine — transport FSM owns UI
+            // `playing` (`TransportState::ui_playing`).
             v.looping.set(st.looping);
             v.pipeline.set(Some(p.pipeline_stats()));
         }
@@ -78,7 +77,8 @@ impl HostCtx {
         self.queue.bump();
         self.queue.clear_pending_scrub_and_play();
         let leaving_play = v.playing.get_untracked();
-        v.playing.set(false);
+        self.transport.force_ready_unless_closed();
+        sync_playing_from_transport(self);
         let p = self.player.borrow().as_ref().cloned();
         if let Some(p) = p {
             p.pause();
@@ -92,7 +92,6 @@ impl HostCtx {
         if leaving_play {
             v.playhead.set(v.frame.get_untracked());
         }
-        v.playing.set(false);
         // `busy` stays with the op queue (open/seek may still be draining).
     }
 
@@ -103,9 +102,8 @@ impl HostCtx {
     /// UrlSource dispose abort Range workers.
     pub fn retire_clip(&self) {
         let v = self.video;
-        note_transport(&self.transport, TransportEvent::Closed);
+        note_transport(self, TransportEvent::Closed);
         self.queue.cancel_all();
-        v.playing.set(false);
         // Drop *before* zeroing frame_count — paused rAF sync_ui treats
         // count 0→N as a new clip and would restore the old playhead.
         let retiring = self.player.borrow_mut().take();

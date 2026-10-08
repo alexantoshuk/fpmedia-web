@@ -6,9 +6,10 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-use webmedia::{TransportCmd, TransportEvent, TransportModel, transport_reduce};
+use webmedia::{TransportCmd, TransportEvent, TransportModel, TransportState, transport_reduce};
 
 use super::ctx::HostCtx;
+use super::host_ops::enqueue_seek_step;
 use super::op_queue::HostOp;
 
 struct TransportInner {
@@ -26,12 +27,26 @@ pub(super) struct TransportHandle {
 impl TransportHandle {
     /// Finger on the scrubber (drag gesture, not settle).
     pub(super) fn is_scrubbing(&self) -> bool {
-        self.inner.try_borrow().is_ok_and(|inner| {
-            matches!(
-                inner.model.state,
-                webmedia::TransportState::Scrubbing { .. }
-            )
-        })
+        self.inner
+            .try_borrow()
+            .is_ok_and(|inner| matches!(inner.model.state, TransportState::Scrubbing { .. }))
+    }
+
+    pub(super) fn state(&self) -> TransportState {
+        self.inner
+            .try_borrow()
+            .map(|inner| inner.model.state)
+            .unwrap_or(TransportState::Closed)
+    }
+
+    /// Leave Playing / PlayPriming / scrub without emitting cmds (error stop).
+    pub(super) fn force_ready_unless_closed(&self) {
+        let Ok(mut inner) = self.inner.try_borrow_mut() else {
+            return;
+        };
+        if !matches!(inner.model.state, TransportState::Closed) {
+            inner.model.state = TransportState::Ready;
+        }
     }
 }
 
@@ -43,6 +58,13 @@ pub(super) fn new_transport() -> TransportHandle {
         })),
         scheduled: Rc::new(Cell::new(false)),
     }
+}
+
+/// Mirror [`TransportState::ui_playing`] onto the UI `playing` signal.
+pub(super) fn sync_playing_from_transport(ctx: &HostCtx) {
+    let live = ctx.with_player(|p| p.play_session_live()).unwrap_or(false);
+    let ui = ctx.transport.state().ui_playing(live);
+    ctx.video.playing.set(ui);
 }
 
 /// Run reduce + queue engine cmds. Playhead updates sync; engine work is serialized
@@ -69,6 +91,7 @@ pub(super) fn dispatch_transport(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, event
         }
         !inner.pending_cmds.is_empty()
     };
+    sync_playing_from_transport(ctx);
 
     if !engine_cmds {
         return;
@@ -102,14 +125,10 @@ fn schedule_cmd_drain(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>) {
 
 fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd) {
     let HostCtx { queue, player, .. } = ctx;
-    let playing = ctx.video.playing;
     let playhead = ctx.video.playhead;
     match cmd {
         TransportCmd::SetPlayhead { .. } | TransportCmd::ClearEnded => {}
         TransportCmd::SoftPause { align_playhead } => {
-            if playing.get_untracked() {
-                playing.set(false);
-            }
             if let Some(p) = player.borrow().as_ref().cloned() {
                 if align_playhead {
                     // Same as HardPause `stop_playback`: UI playhead lags ~100ms
@@ -127,6 +146,9 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd)
                     }
                     playhead.set(eng);
                 }
+                // Always soft-hold when the cmd fires (even if UI already synced
+                // off Playing) — matches prior SoftPause; clock/session may still
+                // be live for one microtask after transport left Playing.
                 web_sys::console::log_1(&"webmedia: soft pause (warm audio)".into());
                 p.pause_for_scrub();
             }
@@ -158,6 +180,15 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd)
                 kick_drain();
             }
         }
+        TransportCmd::EnqueueSeek { frame } => {
+            enqueue_seek_step(ctx, kick_drain, HostOp::Seek(frame));
+        }
+        TransportCmd::EnqueueSeekKeyframe { frame } => {
+            enqueue_seek_step(ctx, kick_drain, HostOp::SeekKeyframe(frame));
+        }
+        TransportCmd::EnqueueStep { forward } => {
+            enqueue_seek_step(ctx, kick_drain, HostOp::Step(forward));
+        }
     }
 }
 
@@ -165,9 +196,7 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd)
 /// Returns the live player, or `None` when nothing is open.
 fn leave_play_for_scrub(ctx: &HostCtx) -> Option<Rc<webmedia::VideoPlayer>> {
     let p = ctx.player.borrow().as_ref().cloned()?;
-    let playing = ctx.video.playing;
-    if playing.get_untracked() {
-        playing.set(false);
+    if p.is_playing() || p.play_session_live() {
         p.pause_for_scrub();
     }
     Some(p)
@@ -206,12 +235,15 @@ fn enqueue_scrub_release(
 }
 
 /// Notify FSM after an async op completes (should not emit engine cmds).
-pub(super) fn note_transport(transport: &TransportHandle, event: TransportEvent) {
-    let mut inner = transport.inner.borrow_mut();
-    let (next, cmds) = transport_reduce(inner.model, event);
-    debug_assert!(
-        cmds.is_empty(),
-        "transport note event should not emit cmds: {event:?} -> {cmds:?}"
-    );
-    inner.model = next;
+pub(super) fn note_transport(ctx: &HostCtx, event: TransportEvent) {
+    {
+        let mut inner = ctx.transport.inner.borrow_mut();
+        let (next, cmds) = transport_reduce(inner.model, event);
+        debug_assert!(
+            cmds.is_empty(),
+            "transport note event should not emit cmds: {event:?} -> {cmds:?}"
+        );
+        inner.model = next;
+    }
+    sync_playing_from_transport(ctx);
 }

@@ -59,6 +59,23 @@ impl fmt::Display for TransportState {
     }
 }
 
+impl TransportState {
+    /// UI transport "is playing" once the play session may present.
+    ///
+    /// [`Self::Playing`] always. [`Self::PlayPriming`] / resume-[`Self::Settling`]
+    /// only when the engine session is already live (after `begin_play_session`) —
+    /// so rAF can present before `PlayPrimeDone` / `ScrubReleaseDone` lands.
+    /// Distinct from engine `Shared.playing` (ExactHold/Scrub mid-play).
+    pub fn ui_playing(self, play_session_live: bool) -> bool {
+        match self {
+            Self::Playing => true,
+            Self::PlayPriming { .. } => play_session_live,
+            Self::Settling { resume: true, .. } => play_session_live,
+            _ => false,
+        }
+    }
+}
+
 /// FSM + settle-generation counter (pure; host owns the instance).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransportModel {
@@ -107,6 +124,19 @@ pub enum TransportEvent {
     PlayPrimeDone,
     PlayPrimeFailed,
     Ended,
+    /// Exact seek (keyboard / API) — not scrub drag.
+    /// `mediabunny: examples/media-player/media-player.ts` `seekToTime`.
+    SeekRequested {
+        frame: u32,
+    },
+    /// Nearest sync at/before frame (fast seek preview).
+    SeekKeyframeRequested {
+        frame: u32,
+    },
+    /// Next/Prev one presentation frame.
+    StepRequested {
+        forward: bool,
+    },
 }
 
 /// Side effects for the host to apply (queue / engine / playhead).
@@ -139,6 +169,15 @@ pub enum TransportCmd {
     },
     EnqueuePlayPrime,
     ClearEnded,
+    EnqueueSeek {
+        frame: u32,
+    },
+    EnqueueSeekKeyframe {
+        frame: u32,
+    },
+    EnqueueStep {
+        forward: bool,
+    },
 }
 
 /// Pure transition.
@@ -316,6 +355,90 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
             vec![C::HardPause, C::ClearEnded, C::EnqueuePlayPrime],
         ),
         (S::Playing, E::PlayPressed) => (state, vec![]),
+
+        // Seek / Step — leave Ready; enqueue pauses the engine (not HardPause:
+        // a bump would cancel the op). mediabunny seekToTime: pause → seek.
+        (S::Ready, E::SeekRequested { frame }) => (
+            S::Ready,
+            vec![
+                C::ClearEnded,
+                C::SetPlayhead { frame },
+                C::EnqueueSeek { frame },
+            ],
+        ),
+        (S::Playing, E::SeekRequested { frame }) => (
+            S::Ready,
+            vec![
+                C::ClearEnded,
+                C::SetPlayhead { frame },
+                C::EnqueueSeek { frame },
+            ],
+        ),
+        (S::PlayPriming { .. }, E::SeekRequested { frame }) => (
+            S::Ready,
+            vec![
+                C::HardPause,
+                C::ClearEnded,
+                C::SetPlayhead { frame },
+                C::EnqueueSeek { frame },
+            ],
+        ),
+        (S::Scrubbing { .. } | S::Settling { .. }, E::SeekRequested { frame }) => (
+            S::Ready,
+            vec![
+                C::PreemptScrub,
+                C::ClearEnded,
+                C::SetPlayhead { frame },
+                C::EnqueueSeek { frame },
+            ],
+        ),
+
+        (S::Ready, E::SeekKeyframeRequested { frame }) => (
+            S::Ready,
+            vec![
+                C::ClearEnded,
+                C::SetPlayhead { frame },
+                C::EnqueueSeekKeyframe { frame },
+            ],
+        ),
+        (S::Playing, E::SeekKeyframeRequested { frame }) => (
+            S::Ready,
+            vec![
+                C::ClearEnded,
+                C::SetPlayhead { frame },
+                C::EnqueueSeekKeyframe { frame },
+            ],
+        ),
+        (S::PlayPriming { .. }, E::SeekKeyframeRequested { frame }) => (
+            S::Ready,
+            vec![
+                C::HardPause,
+                C::ClearEnded,
+                C::SetPlayhead { frame },
+                C::EnqueueSeekKeyframe { frame },
+            ],
+        ),
+        (S::Scrubbing { .. } | S::Settling { .. }, E::SeekKeyframeRequested { frame }) => (
+            S::Ready,
+            vec![
+                C::PreemptScrub,
+                C::ClearEnded,
+                C::SetPlayhead { frame },
+                C::EnqueueSeekKeyframe { frame },
+            ],
+        ),
+
+        (S::Ready | S::Playing, E::StepRequested { forward }) => {
+            (S::Ready, vec![C::ClearEnded, C::EnqueueStep { forward }])
+        }
+        (S::PlayPriming { .. }, E::StepRequested { forward }) => (
+            S::Ready,
+            vec![C::HardPause, C::ClearEnded, C::EnqueueStep { forward }],
+        ),
+        (S::Scrubbing { .. } | S::Settling { .. }, E::StepRequested { forward }) => (
+            S::Ready,
+            vec![C::PreemptScrub, C::ClearEnded, C::EnqueueStep { forward }],
+        ),
 
         (other, _) => (other, vec![]),
     };
@@ -554,5 +677,69 @@ mod tests {
             TransportState::Scrubbing { resume: true, .. }
         ));
         assert!(c.is_empty());
+    }
+
+    #[test]
+    fn seek_from_playing_leaves_ready_and_enqueues() {
+        let (m, c) = step(playing(), TransportEvent::SeekRequested { frame: 40 });
+        assert_eq!(m.state, TransportState::Ready);
+        assert!(!m.state.ui_playing(false));
+        assert!(!m.state.ui_playing(true));
+        assert!(c.contains(&TransportCmd::EnqueueSeek { frame: 40 }));
+        assert!(!c.contains(&TransportCmd::HardPause));
+    }
+
+    #[test]
+    fn ui_playing_primes_only_when_session_live() {
+        let priming = TransportState::PlayPriming { from_scrub: false };
+        assert!(!priming.ui_playing(false));
+        assert!(priming.ui_playing(true));
+        let settling = TransportState::Settling {
+            resume: true,
+            frame: 1,
+            settle_gen: 1,
+        };
+        assert!(!settling.ui_playing(false));
+        assert!(settling.ui_playing(true));
+        let settle_only = TransportState::Settling {
+            resume: false,
+            frame: 1,
+            settle_gen: 1,
+        };
+        assert!(!settle_only.ui_playing(true));
+        assert!(TransportState::Playing.ui_playing(false));
+    }
+
+    #[test]
+    fn step_from_ready_enqueues() {
+        let m = TransportModel {
+            state: TransportState::Ready,
+            next_settle_gen: 1,
+        };
+        let (m, c) = step(m, TransportEvent::StepRequested { forward: true });
+        assert_eq!(m.state, TransportState::Ready);
+        assert_eq!(
+            c,
+            vec![
+                TransportCmd::ClearEnded,
+                TransportCmd::EnqueueStep { forward: true }
+            ]
+        );
+    }
+
+    #[test]
+    fn seek_from_settling_preempts() {
+        let m = TransportModel {
+            state: TransportState::Settling {
+                resume: true,
+                frame: 10,
+                settle_gen: 2,
+            },
+            next_settle_gen: 3,
+        };
+        let (m, c) = step(m, TransportEvent::SeekKeyframeRequested { frame: 50 });
+        assert_eq!(m.state, TransportState::Ready);
+        assert!(c.contains(&TransportCmd::PreemptScrub));
+        assert!(c.contains(&TransportCmd::EnqueueSeekKeyframe { frame: 50 }));
     }
 }
