@@ -21,6 +21,22 @@ use super::coalesce::{CoalesceRun, coalesce_byte_runs, coalesce_byte_runs_adjace
 
 const HEADER_SIZE: usize = 8;
 const EXTENDED_HEADER_SIZE: usize = 16;
+
+fn be_bytes<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], MediaError> {
+    bytes
+        .get(at..)
+        .and_then(|b| b.first_chunk::<N>())
+        .copied()
+        .ok_or_else(|| MediaError::Mp4(format!("truncated box field at byte {at}")))
+}
+
+fn be_u32(bytes: &[u8], at: usize) -> Result<u32, MediaError> {
+    be_bytes(bytes, at).map(u32::from_be_bytes)
+}
+
+fn be_u64(bytes: &[u8], at: usize) -> Result<u64, MediaError> {
+    be_bytes(bytes, at).map(u64::from_be_bytes)
+}
 /// Reject absurdly large `moov` (corruption / wrong container).
 const MAX_MOOV_BYTES: u64 = 64 * 1024 * 1024;
 /// Reject absurdly large `moof` (corruption). Bodies are small metadata tables.
@@ -164,7 +180,7 @@ async fn probe_mfra(source: &dyn MediaSource) -> Result<Option<MfraIndex>, Media
     if tail.len() < 4 {
         return Ok(None);
     }
-    let mfra_size = u32::from_be_bytes(tail[0..4].try_into().unwrap()) as u64;
+    let mfra_size = be_u32(&tail, 0)? as u64;
     if mfra_size < HEADER_SIZE as u64 || mfra_size > MAX_MFRA_BYTES || mfra_size > file_size {
         return Ok(None);
     }
@@ -173,7 +189,7 @@ async fn probe_mfra(source: &dyn MediaSource) -> Result<Option<MfraIndex>, Media
     if mfra_bytes.len() < HEADER_SIZE || &mfra_bytes[4..8] != b"mfra" {
         return Ok(None);
     }
-    let declared = u32::from_be_bytes(mfra_bytes[0..4].try_into().unwrap()) as u64;
+    let declared = be_u32(&mfra_bytes, 0)? as u64;
     if declared != mfra_size && declared != 1 {
         return Ok(None);
     }
@@ -586,15 +602,15 @@ fn parse_box_header_bytes(
     if bytes.len() < HEADER_SIZE {
         return Err(MediaError::Mp4(format!("truncated box header at {offset}")));
     }
-    let size32 = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
-    let typ: [u8; 4] = bytes[4..8].try_into().unwrap();
+    let size32 = be_u32(bytes, 0)?;
+    let typ: [u8; 4] = be_bytes(bytes, 4)?;
     let (header_len, box_size) = if size32 == 1 {
         if bytes.len() < EXTENDED_HEADER_SIZE {
             return Err(MediaError::Mp4(format!(
                 "truncated largesize at offset {offset}"
             )));
         }
-        let size64 = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
+        let size64 = be_u64(bytes, 8)?;
         if size64 < EXTENDED_HEADER_SIZE as u64 {
             return Err(MediaError::Mp4(format!(
                 "invalid largesize {size64} at offset {offset}"
@@ -632,7 +648,7 @@ fn parse_mfra_index(mfra: &[u8]) -> Result<MfraParse, MediaError> {
     let mut tfra_last_time = Vec::new();
     let mut pos = HEADER_SIZE;
     while pos + HEADER_SIZE <= mfra.len() {
-        let size32 = u32::from_be_bytes(mfra[pos..pos + 4].try_into().unwrap()) as usize;
+        let size32 = be_u32(mfra, pos)? as usize;
         let typ = &mfra[pos + 4..pos + 8];
         if size32 < HEADER_SIZE || pos + size32 > mfra.len() {
             break;
@@ -662,12 +678,12 @@ fn parse_tfra_entries(
     if body.len() < 16 {
         return Ok(());
     }
-    let track_id = u32::from_be_bytes(body[0..4].try_into().unwrap());
-    let length = u32::from_be_bytes(body[4..8].try_into().unwrap());
+    let track_id = be_u32(body, 0)?;
+    let length = be_u32(body, 4)?;
     let traf_len = ((length >> 4) & 3) as usize + 1;
     let trun_len = ((length >> 2) & 3) as usize + 1;
     let sample_len = (length & 3) as usize + 1;
-    let entry_count = u32::from_be_bytes(body[8..12].try_into().unwrap()) as usize;
+    let entry_count = be_u32(body, 8)? as usize;
     let mut p = 12;
     let mut last_time = 0u64;
     for _ in 0..entry_count {
@@ -675,18 +691,18 @@ fn parse_tfra_entries(
             if p + 16 > body.len() {
                 return Err(MediaError::Mp4("truncated tfra entry (v1)".into()));
             }
-            let time = u64::from_be_bytes(body[p..p + 8].try_into().unwrap());
+            let time = be_u64(body, p)?;
             p += 8;
-            let off = u64::from_be_bytes(body[p..p + 8].try_into().unwrap());
+            let off = be_u64(body, p)?;
             p += 8;
             (time, off)
         } else {
             if p + 8 > body.len() {
                 return Err(MediaError::Mp4("truncated tfra entry (v0)".into()));
             }
-            let time = u32::from_be_bytes(body[p..p + 4].try_into().unwrap()) as u64;
+            let time = be_u32(body, p)? as u64;
             p += 4;
-            let off = u32::from_be_bytes(body[p..p + 4].try_into().unwrap()) as u64;
+            let off = be_u32(body, p)? as u64;
             p += 4;
             (time, off)
         };
@@ -752,8 +768,8 @@ async fn read_box_header_at_window(
         )));
     }
     let header = &win[rel..rel + HEADER_SIZE];
-    let size32 = u32::from_be_bytes(header[0..4].try_into().unwrap());
-    let typ: [u8; 4] = header[4..8].try_into().unwrap();
+    let size32 = be_u32(header, 0)?;
+    let typ: [u8; 4] = be_bytes(header, 4)?;
 
     let (header_len, box_size) = if size32 == 1 {
         let ext = if rel + EXTENDED_HEADER_SIZE <= win.len() {
@@ -766,7 +782,7 @@ async fn read_box_header_at_window(
                 "truncated largesize at offset {offset}"
             )));
         }
-        let size64 = u64::from_be_bytes(ext[0..8].try_into().unwrap());
+        let size64 = be_u64(&ext, 0)?;
         if size64 < EXTENDED_HEADER_SIZE as u64 {
             return Err(MediaError::Mp4(format!(
                 "invalid largesize {size64} at offset {offset}"
@@ -821,7 +837,7 @@ fn sanitize_moov_padding(bytes: &mut Vec<u8>) -> Result<(), MediaError> {
             // Fewer than 8 bytes of padding — drop them.
             break;
         }
-        let size32 = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap());
+        let size32 = be_u32(bytes, pos)?;
         if size32 == 0 {
             // size-0 "box" (padding) — truncate here.
             break;
@@ -830,7 +846,7 @@ fn sanitize_moov_padding(bytes: &mut Vec<u8>) -> Result<(), MediaError> {
             if end - pos < EXTENDED_HEADER_SIZE {
                 break;
             }
-            let size64 = u64::from_be_bytes(bytes[pos + 8..pos + 16].try_into().unwrap());
+            let size64 = be_u64(bytes, pos + 8)?;
             size64 as usize
         } else {
             size32 as usize
@@ -1146,8 +1162,7 @@ impl Seek for SparseBoxReader {
             && self.pos - next == HEADER_SIZE as u64
             && self.after_read_pos == self.pos
             && let Some(hdr) = self.peek_at(next, HEADER_SIZE)
-            && hdr.len() >= 4
-            && u32::from_be_bytes(hdr[0..4].try_into().unwrap()) == 0
+            && be_u32(&hdr, 0).is_ok_and(|size| size == 0)
         {
             return Ok(self.pos);
         }
