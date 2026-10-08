@@ -33,7 +33,7 @@ impl VideoPlayer {
             // that left eng≪aim (waitEngine / Seek stuck). Mirror scrub settle:
             // ensure index + one-GOP warm, then Exact (`mediabunny: seekToTime` →
             // retrieve samples then `startVideoIterator`).
-            let densify_busy = self.shared.scrub_busy.get();
+            let densify_busy = self.shared.densify.is_busy();
             if densify_busy {
                 web_sys::console::warn_1(
                     &"webmedia: seek densify busy after yield → soft-cold (skip Exact)".into(),
@@ -71,11 +71,11 @@ impl VideoPlayer {
                 if !self.is_current(epoch) {
                     return Err(MediaError::Cancelled);
                 }
-                if self.shared.scrub_busy.get() || !exact_scrub_ready(&self.shared, frame) {
+                if self.shared.densify.is_busy() || !exact_scrub_ready(&self.shared, frame) {
                     web_sys::console::log_1(
                         &format!(
                             "webmedia: seek soft-cold after warm (densify_busy={} still cold={})",
-                            self.shared.scrub_busy.get(),
+                            self.shared.densify.is_busy(),
                             !exact_scrub_ready(&self.shared, frame),
                         )
                         .into(),

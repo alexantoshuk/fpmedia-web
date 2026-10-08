@@ -184,7 +184,7 @@ pub(super) fn kick_fetchmap_gap_fill(shared: &Shared) -> bool {
     tiles > 0
 }
 
-/// Arm independent gray hole-fill (does **not** latch [`Shared::scrub_busy`]).
+/// Arm independent gray hole-fill (does **not** share densify `SingleFlight`).
 ///
 /// Densify abort / Exact yield stay free; gray survives soft-scrub `abort_scrub_fill`.
 /// mediabunny: no FetchMap meter — local plane only.
@@ -193,14 +193,15 @@ pub(super) fn schedule_fetchmap_gap_fill(shared: &Rc<Shared>) {
         || shared.engine.get().is_play()
         || shared.playing.get()
         || shared.file_size == 0
-        || shared.gray_fill_busy.get()
     {
         return;
     }
     if shared.fetch_map.gaps(shared.file_size).is_empty() {
         return;
     }
-    shared.gray_fill_busy.set(true);
+    if !shared.gray_fill.try_claim() {
+        return;
+    }
     let shared = Rc::clone(shared);
     wasm_bindgen_futures::spawn_local(async move {
         fetchmap_gap_fill_task(shared).await;
@@ -217,5 +218,5 @@ async fn fetchmap_gap_fill_task(shared: Rc<Shared>) {
         let pace_ms = if shared.scrub_gesture.get() { 150 } else { 16 };
         sleep_ms(pace_ms).await;
     }
-    shared.gray_fill_busy.set(false);
+    shared.gray_fill.release_busy();
 }

@@ -19,6 +19,7 @@ use super::scrub_blit::{BlitCanvas, BlitCanvasSlot};
 use super::webcodecs::WebCodecsDecoder;
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
+use crate::model::bg_task::SingleFlight;
 use crate::policy::{hover_thumb_dims, next_missing_sync_key};
 use crate::types::{FrameId, VideoMetadata};
 
@@ -40,7 +41,7 @@ pub struct ThumbPreview {
     /// HEVC HW-only: refuse a 3rd decoder for this clip (Exact downscale only).
     decode_blocked: Cell<bool>,
     /// Exclusive decode worker (latest-wins via [`Self::pending_aim`]).
-    busy: Cell<bool>,
+    flight: SingleFlight,
     /// Newest aim while a worker is running (presentation / key frame).
     pending_aim: Cell<Option<FrameId>>,
     /// Latest cursor aim — paint nearest-to-this after decode (not a stale decode id).
@@ -48,8 +49,6 @@ pub struct ThumbPreview {
     /// Last requested thumb box (bg key fill uses the same size).
     last_max_w: Cell<u32>,
     last_max_h: Cell<u32>,
-    /// Bg key-fill wants another pass when the worker was busy.
-    fill_pending: Cell<bool>,
     /// Wall ms of last hover-aim decode start (Play throttle floor).
     last_aim_decode_ms: Cell<f64>,
 }
@@ -62,12 +61,11 @@ impl ThumbPreview {
             decoder: RefCell::new(None),
             blit: BlitCanvasSlot::default(),
             decode_blocked: Cell::new(false),
-            busy: Cell::new(false),
+            flight: SingleFlight::new(),
             pending_aim: Cell::new(None),
             hover_aim: Cell::new(0),
             last_max_w: Cell::new(DEFAULT_THUMB_MAX_W),
             last_max_h: Cell::new(DEFAULT_THUMB_MAX_H),
-            fill_pending: Cell::new(false),
             last_aim_decode_ms: Cell::new(0.0),
         }
     }
@@ -90,7 +88,7 @@ impl ThumbPreview {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.busy.get()
+        self.flight.is_busy()
     }
 
     pub fn note_size(&self, max_w: u32, max_h: u32) {
@@ -103,11 +101,11 @@ impl ThumbPreview {
     }
 
     pub fn set_fill_pending(&self, pending: bool) {
-        self.fill_pending.set(pending);
+        self.flight.set_pending(pending);
     }
 
     pub fn take_fill_pending(&self) -> bool {
-        self.fill_pending.replace(false)
+        self.flight.take_pending()
     }
 
     pub fn last_aim_decode_ms(&self) -> f64 {
@@ -130,8 +128,8 @@ impl ThumbPreview {
             let _ = d.reset();
         }
         self.decode_blocked.set(false);
-        self.busy.set(false);
-        self.fill_pending.set(false);
+        self.flight.release_busy();
+        self.flight.clear_pending();
     }
 
     pub fn contains(&self, key: FrameId, frame: FrameId, width: u32, height: u32) -> bool {
@@ -240,21 +238,15 @@ impl ThumbPreview {
     pub fn claim_decode(&self, aim: FrameId) -> bool {
         self.hover_aim.set(aim);
         self.pending_aim.set(Some(aim));
-        if self.busy.get() {
-            return false;
-        }
-        self.busy.set(true);
-        true
+        self.flight.try_claim()
     }
 
     /// Bg fill: claim worker without stomping [`Self::hover_aim`].
     pub fn claim_fill_key(&self, key: FrameId) -> bool {
-        if self.busy.get() {
-            self.fill_pending.set(true);
+        if !self.flight.request() {
             return false;
         }
         self.pending_aim.set(Some(key));
-        self.busy.set(true);
         true
     }
 
@@ -272,7 +264,7 @@ impl ThumbPreview {
     }
 
     pub fn end_decode(&self) {
-        self.busy.set(false);
+        self.flight.release_busy();
     }
 }
 

@@ -2,6 +2,7 @@
 //!
 //! Design: `.ai/architecture.md` § State machines over flags.
 
+pub mod bg_task;
 pub mod clock_state;
 pub mod decoder_slot;
 pub mod engine_mode;

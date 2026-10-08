@@ -18,7 +18,7 @@ pub enum EngineMode {
     Play,
     /// Paused / drag: gap-fill densify allowed (if [`crate::ScrubPolicy::densify`]).
     Scrub,
-    /// Settle / sync seek owns main HW; densify deferred (`scrub_pending`).
+    /// Settle / sync seek owns main HW; densify deferred (`SingleFlight` pending).
     ExactHold,
 }
 

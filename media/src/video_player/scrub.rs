@@ -89,7 +89,7 @@ impl VideoPlayer {
     pub(super) fn abort_scrub_fill(&self, rearm: bool) {
         // Latch `scrub_pending` *before* bumping the epoch so densify's adopt
         // check (`!scrub_pending` → exit for Play) cannot race a settle rearm.
-        self.shared.scrub_pending.set(rearm);
+        self.shared.densify.set_pending(rearm);
         let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
         self.shared.scrub_epoch.set(scrub);
         // Take under a short borrow — do not `if let … borrow_mut().take()` (RefMut
@@ -117,20 +117,20 @@ impl VideoPlayer {
         let budget_ms = policy.densify_yield_ms;
         let retry_ms = policy.densify_yield_retry_ms;
         let start = now_ms().unwrap_or(0.0);
-        while self.shared.scrub_busy.get() {
+        while self.shared.densify.is_busy() {
             let now = now_ms().unwrap_or(start);
             if now - start >= budget_ms {
                 break;
             }
             sleep_ms(0).await;
         }
-        if !self.shared.scrub_busy.get() {
+        if !self.shared.densify.is_busy() {
             return;
         }
         web_sys::console::warn_1(&"webmedia: densify still busy after yield — re-abort".into());
         self.abort_scrub_fill(rearm);
         let start2 = now_ms().unwrap_or(0.0);
-        while self.shared.scrub_busy.get() {
+        while self.shared.densify.is_busy() {
             let now = now_ms().unwrap_or(start2);
             if now - start2 >= retry_ms {
                 break;
@@ -203,7 +203,7 @@ impl VideoPlayer {
         self.shared.scrub_gesture.set(true);
         self.note_scrub_direction(frame);
         self.aim_scrub_cache(frame);
-        if self.shared.scrub_busy.get() || self.shared.scrub_pending.get() {
+        if self.shared.densify.is_busy() || self.shared.densify.is_pending() {
             self.abort_scrub_fill(false);
         }
     }
@@ -266,7 +266,7 @@ impl VideoPlayer {
                 // `await videoFrameIterator?.return()` before a new iterator
                 // (examples/media-player/media-player.ts). Local densify plane:
                 // soft-cold until scrub HW yields; densify rearms after EndExact.
-                let densify_busy = self.shared.scrub_busy.get();
+                let densify_busy = self.shared.densify.is_busy();
                 if densify_busy {
                     web_sys::console::warn_1(
                         &format!(
@@ -302,7 +302,7 @@ impl VideoPlayer {
                     }
                     let warm_ms = now_ms().unwrap_or(warm_t0) - warm_t0;
                     // Densify may have cleared during gop-warm — Exact only then.
-                    if !self.shared.scrub_busy.get() && exact_scrub_ready(&self.shared, frame) {
+                    if !self.shared.densify.is_busy() && exact_scrub_ready(&self.shared, frame) {
                         self.shared.pending_cold_exact.set(None);
                         self.settle_exact_seed_logged(
                             frame,
@@ -315,7 +315,7 @@ impl VideoPlayer {
                         web_sys::console::log_1(
                             &format!(
                                 "webmedia: settle soft-cold (densify_yield={densify_yield_ms:.0}ms gop_warm={warm_ms:.0}ms densify_busy={} still cold={})",
-                                self.shared.scrub_busy.get(),
+                                self.shared.densify.is_busy(),
                                 !exact_scrub_ready(&self.shared, frame),
                             )
                             .into(),
@@ -521,8 +521,8 @@ impl VideoPlayer {
         {
             return;
         }
-        if self.shared.engine.get().holds_exact() || self.shared.scrub_busy.get() {
-            self.shared.scrub_pending.set(true);
+        if self.shared.engine.get().holds_exact() || self.shared.densify.is_busy() {
+            self.shared.densify.latch_pending();
             return;
         }
         self.kick_scrub_cache_fill();
@@ -537,16 +537,13 @@ impl VideoPlayer {
             || self.shared.engine.get().holds_exact()
         {
             if !self.shared.is_disposed() && self.shared.engine.get().holds_exact() {
-                self.shared.scrub_pending.set(true);
+                self.shared.densify.latch_pending();
             }
             return;
         }
-        if self.shared.scrub_busy.get() {
-            self.shared.scrub_pending.set(true);
+        if !self.shared.densify.request() {
             return;
         }
-        self.shared.scrub_busy.set(true);
-        self.shared.scrub_pending.set(false);
         let shared = Rc::clone(&self.shared);
         wasm_bindgen_futures::spawn_local(async move {
             let _ = scrub_cache_fill_task(shared).await;
@@ -573,7 +570,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             // Settle / sync seek owns HW — exit so `scrub_busy` clears and the scrub
             // decoder is not pinned in a spin-wait (was starving exact on long GOPs).
             if shared.engine.get().holds_exact() {
-                shared.scrub_pending.set(true);
+                shared.densify.latch_pending();
                 return Ok(());
             }
             // Epoch bump from `abort_scrub_fill`. `rearm=false` (Play) clears
@@ -585,7 +582,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                     || shared.engine.get().is_play()
                     || shared.playing.get()
                     || !shared.engine.get().allows_densify()
-                    || !shared.scrub_pending.get()
+                    || !shared.densify.is_pending()
                 {
                     return Ok(());
                 }
@@ -597,8 +594,8 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             apply_clip_budgets(&shared);
             let Some(target) = next_gap_target(&shared) else {
                 // Pending kick may have been set while we were at a momentary full state.
-                if shared.scrub_pending.get() {
-                    shared.scrub_pending.set(false);
+                if shared.densify.is_pending() {
+                    shared.densify.clear_pending();
                     idle_passes = 0;
                     sleep_ms(0).await;
                     continue;
@@ -665,13 +662,13 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                     // Settle/seek hold — exit so scrub HW yields immediately
                     // (do not spin/sleep; was competing with exact after long drag).
                     if shared.engine.get().holds_exact() {
-                        shared.scrub_pending.set(true);
+                        shared.densify.latch_pending();
                         return Ok(());
                     }
                     // Play / abort(false): do not adopt — clear busy for PlayPrime.
                     if shared.engine.get().is_play()
                         || shared.playing.get()
-                        || !shared.scrub_pending.get()
+                        || !shared.densify.is_pending()
                     {
                         return Ok(());
                     }
@@ -694,31 +691,32 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
         }
     }
     .await;
-    shared.scrub_busy.set(false);
 
     if shared.is_disposed() {
-        shared.scrub_pending.set(false);
+        shared.densify.release_busy();
+        shared.densify.clear_pending();
         return result;
     }
-    // While exact settle/seek holds densify, leave `scrub_pending` latched and do
+    // While exact settle/seek holds densify, leave pending latched and do
     // **not** respawn — a spawn_local spin froze the tab (long-GOP cold scrub).
     if shared.engine.get().holds_exact() {
+        shared.densify.release_busy();
         return result;
     }
 
-    let want_again = shared.scrub_pending.get()
+    let was_pending = shared.densify.finish();
+    let want_again = was_pending
         && shared.engine.get().allows_densify()
         && !shared.playing.get()
         && next_gap_target(&shared).is_some();
-    shared.scrub_pending.set(false);
 
-    if want_again && !shared.scrub_busy.get() {
-        shared.scrub_busy.set(true);
+    if want_again {
+        shared.densify.begin();
         let again = Rc::clone(&shared);
         wasm_bindgen_futures::spawn_local(async move {
             yield_microtask().await;
             if again.is_disposed() {
-                again.scrub_busy.set(false);
+                again.densify.release_busy();
                 return;
             }
             let _ = scrub_cache_fill_task(again).await;

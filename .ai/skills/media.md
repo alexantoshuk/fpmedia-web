@@ -23,7 +23,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Play freeze / flush/idle / underrun | presentation cap / `clock_state` | caps: `architecture.md` PlayPolicy; HoldUnderrun; prune floor + cascade — see Gotchas |
 | Cold scrub freezes tab / Play deaf | soft settle + transport | `pending_cold_exact`; Settling+Play Preempt — `e2e/player.scrub.cold-open.spec.ts` |
 | Gray/green strip holes / blur | FetchMap + 1 px canvas | soft-merge; `paint_strip_canvas_1px` — host: `skills/leptos.md` |
-| Gray holes never fill (pause/URL) | `schedule_fetchmap_gap_fill` + FetchMap accumulate | own task (`gray_fill_busy`); not densify/`scrub_busy`; URL accumulate |
+| Gray holes never fill (pause/URL) | `schedule_fetchmap_gap_fill` + FetchMap accumulate | own `SingleFlight` (`gray_fill`); never share densify flight; URL accumulate |
 | Gray fill floods drag / stays slow after | `scrub_gesture` + gray pace | drag: 1×quantum / 150 ms; idle: 2× / 16 ms; clear gesture on pipeline + `play` |
 | URL play ~0.6× / first-play lag | `CachedSource` sample miss | return `want` immediately; quantum fill bg |
 | Dense wiped / Next-Prev lag / Pause densify dead | Play trim + blit gaps | markers kept; Exact trim on Play; blit gaps refill |
@@ -42,7 +42,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 
 ```
 lib.rs, types.rs, clock.rs, frame_index.rs, error.rs, util.rs, timer.rs (wasm)
-model/         clock_state · decoder_slot · engine_mode · session · transport (pure FSMs)
+model/         bg_task (SingleFlight) · clock_state · decoder_slot · engine_mode · session · transport
 policy/        clip (crate::policy::*) · playback (EOF/loop) · workload · scrub_plan (native tests)
 host/          host_op_coalesce (OpQueue) · open_phase (open status)
 residency.rs   AimWindow (aim-distance eviction) · ScrubChunkStore · FrameRunIndex (native tests)

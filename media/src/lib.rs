@@ -55,6 +55,7 @@ pub use error::{DecodeStall, MediaError};
 pub use frame_index::{FrameEntry, FrameIndex};
 pub use host::host_op_coalesce::{HostOp, apply_enqueue};
 pub use host::open_phase::{OpenPhase, OpenSourceKind};
+pub use model::bg_task::SingleFlight;
 pub use model::clock_state::{ClockCmd, ClockEvent, ClockState, reduce as clock_state_reduce};
 pub use model::decoder_slot::{
     DecoderSlotCmd, DecoderSlotEvent, DecoderSlotModel, DecoderSlotPhase,

@@ -19,6 +19,7 @@ use crate::decode::thumb_preview::ThumbPreview;
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
+use crate::model::bg_task::SingleFlight;
 use crate::model::clock_state::ClockState;
 use crate::model::decoder_slot::DecoderSlotModel;
 use crate::model::engine_mode::EngineModel;
@@ -96,13 +97,11 @@ pub(super) struct Shared {
     /// second decoder). Stops retry storms that would call `prefer-hardware`.
     pub(super) scrub_densify_blocked: Cell<bool>,
     pub(super) scrub_epoch: Cell<u64>,
-    pub(super) scrub_busy: Cell<bool>,
-    /// Set while a fill is running so `schedule_scrub_cache_fill` can request another
-    /// pass (avoids dropping work when pause/scrub bumps epoch mid-fill).
-    pub(super) scrub_pending: Cell<bool>,
-    /// Independent FetchMap (gray strip) hole fill — must not latch `scrub_busy`
-    /// (densify abort / Exact yield must stay free of gray meter work).
-    pub(super) gray_fill_busy: Cell<bool>,
+    /// Densify single-flight (`busy` + `pending` restart).
+    pub(super) densify: SingleFlight,
+    /// Independent FetchMap (gray strip) hole fill — must not share densify flight
+    /// (Exact yield must stay free of gray meter work).
+    pub(super) gray_fill: SingleFlight,
     /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).
     pub(super) scrub_gesture: Cell<bool>,
     /// Play vs scrub densify / exact hold + soft-hold audio.
@@ -159,7 +158,7 @@ impl Shared {
             self.session.get().is_restarting(),
             // Underrun / scrub soft-hold only — not HoldHidden (tab freeze ≠ underrun).
             self.clock_state.get().blocks_bg_sync_verify(),
-            self.scrub_busy.get(),
+            self.densify.is_busy(),
         )
     }
 

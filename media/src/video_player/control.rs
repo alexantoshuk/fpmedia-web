@@ -176,7 +176,7 @@ impl VideoPlayer {
             // Cancelled fill may still have `scrub_busy` until its finally runs;
             // schedule only latches pending then. Kick again after a turn so pause
             // densify is not lost when the busy race clears without want_again.
-            self.shared.scrub_pending.set(true);
+            self.shared.densify.latch_pending();
             let shared = Rc::clone(&self.shared);
             wasm_bindgen_futures::spawn_local(async move {
                 yield_microtask().await;
@@ -188,8 +188,8 @@ impl VideoPlayer {
                 {
                     return;
                 }
-                if shared.scrub_busy.get() {
-                    shared.scrub_pending.set(true);
+                if shared.densify.is_busy() {
+                    shared.densify.latch_pending();
                     // Green may already be saturated — still close gray holes.
                     scrub_cold::schedule_fetchmap_gap_fill(&shared);
                     return;
@@ -198,8 +198,9 @@ impl VideoPlayer {
                     scrub_cold::schedule_fetchmap_gap_fill(&shared);
                     return;
                 }
-                shared.scrub_busy.set(true);
-                shared.scrub_pending.set(false);
+                if !shared.densify.request() {
+                    return;
+                }
                 let again = Rc::clone(&shared);
                 let _ = scrub_cache_fill_task(again).await;
             });
@@ -254,7 +255,7 @@ impl Drop for VideoPlayer {
         // mediabunny: initMediaPlayer pause → iterator.return → asyncId++ / UrlSource._dispose.
         self.shared.disposed.set(true);
         self.cancel_ops();
-        self.shared.scrub_pending.set(false);
+        self.shared.densify.clear_pending();
         // Stop AAC pump + drop sink so `AudioContext.close` runs even if a late
         // densify turn still holds `Shared` for a moment.
         if let Ok(mut slot) = self.shared.audio.try_borrow_mut()

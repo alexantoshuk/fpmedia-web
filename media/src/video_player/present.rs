@@ -122,7 +122,7 @@ impl VideoPlayer {
             cache_frames,
             cache_cap,
             cache_no_gaps,
-            scrub_busy: self.shared.scrub_busy.get(),
+            scrub_busy: self.shared.densify.is_busy(),
             scrub_window_from: win_from,
             scrub_window_to: win_to,
             ready_frames,
