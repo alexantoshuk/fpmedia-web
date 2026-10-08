@@ -14,7 +14,7 @@
 use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::error::MediaError;
-use crate::open_phase::OpenPhase;
+use crate::host::open_phase::OpenPhase;
 use crate::source::MediaSource;
 
 use super::coalesce::{CoalesceRun, coalesce_byte_runs, coalesce_byte_runs_adjacent};

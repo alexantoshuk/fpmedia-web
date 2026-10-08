@@ -41,16 +41,16 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 ## Module map (`media/src`)
 
 ```
-lib.rs, types.rs, policy.rs, clock.rs, clock_state.rs, session.rs, transport.rs,
-engine_mode.rs, decoder_slot.rs, workload.rs, host_op_coalesce.rs,
-open_phase.rs, playback_policy.rs, frame_index.rs, error.rs
+lib.rs, types.rs, clock.rs, frame_index.rs, error.rs, util.rs, timer.rs (wasm)
+model/         clock_state · decoder_slot · engine_mode · session · transport (pure FSMs)
+policy/        clip (crate::policy::*) · playback (EOF/loop) · workload · scrub_plan (native tests)
+host/          host_op_coalesce (OpQueue) · open_phase (open status)
+residency.rs   AimWindow (aim-distance eviction) · ScrubChunkStore · FrameRunIndex (native tests)
 bitstream/     AVC + HEVC packet type / sanitize
 source/        MediaSource, CachedSource, FetchMap, ReadOrchestrator (+ wasm Blob/Url)
 audio/         demux, stretch (WSOLA), output, PlaybackClock
 demux/         boxes, coalesce, mp4, tmcd
 video_player/  mod · api · shared · open · control · clock_ctrl · present · decode_ops · play · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
-scrub_plan.rs  pure densify gap / cold-commit (native tests)
-residency.rs   AimWindow (aim-distance eviction) · ScrubChunkStore · FrameRunIndex (native tests)
 decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
 ```
 

@@ -1,9 +1,9 @@
 //! Densify gap targeting for [`super::VideoPlayer`].
 //!
-//! Residency queries stay here; pure pick logic is [`crate::scrub_plan`].
+//! Residency queries stay here; pure pick logic is [`crate::policy::scrub_plan`].
 
 use crate::demux::Mp4VideoTrack;
-use crate::scrub_plan::{decide_next_gap, gop_sample_lead_frames};
+use crate::policy::scrub_plan::{decide_next_gap, gop_sample_lead_frames};
 use crate::types::FrameId;
 
 use super::Shared;

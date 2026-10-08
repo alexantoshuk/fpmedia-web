@@ -11,24 +11,24 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::MediaClock;
 use crate::audio::AudioOutput;
-use crate::clock_state::ClockState;
 use crate::decode::frame_cache::ScrubBlitLru;
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::scrub_blit::BlitCanvasSlot;
 #[cfg(feature = "thumbs")]
 use crate::decode::thumb_preview::ThumbPreview;
 use crate::decode::webcodecs::WebCodecsDecoder;
-use crate::decoder_slot::DecoderSlotModel;
 use crate::demux::Mp4VideoTrack;
-use crate::engine_mode::EngineModel;
 use crate::error::MediaError;
+use crate::model::clock_state::ClockState;
+use crate::model::decoder_slot::DecoderSlotModel;
+use crate::model::engine_mode::EngineModel;
+use crate::model::session::SessionModel;
 use crate::policy::ThumbPolicy;
 use crate::residency::ScrubChunkStore;
-use crate::session::SessionModel;
 use crate::types::{FrameId, Timestamp};
 
 use super::api::PlayerState;
-use crate::workload::WorkloadHints;
+use crate::policy::workload::WorkloadHints;
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
 /// Keep small on Hd — each slot pins a `VideoFrame`; 16 + in-flight decode starved

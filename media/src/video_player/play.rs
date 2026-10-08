@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::error::MediaError;
-use crate::playback_policy::{
+use crate::policy::playback::{
     EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
 };
 use crate::policy::{

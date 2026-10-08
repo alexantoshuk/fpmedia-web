@@ -1,14 +1,14 @@
 //! Cold scrub settle / byte-warm gates for [`super::VideoPlayer`].
 //!
 //! Soft path when Exact would stampede cold Ranges. Commit rule:
-//! [`crate::scrub_plan::cold_settle_commit_frame`].
+//! [`crate::policy::scrub_plan::cold_settle_commit_frame`].
 //! `mediabunny: src/media-sink.ts` `mediaSamplesAtTimestamps` (async retrieve).
 
 use std::rc::Rc;
 
 use crate::decode::scrub_blit::draw_image_bitmap;
 use crate::error::MediaError;
-use crate::scrub_plan::{cold_settle_commit_frame, next_fetchmap_gap};
+use crate::policy::scrub_plan::{cold_settle_commit_frame, next_fetchmap_gap};
 use crate::types::FrameId;
 
 use super::Shared;

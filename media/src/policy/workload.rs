@@ -16,7 +16,7 @@
 
 use std::fmt;
 
-use crate::engine_mode::EngineMode;
+use crate::model::engine_mode::EngineMode;
 
 /// Background-work priority band (highest first for *yielding* bg work).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

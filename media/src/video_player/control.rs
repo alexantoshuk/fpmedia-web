@@ -8,9 +8,9 @@ use std::rc::Rc;
 use web_sys::HtmlCanvasElement;
 
 use super::api::PlayerState;
-use crate::clock_state::ClockEvent;
-use crate::engine_mode::{EngineEvent, reduce as engine_reduce};
-use crate::session::{SessionEvent, reduce as session_reduce};
+use crate::model::clock_state::ClockEvent;
+use crate::model::engine_mode::{EngineEvent, reduce as engine_reduce};
+use crate::model::session::{SessionEvent, reduce as session_reduce};
 use crate::types::{AudioMetadata, FrameId, VideoMetadata};
 
 use super::scrub::scrub_cache_fill_task;

@@ -9,11 +9,11 @@ use crate::decode::owned_video_frame::AsVideoFrame;
 use crate::decode::thumb_preview::{ThumbPreview, paint_thumb_canvas, run_sparse_key_fill};
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
-use crate::policy::{ThumbPolicy, hover_thumb_dims, scrub_preview_choice};
-use crate::types::FrameId;
-use crate::workload::{
+use crate::policy::workload::{
     PLAY_THUMB_AIM_DECODE_MIN_MS, allows_thumb_aim_decode, allows_thumb_key_fill,
 };
+use crate::policy::{ThumbPolicy, hover_thumb_dims, scrub_preview_choice};
+use crate::types::FrameId;
 
 use super::{Shared, VideoPlayer, now_ms, sleep_ms};
 

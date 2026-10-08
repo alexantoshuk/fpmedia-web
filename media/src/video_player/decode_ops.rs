@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::webcodecs::WebCodecsDecoder;
-use crate::decoder_slot::{DecoderSlotCmd, DecoderSlotEvent, reduce as decoder_slot_reduce};
 use crate::error::MediaError;
+use crate::model::decoder_slot::{DecoderSlotCmd, DecoderSlotEvent, reduce as decoder_slot_reduce};
 use crate::types::FrameId;
 
 use super::VideoPlayer;

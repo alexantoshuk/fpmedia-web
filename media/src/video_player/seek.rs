@@ -1,7 +1,7 @@
 //! Seek / step orchestration for [`super::VideoPlayer`].
 
-use crate::engine_mode::{EngineEvent, reduce as engine_reduce};
 use crate::error::MediaError;
+use crate::model::engine_mode::{EngineEvent, reduce as engine_reduce};
 use crate::types::FrameId;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;

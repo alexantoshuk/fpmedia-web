@@ -6,17 +6,13 @@
 
 ## In progress
 
-- Refactor plan below (group 2). Group 1 landed without e2e (no Node.js on the dev box) — run `e2e/` smoke before group 3.
+- Refactor plan below: group 3 next. Groups 1–2 landed without e2e (no Node.js on the dev box) — run `e2e/` smoke before group 3.
 
 ---
 
 ## Next up
 
 Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep order. Groups 1–2 = no behavior change. Group 3 changes behavior → `AGENTS.md` Pre-edit gate (mediabunny cite) per PR. Update the matching `.ai/` row in the same PR (not ahead of code).
-
-### 2. Structural, low risk
-
-1. Group `webmedia` root modules (`model/` · `host/` · `policy/`).
 
 ### 3. Behavior-adjacent (mediabunny cite required)
 

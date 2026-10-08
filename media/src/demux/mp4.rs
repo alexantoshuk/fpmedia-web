@@ -15,7 +15,7 @@ use crate::bitstream::{
 };
 use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
-use crate::open_phase::OpenPhase;
+use crate::host::open_phase::OpenPhase;
 use crate::policy::SETTLE_PLAY_INDEX_LEAD;
 use crate::source::{CachedSource, FetchMap, MediaSource, MemorySource};
 use crate::types::{CodecConfig, EncodedSample, FrameId, VideoCodec, VideoMetadata};

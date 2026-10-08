@@ -11,24 +11,16 @@
 mod audio;
 mod bitstream;
 mod clock;
-mod clock_state;
-mod decoder_slot;
 mod demux;
-mod engine_mode;
 mod error;
 mod frame_index;
-mod host_op_coalesce;
-mod open_phase;
-mod playback_policy;
+mod host;
+mod model;
 mod policy;
 mod residency;
-mod scrub_plan;
-mod session;
 mod source;
-mod transport;
 mod types;
 mod util;
-mod workload;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 mod decode;
@@ -52,11 +44,6 @@ pub use clock::{
     PLAYBACK_RATE_REVIEW_MAX, PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_STEP, is_shuttle_rate,
     is_wall_clock_rate, normalize_playback_rate,
 };
-pub use clock_state::{ClockCmd, ClockEvent, ClockState, reduce as clock_state_reduce};
-pub use decoder_slot::{
-    DecoderSlotCmd, DecoderSlotEvent, DecoderSlotModel, DecoderSlotPhase,
-    reduce as decoder_slot_reduce,
-};
 #[cfg(not(target_arch = "wasm32"))]
 pub use demux::open_mp4_path;
 pub use demux::{
@@ -64,15 +51,29 @@ pub use demux::{
     open_mp4_bytes, parse_mp4_progressive, parse_mp4_progressive_with_progress,
     read_ftyp_moov_stub, scan_top_level,
 };
-pub use engine_mode::{
-    AudioResume, EngineCmd, EngineEvent, EngineMode, EngineModel, reduce as engine_mode_reduce,
-};
 pub use error::{DecodeStall, MediaError};
 pub use frame_index::{FrameEntry, FrameIndex};
-pub use host_op_coalesce::{HostOp, apply_enqueue};
-pub use open_phase::{OpenPhase, OpenSourceKind};
-pub use playback_policy::{
+pub use host::host_op_coalesce::{HostOp, apply_enqueue};
+pub use host::open_phase::{OpenPhase, OpenSourceKind};
+pub use model::clock_state::{ClockCmd, ClockEvent, ClockState, reduce as clock_state_reduce};
+pub use model::decoder_slot::{
+    DecoderSlotCmd, DecoderSlotEvent, DecoderSlotModel, DecoderSlotPhase,
+    reduce as decoder_slot_reduce,
+};
+pub use model::engine_mode::{
+    AudioResume, EngineCmd, EngineEvent, EngineMode, EngineModel, reduce as engine_mode_reduce,
+};
+pub use model::session::{SessionEvent, SessionModel, reduce as session_reduce};
+pub use model::transport::{
+    TransportCmd, TransportEvent, TransportModel, TransportState, reduce as transport_reduce,
+};
+pub use policy::playback::{
     EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
+};
+pub use policy::workload::{
+    FRAGMENT_BACKFILL_IDLE_AHEAD, PLAY_THUMB_AIM_DECODE_MIN_MS, WorkloadHints, WorkloadMode,
+    allows_bg_sync_verify, allows_thumb_aim_decode, allows_thumb_key_fill, classify,
+    fragment_backfill_should_idle_yield,
 };
 pub use policy::{
     DEFAULT_SCRUB_BLIT_MIB_LONG, DEFAULT_SCRUB_BLIT_MIB_SHORT, DEFAULT_SCRUB_CACHE_MIB,
@@ -90,24 +91,15 @@ pub use policy::{
     scrub_blit_frame_budget, scrub_cache_frame_budget, scrub_edge_margins, scrub_gap_fill_armed,
     scrub_preview_choice,
 };
-pub use session::{SessionEvent, SessionModel, reduce as session_reduce};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use source::{BlobSource, UrlSource, UrlSourceOptions, is_no_http_range};
 pub use source::{
     CachedSource, DEFAULT_CACHE_BUDGET, DEFAULT_CACHE_SIZE, DEFAULT_URL_PARALLELISM, FetchMap,
     LOCAL_CACHE_BUDGET, MediaSource, MemorySource, OPEN_URL_PARALLELISM, ReadFuture,
 };
-pub use transport::{
-    TransportCmd, TransportEvent, TransportModel, TransportState, reduce as transport_reduce,
-};
 pub use types::{
     AudioCodec, AudioCodecConfig, AudioMetadata, CodecConfig, EncodedAudioSample, EncodedSample,
     FrameId, Timestamp, VideoCodec, VideoMetadata, build_aac_asc, coalesce_frame_runs,
-};
-pub use workload::{
-    FRAGMENT_BACKFILL_IDLE_AHEAD, PLAY_THUMB_AIM_DECODE_MIN_MS, WorkloadHints, WorkloadMode,
-    allows_bg_sync_verify, allows_thumb_aim_decode, allows_thumb_key_fill, classify,
-    fragment_backfill_should_idle_yield,
 };
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]

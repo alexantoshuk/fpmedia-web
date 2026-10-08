@@ -5,8 +5,8 @@
 
 use std::rc::Rc;
 
-use crate::clock_state::{ClockCmd, ClockEvent, reduce as clock_reduce};
 use crate::error::MediaError;
+use crate::model::clock_state::{ClockCmd, ClockEvent, reduce as clock_reduce};
 
 use super::VideoPlayer;
 use super::now_ms;

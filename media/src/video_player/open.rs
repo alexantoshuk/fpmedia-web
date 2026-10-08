@@ -11,21 +11,21 @@ use web_sys::HtmlCanvasElement;
 
 use crate::MediaClock;
 use crate::audio::AudioOutput;
-use crate::clock_state::ClockState;
 use crate::decode::canvas::{canvas_2d, configure_canvas_for_video};
 use crate::decode::frame_cache::ScrubBlitLru;
 use crate::decode::scrub_blit::BlitCanvasSlot;
 use crate::decode::webcodecs::WebCodecsDecoder;
-use crate::decoder_slot::DecoderSlotModel;
-use crate::engine_mode::EngineModel;
 use crate::error::MediaError;
+use crate::model::clock_state::ClockState;
+use crate::model::decoder_slot::DecoderSlotModel;
+use crate::model::engine_mode::EngineModel;
+use crate::model::session::SessionModel;
 use crate::policy::ThumbPolicy;
-use crate::residency::ScrubChunkStore;
-use crate::session::SessionModel;
-use crate::workload::{
+use crate::policy::workload::{
     FRAGMENT_BACKFILL_IDLE_AHEAD, allows_bg_sync_verify, classify,
     fragment_backfill_should_idle_yield,
 };
+use crate::residency::ScrubChunkStore;
 
 use super::scrub::apply_clip_budgets;
 use super::shared::Shared;
