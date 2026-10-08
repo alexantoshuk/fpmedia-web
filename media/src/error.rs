@@ -31,6 +31,15 @@ pub enum MediaError {
     #[error("webcodecs: {0}")]
     WebCodecs(String),
 
+    /// Our decode pump gave up on a target (one hard reset + retry).
+    #[error("webcodecs: {detail}")]
+    DecodeStall { kind: DecodeStall, detail: String },
+
+    /// Browser codec fault after densify/settle abort races (closed codec,
+    /// `Decoding error`, key frame required) — Exact/PlayPrime recreate once.
+    #[error("webcodecs: {0}")]
+    DecoderPoison(String),
+
     /// Browser `VideoFrame.clone` failed. Prefer moving the frame (cache insert)
     /// or borrowing via [`crate::decode::AsVideoFrame`] for draw.
     #[error("video frame clone failed: {0}")]
@@ -64,9 +73,57 @@ pub enum MediaError {
     ReadOutOfRange { offset: u64, len: usize, size: u64 },
 }
 
+/// Why the decode pump stopped waiting for a target frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodeStall {
+    /// Packets ran out and flush/idle never produced the target PTS.
+    TargetMissing,
+    /// No pump progress for the consumer stall window.
+    PumpStalled,
+    /// `decodeQueueSize` never drained (wedged decoder, `q≈41,held=0`).
+    Backpressure,
+}
+
 impl MediaError {
     pub fn is_cancelled(&self) -> bool {
         matches!(self, Self::Cancelled)
+    }
+
+    /// Browser codec error text → [`Self::DecoderPoison`] or [`Self::WebCodecs`].
+    ///
+    /// Only browser-originated messages pass through here; our own decode errors
+    /// are typed at the producer.
+    pub fn from_codec_message(msg: String) -> Self {
+        let m = msg.to_ascii_lowercase();
+        let poison = m.contains("decoding error")
+            || m.contains("closed")
+            || m.contains("cannot call")
+            || m.contains("key frame required");
+        if poison {
+            Self::DecoderPoison(msg)
+        } else {
+            Self::WebCodecs(msg)
+        }
+    }
+
+    /// Recreate-once predicate (named recovery, not a `SettlePolicy` knob):
+    /// browser poison, or a wedged-backpressure stall that survived the
+    /// reset + retry in `decode_frame_inner`.
+    pub fn is_decoder_poison(&self) -> bool {
+        matches!(
+            self,
+            Self::DecoderPoison(_)
+                | Self::DecodeStall {
+                    kind: DecodeStall::Backpressure,
+                    ..
+                }
+        )
+    }
+
+    /// Pump stall worth one hard decoder reset + retry (orphan PTS after a raced
+    /// invalidate).
+    pub fn is_retryable_stall(&self) -> bool {
+        matches!(self, Self::DecodeStall { .. })
     }
 }
 
@@ -87,6 +144,48 @@ impl From<wasm_bindgen::JsValue> for MediaError {
                     .and_then(|v| v.as_string())
             })
             .unwrap_or_else(|| format!("{value:?}"));
-        Self::WebCodecs(msg)
+        Self::from_codec_message(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_poison_messages_classify() {
+        for msg in [
+            "Decoding error.",
+            "Cannot call 'decode' on a closed codec.",
+            "A key frame required after configure() or flush().",
+        ] {
+            let e = MediaError::from_codec_message(msg.into());
+            assert!(e.is_decoder_poison(), "{msg}");
+            assert!(!e.is_retryable_stall(), "{msg}");
+            assert_eq!(e.to_string(), format!("webcodecs: {msg}"));
+        }
+        let e = MediaError::from_codec_message("Unsupported configuration".into());
+        assert!(matches!(e, MediaError::WebCodecs(_)));
+        assert!(!e.is_decoder_poison());
+    }
+
+    #[test]
+    fn stalls_retry_and_only_backpressure_poisons() {
+        let stall = |kind| MediaError::DecodeStall {
+            kind,
+            detail: "x".into(),
+        };
+        for kind in [
+            DecodeStall::TargetMissing,
+            DecodeStall::PumpStalled,
+            DecodeStall::Backpressure,
+        ] {
+            assert!(stall(kind).is_retryable_stall());
+            assert_eq!(
+                stall(kind).is_decoder_poison(),
+                kind == DecodeStall::Backpressure
+            );
+        }
+        assert!(!MediaError::Cancelled.is_retryable_stall());
     }
 }

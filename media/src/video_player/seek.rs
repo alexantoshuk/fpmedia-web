@@ -89,7 +89,7 @@ impl VideoPlayer {
             match self.exact_goto_with_decoder_retry(frame, epoch).await {
                 Ok(()) => Ok(()),
                 Err(e) if e.is_cancelled() => Err(e),
-                Err(e) if super::is_decoder_poison(&e) => {
+                Err(e) if e.is_decoder_poison() => {
                     web_sys::console::warn_1(
                         &format!("webmedia: seek Exact poison → soft cold ({e})").into(),
                     );

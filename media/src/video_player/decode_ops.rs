@@ -14,7 +14,7 @@ use crate::types::FrameId;
 use super::VideoPlayer;
 use super::scrub::ingest_scrub_frame_shared;
 use super::shared::{QueuedFrame, STEP_BEHIND_CAP};
-use super::{is_decoder_poison, now_ms, sleep_ms};
+use super::{now_ms, sleep_ms};
 
 impl VideoPlayer {
     pub(super) fn apply_decoder_slot(&self, event: DecoderSlotEvent) -> Vec<DecoderSlotCmd> {
@@ -92,12 +92,7 @@ impl VideoPlayer {
         };
         let result = match result {
             // One hard reset + retry — orphan PTS after a raced invalidate.
-            Err(MediaError::WebCodecs(msg))
-                if msg.contains("flush/idle without pts=")
-                    || msg.contains("decode pump stalled")
-                    || msg.contains("exhausted GOP before pts=")
-                    || msg.contains("decodeQueueSize backpressure timed out") =>
-            {
+            Err(e) if e.is_retryable_stall() => {
                 if cancelled() {
                     Err(MediaError::Cancelled)
                 } else {
@@ -238,7 +233,7 @@ impl VideoPlayer {
         match self.goto_frame_with_interim(frame, epoch).await {
             Ok(()) => Ok(()),
             Err(e) if e.is_cancelled() => Err(e),
-            Err(e) if is_decoder_poison(&e) && self.is_current(epoch) => {
+            Err(e) if e.is_decoder_poison() && self.is_current(epoch) => {
                 web_sys::console::warn_1(
                     &format!("webmedia: Exact retry after decoder poison ({e})").into(),
                 );

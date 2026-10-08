@@ -752,7 +752,7 @@ impl DecoderCore {
 
     pub(super) fn check_error(&self) -> Result<(), MediaError> {
         if let Some(msg) = self.error.borrow_mut().take() {
-            Err(MediaError::WebCodecs(msg))
+            Err(MediaError::from_codec_message(msg))
         } else {
             Ok(())
         }

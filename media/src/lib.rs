@@ -69,7 +69,7 @@ pub use demux::{
 pub use engine_mode::{
     AudioResume, EngineCmd, EngineEvent, EngineMode, EngineModel, reduce as engine_mode_reduce,
 };
-pub use error::MediaError;
+pub use error::{DecodeStall, MediaError};
 pub use frame_index::{FrameEntry, FrameIndex};
 pub use host_op_coalesce::{HostOp, apply_enqueue};
 pub use open_phase::{OpenPhase, OpenSourceKind};

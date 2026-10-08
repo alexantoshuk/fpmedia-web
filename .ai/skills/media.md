@@ -14,7 +14,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Open locks until gray full / slow stss | open warm / `defer_avc_sync` | warm lead 96; bg verify + `ensure_key_verified` |
 | Local master judder ~25 fps | `frames_after_decode` + silent clock | ChG: skip gate + thin held; not holds |
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
-| Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact |
+| Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact; fault typing: `MediaError::from_codec_message` / `DecodeStall` |
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
 | Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only, all GOP profiles (no densify, no Long key→N); fill after settle/Pause |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
@@ -48,7 +48,7 @@ bitstream/     AVC + HEVC packet type / sanitize
 source/        MediaSource, CachedSource, FetchMap, ReadOrchestrator (+ wasm Blob/Url)
 audio/         demux, stretch (WSOLA), output, PlaybackClock
 demux/         boxes, coalesce, mp4, tmcd
-video_player/  mod · api · shared · util · open · control · clock_ctrl · present · decode_ops · play · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
+video_player/  mod · api · shared · open · control · clock_ctrl · present · decode_ops · play · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
 scrub_plan.rs  pure densify gap / cold-commit (native tests)
 residency.rs   AimWindow (aim-distance eviction) · ScrubChunkStore · FrameRunIndex (native tests)
 decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*

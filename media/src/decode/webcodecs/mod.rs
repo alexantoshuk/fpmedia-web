@@ -26,7 +26,7 @@ use web_sys::VideoDecoder;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
-use crate::error::MediaError;
+use crate::error::{DecodeStall, MediaError};
 use crate::policy::{GopProfile, PlayPolicy};
 use crate::types::{FrameId, VideoMetadata};
 
@@ -636,24 +636,27 @@ impl WebCodecsDecoder {
                 if let Some(ready) = finish_gop_for_target(&core, target_us, is_cancelled).await? {
                     return Ok(ready);
                 }
-                return Err(MediaError::WebCodecs(format!(
-                    "flush/idle without pts={target_us}µs (held={}, q={}, fed={:?}, stamps={}, near={:?})",
-                    core.borrow().held.len(),
-                    core.borrow().decode_queue_size(),
-                    core.borrow().fed_through_order,
-                    core.borrow().input_timestamps.len(),
-                    {
-                        let c = core.borrow();
-                        let mut nearest: Option<(i64, i64)> = None;
-                        for h in &c.held {
-                            let d = (h.pts_us - target_us).abs();
-                            if nearest.is_none_or(|(_, best)| d < best) {
-                                nearest = Some((h.pts_us, d));
+                return Err(MediaError::DecodeStall {
+                    kind: DecodeStall::TargetMissing,
+                    detail: format!(
+                        "flush/idle without pts={target_us}µs (held={}, q={}, fed={:?}, stamps={}, near={:?})",
+                        core.borrow().held.len(),
+                        core.borrow().decode_queue_size(),
+                        core.borrow().fed_through_order,
+                        core.borrow().input_timestamps.len(),
+                        {
+                            let c = core.borrow();
+                            let mut nearest: Option<(i64, i64)> = None;
+                            for h in &c.held {
+                                let d = (h.pts_us - target_us).abs();
+                                if nearest.is_none_or(|(_, best)| d < best) {
+                                    nearest = Some((h.pts_us, d));
+                                }
                             }
-                        }
-                        nearest.map(|(pts, _)| pts)
-                    },
-                )));
+                            nearest.map(|(pts, _)| pts)
+                        },
+                    ),
+                });
             }
 
             let sig = progress_signature(&core, &signals);
@@ -661,11 +664,14 @@ impl WebCodecsDecoder {
                 last_sig = sig;
                 last_change_ms = now_ms();
             } else if now_ms() - last_change_ms > CONSUMER_STALL_MS {
-                return Err(MediaError::WebCodecs(format!(
-                    "decode pump stalled waiting for pts={target_us}µs (q={}, held={})",
-                    core.borrow().decode_queue_size(),
-                    core.borrow().held.len()
-                )));
+                return Err(MediaError::DecodeStall {
+                    kind: DecodeStall::PumpStalled,
+                    detail: format!(
+                        "decode pump stalled waiting for pts={target_us}µs (q={}, held={})",
+                        core.borrow().decode_queue_size(),
+                        core.borrow().held.len()
+                    ),
+                });
             }
             spins += 1;
             if spins > CONSUMER_MAX_SPINS {

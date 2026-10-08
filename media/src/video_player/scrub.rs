@@ -403,7 +403,7 @@ impl VideoPlayer {
                         Ok(())
                     }
                     Err(e) if e.is_cancelled() => Err(e),
-                    Err(e) if super::is_decoder_poison(&e) => {
+                    Err(e) if e.is_decoder_poison() => {
                         web_sys::console::warn_1(
                             &format!(
                                 "webmedia: Exact seed poison → soft cold ({e}); densify_yield={densify_yield_ms:.0}ms exact={exact_ms:.0}ms"
@@ -418,7 +418,7 @@ impl VideoPlayer {
                 }
             }
             Err(e) if e.is_cancelled() => Err(e),
-            Err(e) if super::is_decoder_poison(&e) => {
+            Err(e) if e.is_decoder_poison() => {
                 let exact_ms = now_ms().unwrap_or(exact_t0) - exact_t0;
                 web_sys::console::warn_1(
                     &format!(

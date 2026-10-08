@@ -13,7 +13,7 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
-use crate::error::MediaError;
+use crate::error::{DecodeStall, MediaError};
 use crate::types::{EncodedSample, FrameId};
 
 use super::core::{DecoderCore, GopSink, REORDER_FEED_SLACK, compute_max_queue_size};
@@ -593,9 +593,10 @@ async fn await_decode_capacity(
         }
         spins += 1;
         if spins > 600 {
-            return Err(MediaError::WebCodecs(format!(
-                "decodeQueueSize backpressure timed out (q={q}, held={held})"
-            )));
+            return Err(MediaError::DecodeStall {
+                kind: DecodeStall::Backpressure,
+                detail: format!("decodeQueueSize backpressure timed out (q={q}, held={held})"),
+            });
         }
         wait_for_capacity_progress(core).await;
     }

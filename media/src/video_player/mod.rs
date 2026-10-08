@@ -4,7 +4,7 @@
 //! Present and decode share the player via interior mutability so an rAF present loop
 //! never waits on `prefetch_one` (mediabunny-style split).
 //!
-//! Layout (navigation splits P0–P6): `api` · `shared` · `util` · `open` · `control` ·
+//! Layout (navigation splits P0–P6): `api` · `shared` · `open` · `control` ·
 //! `clock_ctrl` · `present` · `decode_ops` · `play` · `scrub*` · `seek` · `thumb`.
 
 use std::cell::RefCell;
@@ -26,7 +26,6 @@ mod seek;
 mod shared;
 #[cfg_attr(not(feature = "thumbs"), path = "thumb_off.rs")]
 mod thumb;
-mod util;
 
 pub use api::{DuePresent, PipelineStats, PlayerState, ReadyFrameKind, ReadyFrameMark};
 pub(crate) use shared::PRESENTATION_QUEUE_CAP;
@@ -37,7 +36,6 @@ use shared::{
     BIG_LAG_SECONDS, LOOP_NEAR_END_PRESENTATION_CAP_MAX, PLAY_EXACT_VRAM_VF_SLACK,
     PREFETCH_DEADLINE_SLACK_MS, QueuedFrame, SHUTTLE_PRESENTATION_QUEUE_CAP, Shared,
 };
-use util::is_decoder_poison;
 
 /// Frame-accurate video player (WebCodecs → canvas); optional audio via [`crate::AudioOutput`].
 /// Pure-audio hosts will use a separate `AudioPlayer` over the same audio modules.

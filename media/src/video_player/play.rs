@@ -343,9 +343,7 @@ impl VideoPlayer {
         match self.fill_presentation_queue(epoch).await {
             Ok(()) => Ok(()),
             Err(e) if e.is_cancelled() => Err(e),
-            Err(e)
-                if super::is_decoder_poison(&e) && self.is_current(epoch) && self.is_playing() =>
-            {
+            Err(e) if e.is_decoder_poison() && self.is_current(epoch) && self.is_playing() => {
                 web_sys::console::warn_1(
                     &format!("webmedia: PlayPrime fill poison → recreate ({e})").into(),
                 );
