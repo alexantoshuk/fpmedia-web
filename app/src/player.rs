@@ -522,7 +522,9 @@ pub fn DemoPlayer() -> impl IntoView {
                             video.busy.get() || !video.ready.get() || video.playing.get()
                         }
                         on:change=move |ev| {
-                            let input: HtmlInputElement = event_target(&ev);
+                            let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                return;
+                            };
                             if let Ok(v) = input.value().parse::<u32>() {
                                 video.seek_frame(v);
                             }
@@ -599,7 +601,9 @@ pub fn DemoPlayer() -> impl IntoView {
                             prop:value=move || video.volume.get().to_string()
                             prop:disabled=move || !video.ready.get() || !video.has_audio.get()
                             on:input=move |ev| {
-                                let input: HtmlInputElement = event_target(&ev);
+                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                    return;
+                                };
                                 if let Ok(v) = input.value().parse::<f64>() {
                                     video.set_volume(v);
                                 }
@@ -631,7 +635,9 @@ pub fn DemoPlayer() -> impl IntoView {
                             }
                             prop:disabled=move || !video.ready.get()
                             on:input=move |ev| {
-                                let input: HtmlInputElement = event_target(&ev);
+                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                    return;
+                                };
                                 if let Ok(v) = input.value().parse::<f64>() {
                                     video.set_playback_rate(v);
                                 }
@@ -647,7 +653,9 @@ pub fn DemoPlayer() -> impl IntoView {
                             accept="video/mp4,video/*"
                             data-testid="file-input"
                             on:change=move |ev: leptos::ev::Event| {
-                                let input: HtmlInputElement = event_target(&ev);
+                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                    return;
+                                };
                                 let Some(files) = input.files() else { return };
                                 let Some(file) = files.get(0) else { return };
                                 let name = file.name();
@@ -921,7 +929,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                     return;
                 }
                 hide_hover();
-                let Ok(el) = ev.current_target().unwrap().dyn_into::<Element>() else {
+                let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
                     return;
                 };
                 if let Ok(html) = el.clone().dyn_into::<web_sys::HtmlElement>() {
@@ -936,7 +944,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 }
             }
             on:pointermove=move |ev| {
-                let Ok(el) = ev.current_target().unwrap().dyn_into::<Element>() else {
+                let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
                     return;
                 };
                 if scrubbing.get_untracked() {
@@ -1006,6 +1014,6 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
     }
 }
 
-fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> T {
-    ev.target().expect("event target").unchecked_into::<T>()
+fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> Option<T> {
+    ev.target()?.dyn_into::<T>().ok()
 }
