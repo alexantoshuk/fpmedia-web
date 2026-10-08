@@ -45,7 +45,7 @@ pub(super) fn enqueue_seek_step(
 pub(super) enum SeekOrStep {
     Seek(u32),
     SeekKeyframe(u32),
-    Scrub { target: u32, settle: bool },
+    ScrubDrag(u32),
     ScrubRelease { target: u32, then_play: bool },
     Step(bool),
 }
@@ -153,10 +153,7 @@ pub(super) async fn run_seek_or_step(
     // Scrub settle: host already soft-paused on pointerdown and `prepare_scrub_settle`
     // latched densify hold. Calling hard `pause()` cleared that hold and re-kicked
     // densify under exact goto → `decoder busy` / resume Play no-op (URL fMP4).
-    let scrub_settle = matches!(
-        &op,
-        SeekOrStep::Scrub { settle: true, .. } | SeekOrStep::ScrubRelease { .. }
-    );
+    let scrub_settle = matches!(&op, SeekOrStep::ScrubRelease { .. });
     if scrub_settle {
         if p.is_playing() {
             p.pause_for_scrub();
@@ -167,13 +164,7 @@ pub(super) async fn run_seek_or_step(
     let label = match &op {
         SeekOrStep::Seek(t) => format!("seek {t}"),
         SeekOrStep::SeekKeyframe(t) => format!("seek-key {t}"),
-        SeekOrStep::Scrub { target: t, settle } => {
-            if *settle {
-                format!("scrub settle {t}")
-            } else {
-                format!("scrub {t}")
-            }
-        }
+        SeekOrStep::ScrubDrag(t) => format!("scrub {t}"),
         SeekOrStep::ScrubRelease {
             target: t,
             then_play,
@@ -192,17 +183,11 @@ pub(super) async fn run_seek_or_step(
     let result = match op {
         SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
         SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
-        SeekOrStep::Scrub { target, settle } => {
-            let r = p.scrub_to(u64::from(target), settle).await;
-            // Settle no longer arms densify inside the engine — if Play is queued,
-            // keep the warm main decoder for prime (play-after-scrub).
-            if settle && r.is_ok() && queue.is_current(id) && !queue.has_pending_play() {
-                p.arm_scrub_densify_after_exact(u64::from(target));
-            }
-            r
-        }
+        SeekOrStep::ScrubDrag(target) => p.scrub_to(u64::from(target), false).await,
         SeekOrStep::ScrubRelease { target, then_play } => {
             let r = p.scrub_to(u64::from(target), true).await;
+            // Settle no longer arms densify inside the engine — if Play is queued,
+            // keep the warm main decoder for prime (play-after-scrub).
             if r.is_ok() && queue.is_current(id) && !then_play && !queue.has_pending_play() {
                 p.arm_scrub_densify_after_exact(u64::from(target));
             }

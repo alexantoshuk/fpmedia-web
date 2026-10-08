@@ -215,20 +215,6 @@ impl VideoRef {
         }
     }
 
-    /// Async scrub drag — cancelable exact seek; rapid moves keep only the latest.
-    /// Updates [`Self::playhead`] immediately; does not latch `busy`.
-    /// Aim + blit only while dragging; densify arms after settle / hard Pause.
-    pub fn scrub_frame(&self, frame: u32) {
-        self.scrub_pointer_move(frame);
-    }
-
-    /// Pointer-up settle — exact frame first (hold densify), then densify the GOP.
-    pub fn scrub_settle(&self, frame: u32) {
-        // Legacy: down+up through transport (atomic ScrubRelease).
-        self.scrub_pointer_down(frame);
-        self.scrub_pointer_up(frame);
-    }
-
     /// Timeline pointer down — transport FSM (`architecture.md` § State machines).
     pub fn scrub_pointer_down(&self, frame: u32) {
         let max = self.frame_count.get_untracked().saturating_sub(1);

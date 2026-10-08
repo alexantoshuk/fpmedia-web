@@ -30,11 +30,8 @@ pub(crate) enum HostOp {
     /// Nearest sync at/before frame.
     SeekKeyframe(u32),
     /// Timeline drag — cancelable; latest target wins (does not latch `busy`).
-    /// Drag only (`settle=false`). Pointer-up uses [`HostOp::ScrubRelease`].
-    Scrub {
-        frame: u32,
-        settle: bool,
-    },
+    /// Pointer-up uses [`HostOp::ScrubRelease`].
+    ScrubDrag(u32),
     /// Atomic pointer-up: exact settle, then optional play-prime in the same op.
     ScrubRelease {
         frame: u32,
@@ -53,7 +50,7 @@ impl HostOp {
             Self::Open { .. } => HostOpKind::Open,
             Self::Seek(t) => HostOpKind::Seek(*t),
             Self::SeekKeyframe(t) => HostOpKind::SeekKeyframe(*t),
-            Self::Scrub { frame, .. } => HostOpKind::ScrubDrag { frame: *frame },
+            Self::ScrubDrag(frame) => HostOpKind::ScrubDrag { frame: *frame },
             Self::ScrubRelease {
                 frame,
                 then_play,
@@ -151,7 +148,7 @@ impl OpQueue {
         self.inner.borrow_mut().pending.retain(|(_, o)| {
             !matches!(
                 o,
-                HostOp::Scrub { .. } | HostOp::ScrubRelease { .. } | HostOp::PlayPrime
+                HostOp::ScrubDrag(_) | HostOp::ScrubRelease { .. } | HostOp::PlayPrime
             )
         });
         self.sync_busy();
@@ -267,15 +264,7 @@ fn coalesce_pending(pending: &mut VecDeque<(u64, HostOp)>, id: u64, kind: Enqueu
                     pending.push_back(entry);
                 }
             }
-            HostOpKind::ScrubDrag { frame } => {
-                pending.push_back((
-                    id,
-                    HostOp::Scrub {
-                        frame,
-                        settle: false,
-                    },
-                ));
-            }
+            HostOpKind::ScrubDrag { frame } => pending.push_back((id, HostOp::ScrubDrag(frame))),
             HostOpKind::ScrubRelease {
                 frame,
                 then_play,

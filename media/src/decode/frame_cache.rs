@@ -347,11 +347,6 @@ impl ScrubChunkStore {
         self.chunks.contains_key(&frame)
     }
 
-    #[allow(dead_code)] // chunk inspect / future strip decode
-    pub fn get(&self, frame: FrameId) -> Option<&ScrubChunk> {
-        self.chunks.get(&frame)
-    }
-
     /// Insert without replacing. Returns `true` when newly resident.
     pub fn insert_chunk(&mut self, frame: FrameId, chunk: ScrubChunk) -> bool {
         if self.chunks.contains_key(&frame) {
@@ -402,12 +397,6 @@ impl ScrubChunkStore {
         self.chunks.insert(frame, chunk);
         self.runs.note_insert(&self.chunks, self.playhead, frame);
         self.refresh_no_gaps();
-    }
-
-    /// Drop one resident (bad encode / blit failure).
-    #[allow(dead_code)] // kept for ingest rollback / future Exact-only failure paths
-    pub fn remove(&mut self, frame: FrameId) -> bool {
-        self.remove_frame(frame)
     }
 
     pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId, dir: i8) -> Option<FrameId> {
@@ -538,13 +527,6 @@ impl ScrubBlitLru {
 
     pub fn clear(&mut self) {
         for (_, bmp) in std::mem::take(&mut self.bitmaps) {
-            bmp.close();
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn invalidate(&mut self, frame: FrameId) {
-        if let Some(bmp) = self.bitmaps.remove(&frame) {
             bmp.close();
         }
     }
@@ -744,8 +726,6 @@ impl Drop for ScrubBlitLru {
 
 /// One GOP of hover / filmstrip thumbs at **caller-requested** bitmap size.
 pub struct ThumbGop {
-    #[allow(dead_code)] // GOP identity for filmstrip follow-ups
-    pub key_frame: FrameId,
     pub by_time: HashMap<i64, ThumbBitmap>,
 }
 
@@ -889,7 +869,6 @@ impl ThumbCache {
             self.gops.put(
                 key,
                 ThumbGop {
-                    key_frame: key,
                     by_time: HashMap::new(),
                 },
             );

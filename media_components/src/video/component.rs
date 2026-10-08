@@ -597,10 +597,7 @@ pub fn Video(
                             )
                             .await;
                         }
-                        HostOp::Scrub {
-                            frame: target,
-                            settle,
-                        } => {
+                        HostOp::ScrubDrag(target) => {
                             queue.set_scrub_inflight(true);
                             let _ = run_seek_or_step(
                                 &queue,
@@ -611,7 +608,7 @@ pub fn Video(
                                 error,
                                 playing,
                                 playhead,
-                                SeekOrStep::Scrub { target, settle },
+                                SeekOrStep::ScrubDrag(target),
                             )
                             .await;
                             queue.set_scrub_inflight(false);
@@ -1026,8 +1023,6 @@ pub fn Video(
             );
         }) as Rc<dyn Fn(u32)>
     };
-
-    // Legacy settle/drag API removed — use scrub_pointer_* (transport FSM).
 
     let next_fn = {
         let player = Rc::clone(&player);

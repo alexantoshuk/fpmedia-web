@@ -174,12 +174,7 @@ impl ReadOrchestrator {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn file_size(&self) -> Option<u64> {
-        self.state.lock().expect("orch").file_size
-    }
-
-    #[allow(dead_code)] // gray-strip / debug hooks
+    #[cfg(test)]
     pub fn cache_windows(&self) -> Vec<(u64, u64)> {
         self.state
             .lock()
@@ -434,14 +429,6 @@ impl ReadOrchestrator {
         }
         if let Some(new_id) = to_kick {
             self.kick_worker(new_id);
-        }
-    }
-
-    #[allow(dead_code)] // UrlSource abort / Drop path
-    pub fn abort_worker(&self, id: WorkerId) {
-        let mut g = self.state.lock().expect("orch");
-        if let Some(w) = g.workers.iter_mut().find(|w| w.id == id) {
-            w.aborted = true;
         }
     }
 

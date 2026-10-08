@@ -6,7 +6,7 @@
 
 ## In progress
 
-- Docs + gates hygiene from the 2026-10-08 codebase review (uncommitted): workspace `unwrap_used = "deny"`, `.ai/` cleanup. `server` added to the Clippy gate.
+- Refactor plan below (group 1).
 
 ---
 
@@ -16,12 +16,11 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ### 1. Hygiene (no behavior change)
 
-1. Delete dead / legacy API: `HostOp::Scrub { settle }`, `VideoRef::scrub_frame` / `scrub_settle`, `Player::{seek_frame, next_frame, previous_frame, current_sample}`, `#[allow(dead_code)]` cache helpers in `decode/frame_cache.rs`.
-2. One host-op enum: merge `HostOp` / `HostOpKind` / `EnqueueKind`; drop the `panic!` in `OpQueue::enqueue_seek_or_step`.
-3. `media_components`: one `HostCtx` instead of 10–16-arg `run_open` / `dispatch_transport`; one reset for `close_fn` + `retire_clip`; `VideoRef` ops boilerplate.
-4. Split hover thumbs out of `video_player/scrub.rs` → `thumb.rs` (module-level `cfg(feature = "thumbs")`, no inline stubs).
-5. Split `types.rs` (policy / metadata); move strip pixel math to `media_components::helpers`.
-6. One JS timer module (sleep / macrotask / microtask / rAF / now) for engine + host; removes bare-`resolve` timers (`video_player/util.rs::sleep_ms`, `hover_thumb.rs`) and `expect("window")`.
+1. One host-op enum: merge `HostOp` / `HostOpKind` / `EnqueueKind`; drop the `panic!` in `OpQueue::enqueue_seek_or_step`.
+2. `media_components`: one `HostCtx` instead of 10–16-arg `run_open` / `dispatch_transport`; one reset for `close_fn` + `retire_clip`; `VideoRef` ops boilerplate.
+3. Split hover thumbs out of `video_player/scrub.rs` → `thumb.rs` (module-level `cfg(feature = "thumbs")`, no inline stubs).
+4. Split `types.rs` (policy / metadata); move strip pixel math to `media_components::helpers`.
+5. One JS timer module (sleep / macrotask / microtask / rAF / now) for engine + host; removes bare-`resolve` timers (`video_player/util.rs::sleep_ms`, `hover_thumb.rs`) and `expect("window")`.
 
 ### 2. Structural, low risk
 

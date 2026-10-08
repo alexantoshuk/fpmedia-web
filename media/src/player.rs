@@ -38,17 +38,6 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn open_mp4_bytes(bytes: Vec<u8>) -> Result<Self, MediaError> {
-        let track = crate::demux::open_mp4_bytes(bytes)?;
-        Self::from_track(track)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn open_mp4_path(path: impl AsRef<std::path::Path>) -> Result<Self, MediaError> {
-        let track = crate::demux::open_mp4_path(path)?;
-        Self::from_track(track)
-    }
-
     pub fn from_track(track: Mp4VideoTrack) -> Result<Self, MediaError> {
         if track.frame_count() == 0 {
             return Err(MediaError::EmptyTrack);
@@ -120,34 +109,6 @@ impl Player {
         self.ensure_in_range(frame)?;
         self.frame = frame;
         Ok(())
-    }
-
-    /// Seek to presentation frame `frame` and return the decode cascade.
-    pub async fn seek_frame(&mut self, frame: FrameId) -> Result<DecodeWindow, MediaError> {
-        let window = self.window_at(frame).await?;
-        self.pause();
-        self.commit_frame(frame)?;
-        Ok(window)
-    }
-
-    pub async fn next_frame(&mut self) -> Result<DecodeWindow, MediaError> {
-        let next = self.frame.saturating_add(1);
-        if next >= self.track.frame_count() {
-            return Err(MediaError::FrameOutOfRange(next, self.track.frame_count()));
-        }
-        self.seek_frame(next).await
-    }
-
-    pub async fn previous_frame(&mut self) -> Result<DecodeWindow, MediaError> {
-        if self.frame == 0 {
-            return Err(MediaError::FrameOutOfRange(0, self.track.frame_count()));
-        }
-        self.seek_frame(self.frame - 1).await
-    }
-
-    /// Current frame's encoded sample (not the full cascade).
-    pub async fn current_sample(&self) -> Result<EncodedSample, MediaError> {
-        self.track.encoded_sample(self.frame).await
     }
 
     fn ensure_in_range(&self, frame: FrameId) -> Result<(), MediaError> {
