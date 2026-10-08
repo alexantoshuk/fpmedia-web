@@ -134,8 +134,18 @@ impl VideoPlayer {
         // mediabunny: no shared slot — iterators use `terminated`; we cancel via
         // `op_epoch` and must keep waiting while the epoch is current
         // (`skills/leptos.md` Quick Pause→Play).
-        let wait_ms = self.metadata().settle_policy().take_decoder_wait_ms;
-        let busy_log_ms = self.metadata().settle_policy().densify_yield_ms;
+        let wait_ms = self
+            .shared
+            .track
+            .metadata_ref()
+            .settle_policy()
+            .take_decoder_wait_ms;
+        let busy_log_ms = self
+            .shared
+            .track
+            .metadata_ref()
+            .settle_policy()
+            .densify_yield_ms;
         let start = now_ms().unwrap_or(0.0);
         let mut waited_logged = false;
         loop {
@@ -180,14 +190,14 @@ impl VideoPlayer {
     }
 
     pub(super) async fn goto_frame(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
-        let track = self.shared.player.borrow().track_rc();
+        let track = self.shared.track.clone();
         let video_frame = self.decode_frame(&track, frame, epoch).await?;
         if !self.is_current(epoch) {
             drop(video_frame);
             return Err(MediaError::Cancelled);
         }
         self.present_and_cache(frame, video_frame)?;
-        self.shared.player.borrow_mut().commit_frame(frame)?;
+        self.shared.commit_frame(frame)?;
         Ok(())
     }
 
@@ -200,7 +210,7 @@ impl VideoPlayer {
         frame: FrameId,
         epoch: u64,
     ) -> Result<(), MediaError> {
-        let track = self.shared.player.borrow().track_rc();
+        let track = self.shared.track.clone();
         let shared = Rc::clone(&self.shared);
         let on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)> =
             Box::new(move |id: FrameId, video: OwnedVideoFrame| {
@@ -214,7 +224,7 @@ impl VideoPlayer {
             return Err(MediaError::Cancelled);
         }
         self.present_and_cache(frame, video_frame)?;
-        self.shared.player.borrow_mut().commit_frame(frame)?;
+        self.shared.commit_frame(frame)?;
         Ok(())
     }
 
@@ -248,7 +258,7 @@ impl VideoPlayer {
         frame: FrameId,
         epoch: u64,
     ) -> Result<(), MediaError> {
-        let track = self.shared.player.borrow().track_rc();
+        let track = self.shared.track.clone();
         let shared = Rc::clone(&self.shared);
         let target = frame;
         let on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)> =
@@ -278,7 +288,7 @@ impl VideoPlayer {
             return Err(MediaError::Cancelled);
         }
         self.present_and_cache(frame, video_frame)?;
-        self.shared.player.borrow_mut().commit_frame(frame)?;
+        self.shared.commit_frame(frame)?;
         Ok(())
     }
 }

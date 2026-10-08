@@ -19,11 +19,14 @@ use crate::decode::scrub_blit::BlitCanvasSlot;
 use crate::decode::thumb_preview::ThumbPreview;
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::decoder_slot::DecoderSlotModel;
+use crate::demux::Mp4VideoTrack;
 use crate::engine_mode::EngineModel;
-use crate::player::Player;
+use crate::error::MediaError;
 use crate::policy::ThumbPolicy;
 use crate::session::SessionModel;
-use crate::types::FrameId;
+use crate::types::{FrameId, Timestamp};
+
+use super::api::PlayerState;
 use crate::workload::WorkloadHints;
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).
@@ -60,7 +63,14 @@ pub(super) struct QueuedFrame {
 
 /// Single playhead cache — fill policy lives in [`EngineModel`].
 pub(super) struct Shared {
-    pub(super) player: RefCell<Player>,
+    pub(super) track: Rc<Mp4VideoTrack>,
+    /// Committed playhead (last presented / settled frame).
+    pub(super) frame: Cell<FrameId>,
+    /// Host-visible play flag. Not derived from [`EngineModel`] — mode can be
+    /// `ExactHold` / `Scrub` mid-play.
+    pub(super) playing: Cell<bool>,
+    /// HTML `<video loop>`.
+    pub(super) looping: Cell<bool>,
     /// Ahead of playhead (presentation order). Cap [`PRESENTATION_QUEUE_CAP`].
     pub(super) presentation: RefCell<VecDeque<QueuedFrame>>,
     /// VF currently matching canvas / committed playhead (not yet in behind).
@@ -155,5 +165,33 @@ impl Shared {
     #[inline]
     pub(super) fn is_disposed(&self) -> bool {
         self.disposed.get()
+    }
+
+    pub(super) fn state(&self) -> PlayerState {
+        let frame = self.frame.get();
+        let timestamp = self
+            .track
+            .index()
+            .get(frame)
+            .map(|e| e.composition_timestamp())
+            .unwrap_or(Timestamp::from_seconds(0.0));
+        PlayerState {
+            frame,
+            timestamp,
+            playing: self.playing.get(),
+            looping: self.looping.get(),
+            frame_count: self.track.frame_count(),
+        }
+    }
+
+    /// Commit the playhead to `frame` (after a successful decode / present).
+    /// Does not touch [`Self::playing`] — the play loop relies on that.
+    pub(super) fn commit_frame(&self, frame: FrameId) -> Result<(), MediaError> {
+        let count = self.track.frame_count();
+        if frame >= count {
+            return Err(MediaError::FrameOutOfRange(frame, count));
+        }
+        self.frame.set(frame);
+        Ok(())
     }
 }

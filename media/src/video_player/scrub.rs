@@ -65,12 +65,12 @@ impl VideoPlayer {
     }
 
     pub(super) fn scrub_policy(&self) -> ScrubPolicy {
-        self.shared.player.borrow().metadata().scrub_policy()
+        self.shared.track.metadata_ref().scrub_policy()
     }
 
     pub(super) fn is_all_intra(&self) -> bool {
         matches!(
-            self.shared.player.borrow().metadata().gop_profile,
+            self.shared.track.metadata_ref().gop_profile,
             GopProfile::AllIntra
         )
     }
@@ -112,7 +112,7 @@ impl VideoPlayer {
     /// `rearm`: settle/seek → `true` (densify resumes after Exact); PlayPrime →
     /// `false` (Play must not keep filling gaps).
     pub(super) async fn await_scrub_densify_yield(&self, rearm: bool) {
-        let policy = self.metadata().settle_policy();
+        let policy = self.shared.track.metadata_ref().settle_policy();
         let budget_ms = policy.densify_yield_ms;
         let retry_ms = policy.densify_yield_retry_ms;
         let start = now_ms().unwrap_or(0.0);
@@ -240,7 +240,7 @@ impl VideoPlayer {
             0.0
         };
         let result = async {
-            self.shared.player.borrow_mut().pause();
+            self.shared.playing.set(false);
             self.clear_loop_prime();
 
             if settle {
@@ -286,7 +286,7 @@ impl VideoPlayer {
                     let key = self.key_for(frame).unwrap_or(frame);
                     warm_scrub_gop_bytes(&self.shared, key);
                     {
-                        let track = self.shared.player.borrow().track_rc();
+                        let track = self.shared.track.clone();
                         let lead = gop_sample_lead(&track, key);
                         if let Err(e) = track.warm_sample_bytes(key, lead).await {
                             if e.is_cancelled() {
@@ -329,7 +329,7 @@ impl VideoPlayer {
                 Ok(())
             } else {
                 if self.present_from_cache(frame).await? {
-                    self.shared.player.borrow_mut().commit_frame(frame)?;
+                    self.shared.commit_frame(frame)?;
                     return Ok(());
                 }
 
@@ -565,8 +565,8 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                 return Ok(());
             }
             if shared.engine.get().is_play()
-                || shared.player.borrow().state().playing
-                || !shared.player.borrow().metadata().scrub_policy().densify
+                || shared.playing.get()
+                || !shared.track.metadata_ref().scrub_policy().densify
                 || shared.scrub_densify_blocked.get()
             {
                 return Ok(());
@@ -584,7 +584,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             if shared.scrub_epoch.get() != scrub_epoch {
                 if shared.is_disposed()
                     || shared.engine.get().is_play()
-                    || shared.player.borrow().state().playing
+                    || shared.playing.get()
                     || !shared.engine.get().allows_densify()
                     || !shared.scrub_pending.get()
                 {
@@ -615,9 +615,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             // tab. Prefetch / mfra backfill run; densify retries next pass.
             // Local invention (mediabunny has no densify plane).
             let key = shared
-                .player
-                .borrow()
-                .track()
+                .track
                 .index()
                 .nearest_keyframe(target)
                 .unwrap_or(target);
@@ -673,7 +671,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                     }
                     // Play / abort(false): do not adopt — clear busy for PlayPrime.
                     if shared.engine.get().is_play()
-                        || shared.player.borrow().state().playing
+                        || shared.playing.get()
                         || !shared.scrub_pending.get()
                     {
                         return Ok(());
@@ -711,7 +709,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
 
     let want_again = shared.scrub_pending.get()
         && shared.engine.get().allows_densify()
-        && !shared.player.borrow().state().playing
+        && !shared.playing.get()
         && next_gap_target(&shared).is_some();
     shared.scrub_pending.set(false);
 
@@ -731,7 +729,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
 }
 
 pub(super) fn apply_clip_budgets(shared: &Shared) {
-    let meta = shared.player.borrow().metadata().clone();
+    let meta = shared.track.metadata();
     let policy = meta.scrub_policy();
     let max_frames = meta.scrub_cache_frame_budget();
     shared.scrub_chunks.borrow_mut().set_max_frames(max_frames);
@@ -831,9 +829,7 @@ pub(super) async fn fill_one_gap(
     scrub_epoch: u64,
 ) -> Result<bool, MediaError> {
     let key = shared
-        .player
-        .borrow()
-        .track()
+        .track
         .index()
         .nearest_keyframe(target)
         .unwrap_or(target);
@@ -842,14 +838,14 @@ pub(super) async fn fill_one_gap(
         shared.is_disposed()
             || shared.scrub_epoch.get() != scrub_epoch
             || shared.engine.get().is_play()
-            || shared.player.borrow().state().playing
+            || shared.playing.get()
             || shared.engine.get().holds_exact()
     };
     if cancelled() {
         return Err(MediaError::Cancelled);
     }
     {
-        let index = shared.player.borrow().track().index().clone();
+        let index = shared.track.index().clone();
         let ids = index.gop_frame_ids(key).unwrap_or_default();
         // Skip only when markers **and** live blit cover the GOP. Markers alone
         // after Play's blit wipe must not count as done.
@@ -861,8 +857,8 @@ pub(super) async fn fill_one_gap(
         }
     }
 
-    let meta = shared.player.borrow().metadata().clone();
-    let track = shared.player.borrow().track_rc();
+    let meta = shared.track.metadata();
+    let track = shared.track.clone();
 
     // Short borrow for take — never hold scrub_decoder RefMut across await/reset.
     // After clip dispose the slot is empty — do not recreate a scrub decoder.

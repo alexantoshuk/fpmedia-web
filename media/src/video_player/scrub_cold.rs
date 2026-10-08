@@ -23,7 +23,7 @@ use super::sleep_ms;
 /// (`mediabunny: BlobSource`); skip FetchMap — want-only WASM mirrors must not
 /// block densify / punch the gray strip via `mark_full`.
 pub(super) fn scrub_gop_bytes_warm(shared: &Shared, key: FrameId) -> bool {
-    let track = shared.player.borrow().track_rc();
+    let track = shared.track.clone();
     let indexed = track.indexed_frame_count();
     if key >= indexed {
         return false;
@@ -57,7 +57,7 @@ pub(super) fn scrub_gop_bytes_warm(shared: &Shared, key: FrameId) -> bool {
 ///
 /// Cold → soft present + prefetch ([`soft_cold_scrub_settle`]); densify paints later.
 pub(super) fn exact_scrub_ready(shared: &Shared, frame: FrameId) -> bool {
-    let track = shared.player.borrow().track_rc();
+    let track = shared.track.clone();
     let indexed = track.indexed_frame_count();
     if frame >= indexed {
         return false;
@@ -74,7 +74,7 @@ pub(super) fn soft_cold_scrub_settle(
     player: &VideoPlayer,
     frame: FrameId,
 ) -> Result<(), MediaError> {
-    let indexed = player.shared.player.borrow().track().indexed_frame_count();
+    let indexed = player.shared.track.indexed_frame_count();
     let key = player.key_for(frame).unwrap_or(frame);
     warm_scrub_gop_bytes(&player.shared, key);
     // Soft present: nearest warm blit only — never cold decode on the OpQueue.
@@ -82,7 +82,7 @@ pub(super) fn soft_cold_scrub_settle(
         let _ = player.try_present_warm_blit(preview)?;
     }
     if let Some(commit) = cold_settle_commit_frame(frame, indexed) {
-        player.shared.player.borrow_mut().commit_frame(commit)?;
+        player.shared.commit_frame(commit)?;
         player.touch_playhead(commit);
     }
     Ok(())
@@ -103,14 +103,14 @@ pub(super) fn try_resolve_pending_cold_exact(shared: &Rc<Shared>) {
         return;
     };
     if draw_image_bitmap(&shared.canvas, &shared.ctx, bitmap).is_ok() {
-        let _ = shared.player.borrow_mut().commit_frame(aim);
+        let _ = shared.commit_frame(aim);
         shared.pending_cold_exact.set(None);
     }
 }
 
 /// Kick sample prefetch (and fragment backfill if needed) for a cold densify GOP.
 pub(super) fn warm_scrub_gop_bytes(shared: &Shared, key: FrameId) {
-    let track = shared.player.borrow().track_rc();
+    let track = shared.track.clone();
     let indexed = track.indexed_frame_count();
     if key >= indexed {
         track.kick_fragment_backfill();
@@ -143,9 +143,7 @@ pub(super) fn kick_fetchmap_gap_fill(shared: &Shared) -> bool {
     }
     let (playhead, _) = playhead_and_last(shared);
     let focus_offset = shared
-        .player
-        .borrow()
-        .track()
+        .track
         .index()
         .get(playhead)
         .map(|e| e.offset)
@@ -153,7 +151,7 @@ pub(super) fn kick_fetchmap_gap_fill(shared: &Shared) -> bool {
     let Some((gap_start, gap_end)) = next_fetchmap_gap(&gaps, focus_offset) else {
         return false;
     };
-    let track = shared.player.borrow().track_rc();
+    let track = shared.track.clone();
     let source = track.source();
     // Blob: sync `note_local_gray` (quantum-sized). URL: small Range tiles so
     // we do not stampede OPEN_URL_PARALLELISM (mediabunny: BlobSource vs URL).
@@ -193,7 +191,7 @@ pub(super) fn kick_fetchmap_gap_fill(shared: &Shared) -> bool {
 pub(super) fn schedule_fetchmap_gap_fill(shared: &Rc<Shared>) {
     if shared.is_disposed()
         || shared.engine.get().is_play()
-        || shared.player.borrow().state().playing
+        || shared.playing.get()
         || shared.file_size == 0
         || shared.gray_fill_busy.get()
     {
@@ -210,10 +208,7 @@ pub(super) fn schedule_fetchmap_gap_fill(shared: &Rc<Shared>) {
 }
 
 async fn fetchmap_gap_fill_task(shared: Rc<Shared>) {
-    while !shared.is_disposed()
-        && !shared.engine.get().is_play()
-        && !shared.player.borrow().state().playing
-    {
+    while !shared.is_disposed() && !shared.engine.get().is_play() && !shared.playing.get() {
         if !kick_fetchmap_gap_fill(&shared) {
             break;
         }

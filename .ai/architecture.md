@@ -32,7 +32,7 @@ Long-lived chrome lives **outside** matched routes when routes are added. **Reso
 
 ```
 webmedia/
-├── media/                 ← crate name `webmedia`: demux + FrameIndex + Player + VideoPlayer
+├── media/                 ← crate name `webmedia`: demux + FrameIndex + VideoPlayer
 ├── media_components/      ← crate name `media_components`: Leptos <Video>
 ├── timecode/              ← crate name `timecode`: SMPTE frames ↔ HH:MM:SS:FF (DF/NDF)
 ├── app/                   ← demo host UI + shell()

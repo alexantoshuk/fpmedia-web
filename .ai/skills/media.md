@@ -43,7 +43,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 ```
 lib.rs, types.rs, policy.rs, clock.rs, clock_state.rs, session.rs, transport.rs,
 engine_mode.rs, decoder_slot.rs, workload.rs, host_op_coalesce.rs,
-open_phase.rs, playback_policy.rs, frame_index.rs, player.rs, error.rs
+open_phase.rs, playback_policy.rs, frame_index.rs, error.rs
 bitstream/     AVC + HEVC packet type / sanitize
 source/        MediaSource, CachedSource, FetchMap, ReadOrchestrator (+ wasm Blob/Url)
 audio/         demux, stretch (WSOLA), output, PlaybackClock

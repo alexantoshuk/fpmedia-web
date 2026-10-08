@@ -102,7 +102,7 @@ impl VideoPlayer {
                         // Host may have paused after rate snap (K: pause then 1×,
                         // or rate→pause race). Do not restart audio into a stop.
                         if shared.is_disposed()
-                            || !shared.player.borrow().state().playing
+                            || !shared.playing.get()
                             || crate::is_wall_clock_rate(shared.clock.borrow().playback_rate())
                         {
                             return;
@@ -275,7 +275,7 @@ impl VideoPlayer {
             let frame = queued.frame;
             self.present_play_frame(frame, queued.video)?;
             self.touch_playhead(frame);
-            self.shared.player.borrow_mut().commit_frame(frame)?;
+            self.shared.commit_frame(frame)?;
             self.frame_timestamp_seconds(frame)
                 .unwrap_or_else(|_| self.state().timestamp.seconds)
         } else {

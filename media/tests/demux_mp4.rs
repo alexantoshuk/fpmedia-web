@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use webmedia::{
-    GopProfile, MediaSource, MemorySource, OpenMp4Options, PacketType, Player, ReadFuture,
-    VideoCodec, avc_nal_length_size, determine_avc_packet_type, open_mp4_media_source_cached,
-    open_mp4_path, open_mp4_source,
+    GopProfile, MediaSource, MemorySource, OpenMp4Options, PacketType, ReadFuture, VideoCodec,
+    avc_nal_length_size, determine_avc_packet_type, open_mp4_media_source_cached, open_mp4_path,
+    open_mp4_source,
 };
 
 #[cfg(feature = "hevc")]
@@ -104,11 +104,9 @@ fn demux_short_gop_metadata_and_frames() {
     assert_eq!(window.last().copied(), Some(14));
     assert_eq!(window.len(), 3);
 
-    let player = Player::from_track(track).expect("player");
-    assert_eq!(player.state().frame, 0);
-    let win = block_on(player.window_at(14)).expect("cascade");
-    assert_eq!(win.target_frame, 14);
-    assert!(win.samples.first().is_some_and(|s| s.is_keyframe));
+    let samples = block_on(track.decode_cascade(14)).expect("cascade");
+    assert_eq!(samples.last().map(|s| s.frame), Some(14));
+    assert!(samples.first().is_some_and(|s| s.is_keyframe));
 }
 
 #[test]
@@ -142,15 +140,13 @@ fn demux_with_b_frames_reorder_windows() {
         assert_eq!(w3, vec![0, 3]);
     }
 
-    let player = Player::from_track(track).expect("player");
-    let cascade = block_on(player.window_at(1)).expect("cascade");
-    assert_eq!(cascade.target_frame, 1);
+    let samples = block_on(track.decode_cascade(1)).expect("cascade");
     assert_eq!(
-        cascade.samples.iter().map(|s| s.frame).collect::<Vec<_>>(),
+        samples.iter().map(|s| s.frame).collect::<Vec<_>>(),
         vec![0, 3, 1]
     );
-    assert!(cascade.samples[0].is_keyframe);
-    assert!(!cascade.samples[1].is_keyframe);
+    assert!(samples[0].is_keyframe);
+    assert!(!samples[1].is_keyframe);
 }
 
 #[test]

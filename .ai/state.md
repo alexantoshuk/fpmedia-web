@@ -16,18 +16,17 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ### 2. Structural, low risk
 
-1. Collapse `Player` into `Shared` (`Cell` frame / looping; `playing` from `EngineMode`); no `metadata().clone()` on hot paths.
-2. Shared aim-distance residency for `ScrubChunkStore` / `ScrubBlitLru` / `ThumbCache`.
-3. Typed decode faults instead of matching error strings (`decode_ops.rs`, `util::is_decoder_poison`).
-4. One `open_mp4(source, opts, progress)` entry instead of 8 `open_mp4_*` variants.
-5. Group `webmedia` root modules (`model/` · `host/` · `policy/`).
+1. Shared aim-distance residency for `ScrubChunkStore` / `ScrubBlitLru` / `ThumbCache`.
+2. Typed decode faults instead of matching error strings (`decode_ops.rs`, `util::is_decoder_poison`).
+3. One `open_mp4(source, opts, progress)` entry instead of 8 `open_mp4_*` variants.
+4. Group `webmedia` root modules (`model/` · `host/` · `policy/`).
 
 ### 3. Behavior-adjacent (mediabunny cite required)
 
 1. Apply `EngineCmd` from `engine_reduce` (8 sites discard it) instead of hand-coded side effects.
 2. Single-flight background task for densify / gray fill / thumb fill (replaces `scrub_busy` / `scrub_pending` / `gray_fill_busy` latches).
 3. Move the play session into `VideoPlayer` (prefetch loop, underrun hold/resume, loop, visibility, silent-clock arm); drop host `PlaySession` flags. `mediabunny: examples/media-player/media-player.ts` render / play / pause.
-4. Seek / Step through the transport FSM; derive `playing` from transport; rewrite `skills/leptos.md` “`playing` is UI-owned”.
+4. Seek / Step through the transport FSM; derive `playing` from transport (engine `Shared.playing` is a separate `Cell` today — `EngineMode` can be `ExactHold` / `Scrub` mid-play); rewrite `skills/leptos.md` “`playing` is UI-owned”.
 5. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant. `hover_thumb` defer → `leptos-use` `use_throttle_fn` (trailing) in `HoverThumbPreview` scope.
 
 ### Play / decode

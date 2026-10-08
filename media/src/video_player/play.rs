@@ -23,7 +23,7 @@ impl VideoPlayer {
         if self.is_shuttle() {
             return SHUTTLE_PRESENTATION_QUEUE_CAP;
         }
-        let policy = self.metadata().play_policy();
+        let policy = self.shared.track.metadata_ref().play_policy();
         // Loop: keep a long drain buffer while `fill_loop_prime` owns the decoder.
         if self.is_looping() && self.is_playing() && self.near_loop_prepare_zone() {
             return self.loop_drain_frames_for_rate();
@@ -53,7 +53,9 @@ impl VideoPlayer {
             return false;
         }
         let fps = self
-            .metadata()
+            .shared
+            .track
+            .metadata_ref()
             .fps
             .filter(|f| f.is_finite() && *f > 0.0)
             .unwrap_or(24.0);
@@ -67,9 +69,11 @@ impl VideoPlayer {
 
     /// Frames to keep queued near EOF so `fill_loop_prime` finishes before drain.
     pub(super) fn loop_drain_frames_for_rate(&self) -> usize {
-        let policy = self.metadata().play_policy();
+        let policy = self.shared.track.metadata_ref().play_policy();
         let fps = self
-            .metadata()
+            .shared
+            .track
+            .metadata_ref()
             .fps
             .filter(|f| f.is_finite() && *f > 0.0)
             .unwrap_or(24.0);
@@ -106,7 +110,7 @@ impl VideoPlayer {
         let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() else {
             return;
         };
-        let meta = self.shared.player.borrow().metadata().clone();
+        let meta = self.shared.track.metadata();
         let policy = meta.scrub_policy();
         let buf_w = self.shared.canvas.width().max(1);
         let buf_h = self.shared.canvas.height().max(1);
@@ -163,7 +167,7 @@ impl VideoPlayer {
                 // Play path: present + Exact ingest (same as present_due).
                 self.present_play_frame(queued.frame, queued.video)?;
                 self.touch_playhead(queued.frame);
-                self.shared.player.borrow_mut().commit_frame(queued.frame)?;
+                self.shared.commit_frame(queued.frame)?;
                 return Ok(self.has_more_playback());
             }
         }
@@ -178,8 +182,7 @@ impl VideoPlayer {
         // Behind ring is stale past the catch-up target — drop it.
         self.clear_step_ring();
         let hard_seek = !self.is_all_intra() && {
-            let player = self.shared.player.borrow();
-            let index = player.track().index();
+            let index = self.shared.track.index();
             match (index.nearest_keyframe(next), index.nearest_keyframe(target)) {
                 (Some(nk), Some(tk)) => tk != nk,
                 _ => true,
@@ -195,7 +198,7 @@ impl VideoPlayer {
 
     pub(super) async fn end_or_loop(&self) -> Result<bool, MediaError> {
         if !self.is_looping() {
-            self.shared.player.borrow_mut().pause();
+            self.shared.playing.set(false);
             self.clear_presentation();
             self.clear_step_ring();
             return Ok(false);
@@ -234,7 +237,7 @@ impl VideoPlayer {
         // Soft Pause leaves Warm audio. Either way: skip blocking byte-warm and
         // do not re-decode into an already-primed presentation queue.
         // mediabunny: examples/media-player seekToTime / pause → play.
-        let settle = self.metadata().settle_policy();
+        let settle = self.shared.track.metadata_ref().settle_policy();
         let prime_target = settle.play_prime_frames.min(self.play_presentation_cap());
         let presentation_primed = self.presentation_len() >= prime_target;
         // Skip byte-warm only when Exact/settle already seeded the presentation
@@ -254,7 +257,7 @@ impl VideoPlayer {
         // mediabunny: first samples for seek `t`, not a long timeline warm.
         let head = self.state().frame;
         {
-            let track = self.shared.player.borrow().track_rc();
+            let track = self.shared.track.clone();
             if !track.fragments_complete() {
                 let want = head.saturating_add(play_index_lead);
                 track.request_index_through(want);
@@ -276,12 +279,12 @@ impl VideoPlayer {
                 )
                 .into(),
             );
-            let track = self.shared.player.borrow().track_rc();
+            let track = self.shared.track.clone();
             track.prefetch_samples_ahead(head, play_index_lead);
         } else {
             let warm_t0 = now_ms().unwrap_or(0.0);
             let (warm_secs, warm_key) = {
-                let track = self.shared.player.borrow().track_rc();
+                let track = self.shared.track.clone();
                 let key = track.index().nearest_keyframe(head).unwrap_or(head);
                 let gop_lead = super::scrub_gap::gop_sample_lead(&track, key).min(play_index_lead);
                 // Cover key→head (cascade) + small play-ahead. Clamped gop_lead
@@ -429,7 +432,7 @@ impl VideoPlayer {
             self.shared.wall_origin.set(None);
             let shared = Rc::clone(&self.shared);
             wasm_bindgen_futures::spawn_local(async move {
-                if shared.is_disposed() || !shared.player.borrow().state().playing {
+                if shared.is_disposed() || !shared.playing.get() {
                     return;
                 }
                 let audio = shared.audio.borrow().as_ref().map(Rc::clone);
@@ -461,13 +464,13 @@ impl VideoPlayer {
 
         let count = self.state().frame_count;
         if count == 0 {
-            self.shared.player.borrow_mut().pause();
+            self.shared.playing.set(false);
             return Ok(DuePresent::Ended);
         }
 
         let last_end = {
-            let player = self.shared.player.borrow();
-            let index = player.track().index();
+            let track = &self.shared.track;
+            let index = track.index();
             let indexed = index.len() as u64;
             if indexed == 0 {
                 return Ok(DuePresent::Ended);
@@ -482,7 +485,7 @@ impl VideoPlayer {
                 + (last.duration_ticks as f64 / last.timescale.max(1) as f64);
             eof_timeline_end(
                 sample_end,
-                player.metadata().duration().seconds,
+                track.metadata_ref().duration().seconds,
                 indexed,
                 count,
             )
@@ -505,7 +508,7 @@ impl VideoPlayer {
                 }
                 EofWall::NeedsLoop => return Ok(DuePresent::NeedsLoop),
                 EofWall::Ended => {
-                    self.shared.player.borrow_mut().pause();
+                    self.shared.playing.set(false);
                     self.clear_presentation();
                     self.clear_step_ring();
                     return Ok(DuePresent::Ended);
@@ -550,7 +553,7 @@ impl VideoPlayer {
                     .frames_skipped
                     .set(self.shared.frames_skipped.get().saturating_add(1));
                 drop(queued.video);
-                self.shared.player.borrow_mut().commit_frame(queued.frame)?;
+                self.shared.commit_frame(queued.frame)?;
                 continue;
             }
 
@@ -561,7 +564,7 @@ impl VideoPlayer {
             // Play: Exact ingest of presented frame; densify stays off.
             self.present_play_frame(queued.frame, queued.video)?;
             self.touch_playhead(queued.frame);
-            self.shared.player.borrow_mut().commit_frame(queued.frame)?;
+            self.shared.commit_frame(queued.frame)?;
             did_draw = true;
             break;
         }
@@ -647,7 +650,7 @@ impl VideoPlayer {
         self.present_and_cache(first.frame, first.video)?;
         self.touch_playhead(first.frame);
         self.trim_exact_for_play();
-        self.shared.player.borrow_mut().commit_frame(first.frame)?;
+        self.shared.commit_frame(first.frame)?;
         *self.shared.presentation.borrow_mut() = buf;
         // Decoder is already warm past the primed start frames.
         Ok(true)
@@ -655,10 +658,15 @@ impl VideoPlayer {
 
     pub(super) async fn fill_loop_prime(&self, epoch: u64) -> Result<(), MediaError> {
         self.invalidate_decoder();
-        let track = self.shared.player.borrow().track_rc();
+        let track = self.shared.track.clone();
         let count = self.state().frame_count;
-        let n =
-            (self.metadata().play_policy().loop_prime_frames() as FrameId).clamp(1, count.max(1));
+        let n = (self
+            .shared
+            .track
+            .metadata_ref()
+            .play_policy()
+            .loop_prime_frames() as FrameId)
+            .clamp(1, count.max(1));
         let mut buf: VecDeque<QueuedFrame> = VecDeque::new();
 
         for frame in 0..n {
@@ -760,25 +768,29 @@ impl VideoPlayer {
             return Ok(false);
         }
         let (track, next) = {
-            let player = self.shared.player.borrow();
-            let count = player.state().frame_count;
+            let count = self.shared.track.frame_count();
             let next = self
                 .shared
                 .presentation
                 .borrow()
                 .back()
                 .map(|q| q.frame.saturating_add(1))
-                .unwrap_or_else(|| player.state().frame.saturating_add(1));
+                .unwrap_or_else(|| self.shared.frame.get().saturating_add(1));
             if next >= count {
                 return Ok(false);
             }
-            let track = player.track_rc();
+            let track = self.shared.track.clone();
             // Stay ahead of mfra index so play never stalls at a chunk seam
             // (warm+batch ≈ every ~24 frames with chunk=2; was ~120 with chunk=8).
             // Stay ahead of mfra index so play never stalls at a chunk seam.
             if !track.fragments_complete() {
                 let indexed = track.indexed_frame_count();
-                let lead = self.metadata().settle_policy().play_index_lead;
+                let lead = self
+                    .shared
+                    .track
+                    .metadata_ref()
+                    .settle_policy()
+                    .play_index_lead;
                 if next.saturating_add(lead) >= indexed {
                     track.request_index_through(next.saturating_add(lead.saturating_mul(2)));
                 }
@@ -810,7 +822,9 @@ impl VideoPlayer {
         epoch: u64,
     ) -> Result<(), MediaError> {
         let target = self
-            .metadata()
+            .shared
+            .track
+            .metadata_ref()
             .settle_policy()
             .play_prime_frames
             .min(self.play_presentation_cap());
@@ -850,11 +864,10 @@ impl VideoPlayer {
         next: FrameId,
         behind_seconds: f64,
     ) -> Result<FrameId, MediaError> {
-        let player = self.shared.player.borrow();
-        let index = player.track().index();
+        let index = self.shared.track.index();
         let next_entry = index.get(next).ok_or(MediaError::FrameOutOfRange(
             next,
-            player.state().frame_count,
+            self.shared.track.frame_count(),
         ))?;
         let timescale = next_entry.timescale.max(1) as f64;
         let desired_ticks =
@@ -887,7 +900,7 @@ impl VideoPlayer {
                     drop(presentation);
                     self.present_for_mode(queued.frame, queued.video)?;
                     self.touch_playhead(queued.frame);
-                    self.shared.player.borrow_mut().commit_frame(queued.frame)?;
+                    self.shared.commit_frame(queued.frame)?;
                     return Ok(());
                 }
                 if front.frame < frame {
@@ -899,7 +912,7 @@ impl VideoPlayer {
                         drop(presentation);
                         self.present_for_mode(queued.frame, queued.video)?;
                         self.touch_playhead(queued.frame);
-                        self.shared.player.borrow_mut().commit_frame(queued.frame)?;
+                        self.shared.commit_frame(queued.frame)?;
                         return Ok(());
                     }
                 } else {
@@ -914,7 +927,12 @@ impl VideoPlayer {
 
     pub(super) async fn fill_presentation_queue(&self, epoch: u64) -> Result<(), MediaError> {
         // Start playback after a couple of frames; background prefetch fills to CAP.
-        let min_frames = self.metadata().settle_policy().play_prime_frames;
+        let min_frames = self
+            .shared
+            .track
+            .metadata_ref()
+            .settle_policy()
+            .play_prime_frames;
         self.prime_presentation(min_frames, epoch).await
     }
 

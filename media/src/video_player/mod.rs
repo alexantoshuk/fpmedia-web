@@ -28,7 +28,7 @@ mod shared;
 mod thumb;
 mod util;
 
-pub use api::{DuePresent, PipelineStats, ReadyFrameKind, ReadyFrameMark};
+pub use api::{DuePresent, PipelineStats, PlayerState, ReadyFrameKind, ReadyFrameMark};
 pub(crate) use shared::PRESENTATION_QUEUE_CAP;
 // Private imports — child mods (`play` / `scrub` / `seek`) see these via `super::`.
 use crate::timer::{next_animation_frame, now_ms, sleep_ms, yield_microtask};

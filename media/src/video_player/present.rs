@@ -34,7 +34,7 @@ impl VideoPlayer {
 
     /// Restore pixels after the browser wiped the canvas buffer on size change.
     pub(super) fn repaint_after_buffer_resize(&self) -> Result<(), MediaError> {
-        let frame = self.shared.player.borrow().state().frame;
+        let frame = self.shared.frame.get();
         // Prefer live VF when it still matches the playhead (sharp at any size).
         {
             let disp = self.shared.displayed.borrow();
@@ -126,7 +126,7 @@ impl VideoPlayer {
             scrub_window_from: win_from,
             scrub_window_to: win_to,
             ready_frames,
-            gop_profile: self.shared.player.borrow().metadata().gop_profile,
+            gop_profile: self.shared.track.metadata_ref().gop_profile,
             fetch_file_ranges: self.shared.fetch_map.file_fractions(self.shared.file_size),
         }
     }
@@ -136,11 +136,10 @@ impl VideoPlayer {
     }
 
     pub(super) fn duration_of(&self, frame: FrameId) -> Result<f64, MediaError> {
-        let player = self.shared.player.borrow();
-        let index = player.track().index();
+        let index = self.shared.track.index();
         let entry = index.get(frame).ok_or(MediaError::FrameOutOfRange(
             frame,
-            player.state().frame_count,
+            self.shared.track.frame_count(),
         ))?;
         if entry.duration_ticks == 0 || entry.timescale == 0 {
             return Err(MediaError::MissingFrameDuration(frame));
@@ -149,11 +148,10 @@ impl VideoPlayer {
     }
 
     pub(super) fn frame_timestamp_seconds(&self, frame: FrameId) -> Result<f64, MediaError> {
-        let player = self.shared.player.borrow();
-        let index = player.track().index();
+        let index = self.shared.track.index();
         let entry = index.get(frame).ok_or(MediaError::FrameOutOfRange(
             frame,
-            player.state().frame_count,
+            self.shared.track.frame_count(),
         ))?;
         Ok(entry.composition_timestamp().seconds)
     }
@@ -334,12 +332,7 @@ impl VideoPlayer {
     }
 
     pub(super) fn key_for(&self, frame: FrameId) -> Option<FrameId> {
-        self.shared
-            .player
-            .borrow()
-            .track()
-            .index()
-            .nearest_keyframe(frame)
+        self.shared.track.index().nearest_keyframe(frame)
     }
 
     /// True when a painted hover preview is the same sync key as `aim`.

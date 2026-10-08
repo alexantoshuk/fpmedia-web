@@ -3,9 +3,20 @@
 //! Split from `mod.rs` for navigation only — no behavior change (P6).
 
 use crate::policy::GopProfile;
-use crate::types::FrameId;
+use crate::types::{FrameId, Timestamp};
 
 use super::PRESENTATION_QUEUE_CAP;
+
+/// Playhead snapshot ([`super::VideoPlayer::state`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerState {
+    pub frame: FrameId,
+    pub timestamp: Timestamp,
+    pub playing: bool,
+    /// When true, playback wraps to frame 0 at end (HTML `<video loop>`).
+    pub looping: bool,
+    pub frame_count: u64,
+}
 
 /// Why a frame is marked ready on the demo timeline strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

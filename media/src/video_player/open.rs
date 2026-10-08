@@ -19,7 +19,6 @@ use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::decoder_slot::DecoderSlotModel;
 use crate::engine_mode::EngineModel;
 use crate::error::MediaError;
-use crate::player::Player;
 use crate::policy::ThumbPolicy;
 use crate::session::SessionModel;
 use crate::workload::{
@@ -98,19 +97,21 @@ impl VideoPlayer {
         canvas: HtmlCanvasElement,
         fetch_map: std::sync::Arc<crate::FetchMap>,
     ) -> Result<Self, MediaError> {
+        if track.frame_count() == 0 {
+            return Err(MediaError::EmptyTrack);
+        }
         let file_size = track.source().size();
-        let player = Player::from_track(track)?;
-        Self::from_player(player, audio, canvas, fetch_map, file_size).await
+        Self::from_track_rc(Rc::new(track), audio, canvas, fetch_map, file_size).await
     }
 
-    async fn from_player(
-        player: Player,
+    async fn from_track_rc(
+        track: Rc<crate::demux::Mp4VideoTrack>,
         audio_track: Option<crate::audio::Mp4AudioTrack>,
         canvas: HtmlCanvasElement,
         fetch_map: std::sync::Arc<crate::FetchMap>,
         file_size: u64,
     ) -> Result<Self, MediaError> {
-        let meta = player.metadata();
+        let meta = track.metadata();
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
         let ctx = canvas_2d(&canvas)?;
@@ -159,7 +160,10 @@ impl VideoPlayer {
             None
         };
         let shared = Rc::new(Shared {
-            player: RefCell::new(player),
+            track,
+            frame: Cell::new(0),
+            playing: Cell::new(false),
+            looping: Cell::new(false),
             presentation: RefCell::new(VecDeque::new()),
             displayed: RefCell::new(None),
             step_behind: RefCell::new(VecDeque::new()),
@@ -205,9 +209,7 @@ impl VideoPlayer {
         apply_clip_budgets(&shared);
         if let Some(a) = shared.audio.borrow().as_ref() {
             shared
-                .player
-                .borrow()
-                .track_rc()
+                .track
                 .set_backfill_audio_sink(std::rc::Rc::downgrade(a));
         }
         Self::kick_deferred_sync_verify(&shared);
@@ -225,7 +227,7 @@ impl VideoPlayer {
     /// Chunked: each step extends the index so play past warm moofs does not wait
     /// for the entire mfra list (`ensure_frame_indexed` polls for the needed frame).
     fn kick_fragment_backfill(shared: &Rc<Shared>) {
-        let track = shared.player.borrow().track_rc();
+        let track = shared.track.clone();
         if !track.begin_fragment_backfill_worker() {
             return;
         }
@@ -296,7 +298,7 @@ impl VideoPlayer {
                         // Keep index well ahead of the playhead; only idle-yield when
                         // paused/scrubbing with ≥240 frames of lead.
                         let mode = classify(shared.workload_hints());
-                        let playhead = shared.player.borrow().state().frame;
+                        let playhead = shared.frame.get();
                         let indexed = track.indexed_frame_count();
                         let ahead = indexed.saturating_sub(playhead);
                         if !fragment_backfill_should_idle_yield(
@@ -330,7 +332,7 @@ impl VideoPlayer {
     /// packet retrieve; bg walk finishes the table for scrub geometry without
     /// blocking settle (settle uses [`Mp4VideoTrack::ensure_key_verified`] only).
     fn kick_deferred_sync_verify(shared: &Rc<Shared>) {
-        let track = shared.player.borrow().track_rc();
+        let track = shared.track.clone();
         if track.sync_verify_complete() {
             return;
         }
@@ -358,7 +360,7 @@ impl VideoPlayer {
                     sleep_ms(1000).await;
                     continue;
                 }
-                let track = shared.player.borrow().track_rc();
+                let track = shared.track.clone();
                 if track.sync_verify_complete() {
                     break;
                 }

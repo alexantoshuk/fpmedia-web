@@ -21,7 +21,7 @@ impl VideoPlayer {
         self.shared.engine.set(next);
         self.apply_session_event(crate::SessionEvent::BeginRestart);
         let result = async {
-            self.shared.player.borrow_mut().pause();
+            self.shared.playing.set(false);
             self.clear_loop_prime();
             self.clear_step_ring();
             self.clear_presentation();
@@ -48,7 +48,7 @@ impl VideoPlayer {
                 let key = self.key_for(frame).unwrap_or(frame);
                 warm_scrub_gop_bytes(&self.shared, key);
                 {
-                    let track = self.shared.player.borrow().track_rc();
+                    let track = self.shared.track.clone();
                     if let Err(e) = track.ensure_indexed_through(frame).await {
                         if e.is_cancelled() {
                             return Err(e);
@@ -131,7 +131,7 @@ impl VideoPlayer {
     }
 
     pub async fn next_frame(&self) -> Result<(), MediaError> {
-        self.shared.player.borrow_mut().pause();
+        self.shared.playing.set(false);
         let next = self.state().frame.saturating_add(1);
         if next >= self.state().frame_count {
             return Err(MediaError::FrameOutOfRange(next, self.state().frame_count));
@@ -141,7 +141,7 @@ impl VideoPlayer {
         // Live ahead VF (play prefetch / prior Next).
         if let Some(video) = self.take_presentation_front(next) {
             self.install_displayed(next, video)?;
-            self.shared.player.borrow_mut().commit_frame(next)?;
+            self.shared.commit_frame(next)?;
             self.touch_playhead(next);
             self.snap_media_clock_to_playhead();
             self.arm_scrub_densify_after_step(next);
@@ -154,7 +154,7 @@ impl VideoPlayer {
             if let Some(old) = self.shared.displayed.borrow_mut().take() {
                 self.push_step_behind(old);
             }
-            self.shared.player.borrow_mut().commit_frame(next)?;
+            self.shared.commit_frame(next)?;
             self.touch_playhead(next);
             self.snap_media_clock_to_playhead();
             self.arm_scrub_densify_after_step(next);
@@ -167,7 +167,7 @@ impl VideoPlayer {
     }
 
     pub async fn previous_frame(&self) -> Result<(), MediaError> {
-        self.shared.player.borrow_mut().pause();
+        self.shared.playing.set(false);
         let cur = self.state().frame;
         if cur == 0 {
             return Err(MediaError::FrameOutOfRange(0, self.state().frame_count));
@@ -180,7 +180,7 @@ impl VideoPlayer {
                 self.push_presentation_front(displayed);
             }
             self.install_displayed_no_retire(prev, video)?;
-            self.shared.player.borrow_mut().commit_frame(prev)?;
+            self.shared.commit_frame(prev)?;
             self.touch_playhead(prev);
             self.snap_media_clock_to_playhead();
             self.arm_scrub_densify_after_step(prev);
@@ -191,7 +191,7 @@ impl VideoPlayer {
             if let Some(displayed) = self.shared.displayed.borrow_mut().take() {
                 self.push_presentation_front(displayed);
             }
-            self.shared.player.borrow_mut().commit_frame(prev)?;
+            self.shared.commit_frame(prev)?;
             self.touch_playhead(prev);
             self.snap_media_clock_to_playhead();
             self.arm_scrub_densify_after_step(prev);
@@ -234,7 +234,7 @@ impl VideoPlayer {
             return Err(MediaError::FrameOutOfRange(frame, count));
         }
         let epoch = self.begin_op();
-        let track = self.shared.player.borrow().track_rc();
+        let track = self.shared.track.clone();
         self.decode_frame(&track, frame, epoch).await
     }
 

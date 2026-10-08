@@ -2,7 +2,7 @@
 //!
 //! Isolated from the Leptos/`app` stack.
 //!
-//! - Always: MP4 demux + presentation-order frame index + player API (encoded samples).
+//! - Always: MP4 demux + presentation-order frame index + decode cascades (encoded samples).
 //! - Feature `webcodecs` on `wasm32`: WebCodecs decode → canvas via [`VideoPlayer`].
 //!
 //! Frame index (presentation order) is the primary position identifier —
@@ -20,7 +20,6 @@ mod frame_index;
 mod host_op_coalesce;
 mod open_phase;
 mod playback_policy;
-mod player;
 mod policy;
 mod scrub_plan;
 mod session;
@@ -76,7 +75,6 @@ pub use open_phase::{OpenPhase, OpenSourceKind};
 pub use playback_policy::{
     EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
 };
-pub use player::{DecodeWindow, Player, PlayerState};
 pub use policy::{
     DEFAULT_SCRUB_BLIT_MIB_LONG, DEFAULT_SCRUB_BLIT_MIB_SHORT, DEFAULT_SCRUB_CACHE_MIB,
     EDGE_MARGIN_LEFT_MAX, EDGE_MARGIN_LEFT_MIN, EDGE_MARGIN_RIGHT_MIN, GopProfile,
@@ -121,4 +119,6 @@ pub use decode::{
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs", feature = "thumbs"))]
 pub use decode::{ThumbPreview, ThumbSink};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
-pub use video_player::{DuePresent, PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoPlayer};
+pub use video_player::{
+    DuePresent, PipelineStats, PlayerState, ReadyFrameKind, ReadyFrameMark, VideoPlayer,
+};

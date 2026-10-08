@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use web_sys::HtmlCanvasElement;
 
+use super::api::PlayerState;
 use crate::clock_state::ClockEvent;
 use crate::engine_mode::{EngineEvent, reduce as engine_reduce};
-use crate::player::PlayerState;
 use crate::session::{SessionEvent, reduce as session_reduce};
 use crate::types::{AudioMetadata, FrameId, VideoMetadata};
 
@@ -20,7 +20,7 @@ use super::{VideoPlayer, yield_microtask};
 
 impl VideoPlayer {
     pub fn metadata(&self) -> VideoMetadata {
-        self.shared.player.borrow().metadata()
+        self.shared.track.metadata()
     }
 
     pub fn audio_metadata(&self) -> Option<AudioMetadata> {
@@ -37,12 +37,12 @@ impl VideoPlayer {
     }
 
     pub fn state(&self) -> PlayerState {
-        self.shared.player.borrow().state()
+        self.shared.state()
     }
 
     /// Frames currently in the demux index (fMP4 warm prefix may be ≪ duration).
     pub fn indexed_frame_count(&self) -> FrameId {
-        self.shared.player.borrow().track().indexed_frame_count()
+        self.shared.track.indexed_frame_count()
     }
 
     /// True when Exact settle/seek may cascade without cold Range stampede.
@@ -76,9 +76,8 @@ impl VideoPlayer {
         // Free Chromium VideoFrame pool for prefetch — step ring is Pause/Prev only.
         self.clear_step_behind_ring();
         {
-            let player = self.shared.player.borrow();
-            let head = player.state().frame;
-            let track = player.track_rc();
+            let head = self.shared.frame.get();
+            let track = &self.shared.track;
             if !track.fragments_complete() {
                 // Pump mfra index well ahead of play so we never stall at the
                 // warm+chunk seam (was solid lag on frame 119 / indexed 120).
@@ -88,7 +87,7 @@ impl VideoPlayer {
             // (mfra backfill does not fetch sample bytes).
             track.prefetch_samples_ahead(head, 120);
         }
-        self.shared.player.borrow_mut().play();
+        self.shared.playing.set(true);
         self.shared.frames_skipped.set(0);
         self.shared.last_behind_ms.set(None);
         self.apply_clock_event(ClockEvent::ResetForPlay);
@@ -116,7 +115,7 @@ impl VideoPlayer {
     pub(super) fn pause_inner(&self, soft_audio: bool) {
         // Leaving play: cancel decode + scrub fill epoch (pending latch restarts fill).
         // Already paused: do not bump scrub_epoch (UI steps call pause every time).
-        let was_playing = self.shared.player.borrow().state().playing;
+        let was_playing = self.shared.playing.get();
         let (next, _) = engine_reduce(
             self.shared.engine.get(),
             EngineEvent::EnterScrub { soft_audio },
@@ -130,7 +129,7 @@ impl VideoPlayer {
                 let _ = self.stop_media_clock();
             }
         }
-        self.shared.player.borrow_mut().pause();
+        self.shared.playing.set(false);
         self.clear_loop_prime();
         // `prepare_scrub_settle` latches ExactHold *before* the async scrub op;
         // `run_seek_or_step` always called `pause()` which used to clear that latch
@@ -158,8 +157,8 @@ impl VideoPlayer {
                 if shared.is_disposed()
                     || shared.engine.get().holds_exact()
                     || shared.engine.get().is_play()
-                    || shared.player.borrow().state().playing
-                    || !shared.player.borrow().metadata().scrub_policy().densify
+                    || shared.playing.get()
+                    || !shared.track.metadata_ref().scrub_policy().densify
                 {
                     return;
                 }
@@ -206,14 +205,14 @@ impl VideoPlayer {
     }
 
     pub fn set_loop(&self, looping: bool) {
-        self.shared.player.borrow_mut().set_loop(looping);
+        self.shared.looping.set(looping);
         if !looping {
             self.clear_loop_prime();
         }
     }
 
     pub fn is_looping(&self) -> bool {
-        self.shared.player.borrow().is_looping()
+        self.shared.looping.get()
     }
 
     pub fn is_restarting(&self) -> bool {
@@ -248,8 +247,6 @@ impl Drop for VideoPlayer {
         // Bumps scrub_epoch + drops scrub decoder + clears Covered/Exact.
         self.clear_scrub_store();
         // Abort Range workers now — densify/backfill may keep `Shared` a few turns.
-        if let Ok(p) = self.shared.player.try_borrow() {
-            p.track_rc().source().dispose();
-        }
+        self.shared.track.source().dispose();
     }
 }

@@ -24,7 +24,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 | ------- | ------- |
 | **`media_components` crate** | Leptos `<Video>` + `VideoRef` — media element API only (HTML `<video>` analog) |
 | **Demo app** | `app` / `frontend` — file picker, transport buttons, **keyboard (JKL/Space/arrows)**, status (not production chrome) |
-| **Library API** | `webmedia` crate — demux + frame index + `Player` / `VideoPlayer`; audio under `audio/` |
+| **Library API** | `webmedia` crate — demux + frame index + `VideoPlayer`; audio under `audio/` |
 
 ---
 

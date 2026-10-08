@@ -9,7 +9,7 @@ use crate::types::FrameId;
 use super::Shared;
 
 pub(super) fn playhead_and_last(shared: &Shared) -> (FrameId, FrameId) {
-    let state = shared.player.borrow().state();
+    let state = shared.state();
     let last = state.frame_count.saturating_sub(1);
     let committed = state.frame.min(last);
     let aimed = shared.scrub_chunks.borrow().playhead().min(last);
@@ -24,16 +24,11 @@ pub(super) fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     let (playhead, last) = playhead_and_last(shared);
     // fMP4 warm open: provisional duration may exceed indexed samples — never
     // densify past the indexed prefix (would stall on mfra backfill + decode).
-    let indexed_last = shared
-        .player
-        .borrow()
-        .track()
-        .indexed_frame_count()
-        .saturating_sub(1);
+    let indexed_last = shared.track.indexed_frame_count().saturating_sub(1);
     let last_clamped = last.min(indexed_last);
     let playhead_clamped = playhead.min(last_clamped);
     let dir = shared.scrub_dir.get();
-    let policy = shared.player.borrow().metadata().scrub_policy();
+    let policy = shared.track.metadata_ref().scrub_policy();
     let (margin_left, margin_right) = (policy.margin_left, policy.margin_right);
     // Play keeps markers and trims Exact (not a full wipe) — ImageBitmap holes
     // must still win over marker `no_gaps`, or pause densify never re-warms Exact.

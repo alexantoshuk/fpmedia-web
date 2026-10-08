@@ -98,6 +98,12 @@ impl Mp4VideoTrack {
         self.metadata.borrow().clone()
     }
 
+    /// Borrow without cloning. Backfill / sync demote mutate metadata — never
+    /// hold the `Ref` across `.await`.
+    pub fn metadata_ref(&self) -> Ref<'_, VideoMetadata> {
+        self.metadata.borrow()
+    }
+
     pub fn index(&self) -> Ref<'_, FrameIndex> {
         self.index.borrow()
     }

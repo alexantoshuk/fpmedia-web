@@ -107,7 +107,7 @@ impl VideoPlayer {
             thumbs.note_size(max_w, max_h);
             thumbs.set_hover_aim(frame);
         }
-        let meta = self.shared.player.borrow().metadata().clone();
+        let meta = self.shared.track.metadata();
         let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
 
         let cached_exact = self
@@ -288,7 +288,7 @@ impl VideoPlayer {
             return Ok(None);
         };
         let store_key = self.key_for(preview).unwrap_or(preview);
-        let meta = self.shared.player.borrow().metadata().clone();
+        let meta = self.shared.track.metadata();
         let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
         let epoch = {
             let Ok(slot) = self.shared.thumb.try_borrow() else {
@@ -519,7 +519,7 @@ impl VideoPlayer {
             return Err(MediaError::Cancelled);
         }
 
-        let meta = self.shared.player.borrow().metadata().clone();
+        let meta = self.shared.track.metadata();
         let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
         let store_key = self.key_for(frame).unwrap_or(frame);
 
@@ -561,7 +561,7 @@ impl VideoPlayer {
             return Err(MediaError::Cancelled);
         }
 
-        let track = self.shared.player.borrow().track_rc();
+        let track = self.shared.track.clone();
 
         let taken = {
             let Ok(slot) = self.shared.thumb.try_borrow() else {
@@ -717,8 +717,8 @@ impl VideoPlayer {
             if shared.is_disposed() {
                 return;
             }
-            let track = shared.player.borrow().track_rc();
-            let meta = shared.player.borrow().metadata().clone();
+            let track = shared.track.clone();
+            let meta = shared.track.metadata();
             let yield_play =
                 || shared.is_disposed() || !allows_thumb_key_fill(shared.workload_hints());
             let next_gap = || {
@@ -740,8 +740,8 @@ impl VideoPlayer {
 /// Next missing sync key for sparse thumb fill (focus = hover aim).
 fn next_thumb_key_gap_shared(shared: &Shared) -> Option<FrameId> {
     let thumbs = shared.thumb.try_borrow().ok().and_then(|s| s.clone())?;
-    let meta = shared.player.borrow().metadata().clone();
+    let meta = shared.track.metadata();
     let focus = thumbs.hover_aim();
-    let keys = shared.player.borrow().track().index().sync_frame_ids();
+    let keys = shared.track.index().sync_frame_ids();
     thumbs.next_missing_key(&keys, focus, meta.width, meta.height)
 }
