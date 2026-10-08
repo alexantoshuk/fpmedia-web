@@ -8,9 +8,8 @@ use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use webmedia::{TransportCmd, TransportEvent, TransportModel, transport_reduce};
 
-use super::host_ops::PlayerHandle;
-use super::op_queue::{HostOp, OpQueue};
-use super::session::PlaySession;
+use super::ctx::HostCtx;
+use super::op_queue::HostOp;
 
 struct TransportInner {
     model: TransportModel,
@@ -48,31 +47,20 @@ pub(super) fn new_transport() -> TransportHandle {
 
 /// Run reduce + queue engine cmds. Playhead updates sync; engine work is serialized
 /// on one microtask drain (same race class as the old demo `defer_scrub` TLS).
-#[allow(clippy::too_many_arguments)] // host wiring: transport + queue + UI signals
-pub(super) fn dispatch_transport(
-    transport: &TransportHandle,
-    event: TransportEvent,
-    queue: &OpQueue,
-    kick_drain: &Rc<dyn Fn()>,
-    player: &PlayerHandle,
-    session: &Rc<RefCell<Option<PlaySession>>>,
-    playing: RwSignal<bool>,
-    playhead: RwSignal<u32>,
-    ended: RwSignal<bool>,
-    stop_playback: &Rc<dyn Fn()>,
-) {
+pub(super) fn dispatch_transport(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, event: TransportEvent) {
+    let v = ctx.video;
     let engine_cmds = {
-        let mut inner = transport.inner.borrow_mut();
+        let mut inner = ctx.transport.inner.borrow_mut();
         let (next, cmds) = transport_reduce(inner.model, event);
         inner.model = next;
         let mut engine = Vec::new();
         for cmd in cmds {
             match cmd {
                 TransportCmd::SetPlayhead { frame } => {
-                    playhead.set(frame);
-                    ended.set(false);
+                    v.playhead.set(frame);
+                    v.ended.set(false);
                 }
-                TransportCmd::ClearEnded => ended.set(false),
+                TransportCmd::ClearEnded => v.ended.set(false),
                 other => engine.push(other),
             }
         }
@@ -85,83 +73,42 @@ pub(super) fn dispatch_transport(
     if !engine_cmds {
         return;
     }
-    schedule_cmd_drain(
-        transport,
-        queue,
-        kick_drain,
-        player,
-        session,
-        playing,
-        playhead,
-        stop_playback,
-    );
+    schedule_cmd_drain(ctx, kick_drain);
 }
 
-#[allow(clippy::too_many_arguments)] // host wiring: transport + queue + UI signals
-fn schedule_cmd_drain(
-    transport: &TransportHandle,
-    queue: &OpQueue,
-    kick_drain: &Rc<dyn Fn()>,
-    player: &PlayerHandle,
-    session: &Rc<RefCell<Option<PlaySession>>>,
-    playing: RwSignal<bool>,
-    playhead: RwSignal<u32>,
-    stop_playback: &Rc<dyn Fn()>,
-) {
+fn schedule_cmd_drain(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>) {
+    let transport = &ctx.transport;
     if transport.scheduled.get() {
         return;
     }
     transport.scheduled.set(true);
-    let transport = transport.clone();
-    let queue = queue.clone();
+    let ctx = ctx.clone();
     let kick_drain = Rc::clone(kick_drain);
-    let player = Rc::clone(player);
-    let session = Rc::clone(session);
-    let stop_playback = Rc::clone(stop_playback);
     spawn_local(async move {
+        let transport = &ctx.transport;
         loop {
             let cmd = transport.inner.borrow_mut().pending_cmds.pop_front();
             let Some(cmd) = cmd else {
                 break;
             };
-            apply_engine_cmd(
-                cmd,
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                playhead,
-                &stop_playback,
-            );
+            apply_engine_cmd(&ctx, &kick_drain, cmd);
         }
         transport.scheduled.set(false);
         if !transport.inner.borrow().pending_cmds.is_empty() {
-            schedule_cmd_drain(
-                &transport,
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                playhead,
-                &stop_playback,
-            );
+            schedule_cmd_drain(&ctx, &kick_drain);
         }
     });
 }
 
-#[allow(clippy::too_many_arguments)] // host wiring: transport + queue + UI signals
-fn apply_engine_cmd(
-    cmd: TransportCmd,
-    queue: &OpQueue,
-    kick_drain: &Rc<dyn Fn()>,
-    player: &PlayerHandle,
-    session: &Rc<RefCell<Option<PlaySession>>>,
-    playing: RwSignal<bool>,
-    playhead: RwSignal<u32>,
-    stop_playback: &Rc<dyn Fn()>,
-) {
+fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd) {
+    let HostCtx {
+        queue,
+        player,
+        session,
+        ..
+    } = ctx;
+    let playing = ctx.video.playing;
+    let playhead = ctx.video.playhead;
     match cmd {
         TransportCmd::SetPlayhead { .. } | TransportCmd::ClearEnded => {}
         TransportCmd::SoftPause { align_playhead } => {
@@ -191,7 +138,7 @@ fn apply_engine_cmd(
             }
         }
         TransportCmd::HardPause => {
-            stop_playback();
+            ctx.stop_playback();
         }
         TransportCmd::PreemptScrub => {
             // Bump so in-flight ScrubRelease / PlayPrime bails and does not note
@@ -203,16 +150,14 @@ fn apply_engine_cmd(
             queue.clear_pending_scrub_and_play();
         }
         TransportCmd::EnqueueDrag { frame } => {
-            enqueue_scrub_drag(queue, kick_drain, player, session, playing, frame);
+            enqueue_scrub_drag(ctx, kick_drain, frame);
         }
         TransportCmd::EnqueueScrubRelease {
             frame,
             then_play,
             settle_gen,
         } => {
-            enqueue_scrub_release(
-                queue, kick_drain, player, session, playing, frame, then_play, settle_gen,
-            );
+            enqueue_scrub_release(ctx, kick_drain, frame, then_play, settle_gen);
         }
         TransportCmd::EnqueuePlayPrime => {
             if queue.enqueue(HostOp::PlayPrime) {
@@ -222,61 +167,43 @@ fn apply_engine_cmd(
     }
 }
 
-fn enqueue_scrub_drag(
-    queue: &OpQueue,
-    kick_drain: &Rc<dyn Fn()>,
-    player: &PlayerHandle,
-    session: &Rc<RefCell<Option<PlaySession>>>,
-    playing: RwSignal<bool>,
-    frame: u32,
-) {
-    if player.borrow().as_ref().is_none() {
-        return;
-    }
-    let leaving_play = playing.get_untracked();
-    if leaving_play {
+/// Leave play for a scrub op: drop the session, soft-hold the engine.
+/// Returns the live player, or `None` when nothing is open.
+fn leave_play_for_scrub(ctx: &HostCtx) -> Option<Rc<webmedia::VideoPlayer>> {
+    let p = ctx.player.borrow().as_ref().cloned()?;
+    let playing = ctx.video.playing;
+    if playing.get_untracked() {
         playing.set(false);
-        let _ = session.borrow_mut().take();
+        let _ = ctx.session.borrow_mut().take();
+        p.pause_for_scrub();
     }
-    if let Some(p) = player.borrow().as_ref().cloned() {
-        if leaving_play {
-            p.pause_for_scrub();
-        }
-        p.clear_densify_hold();
-        p.cancel_ops();
-        p.note_scrub_frame(u64::from(frame));
-    }
-    if queue.enqueue(HostOp::ScrubDrag(frame)) {
+    Some(p)
+}
+
+fn enqueue_scrub_drag(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, frame: u32) {
+    let Some(p) = leave_play_for_scrub(ctx) else {
+        return;
+    };
+    p.clear_densify_hold();
+    p.cancel_ops();
+    p.note_scrub_frame(u64::from(frame));
+    if ctx.queue.enqueue(HostOp::ScrubDrag(frame)) {
         kick_drain();
     }
 }
 
-#[allow(clippy::too_many_arguments)] // host wiring: queue + session + play UI
-pub(super) fn enqueue_scrub_release(
-    queue: &OpQueue,
+fn enqueue_scrub_release(
+    ctx: &HostCtx,
     kick_drain: &Rc<dyn Fn()>,
-    player: &PlayerHandle,
-    session: &Rc<RefCell<Option<PlaySession>>>,
-    playing: RwSignal<bool>,
     frame: u32,
     then_play: bool,
     settle_gen: u64,
 ) {
-    if player.borrow().as_ref().is_none() {
+    let Some(p) = leave_play_for_scrub(ctx) else {
         return;
-    }
-    let leaving_play = playing.get_untracked();
-    if leaving_play {
-        playing.set(false);
-        let _ = session.borrow_mut().take();
-    }
-    if let Some(p) = player.borrow().as_ref().cloned() {
-        if leaving_play {
-            p.pause_for_scrub();
-        }
-        p.prepare_scrub_settle(u64::from(frame));
-    }
-    if queue.enqueue(HostOp::ScrubRelease {
+    };
+    p.prepare_scrub_settle(u64::from(frame));
+    if ctx.queue.enqueue(HostOp::ScrubRelease {
         frame,
         then_play,
         settle_gen,

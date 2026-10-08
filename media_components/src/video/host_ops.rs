@@ -1,29 +1,27 @@
 //! Host-op enqueue helpers + the async bodies the drain loop runs.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlCanvasElement;
-use webmedia::{MediaSource, OpenPhase, VideoPlayer};
+use webmedia::OpenPhase;
 
-use super::op_queue::{HostOp, OpQueue};
+use super::VideoRef;
+use super::ctx::HostCtx;
+use super::op_queue::{HostOp, OpenArgs};
 use super::open_url::open_source_staged;
-use super::session::{FpsMeter, PlaySession, performance_now_ms};
+use super::session::{PlaySession, performance_now_ms};
 
-pub(super) type PlayerHandle = Rc<RefCell<Option<Rc<VideoPlayer>>>>;
-
-pub(super) fn enqueue_seek_step(
-    queue: &OpQueue,
-    kick_drain: &Rc<dyn Fn()>,
-    player: &PlayerHandle,
-    session: &Rc<RefCell<Option<PlaySession>>>,
-    playing: RwSignal<bool>,
-    op: HostOp,
-) {
+pub(super) fn enqueue_seek_step(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, op: HostOp) {
+    let HostCtx {
+        queue,
+        player,
+        session,
+        ..
+    } = ctx;
+    let playing = ctx.video.playing;
     if player.borrow().as_ref().is_none() {
         return;
     }
@@ -50,26 +48,26 @@ pub(super) enum SeekOrStep {
     Step(bool),
 }
 
-#[allow(clippy::too_many_arguments)] // Leptos open task wires many signals.
-pub(super) async fn run_open(
-    queue: &OpQueue,
-    id: u64,
-    source: std::sync::Arc<dyn MediaSource>,
-    canvas: HtmlCanvasElement,
-    player: &PlayerHandle,
-    sync_ui: &Rc<dyn Fn()>,
-    fps_meter: &Rc<RefCell<FpsMeter>>,
-    ready: RwSignal<bool>,
-    metadata: RwSignal<Option<webmedia::VideoMetadata>>,
-    error: RwSignal<Option<String>>,
-    status: RwSignal<String>,
-    fps: RwSignal<Option<f64>>,
-    pipeline: RwSignal<Option<webmedia::PipelineStats>>,
-    has_audio: RwSignal<bool>,
-    volume: RwSignal<f64>,
-    muted: RwSignal<bool>,
-    playback_rate: RwSignal<f64>,
-) {
+pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }: OpenArgs) {
+    let HostCtx {
+        queue,
+        player,
+        fps_meter,
+        ..
+    } = ctx;
+    let VideoRef {
+        ready,
+        metadata,
+        error,
+        status,
+        fps,
+        pipeline,
+        has_audio,
+        volume,
+        muted,
+        playback_rate,
+        ..
+    } = ctx.video;
     web_sys::console::log_1(&"webmedia: open task running".into());
     if !queue.is_current(id) {
         return;
@@ -108,7 +106,7 @@ pub(super) async fn run_open(
                     fps_meter.borrow_mut().reset();
                     fps.set(None);
                     pipeline.set(Some(p.pipeline_stats()));
-                    sync_ui();
+                    ctx.sync_ui();
                 }
                 Err(e) if e.is_cancelled() => {
                     status.set(OpenPhase::Cancelled.label());
@@ -130,18 +128,19 @@ pub(super) async fn run_open(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn run_seek_or_step(
-    queue: &OpQueue,
-    id: u64,
-    player: &PlayerHandle,
-    sync_ui: &Rc<dyn Fn()>,
-    session: &Rc<RefCell<Option<PlaySession>>>,
-    error: RwSignal<Option<String>>,
-    playing: RwSignal<bool>,
-    playhead: RwSignal<u32>,
-    op: SeekOrStep,
-) -> bool {
+pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> bool {
+    let HostCtx {
+        queue,
+        player,
+        session,
+        ..
+    } = ctx;
+    let VideoRef {
+        error,
+        playing,
+        playhead,
+        ..
+    } = ctx.video;
     if !queue.is_current(id) {
         return false;
     }
@@ -214,7 +213,7 @@ pub(super) async fn run_seek_or_step(
         Err(e) if e.is_cancelled() => {}
         Err(e) => error.set(Some(e.to_string())),
     }
-    sync_ui();
+    ctx.sync_ui();
     // Snap UI playhead to committed engine after scrub settle/release (and step).
     // Soft-cold can commit a safe indexed frame while the pointer aim stays ahead —
     // leaving eng≠ph makes waitExactSettle spin and PlayPrime `seek_frame` the
@@ -230,21 +229,22 @@ pub(super) async fn run_seek_or_step(
     result.is_ok()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn run_play_prime(
-    queue: &OpQueue,
-    id: u64,
-    player: &PlayerHandle,
-    session: &Rc<RefCell<Option<PlaySession>>>,
-    fps_meter: &Rc<RefCell<FpsMeter>>,
-    stop_playback: &Rc<dyn Fn()>,
-    resume_raf: &impl Fn(),
-    ready: RwSignal<bool>,
-    playing: RwSignal<bool>,
-    playhead: RwSignal<u32>,
-    error: RwSignal<Option<String>>,
-    fps: RwSignal<Option<f64>>,
-) -> bool {
+pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn()) -> bool {
+    let HostCtx {
+        queue,
+        player,
+        session,
+        fps_meter,
+        ..
+    } = ctx;
+    let VideoRef {
+        ready,
+        playing,
+        playhead,
+        error,
+        fps,
+        ..
+    } = ctx.video;
     if !queue.is_current(id) || !ready.get_untracked() {
         return false;
     }
@@ -402,10 +402,13 @@ pub(super) async fn run_play_prime(
     playing.set(true);
 
     {
-        let player = Rc::clone(player);
-        let session = Rc::clone(session);
-        let stop_playback = Rc::clone(stop_playback);
-        let queue = queue.clone();
+        let ctx = ctx.clone();
+        let HostCtx {
+            player,
+            session,
+            queue,
+            ..
+        } = ctx.clone();
         spawn_local(async move {
             while playing.get_untracked() && queue.is_current(id) {
                 let pause_prefetch = session
@@ -432,7 +435,7 @@ pub(super) async fn run_play_prime(
                         Err(e) => {
                             if queue.is_current(id) {
                                 error.set(Some(e.to_string()));
-                                stop_playback();
+                                ctx.stop_playback();
                             }
                             break;
                         }
@@ -454,7 +457,7 @@ pub(super) async fn run_play_prime(
                         Some(Err(e)) => {
                             if queue.is_current(id) {
                                 error.set(Some(e.to_string()));
-                                stop_playback();
+                                ctx.stop_playback();
                             }
                             break;
                         }

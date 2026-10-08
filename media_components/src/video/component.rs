@@ -1,6 +1,6 @@
 //! [`Video`] component — canvas stage + playback orchestration.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use leptos::html::{Canvas, Div};
@@ -14,13 +14,13 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 use webmedia::{BlobSource, DuePresent, MediaSource, OpenPhase, OpenSourceKind, TransportEvent};
 
+use super::ctx::HostCtx;
 use super::host_ops::{
-    PlayerHandle, SeekOrStep, enqueue_seek_step, run_open, run_play_prime, run_seek_or_step,
-    wait_animation_frame,
+    SeekOrStep, enqueue_seek_step, run_open, run_play_prime, run_seek_or_step, wait_animation_frame,
 };
 use super::op_queue::{HostOp, OpQueue, OpenArgs};
 use super::open_url::{resolve_url_source, same_origin_media_proxy_url};
-use super::session::{FpsMeter, PlaySession, performance_now_ms};
+use super::session::performance_now_ms;
 use super::transport_apply::{dispatch_transport, new_transport, note_transport};
 use super::{VideoOps, VideoRef};
 
@@ -36,110 +36,37 @@ pub fn Video(
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let viewport_ref = NodeRef::<Div>::new();
-    let player: PlayerHandle = Rc::new(RefCell::new(None));
-    let fps_meter = Rc::new(RefCell::new(FpsMeter::new()));
-    let session: Rc<RefCell<Option<PlaySession>>> = Rc::new(RefCell::new(None));
     // Paused rAF strip/`sync_ui` throttle (play uses `PlaySession::last_ui_ms`).
     let last_paused_ui_ms = Rc::new(Cell::new(0.0_f64));
 
-    let busy = video.busy;
-    let ready = video.ready;
-    let playing = video.playing;
-    let looping = video.looping;
-    let ended = video.ended;
-    let frame = video.frame;
-    let playhead = video.playhead;
-    let frame_count = video.frame_count;
-    let timestamp = video.timestamp;
-    let fps = video.fps;
-    let metadata = video.metadata;
-    let error = video.error;
-    let pipeline = video.pipeline;
-    let status = video.status;
-    let has_audio = video.has_audio;
-    let volume = video.volume;
-    let muted = video.muted;
-    let playback_rate = video.playback_rate;
+    let VideoRef {
+        ready,
+        playing,
+        looping,
+        ended,
+        fps,
+        error,
+        status,
+        ..
+    } = video;
 
     // mediabunny CallSerializer + asyncId — one queue for open / seek / play-prime.
-    let queue = OpQueue::new(busy);
-    let transport = new_transport();
-
-    let sync_ui = {
-        let player = Rc::clone(&player);
-        Rc::new(move || {
-            let Ok(borrow) = player.try_borrow() else {
-                return;
-            };
-            if let Some(p) = borrow.as_ref() {
-                let st = p.state();
-                let engine = st.frame.min(u32::MAX as u64) as u32;
-                let count = st.frame_count.min(u32::MAX as u64) as u32;
-                let count_changed = frame_count.get_untracked() != count;
-                frame.set(engine);
-                frame_count.set(count);
-                timestamp.set(st.timestamp.seconds);
-                // Follow engine while playing, or reset playhead on a new clip.
-                // While paused after scrub, leave `playhead` (UI target) alone.
-                if playing.get_untracked() || count_changed {
-                    playhead.set(engine);
-                }
-                // fMP4 bg backfill grows the index after warm open — refresh meta.
-                if count_changed {
-                    metadata.set(Some(p.metadata()));
-                }
-                // Do NOT sync `playing` from the engine. UI owns transport state;
-                // overwriting after Pause (e.g. pause missed try_borrow, then
-                // sync_ui) left playing=true with no session → Play/Next/Prev dead.
-                looping.set(st.looping);
-                pipeline.set(Some(p.pipeline_stats()));
-            }
-        }) as Rc<dyn Fn()>
-    };
-
-    let stop_playback = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let fps_meter = Rc::clone(&fps_meter);
-        let sync_ui = Rc::clone(&sync_ui);
-        let queue = queue.clone();
-        Rc::new(move || {
-            // Abort in-flight play-prime / scrub-release / prefetch.
-            queue.bump();
-            queue.clear_pending_scrub_and_play();
-            let leaving_play = playing.get_untracked();
-            playing.set(false);
-            let _ = session.borrow_mut().take();
-            let p = player.borrow().as_ref().cloned();
-            if let Some(p) = p {
-                p.pause();
-            }
-            fps_meter.borrow_mut().reset();
-            fps.set(None);
-            sync_ui();
-            // `sync_ui` skips playhead while paused (preserve scrub targets). Leaving
-            // play must still align playhead to the committed canvas/engine frame —
-            // otherwise Pause→Seek/Prev/Next use a ~100ms-stale playhead.
-            if leaving_play {
-                playhead.set(frame.get_untracked());
-            }
-            playing.set(false);
-            // `busy` stays with the op queue (open/seek may still be draining).
-        }) as Rc<dyn Fn()>
-    };
+    let ctx = HostCtx::new(video, OpQueue::new(video.busy), new_transport());
 
     // Tab / window hidden while playing: freeze clock + soft-hold audio so
     // restore does not skip-catch with silent AudioContext.
     // mediabunny media-player: no visibility handler — local adaptation.
     let visibility_held = Rc::new(Cell::new(false));
     let _visibility = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
+        let ctx = ctx.clone();
         let visibility_held = Rc::clone(&visibility_held);
         let document = web_sys::window()
             .and_then(|w| w.document())
             .expect("document");
         use_event_listener(document.clone(), leptos::ev::visibilitychange, move |_| {
+            let HostCtx {
+                player, session, ..
+            } = &ctx;
             if document.hidden() {
                 if !playing.get_untracked() || session.borrow().is_none() {
                     return;
@@ -169,8 +96,8 @@ pub fn Video(
             if !playing.get_untracked() || session.borrow().is_none() {
                 return;
             }
-            let player = Rc::clone(&player);
-            let session = Rc::clone(&session);
+            let player = Rc::clone(player);
+            let session = Rc::clone(session);
             spawn_local(async move {
                 let Some(p) = player.borrow().as_ref().cloned() else {
                     return;
@@ -205,18 +132,20 @@ pub fn Video(
         ..
     } = use_raf_fn_with_options(
         {
-            let player = Rc::clone(&player);
-            let session = Rc::clone(&session);
-            let fps_meter = Rc::clone(&fps_meter);
-            let sync_ui = Rc::clone(&sync_ui);
-            let stop_playback = Rc::clone(&stop_playback);
+            let ctx = ctx.clone();
             let last_paused_ui_ms = Rc::clone(&last_paused_ui_ms);
-            let transport = transport.clone();
             move |_| {
+                let HostCtx {
+                    player,
+                    session,
+                    fps_meter,
+                    transport,
+                    ..
+                } = &ctx;
                 // Play path: normal present/prefetch UI.
                 // Pause path: still tick so gap-fill strip marks update (fill is async).
                 if !playing.get_untracked() {
-                    // Match play ~10 Hz — unthrottled paused rAF + strip Effect
+                    // Match play ~10 Hz — unthrottled paused rAF + strip Effect
                     // starved pointer/playhead CSS (red bar lagged the finger).
                     // Drag: ~150 ms (hover coalesce) so strips still grow.
                     let interval_ms = if transport.is_scrubbing() {
@@ -231,7 +160,7 @@ pub fn Video(
                     last_paused_ui_ms.set(now);
                     // `sync_ui` refreshes pipeline + frame_count (playhead only when
                     // count changes / playing — preserves scrub aim).
-                    sync_ui();
+                    ctx.sync_ui();
                     return;
                 }
 
@@ -284,11 +213,7 @@ pub fn Video(
 
                 {
                     let want = looping.get_untracked();
-                    if let Ok(borrow) = player.try_borrow()
-                        && let Some(p) = borrow.as_ref()
-                    {
-                        p.set_loop(want);
-                    }
+                    ctx.with_player(|p| p.set_loop(want));
                 }
 
                 let t = {
@@ -296,7 +221,8 @@ pub fn Video(
                     match borrow.as_ref() {
                         Some(p) => p.media_time(),
                         None => {
-                            stop_playback();
+                            drop(borrow);
+                            ctx.stop_playback();
                             return;
                         }
                     }
@@ -307,7 +233,8 @@ pub fn Video(
                     match borrow.as_ref() {
                         Some(p) => p.present_due(t),
                         None => {
-                            stop_playback();
+                            drop(borrow);
+                            ctx.stop_playback();
                             return;
                         }
                     }
@@ -316,25 +243,23 @@ pub fn Video(
                 match outcome {
                     Ok(DuePresent::Ended) => {
                         ended.set(true);
-                        note_transport(&transport, TransportEvent::Ended);
-                        stop_playback();
+                        note_transport(transport, TransportEvent::Ended);
+                        ctx.stop_playback();
                         status.set("Ended.".into());
                     }
                     Ok(DuePresent::NeedsLoop) => {
                         if let Some(s) = session.borrow_mut().as_mut() {
                             s.restarting = true;
                         }
-                        let player = Rc::clone(&player);
-                        let session = Rc::clone(&session);
-                        let stop_playback = Rc::clone(&stop_playback);
+                        let ctx = ctx.clone();
                         spawn_local(async move {
-                            let Some(p) = player.borrow().as_ref().cloned() else {
-                                stop_playback();
+                            let Some(p) = ctx.player.borrow().as_ref().cloned() else {
+                                ctx.stop_playback();
                                 return;
                             };
                             match p.loop_to_start().await {
                                 Ok(()) => {
-                                    if let Some(s) = session.borrow_mut().as_mut() {
+                                    if let Some(s) = ctx.session.borrow_mut().as_mut() {
                                         s.media_origin = 0.0;
                                         s.wall_origin =
                                             performance_now_ms().map(|n| n / 1000.0).unwrap_or(0.0);
@@ -346,13 +271,13 @@ pub fn Video(
                                     let _ = p.resume_media_clock(0.0).await;
                                 }
                                 Err(e) if e.is_cancelled() => {
-                                    if let Some(s) = session.borrow_mut().as_mut() {
+                                    if let Some(s) = ctx.session.borrow_mut().as_mut() {
                                         s.restarting = false;
                                     }
                                 }
                                 Err(e) => {
                                     error.set(Some(e.to_string()));
-                                    stop_playback();
+                                    ctx.stop_playback();
                                 }
                             }
                         });
@@ -377,25 +302,19 @@ pub fn Video(
                             {
                                 s.last_ui_ms = now;
                                 drop(borrow);
-                                sync_ui();
+                                ctx.sync_ui();
                             }
                         }
                         // True underrun only: next frame already due + empty queue.
                         // Holding on every empty-between-presents thrashed audio and
                         // broke short-clip play/pause smoke.
-                        let underrun = match player.try_borrow() {
-                            Ok(borrow) => borrow
-                                .as_ref()
-                                .is_some_and(|p| p.is_playing() && p.play_underrun_hold()),
-                            Err(_) => false,
-                        };
+                        let underrun = ctx
+                            .with_player(|p| p.is_playing() && p.play_underrun_hold())
+                            .unwrap_or(false);
                         if underrun {
                             let should_hold = {
-                                let hidden = player
-                                    .try_borrow()
-                                    .ok()
-                                    .and_then(|b| b.as_ref().map(|p| p.is_hidden_hold()))
-                                    .unwrap_or(false);
+                                let hidden =
+                                    ctx.with_player(|p| p.is_hidden_hold()).unwrap_or(false);
                                 let mut borrow = session.borrow_mut();
                                 borrow.as_mut().is_some_and(|s| {
                                     if hidden
@@ -411,20 +330,16 @@ pub fn Video(
                                 })
                             };
                             if should_hold
-                                && let Ok(borrow) = player.try_borrow()
-                                && let Some(p) = borrow.as_ref()
+                                && let Some(t) =
+                                    ctx.with_player(|p| p.hold_media_clock_for_underrun())
+                                && let Some(s) = session.borrow_mut().as_mut()
                             {
-                                let t = p.hold_media_clock_for_underrun();
-                                if let Some(s) = session.borrow_mut().as_mut() {
-                                    s.media_origin = t;
-                                }
+                                s.media_origin = t;
                             }
                         } else {
                             let should_resume = {
-                                let has_frames = player
-                                    .try_borrow()
-                                    .ok()
-                                    .and_then(|b| b.as_ref().map(|p| p.presentation_len() > 0))
+                                let has_frames = ctx
+                                    .with_player(|p| p.presentation_len() > 0)
                                     .unwrap_or(false);
                                 let mut borrow = session.borrow_mut();
                                 borrow.as_mut().is_some_and(|s| {
@@ -442,11 +357,10 @@ pub fn Video(
                                 })
                             };
                             if should_resume {
-                                let player = Rc::clone(&player);
-                                let session = Rc::clone(&session);
-                                let stop_playback = Rc::clone(&stop_playback);
+                                let ctx = ctx.clone();
                                 spawn_local(async move {
-                                    let Some(p) = player.borrow().as_ref().cloned() else {
+                                    let session = &ctx.session;
+                                    let Some(p) = ctx.player.borrow().as_ref().cloned() else {
                                         if let Some(s) = session.borrow_mut().as_mut() {
                                             s.resuming_clock = false;
                                         }
@@ -473,7 +387,7 @@ pub fn Video(
                                                 s.resuming_clock = false;
                                             }
                                             error.set(Some(e.to_string()));
-                                            stop_playback();
+                                            ctx.stop_playback();
                                         }
                                     }
                                 });
@@ -482,7 +396,7 @@ pub fn Video(
                     }
                     Err(e) => {
                         error.set(Some(e.to_string()));
-                        stop_playback();
+                        ctx.stop_playback();
                     }
                 }
             }
@@ -501,38 +415,24 @@ pub fn Video(
     });
 
     use_resize_observer(viewport_ref, {
-        let player = Rc::clone(&player);
+        let ctx = ctx.clone();
         move |_entries, _observer| {
-            let Ok(borrow) = player.try_borrow() else {
-                return;
-            };
-            if let Some(p) = borrow.as_ref() {
+            ctx.with_player(|p| {
                 let _ = p.relayout();
-            }
+            });
         }
     });
 
     let kick_drain = {
-        let queue = queue.clone();
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let fps_meter = Rc::clone(&fps_meter);
-        let sync_ui = Rc::clone(&sync_ui);
-        let stop_playback = Rc::clone(&stop_playback);
+        let ctx = ctx.clone();
         let resume_raf = resume_raf.clone();
-        let transport = transport.clone();
         Rc::new(move || {
-            let queue = queue.clone();
-            let player = Rc::clone(&player);
-            let session = Rc::clone(&session);
-            let fps_meter = Rc::clone(&fps_meter);
-            let sync_ui = Rc::clone(&sync_ui);
-            let stop_playback = Rc::clone(&stop_playback);
+            let ctx = ctx.clone();
             let resume_raf = resume_raf.clone();
-            let transport = transport.clone();
             // IMPORTANT: wasm_bindgen_futures::spawn_local (not leptos) — open may
             // be invoked from the file-input handler outside a reactive owner.
             spawn_local(async move {
+                let queue = &ctx.queue;
                 loop {
                     let Some((id, op)) = queue.pop_next() else {
                         if queue.try_end_drain() {
@@ -544,73 +444,22 @@ pub fn Video(
                         continue;
                     }
                     match op {
-                        HostOp::Open(OpenArgs { source, canvas }) => {
-                            run_open(
-                                &queue,
-                                id,
-                                source,
-                                canvas,
-                                &player,
-                                &sync_ui,
-                                &fps_meter,
-                                ready,
-                                metadata,
-                                error,
-                                status,
-                                fps,
-                                pipeline,
-                                has_audio,
-                                volume,
-                                muted,
-                                playback_rate,
-                            )
-                            .await;
+                        HostOp::Open(args) => {
+                            run_open(&ctx, id, args).await;
                             if queue.is_current(id) && ready.get_untracked() {
-                                note_transport(&transport, TransportEvent::OpenReady);
+                                note_transport(&ctx.transport, TransportEvent::OpenReady);
                             }
                         }
                         HostOp::Seek(target) => {
-                            let _ = run_seek_or_step(
-                                &queue,
-                                id,
-                                &player,
-                                &sync_ui,
-                                &session,
-                                error,
-                                playing,
-                                playhead,
-                                SeekOrStep::Seek(target),
-                            )
-                            .await;
+                            let _ = run_seek_or_step(&ctx, id, SeekOrStep::Seek(target)).await;
                         }
                         HostOp::SeekKeyframe(target) => {
-                            let _ = run_seek_or_step(
-                                &queue,
-                                id,
-                                &player,
-                                &sync_ui,
-                                &session,
-                                error,
-                                playing,
-                                playhead,
-                                SeekOrStep::SeekKeyframe(target),
-                            )
-                            .await;
+                            let _ =
+                                run_seek_or_step(&ctx, id, SeekOrStep::SeekKeyframe(target)).await;
                         }
                         HostOp::ScrubDrag(target) => {
                             queue.set_scrub_inflight(true);
-                            let _ = run_seek_or_step(
-                                &queue,
-                                id,
-                                &player,
-                                &sync_ui,
-                                &session,
-                                error,
-                                playing,
-                                playhead,
-                                SeekOrStep::ScrubDrag(target),
-                            )
-                            .await;
+                            let _ = run_seek_or_step(&ctx, id, SeekOrStep::ScrubDrag(target)).await;
                             queue.set_scrub_inflight(false);
                         }
                         HostOp::ScrubRelease {
@@ -620,35 +469,15 @@ pub fn Video(
                         } => {
                             queue.set_scrub_inflight(true);
                             let ok = run_seek_or_step(
-                                &queue,
+                                &ctx,
                                 id,
-                                &player,
-                                &sync_ui,
-                                &session,
-                                error,
-                                playing,
-                                playhead,
                                 SeekOrStep::ScrubRelease { target, then_play },
                             )
                             .await;
                             queue.set_scrub_inflight(false);
                             let mut played_ok = false;
                             if ok && then_play && queue.is_current(id) {
-                                played_ok = run_play_prime(
-                                    &queue,
-                                    id,
-                                    &player,
-                                    &session,
-                                    &fps_meter,
-                                    &stop_playback,
-                                    &resume_raf,
-                                    ready,
-                                    playing,
-                                    playhead,
-                                    error,
-                                    fps,
-                                )
-                                .await;
+                                played_ok = run_play_prime(&ctx, id, &resume_raf).await;
                             }
                             // Always note Done — reduce ignores stale `settle_gen`.
                             // Skipping when `!is_current` left transport in Settling
@@ -659,7 +488,7 @@ pub fn Video(
                                 ok
                             };
                             note_transport(
-                                &transport,
+                                &ctx.transport,
                                 TransportEvent::ScrubReleaseDone {
                                     settle_gen,
                                     then_play,
@@ -668,42 +497,17 @@ pub fn Video(
                             );
                         }
                         HostOp::Step(forward) => {
-                            let _ = run_seek_or_step(
-                                &queue,
-                                id,
-                                &player,
-                                &sync_ui,
-                                &session,
-                                error,
-                                playing,
-                                playhead,
-                                SeekOrStep::Step(forward),
-                            )
-                            .await;
+                            let _ = run_seek_or_step(&ctx, id, SeekOrStep::Step(forward)).await;
                             // Cached steps can finish in one microtask; without a
                             // paint yield the drain chains several frames before
                             // the browser composites → lag then a burst.
                             wait_animation_frame().await;
                         }
                         HostOp::PlayPrime => {
-                            let ok = run_play_prime(
-                                &queue,
-                                id,
-                                &player,
-                                &session,
-                                &fps_meter,
-                                &stop_playback,
-                                &resume_raf,
-                                ready,
-                                playing,
-                                playhead,
-                                error,
-                                fps,
-                            )
-                            .await;
+                            let ok = run_play_prime(&ctx, id, &resume_raf).await;
                             if queue.is_current(id) {
                                 note_transport(
-                                    &transport,
+                                    &ctx.transport,
                                     if ok {
                                         TransportEvent::PlayPrimeDone
                                     } else {
@@ -718,50 +522,8 @@ pub fn Video(
         }) as Rc<dyn Fn()>
     };
 
-    // mediabunny media-player `initMediaPlayer`: pause → iterator.return →
-    // asyncId++ before a new Input. Drop retiring VideoPlayer so UrlSource
-    // dispose aborts Range workers (was: zombie orch after clip switch).
-    let retire_clip = {
-        let queue = queue.clone();
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let stop_playback = Rc::clone(&stop_playback);
-        let fps_meter = Rc::clone(&fps_meter);
-        let transport = transport.clone();
-        Rc::new(move || {
-            note_transport(&transport, TransportEvent::Closed);
-            stop_playback();
-            queue.cancel_all();
-            playing.set(false);
-            let _ = session.borrow_mut().take();
-            // Drop *before* zeroing frame_count — paused rAF sync_ui treats
-            // count 0→N as a new clip and would restore the old playhead.
-            let retiring = player.borrow_mut().take();
-            if let Some(p) = retiring {
-                // Bump thumb epoch while the sink still exists; Drop clears it.
-                p.cancel_hover_thumb();
-                p.pause();
-            }
-            // `retiring` drops here → decoder/caches + UrlSource orch.dispose.
-            // `ready=false` also hides HoverThumbPreview (Effect on ready).
-            ready.set(false);
-            ended.set(false);
-            error.set(None);
-            fps.set(None);
-            pipeline.set(None);
-            metadata.set(None);
-            frame.set(0);
-            playhead.set(0);
-            frame_count.set(0);
-            timestamp.set(0.0);
-            has_audio.set(false);
-            fps_meter.borrow_mut().reset();
-        }) as Rc<dyn Fn()>
-    };
-
     let open_blob = {
-        let queue = queue.clone();
-        let retire_clip = Rc::clone(&retire_clip);
+        let ctx = ctx.clone();
         let kick_drain = Rc::clone(&kick_drain);
         Rc::new(move |blob: web_sys::Blob| {
             let Some(canvas_el) = canvas_ref.get_untracked() else {
@@ -770,22 +532,21 @@ pub fn Video(
                 return;
             };
             let canvas: HtmlCanvasElement = canvas_el;
-            retire_clip();
+            ctx.retire_clip();
             let size_kb = (blob.size() as u64) / 1024;
             status.set(OpenPhase::ProbingSource(OpenSourceKind::Progressive { size_kb }).label());
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("webmedia: open_blob start ~{size_kb} KB").into());
             let source: std::sync::Arc<dyn MediaSource> =
                 std::sync::Arc::new(BlobSource::new(blob));
-            if queue.enqueue(HostOp::Open(OpenArgs { source, canvas })) {
+            if ctx.queue.enqueue(HostOp::Open(OpenArgs { source, canvas })) {
                 kick_drain();
             }
         }) as Rc<dyn Fn(web_sys::Blob)>
     };
 
     let open_url = {
-        let queue = queue.clone();
-        let retire_clip = Rc::clone(&retire_clip);
+        let ctx = ctx.clone();
         let kick_drain = Rc::clone(&kick_drain);
         Rc::new(move |url: String| {
             let Some(canvas_el) = canvas_ref.get_untracked() else {
@@ -800,8 +561,8 @@ pub fn Video(
                 status.set("Enter a URL to open.".into());
                 return;
             }
-            retire_clip();
-            let fetch_id = queue.current_id();
+            ctx.retire_clip();
+            let fetch_id = ctx.queue.current_id();
             // Do **not** latch `busy` across resolve — cancelled fetch used to
             // leave busy=true forever when drain had already ended. `!ready`
             // keeps Play disabled; Open enqueue sets busy for demux/seek.
@@ -811,7 +572,7 @@ pub fn Video(
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("webmedia: open_url start {url}").into());
 
-            let queue = queue.clone();
+            let queue = ctx.queue.clone();
             let kick_drain = Rc::clone(&kick_drain);
             spawn_local(async move {
                 let opened = resolve_url_source(&url, |phase| status.set(phase.label())).await;
@@ -838,13 +599,21 @@ pub fn Video(
         }) as Rc<dyn Fn(String)>
     };
 
-    let play_fn = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let queue = queue.clone();
+    let dispatch = {
+        let ctx = ctx.clone();
         let kick_drain = Rc::clone(&kick_drain);
-        let transport = transport.clone();
-        let stop_playback = Rc::clone(&stop_playback);
+        Rc::new(move |event: TransportEvent| dispatch_transport(&ctx, &kick_drain, event))
+            as Rc<dyn Fn(TransportEvent)>
+    };
+    let enqueue_op = {
+        let ctx = ctx.clone();
+        let kick_drain = Rc::clone(&kick_drain);
+        Rc::new(move |op: HostOp| enqueue_seek_step(&ctx, &kick_drain, op)) as Rc<dyn Fn(HostOp)>
+    };
+
+    let play_fn = {
+        let ctx = ctx.clone();
+        let dispatch = Rc::clone(&dispatch);
         Rc::new(move || {
             if !ready.get_untracked() {
                 web_sys::console::log_1(&"webmedia: play ignored (not ready)".into());
@@ -852,90 +621,38 @@ pub fn Video(
             }
             // Stale `playing` with no session (Pause race) blocked all transport.
             if playing.get_untracked() {
-                if session.borrow().is_some() {
+                if ctx.session.borrow().is_some() {
                     web_sys::console::log_1(&"webmedia: play ignored (already playing)".into());
                     return;
                 }
                 web_sys::console::log_1(&"webmedia: recover stale playing flag".into());
                 playing.set(false);
-                if let Some(p) = player.borrow().as_ref().cloned() {
+                if let Some(p) = ctx.player.borrow().as_ref().cloned() {
                     p.pause();
                 }
             }
-            if player.borrow().as_ref().is_none() {
+            if ctx.player.borrow().as_ref().is_none() {
                 web_sys::console::log_1(&"webmedia: play ignored (no player)".into());
                 return;
             }
-            dispatch_transport(
-                &transport,
-                TransportEvent::PlayPressed,
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                playhead,
-                ended,
-                &stop_playback,
-            );
+            dispatch(TransportEvent::PlayPressed);
         }) as Rc<dyn Fn()>
     };
 
     let pause_fn = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let queue = queue.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        let transport = transport.clone();
-        let stop_playback = Rc::clone(&stop_playback);
-        Rc::new(move || {
-            dispatch_transport(
-                &transport,
-                TransportEvent::PausePressed,
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                playhead,
-                ended,
-                &stop_playback,
-            );
-        }) as Rc<dyn Fn()>
+        let dispatch = Rc::clone(&dispatch);
+        Rc::new(move || dispatch(TransportEvent::PausePressed)) as Rc<dyn Fn()>
     };
 
-    let seek_fn = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let queue = queue.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move |target: u32| {
-            enqueue_seek_step(
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                HostOp::Seek(target),
-            );
-        }) as Rc<dyn Fn(u32)>
+    let scrub_pointer_down_fn = {
+        let dispatch = Rc::clone(&dispatch);
+        Rc::new(move |frame: u32| dispatch(TransportEvent::PointerDown { frame }))
+            as Rc<dyn Fn(u32)>
     };
 
-    let seek_keyframe_fn = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let queue = queue.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move |target: u32| {
-            enqueue_seek_step(
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                HostOp::SeekKeyframe(target),
-            );
-        }) as Rc<dyn Fn(u32)>
+    let scrub_pointer_up_fn = {
+        let dispatch = Rc::clone(&dispatch);
+        Rc::new(move |frame: u32| dispatch(TransportEvent::PointerUp { frame })) as Rc<dyn Fn(u32)>
     };
 
     // Rate-limit scrub drag only — pointermove is denser than key-repeat.
@@ -943,27 +660,9 @@ pub fn Video(
     const SCRUB_DRAG_THROTTLE_MS: f64 = 50.0;
 
     let scrub_pointer_move_throttled = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let queue = queue.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        let transport = transport.clone();
-        let stop_playback = Rc::clone(&stop_playback);
+        let dispatch = Rc::clone(&dispatch);
         use_throttle_fn_with_arg_and_options(
-            move |target: u32| {
-                dispatch_transport(
-                    &transport,
-                    TransportEvent::PointerMove { frame: target },
-                    &queue,
-                    &kick_drain,
-                    &player,
-                    &session,
-                    playing,
-                    playhead,
-                    ended,
-                    &stop_playback,
-                );
-            },
+            move |frame: u32| dispatch(TransportEvent::PointerMove { frame }),
             SCRUB_DRAG_THROTTLE_MS,
             // trailing=false: a post-pointerup trailing drag can enqueue after
             // ScrubRelease and silently kill play.
@@ -971,144 +670,53 @@ pub fn Video(
         )
     };
 
-    let scrub_pointer_down_fn = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let queue = queue.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        let transport = transport.clone();
-        let stop_playback = Rc::clone(&stop_playback);
-        Rc::new(move |target: u32| {
-            dispatch_transport(
-                &transport,
-                TransportEvent::PointerDown { frame: target },
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                playhead,
-                ended,
-                &stop_playback,
-            );
-        }) as Rc<dyn Fn(u32)>
-    };
+    let scrub_pointer_move_fn = Rc::new(move |target: u32| {
+        scrub_pointer_move_throttled(target);
+    }) as Rc<dyn Fn(u32)>;
 
-    let scrub_pointer_move_fn = {
-        let scrub_pointer_move_throttled = scrub_pointer_move_throttled.clone();
-        Rc::new(move |target: u32| {
-            scrub_pointer_move_throttled(target);
-        }) as Rc<dyn Fn(u32)>
+    let seek_fn = |to_op: fn(u32) -> HostOp| {
+        let enqueue_op = Rc::clone(&enqueue_op);
+        Rc::new(move |frame: u32| enqueue_op(to_op(frame))) as Rc<dyn Fn(u32)>
     };
-
-    let scrub_pointer_up_fn = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let queue = queue.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        let transport = transport.clone();
-        let stop_playback = Rc::clone(&stop_playback);
-        Rc::new(move |target: u32| {
-            dispatch_transport(
-                &transport,
-                TransportEvent::PointerUp { frame: target },
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                playhead,
-                ended,
-                &stop_playback,
-            );
-        }) as Rc<dyn Fn(u32)>
-    };
-
-    let next_fn = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let queue = queue.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move || {
-            enqueue_seek_step(
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                HostOp::Step(true),
-            );
-        }) as Rc<dyn Fn()>
-    };
-
-    let prev_fn = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let queue = queue.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move || {
-            enqueue_seek_step(
-                &queue,
-                &kick_drain,
-                &player,
-                &session,
-                playing,
-                HostOp::Step(false),
-            );
-        }) as Rc<dyn Fn()>
+    let step_fn = |forward: bool| {
+        let enqueue_op = Rc::clone(&enqueue_op);
+        Rc::new(move || enqueue_op(HostOp::Step(forward))) as Rc<dyn Fn()>
     };
 
     let set_loop_fn = {
-        let player = Rc::clone(&player);
-        let sync_ui = Rc::clone(&sync_ui);
+        let ctx = ctx.clone();
         Rc::new(move |on: bool| {
-            if let Ok(borrow) = player.try_borrow()
-                && let Some(p) = borrow.as_ref()
-            {
-                p.set_loop(on);
-            }
-            sync_ui();
+            ctx.with_player(|p| p.set_loop(on));
+            ctx.sync_ui();
         }) as Rc<dyn Fn(bool)>
     };
 
     let set_volume_fn = {
-        let player = Rc::clone(&player);
+        let ctx = ctx.clone();
         Rc::new(move |v: f64| {
-            if let Ok(borrow) = player.try_borrow()
-                && let Some(p) = borrow.as_ref()
-            {
-                p.set_volume(v);
-            }
+            ctx.with_player(|p| p.set_volume(v));
         }) as Rc<dyn Fn(f64)>
     };
 
     let set_muted_fn = {
-        let player = Rc::clone(&player);
+        let ctx = ctx.clone();
         Rc::new(move |m: bool| {
-            if let Ok(borrow) = player.try_borrow()
-                && let Some(p) = borrow.as_ref()
-            {
-                p.set_muted(m);
-            }
+            ctx.with_player(|p| p.set_muted(m));
         }) as Rc<dyn Fn(bool)>
     };
 
     let set_playback_rate_fn = {
-        let player = Rc::clone(&player);
+        let ctx = ctx.clone();
         Rc::new(move |r: f64| {
-            if let Ok(borrow) = player.try_borrow()
-                && let Some(p) = borrow.as_ref()
-            {
-                p.set_playback_rate(r);
-            }
+            ctx.with_player(|p| p.set_playback_rate(r));
         }) as Rc<dyn Fn(f64)>
     };
 
     let paint_hover_thumb_fn = {
-        let player = Rc::clone(&player);
+        let ctx = ctx.clone();
         Rc::new(
             move |frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32| {
-                let Some(p) = player.borrow().as_ref().cloned() else {
+                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
                     return;
                 };
                 spawn_local(async move {
@@ -1121,77 +729,41 @@ pub fn Video(
     };
 
     let try_paint_hover_thumb_fn = {
-        let player = Rc::clone(&player);
+        let ctx = ctx.clone();
         Rc::new(
             move |frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32| {
-                let Ok(borrow) = player.try_borrow() else {
-                    return false;
-                };
-                let Some(p) = borrow.as_ref() else {
-                    return false;
-                };
-                let aim = u64::from(frame);
-                match p.try_paint_hover_thumb_cached(aim, &dest, max_w, max_h) {
-                    // Far interim still paints, but return false so host defers
-                    // throttled aim decode (Pause+Play far refine floor).
-                    Ok(Some(painted)) => p.hover_thumb_close_enough(aim, painted),
-                    _ => false,
-                }
+                ctx.with_player(|p| {
+                    let aim = u64::from(frame);
+                    match p.try_paint_hover_thumb_cached(aim, &dest, max_w, max_h) {
+                        // Far interim still paints, but return false so host defers
+                        // throttled aim decode (Pause+Play far refine floor).
+                        Ok(Some(painted)) => p.hover_thumb_close_enough(aim, painted),
+                        _ => false,
+                    }
+                })
+                .unwrap_or(false)
             },
         ) as Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32) -> bool>
     };
 
     let cancel_hover_thumb_fn = {
-        let player = Rc::clone(&player);
+        let ctx = ctx.clone();
         Rc::new(move || {
-            if let Ok(borrow) = player.try_borrow()
-                && let Some(p) = borrow.as_ref()
-            {
-                p.cancel_hover_thumb();
-            }
+            ctx.with_player(|p| p.cancel_hover_thumb());
         }) as Rc<dyn Fn()>
     };
 
     let set_thumb_policy_fn = {
-        let player = Rc::clone(&player);
+        let ctx = ctx.clone();
         Rc::new(move |policy: webmedia::ThumbPolicy| {
-            if let Ok(borrow) = player.try_borrow()
-                && let Some(p) = borrow.as_ref()
-            {
-                p.set_thumb_policy(policy);
-            }
+            ctx.with_player(|p| p.set_thumb_policy(policy));
         }) as Rc<dyn Fn(webmedia::ThumbPolicy)>
     };
 
     let close_fn = {
-        let player = Rc::clone(&player);
-        let session = Rc::clone(&session);
-        let fps_meter = Rc::clone(&fps_meter);
-        let queue = queue.clone();
-        let transport = transport.clone();
+        let ctx = ctx.clone();
         Rc::new(move || {
-            note_transport(&transport, TransportEvent::Closed);
-            queue.cancel_all();
-            playing.set(false);
-            let _ = session.borrow_mut().take();
-            // Drop VideoPlayer (decoder + caches); cancel_ops via Drop.
-            let retiring = player.borrow_mut().take();
-            if let Some(p) = retiring {
-                p.cancel_hover_thumb();
-                p.pause();
-            }
-            fps_meter.borrow_mut().reset();
-            ready.set(false);
-            ended.set(false);
-            frame.set(0);
-            playhead.set(0);
-            frame_count.set(0);
-            timestamp.set(0.0);
-            fps.set(None);
-            metadata.set(None);
-            pipeline.set(None);
-            has_audio.set(false);
-            error.set(None);
+            ctx.retire_clip();
             status.set("Closed.".into());
         }) as Rc<dyn Fn()>
     };
@@ -1202,13 +774,13 @@ pub fn Video(
         play: play_fn,
         pause: pause_fn,
         close: Rc::clone(&close_fn),
-        seek_frame: seek_fn,
-        seek_keyframe: seek_keyframe_fn,
+        seek_frame: seek_fn(HostOp::Seek),
+        seek_keyframe: seek_fn(HostOp::SeekKeyframe),
         scrub_pointer_down: scrub_pointer_down_fn,
         scrub_pointer_move: scrub_pointer_move_fn,
         scrub_pointer_up: scrub_pointer_up_fn,
-        next_frame: next_fn,
-        previous_frame: prev_fn,
+        next_frame: step_fn(true),
+        previous_frame: step_fn(false),
         set_loop: set_loop_fn,
         set_volume: set_volume_fn,
         set_muted: set_muted_fn,

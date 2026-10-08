@@ -4,6 +4,7 @@
 //! Host UI (controls, file picker) lives in the demo `app` crate.
 
 mod component;
+mod ctx;
 mod host_ops;
 mod op_queue;
 mod open_url;
@@ -106,12 +107,25 @@ impl VideoRef {
         }
     }
 
+    /// Clone one registered callback out of [`Self::ops`] (call it after the
+    /// store borrow ends — callbacks may re-enter `VideoRef`).
+    fn op<F: ?Sized>(&self, pick: impl FnOnce(&VideoOps) -> &Rc<F>) -> Option<Rc<F>> {
+        self.ops
+            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(pick(o))))
+            .flatten()
+    }
+
+    /// Clamp `frame` to the clip, clear `ended`, move the UI playhead there.
+    fn aim(&self, frame: u32) -> u32 {
+        let max = self.frame_count.get_untracked().saturating_sub(1);
+        let frame = frame.min(max);
+        self.ended.set(false);
+        self.playhead.set(frame);
+        frame
+    }
+
     pub fn open_blob(&self, blob: web_sys::Blob) {
-        let open = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.open_blob)))
-            .flatten();
-        if let Some(open) = open {
+        if let Some(open) = self.op(|o| &o.open_blob) {
             open(blob);
         } else {
             self.status
@@ -128,11 +142,7 @@ impl VideoRef {
     /// through fetch → Blob. Needs CORS for cross-origin hosts.
     pub fn open_url(&self, url: impl Into<String>) {
         let url = url.into();
-        let open = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.open_url)))
-            .flatten();
-        if let Some(open) = open {
+        if let Some(open) = self.op(|o| &o.open_url) {
             open(url);
         } else {
             self.status
@@ -143,11 +153,7 @@ impl VideoRef {
 
     /// Drop the decode session (decoder + caches). Canvas stays mounted for a later open.
     pub fn close(&self) {
-        if let Some(close) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.close)))
-            .flatten()
-        {
+        if let Some(close) = self.op(|o| &o.close) {
             close();
         }
     }
@@ -158,11 +164,7 @@ impl VideoRef {
         // is already cascading key→playhead; a Play-time seek cancels that work and
         // restarts the GOP (multi-second lag on long-GOP clips). PlayPrime
         // waits behind settle (or seeks only if still mismatched after).
-        if let Some(play) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.play)))
-            .flatten()
-        {
+        if let Some(play) = self.op(|o| &o.play) {
             play();
         }
     }
@@ -174,11 +176,7 @@ impl VideoRef {
         // Already paused with playhead ≠ frame (scrub target): promote via seek.
         let was_playing = self.playing.get_untracked();
         let ph = self.playhead.get_untracked();
-        if let Some(pause) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.pause)))
-            .flatten()
-        {
+        if let Some(pause) = self.op(|o| &o.pause) {
             pause();
         }
         if !was_playing && self.frame.get_untracked() != ph {
@@ -187,75 +185,40 @@ impl VideoRef {
     }
 
     pub fn seek_frame(&self, frame: u32) {
-        let max = self.frame_count.get_untracked().saturating_sub(1);
-        let frame = frame.min(max);
-        self.ended.set(false);
-        self.playhead.set(frame);
-        if let Some(seek) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
-            .flatten()
-        {
+        let frame = self.aim(frame);
+        if let Some(seek) = self.op(|o| &o.seek_frame) {
             seek(frame);
         }
     }
 
     /// Fast scrub preview — snap to the nearest keyframe at or before `frame`.
     pub fn seek_keyframe(&self, frame: u32) {
-        let max = self.frame_count.get_untracked().saturating_sub(1);
-        let frame = frame.min(max);
-        self.ended.set(false);
-        self.playhead.set(frame);
-        if let Some(seek) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_keyframe)))
-            .flatten()
-        {
+        let frame = self.aim(frame);
+        if let Some(seek) = self.op(|o| &o.seek_keyframe) {
             seek(frame);
         }
     }
 
     /// Timeline pointer down — transport FSM (`architecture.md` § State machines).
     pub fn scrub_pointer_down(&self, frame: u32) {
-        let max = self.frame_count.get_untracked().saturating_sub(1);
-        let frame = frame.min(max);
-        self.ended.set(false);
-        self.playhead.set(frame);
-        if let Some(f) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_pointer_down)))
-            .flatten()
-        {
+        let frame = self.aim(frame);
+        if let Some(f) = self.op(|o| &o.scrub_pointer_down) {
             f(frame);
         }
     }
 
     /// Timeline pointer move while scrubbing.
     pub fn scrub_pointer_move(&self, frame: u32) {
-        let max = self.frame_count.get_untracked().saturating_sub(1);
-        let frame = frame.min(max);
-        self.ended.set(false);
-        self.playhead.set(frame);
-        if let Some(f) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_pointer_move)))
-            .flatten()
-        {
+        let frame = self.aim(frame);
+        if let Some(f) = self.op(|o| &o.scrub_pointer_move) {
             f(frame);
         }
     }
 
     /// Timeline pointer up — settle (± resume play when scrub began while playing).
     pub fn scrub_pointer_up(&self, frame: u32) {
-        let max = self.frame_count.get_untracked().saturating_sub(1);
-        let frame = frame.min(max);
-        self.ended.set(false);
-        self.playhead.set(frame);
-        if let Some(f) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.scrub_pointer_up)))
-            .flatten()
-        {
+        let frame = self.aim(frame);
+        if let Some(f) = self.op(|o| &o.scrub_pointer_up) {
             f(frame);
         }
     }
@@ -272,11 +235,7 @@ impl VideoRef {
         // Scrub/seek target still ahead/behind engine — promote via seek.
         let adjacent_aim = engine.saturating_add(1).min(max);
         if ph != engine && ph != adjacent_aim {
-            if let Some(seek) = self
-                .ops
-                .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
-                .flatten()
-            {
+            if let Some(seek) = self.op(|o| &o.seek_frame) {
                 seek(ph);
             }
             return;
@@ -285,11 +244,7 @@ impl VideoRef {
             return;
         }
         self.playhead.set(adjacent_aim);
-        if let Some(next) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.next_frame)))
-            .flatten()
-        {
+        if let Some(next) = self.op(|o| &o.next_frame) {
             next();
         }
     }
@@ -303,11 +258,7 @@ impl VideoRef {
 
         let adjacent_aim = engine.saturating_sub(1);
         if ph != engine && ph != adjacent_aim {
-            if let Some(seek) = self
-                .ops
-                .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.seek_frame)))
-                .flatten()
-            {
+            if let Some(seek) = self.op(|o| &o.seek_frame) {
                 seek(ph);
             }
             return;
@@ -316,22 +267,14 @@ impl VideoRef {
             return;
         }
         self.playhead.set(adjacent_aim);
-        if let Some(prev) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.previous_frame)))
-            .flatten()
-        {
+        if let Some(prev) = self.op(|o| &o.previous_frame) {
             prev();
         }
     }
 
     pub fn set_loop(&self, on: bool) {
         self.looping.set(on);
-        if let Some(set_loop) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.set_loop)))
-            .flatten()
-        {
+        if let Some(set_loop) = self.op(|o| &o.set_loop) {
             set_loop(on);
         }
     }
@@ -339,22 +282,14 @@ impl VideoRef {
     pub fn set_volume(&self, volume: f64) {
         let v = volume.clamp(0.0, 1.0);
         self.volume.set(v);
-        if let Some(set_volume) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.set_volume)))
-            .flatten()
-        {
+        if let Some(set_volume) = self.op(|o| &o.set_volume) {
             set_volume(v);
         }
     }
 
     pub fn set_muted(&self, muted: bool) {
         self.muted.set(muted);
-        if let Some(set_muted) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.set_muted)))
-            .flatten()
-        {
+        if let Some(set_muted) = self.op(|o| &o.set_muted) {
             set_muted(muted);
         }
     }
@@ -362,11 +297,7 @@ impl VideoRef {
     pub fn set_playback_rate(&self, rate: f64) {
         let r = webmedia::normalize_playback_rate(rate);
         self.playback_rate.set(r);
-        if let Some(set_rate) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.set_playback_rate)))
-            .flatten()
-        {
+        if let Some(set_rate) = self.op(|o| &o.set_playback_rate) {
             set_rate(r);
         }
     }
@@ -380,11 +311,7 @@ impl VideoRef {
     pub fn paint_hover_thumb(&self, frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
-        if let Some(paint) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.paint_hover_thumb)))
-            .flatten()
-        {
+        if let Some(paint) = self.op(|o| &o.paint_hover_thumb) {
             paint(frame, dest, max_w, max_h);
         }
     }
@@ -399,33 +326,20 @@ impl VideoRef {
     ) -> bool {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
-        self.ops
-            .try_with_value(|ops| {
-                ops.as_ref()
-                    .map(|o| (o.try_paint_hover_thumb)(frame, dest, max_w, max_h))
-            })
-            .flatten()
-            .unwrap_or(false)
+        self.op(|o| &o.try_paint_hover_thumb)
+            .is_some_and(|paint| paint(frame, dest, max_w, max_h))
     }
 
     /// Abort in-flight hover thumb Exact downscale / hide race with scrub.
     pub fn cancel_hover_thumb(&self) {
-        if let Some(cancel) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.cancel_hover_thumb)))
-            .flatten()
-        {
+        if let Some(cancel) = self.op(|o| &o.cancel_hover_thumb) {
             cancel();
         }
     }
 
     /// Runtime thumb sink gate (`Off` drops [`webmedia::ThumbPreview`]).
     pub fn set_thumb_policy(&self, policy: ThumbPolicy) {
-        if let Some(set) = self
-            .ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(&o.set_thumb_policy)))
-            .flatten()
-        {
+        if let Some(set) = self.op(|o| &o.set_thumb_policy) {
             set(policy);
         }
     }

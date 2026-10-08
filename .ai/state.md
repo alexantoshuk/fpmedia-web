@@ -16,10 +16,9 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ### 1. Hygiene (no behavior change)
 
-1. `media_components`: one `HostCtx` instead of 10–16-arg `run_open` / `dispatch_transport`; one reset for `close_fn` + `retire_clip`; `VideoRef` ops boilerplate.
-2. Split hover thumbs out of `video_player/scrub.rs` → `thumb.rs` (module-level `cfg(feature = "thumbs")`, no inline stubs).
-3. Split `types.rs` (policy / metadata); move strip pixel math to `media_components::helpers`.
-4. One JS timer module (sleep / macrotask / microtask / rAF / now) for engine + host; removes bare-`resolve` timers (`video_player/util.rs::sleep_ms`, `hover_thumb.rs`) and `expect("window")`.
+1. Split hover thumbs out of `video_player/scrub.rs` → `thumb.rs` (module-level `cfg(feature = "thumbs")`, no inline stubs).
+2. Split `types.rs` (policy / metadata); move strip pixel math to `media_components::helpers`.
+3. One JS timer module (sleep / macrotask / microtask / rAF / now) for engine + host; removes bare-`resolve` timers (`video_player/util.rs::sleep_ms`, `hover_thumb.rs`) and `expect("window")`.
 
 ### 2. Structural, low risk
 
