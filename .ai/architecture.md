@@ -148,7 +148,7 @@ Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). U
 | `ScrubBlitLru` | Live densify bitmaps; cap from `scrub_blit_frame_budget` |
 | `ThumbCache` / `ThumbPreview` | Hover filmstrip (3rd decoder); feature `thumbs` |
 
-**Modes:** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify`. Soft-drag → aim+blit only (no densify under finger — PreferSoftware saturates JS). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Eviction: farthest from aim. `mediabunny:` CanvasSink pool idea — no still-encode store.
+**Modes:** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify`. Soft-drag → aim+blit only (no densify under finger — PreferSoftware saturates JS). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Eviction: farthest from aim — one `residency::AimWindow` under markers + blit. `mediabunny:` CanvasSink pool idea — no still-encode store.
 
 ### Predictive densify
 

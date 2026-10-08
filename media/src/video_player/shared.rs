@@ -12,7 +12,7 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 use crate::MediaClock;
 use crate::audio::AudioOutput;
 use crate::clock_state::ClockState;
-use crate::decode::frame_cache::{ScrubBlitLru, ScrubChunkStore};
+use crate::decode::frame_cache::ScrubBlitLru;
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::scrub_blit::BlitCanvasSlot;
 #[cfg(feature = "thumbs")]
@@ -23,6 +23,7 @@ use crate::demux::Mp4VideoTrack;
 use crate::engine_mode::EngineModel;
 use crate::error::MediaError;
 use crate::policy::ThumbPolicy;
+use crate::residency::ScrubChunkStore;
 use crate::session::SessionModel;
 use crate::types::{FrameId, Timestamp};
 

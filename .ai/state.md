@@ -16,10 +16,9 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ### 2. Structural, low risk
 
-1. Shared aim-distance residency for `ScrubChunkStore` / `ScrubBlitLru` / `ThumbCache`.
-2. Typed decode faults instead of matching error strings (`decode_ops.rs`, `util::is_decoder_poison`).
-3. One `open_mp4(source, opts, progress)` entry instead of 8 `open_mp4_*` variants.
-4. Group `webmedia` root modules (`model/` · `host/` · `policy/`).
+1. Typed decode faults instead of matching error strings (`decode_ops.rs`, `util::is_decoder_poison`).
+2. One `open_mp4(source, opts, progress)` entry instead of 8 `open_mp4_*` variants.
+3. Group `webmedia` root modules (`model/` · `host/` · `policy/`).
 
 ### 3. Behavior-adjacent (mediabunny cite required)
 
@@ -37,6 +36,7 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ## Later
 
+- `ThumbCache` on `residency::AimWindow` (aim-distance instead of GOP LRU) — behavior change; probe hover first.
 - Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).
 - Drop `re_mp4` fork when upstream has #35 + #37.
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.

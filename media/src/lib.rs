@@ -21,6 +21,7 @@ mod host_op_coalesce;
 mod open_phase;
 mod playback_policy;
 mod policy;
+mod residency;
 mod scrub_plan;
 mod session;
 mod source;

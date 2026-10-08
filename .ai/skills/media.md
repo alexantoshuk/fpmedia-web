@@ -50,6 +50,7 @@ audio/         demux, stretch (WSOLA), output, PlaybackClock
 demux/         boxes, coalesce, mp4, tmcd
 video_player/  mod · api · shared · util · open · control · clock_ctrl · present · decode_ops · play · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
 scrub_plan.rs  pure densify gap / cold-commit (native tests)
+residency.rs   AimWindow (aim-distance eviction) · ScrubChunkStore · FrameRunIndex (native tests)
 decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
 ```
 

@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
-use crate::decode::scrub_blit::{ScrubChunk, draw_image_bitmap};
+use crate::decode::scrub_blit::draw_image_bitmap;
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::engine_mode::{EngineEvent, reduce as engine_reduce};
 use crate::error::MediaError;
@@ -11,6 +11,7 @@ use crate::policy::{
     GopProfile, ScrubPolicy, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
     scrub_blit_frame_budget,
 };
+use crate::residency::ScrubChunk;
 use crate::types::FrameId;
 
 use super::scrub_cold::{

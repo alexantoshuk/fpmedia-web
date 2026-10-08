@@ -18,12 +18,6 @@ use web_sys::{
 
 use crate::error::MediaError;
 
-/// Resident densify marker in [`crate::decode::frame_cache::ScrubChunkStore`].
-///
-/// Presence-only — canvas present uses [`crate::decode::frame_cache::ScrubBlitLru`].
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ScrubChunk;
-
 /// Reusable VF -> `ImageBitmap` surface (not in the DOM).
 pub struct BlitCanvas {
     offscreen: OffscreenCanvas,
