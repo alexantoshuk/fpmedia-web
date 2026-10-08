@@ -190,6 +190,7 @@ cargo check --target wasm32-unknown-unknown -p webmedia --features webcodecs # e
 # Opt-in HEVC: `cargo test -p webmedia --features hevc`; demo WASM →
 # `media_components` feature `hevc` (e.g. default = ["thumbs", "hevc"] while testing)
 cargo test -p webmedia                                  # engine tests (native; wasm-only modules not covered)
+cargo test -p media_components                          # host UI math (native; wasm modules cfg'd out)
 npm install && npm run e2e:install                      # once: Playwright (+ Chromium if CDN ok)
 npm run e2e                                             # browser smoke (app up on :3000; Win uses system Chrome)
 # Scrub perf probes: e2e/perf.scrub.*.spec.ts — listed in skills/media.md Triage

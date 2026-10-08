@@ -4,10 +4,11 @@
 //! Hosts paint with a 1 px-tall canvas + integer `fillRect` (Chrome blurs
 //! many-stop CSS gradients on long clips). mediabunny: no meter.
 
-use crate::video::{ReadyFrameKind, ReadyFrameMark, VideoMetadata};
+#[cfg(target_arch = "wasm32")]
+use crate::video::{ReadyFrameKind, ReadyFrameMark};
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
-use webmedia::frame_runs_to_width;
-use webmedia::strip_merge_gap_frames;
+use webmedia::{FrameId, VideoMetadata, frame_runs_to_width, strip_merge_gap_frames};
 
 pub use webmedia::{
     STRIP_PAINT_STICKY_PX, StripPaintLatch, StripPxRun, fetch_strip_px_runs,
@@ -25,33 +26,37 @@ pub const EXACT_STRIP_COLOR: &str = "#34d399";
 pub const FETCH_STRIP_COLOR: &str = "#6b7280";
 
 /// Frame marks → snapped pixel runs on `width_px` (Covered soft-merges; Exact hard).
+#[cfg(target_arch = "wasm32")]
 pub fn cache_strip_px_runs_for_width(
     marks: &[ReadyFrameMark],
     kind: ReadyFrameKind,
     max: f64,
     width_px: u16,
 ) -> Vec<StripPxRun> {
-    let max = max.max(1.0);
-    let merge_gap = match kind {
-        ReadyFrameKind::Covered => strip_merge_gap_frames(max).saturating_mul(2),
-        ReadyFrameKind::Exact => 0,
-    };
-    let mut runs: Vec<(u64, u64)> = marks
+    let mut runs: Vec<(FrameId, FrameId)> = marks
         .iter()
         .filter(|m| m.kind == kind)
         .map(|m| (m.frame, m.end.max(m.frame)))
         .collect();
     runs.sort_by_key(|&(lo, _)| lo);
-    frame_runs_to_width(&runs, max, merge_gap, width_px)
+    ready_runs_to_width(&runs, kind == ReadyFrameKind::Covered, max, width_px)
 }
 
-/// Assumed-800 snap (tests / soft-merge parity).
-pub fn cache_strip_px_runs(
-    marks: &[ReadyFrameMark],
-    kind: ReadyFrameKind,
+/// Sorted inclusive ready runs → snapped pixel runs on `width_px`.
+/// `soft_merge` closes sub-pixel holes (Covered); Exact keeps every hole.
+pub fn ready_runs_to_width(
+    runs: &[(FrameId, FrameId)],
+    soft_merge: bool,
     max: f64,
+    width_px: u16,
 ) -> Vec<StripPxRun> {
-    cache_strip_px_runs_for_width(marks, kind, max, 800)
+    let max = max.max(1.0);
+    let merge_gap = if soft_merge {
+        strip_merge_gap_frames(max).saturating_mul(2)
+    } else {
+        0
+    };
+    frame_runs_to_width(runs, max, merge_gap, width_px)
 }
 
 /// Device-pixel buffer width for a 1 px-tall strip canvas (`css_w × dpr`).
@@ -166,7 +171,6 @@ pub fn format_timecode_at(meta: &VideoMetadata, frame: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::video::ReadyFrameKind;
 
     #[test]
     fn playhead_pct_edges() {
@@ -176,7 +180,7 @@ mod tests {
 
     #[test]
     fn empty_strips_are_empty_runs() {
-        assert!(cache_strip_px_runs(&[], ReadyFrameKind::Exact, 10.0).is_empty());
+        assert!(ready_runs_to_width(&[], false, 10.0, 800).is_empty());
         assert!(fetch_strip_px_runs(&[]).is_empty());
     }
 
@@ -195,25 +199,13 @@ mod tests {
 
     #[test]
     fn exact_does_not_soft_merge_holes() {
-        use crate::video::ReadyFrameMark;
-        let marks = [
-            ReadyFrameMark::run(0, 0, ReadyFrameKind::Exact),
-            ReadyFrameMark::run(100, 100, ReadyFrameKind::Exact),
-        ];
-        let exact = cache_strip_px_runs(&marks, ReadyFrameKind::Exact, 8000.0);
+        let far = [(0, 0), (100, 100)];
+        let exact = ready_runs_to_width(&far, false, 8000.0, 800);
         assert_eq!(exact.len(), 2, "Exact keeps holes: {exact:?}");
-        let covered = [
-            ReadyFrameMark::run(0, 0, ReadyFrameKind::Covered),
-            ReadyFrameMark::run(100, 100, ReadyFrameKind::Covered),
-        ];
-        let c = cache_strip_px_runs(&covered, ReadyFrameKind::Covered, 8000.0);
+        let c = ready_runs_to_width(&far, true, 8000.0, 800);
         // soft-merge gap = 2*floor(8000/800)=20; hole 99 > 20 → two segments.
         assert_eq!(c.len(), 2, "Covered keeps real holes: {c:?}");
-        let covered_close = [
-            ReadyFrameMark::run(0, 0, ReadyFrameKind::Covered),
-            ReadyFrameMark::run(15, 15, ReadyFrameKind::Covered),
-        ];
-        let c2 = cache_strip_px_runs(&covered_close, ReadyFrameKind::Covered, 8000.0);
+        let c2 = ready_runs_to_width(&[(0, 0), (15, 15)], true, 8000.0, 800);
         assert_eq!(c2.len(), 1, "Covered soft-merges ≤2px gap: {c2:?}");
     }
 

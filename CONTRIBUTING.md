@@ -35,11 +35,13 @@ cargo fmt --all -- --check
 cargo clippy -p webmedia --all-targets --all-features -- -D warnings
 cargo clippy --target wasm32-unknown-unknown -p frontend -- -D warnings
 cargo clippy --target wasm32-unknown-unknown -p media_components -- -D warnings
+cargo clippy -p media_components --all-targets -- -D warnings
 cargo clippy -p server -- -D warnings
 cargo check -p server
 cargo check --target wasm32-unknown-unknown -p frontend
 cargo check --target wasm32-unknown-unknown -p media_components
 cargo test -p webmedia
+cargo test -p media_components
 cargo leptos build
 ```
 
