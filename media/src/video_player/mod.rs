@@ -5,7 +5,7 @@
 //! never waits on `prefetch_one` (mediabunny-style split).
 //!
 //! Layout (navigation splits P0–P6): `api` · `shared` · `util` · `open` · `control` ·
-//! `clock_ctrl` · `present` · `decode_ops` · `play` · `scrub*` · `seek`.
+//! `clock_ctrl` · `present` · `decode_ops` · `play` · `scrub*` · `seek` · `thumb`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,6 +24,8 @@ mod scrub_cold;
 mod scrub_gap;
 mod seek;
 mod shared;
+#[cfg_attr(not(feature = "thumbs"), path = "thumb_off.rs")]
+mod thumb;
 mod util;
 
 pub use api::{DuePresent, PipelineStats, ReadyFrameKind, ReadyFrameMark};

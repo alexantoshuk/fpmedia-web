@@ -342,6 +342,16 @@ impl VideoPlayer {
             .nearest_keyframe(frame)
     }
 
+    /// True when a painted hover preview is the same sync key as `aim`.
+    ///
+    /// Far interim (other GOP) must still schedule aim decode — otherwise a
+    /// single warm thumb short-circuits Play refine forever (no gray / no update).
+    pub fn hover_thumb_close_enough(&self, aim: FrameId, painted: FrameId) -> bool {
+        let ka = self.key_for(aim).unwrap_or(aim);
+        let kp = self.key_for(painted).unwrap_or(painted);
+        ka == kp
+    }
+
     pub(super) fn touch_playhead(&self, frame: FrameId) {
         if let Ok(mut cache) = self.shared.scrub_chunks.try_borrow_mut() {
             cache.touch_playhead(frame);
