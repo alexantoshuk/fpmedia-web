@@ -24,7 +24,6 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use bytes::Bytes;
 use futures_util::StreamExt;
 use leptos::logging::log;
 use leptos::prelude::*;
@@ -44,7 +43,7 @@ const PROXY_BUFFER_MAX: u64 = 16 * 1024 * 1024;
 async fn main() {
     simple_logger::init_with_level(log::Level::Info).expect("failed to init logger");
 
-    let conf = get_configuration(None).unwrap();
+    let conf = get_configuration(None).expect("leptos configuration (Cargo.toml metadata)");
     let addr = conf.leptos_options.site_addr;
     let leptos_options = conf.leptos_options;
 
@@ -77,13 +76,15 @@ async fn main() {
     log!(
         "media proxy: GET/HEAD /proxy?url=<encoded https URL> (forwards Range; loopback peers only)"
     );
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .expect("bind site address");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
-    .unwrap();
+    .expect("http server");
 }
 
 #[derive(Clone)]
@@ -270,11 +271,9 @@ async fn media_proxy(
 
     // Large body: stream chunked — do **not** forward upstream Content-Length
     // (truncated CDN / reset mid-stream → Chrome ERR_CONTENT_LENGTH_MISMATCH).
-    let stream = resp.bytes_stream().map(|chunk| {
-        chunk
-            .map(Bytes::from)
-            .map_err(|e| std::io::Error::other(e.to_string()))
-    });
+    let stream = resp
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(|e| std::io::Error::other(e.to_string())));
     out.body(Body::from_stream(stream))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
@@ -338,10 +337,10 @@ fn validate_proxy_target(raw: &str) -> Result<reqwest::Url, String> {
     if host.eq_ignore_ascii_case("localhost") {
         return Err("refusing to proxy localhost".into());
     }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_blocked_ip(ip) {
-            return Err("refusing to proxy private/loopback IP".into());
-        }
+    if let Ok(ip) = host.parse::<IpAddr>()
+        && is_blocked_ip(ip)
+    {
+        return Err("refusing to proxy private/loopback IP".into());
     }
     Ok(url)
 }
@@ -374,7 +373,12 @@ async fn get_static_file(uri: Uri, root: &str) -> Result<Response<Body>, (Status
     let req = Request::builder()
         .uri(uri.clone())
         .body(Body::empty())
-        .unwrap();
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("bad request: {err}"),
+            )
+        })?;
     match ServeDir::new(root).oneshot(req).await {
         Ok(res) => Ok(res.map(Body::new)),
         Err(err) => Err((
