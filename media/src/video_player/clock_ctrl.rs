@@ -9,7 +9,7 @@ use crate::clock_state::{ClockCmd, ClockEvent, reduce as clock_reduce};
 use crate::error::MediaError;
 
 use super::VideoPlayer;
-use super::performance_now_ms;
+use super::now_ms;
 
 impl VideoPlayer {
     pub fn set_volume(&self, volume: f64) {
@@ -84,7 +84,7 @@ impl VideoPlayer {
                 self.shared.clock.borrow_mut().set_playback_rate(rate);
                 if was_playing {
                     self.shared.clock.borrow_mut().start(t);
-                    if let Some(now) = performance_now_ms() {
+                    if let Some(now) = now_ms() {
                         self.shared.wall_origin.set(Some(now / 1000.0));
                     }
                 }
@@ -137,13 +137,13 @@ impl VideoPlayer {
                     if let Some(c) = self.shared.playback_clock.as_ref() {
                         let _ = c.stop();
                     }
-                    if let Some(now) = performance_now_ms() {
+                    if let Some(now) = now_ms() {
                         self.shared.wall_origin.set(Some(now / 1000.0));
                     }
                 } else if let Some(c) = self.shared.playback_clock.as_ref() {
                     self.shared.wall_origin.set(None);
                     c.start(t);
-                } else if let Some(now) = performance_now_ms() {
+                } else if let Some(now) = now_ms() {
                     self.shared.wall_origin.set(Some(now / 1000.0));
                 }
             }
@@ -184,7 +184,7 @@ impl VideoPlayer {
             .shared
             .wall_origin
             .get()
-            .and_then(|origin| performance_now_ms().map(|now| now / 1000.0 - origin));
+            .and_then(|origin| now_ms().map(|now| now / 1000.0 - origin));
         self.shared.clock.borrow().media_time(elapsed)
     }
 
@@ -224,7 +224,7 @@ impl VideoPlayer {
                 let _ = c.stop();
                 c.set_playback_rate(self.playback_rate());
             }
-            if let Some(now) = performance_now_ms() {
+            if let Some(now) = now_ms() {
                 self.shared.wall_origin.set(Some(now / 1000.0));
             }
             return Ok(());
@@ -255,7 +255,7 @@ impl VideoPlayer {
                 let _ = c.stop();
                 c.set_playback_rate(self.playback_rate());
             }
-            if let Some(now) = performance_now_ms() {
+            if let Some(now) = now_ms() {
                 self.shared.wall_origin.set(Some(now / 1000.0));
             }
             return;
@@ -290,7 +290,7 @@ impl VideoPlayer {
             self.shared.wall_origin.set(None);
             c.set_playback_rate(self.playback_rate());
             c.start(media_time_secs);
-        } else if let Some(now) = performance_now_ms() {
+        } else if let Some(now) = now_ms() {
             self.shared.wall_origin.set(Some(now / 1000.0));
         }
     }
@@ -434,7 +434,7 @@ impl VideoPlayer {
                 let _ = c.stop();
                 c.set_playback_rate(self.playback_rate());
             }
-            if let Some(now) = performance_now_ms() {
+            if let Some(now) = now_ms() {
                 self.shared.wall_origin.set(Some(now / 1000.0));
             }
             return Ok(());
@@ -450,7 +450,7 @@ impl VideoPlayer {
             c.set_playback_rate(self.playback_rate());
             c.resume_context().await?;
             c.start(media_time_secs);
-        } else if let Some(now) = performance_now_ms() {
+        } else if let Some(now) = now_ms() {
             self.shared.wall_origin.set(Some(now / 1000.0));
         }
         Ok(())
@@ -476,14 +476,14 @@ impl VideoPlayer {
         self.shared
             .underrun_holds
             .set(self.shared.underrun_holds.get().saturating_add(1));
-        self.shared.underrun_hold_since_ms.set(performance_now_ms());
+        self.shared.underrun_hold_since_ms.set(now_ms());
     }
 
     fn finish_underrun_hold_timer(&self) {
         let Some(since) = self.shared.underrun_hold_since_ms.take() else {
             return;
         };
-        if let Some(now) = performance_now_ms() {
+        if let Some(now) = now_ms() {
             let dt = (now - since).max(0.0);
             self.shared
                 .underrun_hold_ms
@@ -494,10 +494,7 @@ impl VideoPlayer {
     /// Hold stats including an in-progress freeze (for live pipeline UI).
     pub(super) fn underrun_hold_ms_now(&self) -> f64 {
         let mut total = self.shared.underrun_hold_ms.get();
-        if let (Some(since), Some(now)) = (
-            self.shared.underrun_hold_since_ms.get(),
-            performance_now_ms(),
-        ) {
+        if let (Some(since), Some(now)) = (self.shared.underrun_hold_since_ms.get(), now_ms()) {
             total += (now - since).max(0.0);
         }
         total

@@ -31,14 +31,13 @@ mod util;
 pub use api::{DuePresent, PipelineStats, ReadyFrameKind, ReadyFrameMark};
 pub(crate) use shared::PRESENTATION_QUEUE_CAP;
 // Private imports — child mods (`play` / `scrub` / `seek`) see these via `super::`.
+use crate::timer::{next_animation_frame, now_ms, sleep_ms, yield_microtask};
 use api::ready_kind_paint_order;
 use shared::{
     BIG_LAG_SECONDS, LOOP_NEAR_END_PRESENTATION_CAP_MAX, PLAY_EXACT_VRAM_VF_SLACK,
     PREFETCH_DEADLINE_SLACK_MS, QueuedFrame, SHUTTLE_PRESENTATION_QUEUE_CAP, Shared,
 };
-use util::{
-    is_decoder_poison, performance_now_ms, sleep_ms, wait_animation_frame, yield_event_loop,
-};
+use util::is_decoder_poison;
 
 /// Frame-accurate video player (WebCodecs → canvas); optional audio via [`crate::AudioOutput`].
 /// Pure-audio hosts will use a separate `AudioPlayer` over the same audio modules.

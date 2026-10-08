@@ -6,17 +6,13 @@
 
 ## In progress
 
-- Refactor plan below (group 1).
+- Refactor plan below (group 2). Group 1 landed without e2e (no Node.js on the dev box) — run `e2e/` smoke before group 3.
 
 ---
 
 ## Next up
 
 Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep order. Groups 1–2 = no behavior change. Group 3 changes behavior → `AGENTS.md` Pre-edit gate (mediabunny cite) per PR. Update the matching `.ai/` row in the same PR (not ahead of code).
-
-### 1. Hygiene (no behavior change)
-
-1. One JS timer module (sleep / macrotask / microtask / rAF / now) for engine + host; removes bare-`resolve` timers (`video_player/util.rs::sleep_ms`, `hover_thumb.rs`) and `expect("window")`.
 
 ### 2. Structural, low risk
 
@@ -32,7 +28,7 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 2. Single-flight background task for densify / gray fill / thumb fill (replaces `scrub_busy` / `scrub_pending` / `gray_fill_busy` latches).
 3. Move the play session into `VideoPlayer` (prefetch loop, underrun hold/resume, loop, visibility, silent-clock arm); drop host `PlaySession` flags. `mediabunny: examples/media-player/media-player.ts` render / play / pause.
 4. Seek / Step through the transport FSM; derive `playing` from transport; rewrite `skills/leptos.md` “`playing` is UI-owned”.
-5. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant.
+5. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant. `hover_thumb` defer → `leptos-use` `use_throttle_fn` (trailing) in `HoverThumbPreview` scope.
 
 ### Play / decode
 

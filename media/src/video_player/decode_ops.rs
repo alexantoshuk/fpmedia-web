@@ -14,7 +14,7 @@ use crate::types::FrameId;
 use super::VideoPlayer;
 use super::scrub::ingest_scrub_frame_shared;
 use super::shared::{QueuedFrame, STEP_BEHIND_CAP};
-use super::{is_decoder_poison, performance_now_ms, sleep_ms};
+use super::{is_decoder_poison, now_ms, sleep_ms};
 
 impl VideoPlayer {
     pub(super) fn apply_decoder_slot(&self, event: DecoderSlotEvent) -> Vec<DecoderSlotCmd> {
@@ -136,7 +136,7 @@ impl VideoPlayer {
         // (`skills/leptos.md` Quick Pause→Play).
         let wait_ms = self.metadata().settle_policy().take_decoder_wait_ms;
         let busy_log_ms = self.metadata().settle_policy().densify_yield_ms;
-        let start = performance_now_ms().unwrap_or(0.0);
+        let start = now_ms().unwrap_or(0.0);
         let mut waited_logged = false;
         loop {
             if !self.is_current(epoch) {
@@ -144,7 +144,7 @@ impl VideoPlayer {
             }
             let taken = self.decoder.borrow_mut().take();
             if let Some(mut decoder) = taken {
-                let waited = performance_now_ms().unwrap_or(start) - start;
+                let waited = now_ms().unwrap_or(start) - start;
                 if waited >= 100.0 {
                     web_sys::console::warn_1(
                         &format!("webmedia: take_decoder waited {waited:.0}ms").into(),
@@ -159,7 +159,7 @@ impl VideoPlayer {
                 }
                 return Ok(decoder);
             }
-            let now = performance_now_ms().unwrap_or(start);
+            let now = now_ms().unwrap_or(start);
             if !waited_logged && now - start >= busy_log_ms {
                 waited_logged = true;
                 web_sys::console::warn_1(

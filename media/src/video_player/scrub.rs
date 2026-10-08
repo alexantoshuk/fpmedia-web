@@ -19,8 +19,8 @@ use super::scrub_cold::{
 };
 use super::scrub_gap::{gop_sample_lead, next_gap_target, playhead_and_last};
 use super::{
-    PLAY_EXACT_VRAM_VF_SLACK, Shared, VideoPlayer, performance_now_ms, sleep_ms,
-    wait_animation_frame, yield_event_loop,
+    PLAY_EXACT_VRAM_VF_SLACK, Shared, VideoPlayer, next_animation_frame, now_ms, sleep_ms,
+    yield_microtask,
 };
 
 impl VideoPlayer {
@@ -115,9 +115,9 @@ impl VideoPlayer {
         let policy = self.metadata().settle_policy();
         let budget_ms = policy.densify_yield_ms;
         let retry_ms = policy.densify_yield_retry_ms;
-        let start = performance_now_ms().unwrap_or(0.0);
+        let start = now_ms().unwrap_or(0.0);
         while self.shared.scrub_busy.get() {
-            let now = performance_now_ms().unwrap_or(start);
+            let now = now_ms().unwrap_or(start);
             if now - start >= budget_ms {
                 break;
             }
@@ -128,9 +128,9 @@ impl VideoPlayer {
         }
         web_sys::console::warn_1(&"webmedia: densify still busy after yield — re-abort".into());
         self.abort_scrub_fill(rearm);
-        let start2 = performance_now_ms().unwrap_or(0.0);
+        let start2 = now_ms().unwrap_or(0.0);
         while self.shared.scrub_busy.get() {
-            let now = performance_now_ms().unwrap_or(start2);
+            let now = now_ms().unwrap_or(start2);
             if now - start2 >= retry_ms {
                 break;
             }
@@ -220,9 +220,9 @@ impl VideoPlayer {
         let densify_yield_ms = if settle {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
             self.abort_scrub_fill(true);
-            let yield_t0 = performance_now_ms().unwrap_or(0.0);
+            let yield_t0 = now_ms().unwrap_or(0.0);
             self.await_scrub_densify_yield(true).await;
-            let yield_ms = performance_now_ms().unwrap_or(yield_t0) - yield_t0;
+            let yield_ms = now_ms().unwrap_or(yield_t0) - yield_t0;
             let (next, _) = engine_reduce(self.shared.engine.get(), EngineEvent::BeginExact);
             self.shared.engine.set(next);
             self.clear_scrub_direction();
@@ -282,7 +282,7 @@ impl VideoPlayer {
                     // (7–16s on cold URL).
                     soft_cold_scrub_settle(self, frame)?;
                     self.shared.pending_cold_exact.set(Some(frame));
-                    let warm_t0 = performance_now_ms().unwrap_or(0.0);
+                    let warm_t0 = now_ms().unwrap_or(0.0);
                     let key = self.key_for(frame).unwrap_or(frame);
                     warm_scrub_gop_bytes(&self.shared, key);
                     {
@@ -300,7 +300,7 @@ impl VideoPlayer {
                     if !self.is_current(epoch) {
                         return Err(MediaError::Cancelled);
                     }
-                    let warm_ms = performance_now_ms().unwrap_or(warm_t0) - warm_t0;
+                    let warm_ms = now_ms().unwrap_or(warm_t0) - warm_t0;
                     // Densify may have cleared during gop-warm — Exact only then.
                     if !self.shared.scrub_busy.get() && exact_scrub_ready(&self.shared, frame) {
                         self.shared.pending_cold_exact.set(None);
@@ -382,14 +382,14 @@ impl VideoPlayer {
         densify_yield_ms: f64,
         gop_warm_ms: Option<f64>,
     ) -> Result<(), MediaError> {
-        let exact_t0 = performance_now_ms().unwrap_or(0.0);
+        let exact_t0 = now_ms().unwrap_or(0.0);
         match self.exact_goto_with_decoder_retry(frame, epoch).await {
             Ok(()) => {
-                let exact_ms = performance_now_ms().unwrap_or(exact_t0) - exact_t0;
-                let seed_t0 = performance_now_ms().unwrap_or(0.0);
+                let exact_ms = now_ms().unwrap_or(exact_t0) - exact_t0;
+                let seed_t0 = now_ms().unwrap_or(0.0);
                 match self.seed_play_presentation_after_seek(epoch).await {
                     Ok(()) => {
-                        let seed_ms = performance_now_ms().unwrap_or(seed_t0) - seed_t0;
+                        let seed_ms = now_ms().unwrap_or(seed_t0) - seed_t0;
                         let warm_part = gop_warm_ms
                             .map(|w| format!(" gop_warm={w:.0}ms"))
                             .unwrap_or_default();
@@ -418,7 +418,7 @@ impl VideoPlayer {
             }
             Err(e) if e.is_cancelled() => Err(e),
             Err(e) if super::is_decoder_poison(&e) => {
-                let exact_ms = performance_now_ms().unwrap_or(exact_t0) - exact_t0;
+                let exact_ms = now_ms().unwrap_or(exact_t0) - exact_t0;
                 web_sys::console::warn_1(
                     &format!(
                         "webmedia: Exact poison → soft cold settle ({e}); densify_yield={densify_yield_ms:.0}ms exact={exact_ms:.0}ms"
@@ -627,7 +627,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             warm_scrub_gop_bytes(&shared, key);
             if !scrub_gop_bytes_warm(&shared, key) {
                 idle_passes = 0;
-                wait_animation_frame().await;
+                next_animation_frame().await;
                 continue;
             }
             // Soft cold settle: GOP bytes arrived — paint Exact blit if densify
@@ -658,7 +658,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                         // Keep Exact blit at viewport size — do not shrink the window.
                         // mediabunny: CanvasSink poolSize stays tiny; no equivalent
                         // pacing — local yield only (`sleep_ms(0)` was too short).
-                        wait_animation_frame().await;
+                        next_animation_frame().await;
                     } else {
                         // Macrotask so paused rAF can refresh the ready strip.
                         sleep_ms(0).await;
@@ -719,7 +719,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
         shared.scrub_busy.set(true);
         let again = Rc::clone(&shared);
         wasm_bindgen_futures::spawn_local(async move {
-            yield_event_loop().await;
+            yield_microtask().await;
             if again.is_disposed() {
                 again.scrub_busy.set(false);
                 return;

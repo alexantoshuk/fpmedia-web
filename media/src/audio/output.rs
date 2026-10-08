@@ -15,7 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use js_sys::{Float32Array, Promise, Uint8Array};
+use js_sys::{Float32Array, Uint8Array};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -524,7 +524,7 @@ impl AudioOutput {
             sample_idx += 1;
 
             if self.pending.borrow().is_empty() {
-                yield_timeout_ms(0).await;
+                crate::timer::sleep_ms(0).await;
             }
         }
 
@@ -618,7 +618,7 @@ impl AudioOutput {
                     if self.epoch.get() != epoch {
                         return Ok(());
                     }
-                    yield_timeout_ms(50).await;
+                    crate::timer::sleep_ms(50).await;
                 }
             }
 
@@ -631,7 +631,7 @@ impl AudioOutput {
 
             // Wait briefly for decoder output if queue empty.
             if self.pending.borrow().is_empty() {
-                yield_timeout_ms(0).await;
+                crate::timer::sleep_ms(0).await;
             }
         }
 
@@ -885,21 +885,4 @@ fn audio_data_to_buffer(
         buffer.copy_to_channel_with_f32_array(f32_arr.as_ref(), ch as i32)?;
     }
     Ok(buffer)
-}
-
-async fn yield_timeout_ms(ms: i32) {
-    let promise = Promise::new(&mut |resolve, _reject| {
-        let win = match web_sys::window() {
-            Some(w) => w,
-            None => {
-                let _ = resolve.call0(&JsValue::NULL);
-                return;
-            }
-        };
-        let cb = Closure::once_into_js(move || {
-            let _ = resolve.call0(&JsValue::NULL);
-        });
-        let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), ms);
-    });
-    let _ = JsFuture::from(promise).await;
 }

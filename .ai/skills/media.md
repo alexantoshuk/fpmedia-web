@@ -77,7 +77,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 - **Lifecycle** → feed-ahead over flush; soft sequential next-key on Play; after flush clear warm state; `take_decoder` ~5s wall-clock. All-Intra: never hard-recreate on every key when idle.
 - **Held / PTS** → park `PTS >= target`; prune_floor + cascade through aim; main HW prefer Hd+Uhd; scrub/thumb `PreferSoftware` (not no-preference); HW configure fail → PreferSoftware sticky; `optimizeForLatency: false`. `mediabunny: src/media-sink.ts` alpha prefer-software.
 - **Backpressure** → wait on new output/take (not buffered frames as progress); dual-async pump parks at `q==0` for consumer; densify cancel → hard reset, fill task returns.
-- **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout`.
+- **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout` — use `webmedia::timer` (engine + host).
 - **Op cancel** → `op_epoch`; Cancelled = soft; invalidate uses reset when checked out.
 - **Clock / rate** → `ClockState` + `media_time()`; soft-hold scrub/Pause; resume AudioContext before long prime; forward rates only; decrease snaps to displayed. UX ladder: `product.md`.
 - **Underrun** → HoldUnderrun + soft audio hold (keep decoder); not skip spiral. EOF: don’t End while presentation holds frames / while playhead mid at shuttle.

@@ -14,8 +14,8 @@ use crate::types::FrameId;
 
 use super::{
     BIG_LAG_SECONDS, DuePresent, LOOP_NEAR_END_PRESENTATION_CAP_MAX, PLAY_EXACT_VRAM_VF_SLACK,
-    PREFETCH_DEADLINE_SLACK_MS, QueuedFrame, SHUTTLE_PRESENTATION_QUEUE_CAP, VideoPlayer,
-    performance_now_ms, sleep_ms,
+    PREFETCH_DEADLINE_SLACK_MS, QueuedFrame, SHUTTLE_PRESENTATION_QUEUE_CAP, VideoPlayer, now_ms,
+    sleep_ms,
 };
 
 impl VideoPlayer {
@@ -279,7 +279,7 @@ impl VideoPlayer {
             let track = self.shared.player.borrow().track_rc();
             track.prefetch_samples_ahead(head, play_index_lead);
         } else {
-            let warm_t0 = performance_now_ms().unwrap_or(0.0);
+            let warm_t0 = now_ms().unwrap_or(0.0);
             let (warm_secs, warm_key) = {
                 let track = self.shared.player.borrow().track_rc();
                 let key = track.index().nearest_keyframe(head).unwrap_or(head);
@@ -301,7 +301,7 @@ impl VideoPlayer {
                     .get(last)
                     .map(|e| e.composition_timestamp().seconds)
                     .unwrap_or(0.0);
-                let warm_ms = performance_now_ms().unwrap_or(warm_t0) - warm_t0;
+                let warm_ms = now_ms().unwrap_or(warm_t0) - warm_t0;
                 web_sys::console::log_1(
                     &format!(
                         "webmedia: play prime warm key={key} span={await_span} {warm_ms:.0}ms"
@@ -447,7 +447,7 @@ impl VideoPlayer {
             c.start(t);
         } else {
             self.shared.clock.borrow_mut().start(t);
-            if let Some(now) = performance_now_ms() {
+            if let Some(now) = now_ms() {
                 self.shared.wall_origin.set(Some(now / 1000.0));
             }
         }
@@ -832,7 +832,7 @@ impl VideoPlayer {
     pub async fn prefetch_until(&self, deadline_ms: f64) -> Result<usize, MediaError> {
         let mut decoded = 0usize;
         while self.is_playing() && self.presentation_len() < self.play_presentation_cap() {
-            if let Some(now) = performance_now_ms()
+            if let Some(now) = now_ms()
                 && now + PREFETCH_DEADLINE_SLACK_MS >= deadline_ms
             {
                 break;

@@ -369,23 +369,7 @@ async fn range_get_open(
 
     // Long streams: floor 30 s to first byte; cap 180 s (body read has its own life).
     let timeout_ms = 180_000i32;
-    let timeout = js_sys::Promise::new(&mut |resolve, _reject| {
-        let ctrl = controller.clone();
-        let resolve_ok = resolve.clone();
-        let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
-            ctrl.abort();
-            let _ = resolve_ok.call0(&wasm_bindgen::JsValue::NULL);
-        });
-        if window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                timeout_ms,
-            )
-            .is_err()
-        {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
-        }
-    });
+    let timeout = abort_after(controller, timeout_ms);
 
     let raced = js_sys::Promise::race(&js_sys::Array::of2(&fetch_promise, &timeout));
     let resp_val = JsFuture::from(raced).await.map_err(|e| {
@@ -410,6 +394,15 @@ async fn range_get_open(
         .map_err(|_| MediaError::Source("fetch did not return a Response".into()))
 }
 
+/// Race arm for `fetch`: aborts `controller` and resolves `null` after `ms`.
+fn abort_after(controller: &AbortController, ms: i32) -> js_sys::Promise {
+    let ctrl = controller.clone();
+    crate::timer::timeout_promise(ms, move || {
+        ctrl.abort();
+        wasm_bindgen::JsValue::NULL
+    })
+}
+
 /// Closed Range used only for the connect probe (`bytes=0-0`).
 async fn range_get_closed(url: &str, start: u64, end: u64) -> Result<Response, MediaError> {
     let window = web_sys::window().ok_or_else(|| MediaError::Source("no window".into()))?;
@@ -427,23 +420,7 @@ async fn range_get_closed(url: &str, start: u64, end: u64) -> Result<Response, M
     let request = Request::new_with_str_and_init(url, &init).map_err(js_to_source)?;
     let fetch_promise = window.fetch_with_request(&request);
     let timeout_ms = 15_000i32;
-    let timeout = js_sys::Promise::new(&mut |resolve, _reject| {
-        let ctrl = controller.clone();
-        let resolve_ok = resolve.clone();
-        let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
-            ctrl.abort();
-            let _ = resolve_ok.call0(&wasm_bindgen::JsValue::NULL);
-        });
-        if window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                timeout_ms,
-            )
-            .is_err()
-        {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
-        }
-    });
+    let timeout = abort_after(&controller, timeout_ms);
 
     let raced = js_sys::Promise::race(&js_sys::Array::of2(&fetch_promise, &timeout));
     let resp_val = JsFuture::from(raced).await.map_err(js_to_source)?;

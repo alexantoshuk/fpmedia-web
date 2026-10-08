@@ -16,7 +16,7 @@ use crate::types::{AudioMetadata, FrameId, VideoMetadata};
 use super::scrub::scrub_cache_fill_task;
 use super::scrub_cold;
 use super::scrub_gap::next_gap_target;
-use super::{VideoPlayer, yield_event_loop};
+use super::{VideoPlayer, yield_microtask};
 
 impl VideoPlayer {
     pub fn metadata(&self) -> VideoMetadata {
@@ -154,7 +154,7 @@ impl VideoPlayer {
             self.shared.scrub_pending.set(true);
             let shared = Rc::clone(&self.shared);
             wasm_bindgen_futures::spawn_local(async move {
-                yield_event_loop().await;
+                yield_microtask().await;
                 if shared.is_disposed()
                     || shared.engine.get().holds_exact()
                     || shared.engine.get().is_play()

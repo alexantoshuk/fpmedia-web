@@ -15,7 +15,7 @@ use crate::workload::{
     PLAY_THUMB_AIM_DECODE_MIN_MS, allows_thumb_aim_decode, allows_thumb_key_fill,
 };
 
-use super::{Shared, VideoPlayer, performance_now_ms, sleep_ms};
+use super::{Shared, VideoPlayer, now_ms, sleep_ms};
 
 impl VideoPlayer {
     /// Abort in-flight hover Exact downscale (scrub start / pointer leave).
@@ -257,7 +257,7 @@ impl VideoPlayer {
         if !far_refine && allows_thumb_key_fill(hints) {
             return true;
         }
-        let now = performance_now_ms().unwrap_or(0.0);
+        let now = now_ms().unwrap_or(0.0);
         let Ok(slot) = self.shared.thumb.try_borrow() else {
             return false;
         };
@@ -366,7 +366,7 @@ impl VideoPlayer {
         if let Ok(slot) = self.shared.thumb.try_borrow()
             && let Some(thumbs) = slot.as_ref()
         {
-            thumbs.note_aim_decode_ms(performance_now_ms().unwrap_or(0.0));
+            thumbs.note_aim_decode_ms(now_ms().unwrap_or(0.0));
         }
         let blocked = {
             let Ok(slot) = self.shared.thumb.try_borrow() else {
@@ -389,7 +389,7 @@ impl VideoPlayer {
         };
         if !claim {
             // Bg key-fill owns the worker — wait until free; latest aim already
-            // latched in `pending_aim`. Do **not** spin on `yield_event_loop`
+            // latched in `pending_aim`. Do **not** spin on `yield_microtask`
             // (Promise.resolve microtask) — that freezes the tab while fill
             // decodes. Macrotask + wall cap; pending survives for the next paint.
             let wait_epoch = {
@@ -400,11 +400,11 @@ impl VideoPlayer {
                     .map(|t| t.generation())
                     .ok_or(MediaError::Cancelled)?
             };
-            let wait_start = performance_now_ms().unwrap_or(0.0);
+            let wait_start = now_ms().unwrap_or(0.0);
             const CLAIM_WAIT_MS: f64 = 2_000.0;
             loop {
                 sleep_ms(0).await;
-                if performance_now_ms().unwrap_or(wait_start) - wait_start >= CLAIM_WAIT_MS {
+                if now_ms().unwrap_or(wait_start) - wait_start >= CLAIM_WAIT_MS {
                     return Err(MediaError::Cancelled);
                 }
                 if !allows_thumb_aim_decode(self.shared.workload_hints()) {

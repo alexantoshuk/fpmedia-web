@@ -708,37 +708,17 @@ pub(super) fn ticks_to_micros(ticks: i64, timescale: u64) -> i64 {
 /// Monotonic ms, or `0.0` when `performance` is unavailable (stall check then
 /// falls back to `CONSUMER_MAX_SPINS`).
 pub(super) fn now_ms() -> f64 {
-    web_sys::window()
-        .and_then(|w| w.performance())
-        .map(|p| p.now())
-        .unwrap_or(0.0)
+    crate::timer::now_ms().unwrap_or(0.0)
 }
 
-/// Macrotask turn via `setTimeout` + bare Promise `resolve` (mediabunny-compatible).
-/// Required when waiting for WebCodecs to drain — microtasks alone never let it run.
+/// Macrotask turn via `setTimeout`. Required when waiting for WebCodecs to
+/// drain — microtasks alone never let it run.
+///
+/// Resolves with `"timeout"` so `flush_with_timeout_ms` can tell a real flush
+/// from the race timer — an `undefined` resolve made every wedged flush look
+/// successful (`decodeQueueSize` still full afterwards).
 pub(super) fn sleep_promise_ms(ms: i32) -> js_sys::Promise {
-    js_sys::Promise::new(&mut |resolve, _reject| {
-        let window = match web_sys::window() {
-            Some(w) => w,
-            None => {
-                let _ = resolve.call1(&JsValue::NULL, &JsValue::from_str("timeout"));
-                return;
-            }
-        };
-        // Resolve with `"timeout"` so `flush_with_timeout_ms` can tell a real
-        // flush from the race timer — a bare `resolve` made every wedged flush
-        // look successful (`decodeQueueSize` still full afterwards).
-        if window
-            .set_timeout_with_callback_and_timeout_and_arguments_1(
-                &resolve,
-                ms,
-                &JsValue::from_str("timeout"),
-            )
-            .is_err()
-        {
-            let _ = resolve.call1(&JsValue::NULL, &JsValue::from_str("timeout"));
-        }
-    })
+    crate::timer::timeout_promise(ms, || JsValue::from_str("timeout"))
 }
 
 pub(super) fn promise_race(a: js_sys::Promise, b: js_sys::Promise) -> js_sys::Promise {
