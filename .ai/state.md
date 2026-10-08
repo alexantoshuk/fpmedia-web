@@ -8,12 +8,12 @@
 
 ### Handoff (2026-10-08 → next chat)
 
-- **Branch:** `main`, ahead of `origin` (through **3.2**). Do not push unless asked.
+- **Branch:** `main`, ahead of `origin` (**3.2** `e935c69`). Do not push unless asked.
 - **Group 3 landed:**
   - 3.1 — play session in `VideoPlayer` (`10869fc`).
   - 3.2 — Seek/Step via transport FSM; UI `playing` ← `TransportState::ui_playing`; SoftPause always `pause_for_scrub`. Cite: `mediabunny: examples/media-player/media-player.ts` `seekToTime`.
   - Loop seam: `ResetForPlay` → HoldScrub across `loop_to_start`, warm-prefetch before resume (eof-loop `holdsB` 0). See `skills/media.md` triage.
-- **e2e:** full suite green (38 passed) after 3.2.
+- **e2e:** full suite green (38 passed) after 3.2. Gates (fmt/clippy/tests/`cargo leptos build`) passed at commit.
 - **Dirty (leave):** `e2e/baselines/pre-decode-sink/avc_1080p_24_gop{12,48}_bf0.json` — probe noise; `e2e-*.log` untracked.
 - **Invariants:** engine `Shared.playing` still a separate `Cell`; approve-before-edit + mediabunny cite for media.
 - **Next chat starts at:** group 3.3 — drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`).
