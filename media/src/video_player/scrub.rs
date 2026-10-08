@@ -7,10 +7,11 @@ use crate::decode::scrub_blit::{ScrubChunk, draw_image_bitmap};
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::engine_mode::{EngineEvent, reduce as engine_reduce};
 use crate::error::MediaError;
-use crate::types::{
-    FrameId, GopProfile, ScrubPolicy, exact_frames_to_free_for_play_vram,
-    scrub_blit_cap_during_play, scrub_blit_frame_budget,
+use crate::policy::{
+    GopProfile, ScrubPolicy, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
+    scrub_blit_frame_budget,
 };
+use crate::types::FrameId;
 
 use super::scrub_cold::{
     exact_scrub_ready, schedule_fetchmap_gap_fill, scrub_gop_bytes_warm, soft_cold_scrub_settle,

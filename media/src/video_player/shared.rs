@@ -21,8 +21,9 @@ use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::decoder_slot::DecoderSlotModel;
 use crate::engine_mode::EngineModel;
 use crate::player::Player;
+use crate::policy::ThumbPolicy;
 use crate::session::SessionModel;
-use crate::types::{FrameId, ThumbPolicy};
+use crate::types::FrameId;
 use crate::workload::WorkloadHints;
 
 /// Live VF ahead of the playhead (play prefetch + Next hits).

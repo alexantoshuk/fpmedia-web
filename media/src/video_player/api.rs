@@ -2,7 +2,8 @@
 //!
 //! Split from `mod.rs` for navigation only — no behavior change (P6).
 
-use crate::types::{FrameId, GopProfile};
+use crate::policy::GopProfile;
+use crate::types::FrameId;
 
 use super::PRESENTATION_QUEUE_CAP;
 

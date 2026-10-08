@@ -27,7 +27,8 @@ use web_sys::VideoDecoder;
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
-use crate::types::{FrameId, GopProfile, PlayPolicy, VideoMetadata};
+use crate::policy::{GopProfile, PlayPolicy};
+use crate::types::{FrameId, VideoMetadata};
 
 use self::core::{
     DecoderConfig, DecoderCore, HwAccel, PruneFloorGuard, PruneInterim, REORDER_FEED_SLACK,

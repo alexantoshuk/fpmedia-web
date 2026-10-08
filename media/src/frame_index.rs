@@ -5,7 +5,8 @@
 //! Local invention — mediabunny has no `FrameIndex` equivalent; packet cursors
 //! use their own key probes.
 
-use crate::types::{FrameId, GopProfile, SHORT_GOP_MAX_LEN, Timestamp};
+use crate::policy::{GopProfile, SHORT_GOP_MAX_LEN};
+use crate::types::{FrameId, Timestamp};
 
 /// One frame in presentation order.
 #[derive(Clone, Debug, PartialEq, Eq)]

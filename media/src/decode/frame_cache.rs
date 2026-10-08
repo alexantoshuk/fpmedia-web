@@ -12,7 +12,8 @@ use std::num::NonZeroUsize;
 use std::ops::Bound;
 
 use crate::decode::scrub_blit::ScrubChunk;
-use crate::types::{FrameId, nearer_gap_with_dir, scrub_gap_fill_armed};
+use crate::policy::{nearer_gap_with_dir, scrub_gap_fill_armed};
+use crate::types::FrameId;
 use lru::LruCache;
 use web_sys::ImageBitmap;
 

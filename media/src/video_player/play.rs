@@ -7,10 +7,10 @@ use crate::error::MediaError;
 use crate::playback_policy::{
     EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
 };
-use crate::types::{
-    FrameId, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
-    scrub_blit_frame_budget,
+use crate::policy::{
+    exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play, scrub_blit_frame_budget,
 };
+use crate::types::FrameId;
 
 use super::{
     BIG_LAG_SECONDS, DuePresent, LOOP_NEAR_END_PRESENTATION_CAP_MAX, PLAY_EXACT_VRAM_VF_SLACK,

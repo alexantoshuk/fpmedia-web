@@ -19,7 +19,8 @@ use super::scrub_blit::{BlitCanvas, BlitCanvasSlot};
 use super::webcodecs::WebCodecsDecoder;
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
-use crate::types::{FrameId, VideoMetadata, hover_thumb_dims, next_missing_sync_key};
+use crate::policy::{hover_thumb_dims, next_missing_sync_key};
+use crate::types::{FrameId, VideoMetadata};
 
 /// Default hover box (matches `media_components` / `.wm-thumb-preview`).
 pub const DEFAULT_THUMB_MAX_W: u32 = 160;

@@ -4,7 +4,8 @@
 use web_sys::HtmlCanvasElement;
 
 use crate::error::MediaError;
-use crate::types::{FrameId, ThumbPolicy};
+use crate::policy::ThumbPolicy;
+use crate::types::FrameId;
 
 use super::VideoPlayer;
 

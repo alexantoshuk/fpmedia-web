@@ -13,7 +13,8 @@
     allow(dead_code)
 )]
 
-use crate::types::{FrameId, SettlePolicy};
+use crate::policy::SettlePolicy;
+use crate::types::FrameId;
 
 /// Result of [`decide_next_gap`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

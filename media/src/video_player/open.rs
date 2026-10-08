@@ -20,8 +20,8 @@ use crate::decoder_slot::DecoderSlotModel;
 use crate::engine_mode::EngineModel;
 use crate::error::MediaError;
 use crate::player::Player;
+use crate::policy::ThumbPolicy;
 use crate::session::SessionModel;
-use crate::types::ThumbPolicy;
 use crate::workload::{
     FRAGMENT_BACKFILL_IDLE_AHEAD, allows_bg_sync_verify, classify,
     fragment_backfill_should_idle_yield,

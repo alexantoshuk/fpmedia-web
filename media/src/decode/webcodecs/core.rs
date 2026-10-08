@@ -218,7 +218,7 @@ pub(super) struct DecoderCore {
     /// HW hint last used on configure (main may PreferHardware; scrub/thumb PreferSoftware).
     pub(super) hw_accel: HwAccel,
     /// Pump warm frames past consumer target
-    /// ([`crate::types::PlayPolicy::decode_warm_ahead`]).
+    /// ([`crate::policy::PlayPolicy::decode_warm_ahead`]).
     pub(super) warm_ahead: usize,
     /// Bumped on teardown so late browser callbacks become no-ops.
     pub(super) generation: Rc<Cell<u64>>,
