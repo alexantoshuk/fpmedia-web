@@ -16,7 +16,7 @@ Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep o
 
 ### 1. Hygiene (no behavior change)
 
-1. Split `types.rs` (policy / metadata); move strip pixel math to `media_components::helpers`.
+1. Split `types.rs` (policy / metadata).
 2. One JS timer module (sleep / macrotask / microtask / rAF / now) for engine + host; removes bare-`resolve` timers (`video_player/util.rs::sleep_ms`, `hover_thumb.rs`) and `expect("window")`.
 
 ### 2. Structural, low risk

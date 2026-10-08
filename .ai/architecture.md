@@ -15,7 +15,7 @@
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — demo host (controls) + thin SSR shell |
-| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `helpers` (scrubber strip math) + `HoverThumbPreview`. Modules: `video`, `helpers`, `hover_thumb` |
+| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `strip` (scrubber strip pixel math) + `helpers` (chrome math) + `HoverThumbPreview`. Modules: `video`, `strip`, `helpers`, `hover_thumb` (`video` / `hover_thumb` wasm-only) |
 | Media engine | `webmedia` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `media_components/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
@@ -76,7 +76,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Design: [Play / scrub residency](#play--scrub-residency). Traps: `skills/media.md`. |
 | Optional hover thumbs (`thumbs`) | Feature `thumbs` default on; runtime `ThumbPolicy`; 3rd decoder + `ThumbCache` / `ThumbPreview`; UI `HoverThumbPreview`. UX: `product.md`. |
 | Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. `audio/` has no canvas dependency. |
-| Component API like HTML media | Element crates: open/play/seek/rate/volume. Strip math: `media_components::helpers`. Demo owns JKL/Space/arrows. |
+| Component API like HTML media | Element crates: open/play/seek/rate/volume. Strip math: `media_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns JKL/Space/arrows. |
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `webmedia::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
 
