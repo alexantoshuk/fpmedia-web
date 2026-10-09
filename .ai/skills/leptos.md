@@ -18,10 +18,10 @@
 | Progress bar stuck on old frame | `player.take()` before zeroing counts; paused rAF `sync_ui` |
 | URL open CORS / `/proxy` 403 / CL mismatch | same-origin proxy, loopback only — `architecture.md` Progressive open |
 | Gray vs green strips blur | 1 px canvas `paint_strip_canvas_1px` — UX: `product.md` |
-| Hover jank on Play / lag until paint | UI defer; sync DOM transform first; engine thumb rules: `skills/media.md` |
-| `RefCell already borrowed` (tachys / Loop) | no borrow across await; defer scrub off `on:pointer*` |
+| Hover jank on Play / lag until paint | `HoverThumbPreview` trailing throttle 150 ms (per instance); sync DOM transform first; engine: `skills/media.md` |
+| `RefCell already borrowed` (tachys / Loop) | no borrow across await; scrub → `scrub_pointer_*` sync (Move throttled in `<Video>`); no demo TLS |
 | Start stutter / Play lag after scrub | clock origins after prime; no `seek_frame` from `VideoRef::play` |
-| Scrub bar lags / pointer jank / hold jumps | sync playhead on move; paused rAF `sync_ui` ≤10 Hz (150 ms while `Scrubbing`) |
+| Scrub bar lags / pointer jank / hold jumps | sync playhead on move; `<Video>` Move throttle 50 ms; paused rAF `sync_ui` ≤10 Hz (150 ms while `Scrubbing`) |
 | Ops dropped while busy | OpQueue coalesce — not `if busy { return }` (`host_op_coalesce`) |
 
 ## Quick reference
@@ -41,7 +41,7 @@ Tailwind: only literal class strings in `.rs`/`.css`; computed geometry → `sty
 2. **No `RefCell` across `.await`** — clone `Rc<VideoPlayer>`, await, put back. Engine re-entry: `skills/media.md` RefCell.
 3. **`playing` follows transport** — `TransportState::ui_playing(session_live)` (`Playing`, or priming/resume-settle after `begin_play_session`). Never `playing.set(engine.playing)` in `sync_ui`. Seek/Step/Play/Pause/scrub → `dispatch_transport` / `note_transport`.
 4. **Transport** — pointers → `VideoRef::scrub_pointer_*`; Seek/Step → `SeekRequested` / `StepRequested`. FSM owns resume (`ScrubRelease { then_play }`). Soft-hold via `pause_for_scrub`. PlayPrime fail → soft-park (no bump) so retry works.
-5. **Playhead** — sync on pointerdown/move before deferred engine work. `sync_ui` updates playhead only while playing or on new clip. Leaving play: snap playhead to engine. Hold ←/→: aim `engine±1`, not `playhead++`.
+5. **Playhead** — sync on pointerdown/move before `scrub_pointer_*`. `sync_ui` updates playhead only while playing or on new clip. Leaving play: snap playhead to engine. Hold ←/→: aim `engine±1`, not `playhead++`.
 6. **Clock / play session** — `VideoPlayer::media_time()` only; engine owns prefetch, underrun, loop seam, silent-clock arm (`play_raf_tick` / `begin_play_session`). Host: OpQueue prime + rAF tick + visibility → hold/resume APIs.
 7. **rAF** — `use_raf_fn` resume after prime; throttle `sync_ui`/fps ~10 Hz; call `play_raf_tick` (not host underrun/loop).
 8. **Open / clip switch** — file input uses wasm spawn; `retire_clip` before zeroing UI; remote URL → `/proxy` then UrlSource/blob.

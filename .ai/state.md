@@ -6,27 +6,17 @@
 
 ## In progress
 
-### Handoff (2026-10-08 → next chat)
+### Handoff
 
-- **Branch:** `main`, ahead of `origin` (**3.2** `e935c69`). Do not push unless asked.
-- **Group 3 landed:**
-  - 3.1 — play session in `VideoPlayer` (`10869fc`).
-  - 3.2 — Seek/Step via transport FSM; UI `playing` ← `TransportState::ui_playing`; SoftPause always `pause_for_scrub`. Cite: `mediabunny: examples/media-player/media-player.ts` `seekToTime`.
-  - Loop seam: `ResetForPlay` → HoldScrub across `loop_to_start`, warm-prefetch before resume (eof-loop `holdsB` 0). See `skills/media.md` triage.
-- **e2e:** full suite green (38 passed) after 3.2. Gates (fmt/clippy/tests/`cargo leptos build`) passed at commit.
-- **Dirty (leave):** `e2e/baselines/pre-decode-sink/avc_1080p_24_gop{12,48}_bf0.json` — probe noise; `e2e-*.log` untracked.
-- **Invariants:** engine `Shared.playing` still a separate `Cell`; approve-before-edit + mediabunny cite for media.
-- **Next chat starts at:** group 3.3 — drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`).
+- **Branch:** `main`, ahead of `origin`. Do not push unless asked.
+- **Group 3:** 3.1–3.3 landed (play session, transport Seek/Step, drop TLS coalesce). Refactor plan groups empty except optional Play/decode.
+- **e2e:** re-run after 3.3 (TLS drop) before treating group 3 fully verified.
+- **Dirty (leave):** `e2e/baselines/pre-decode-sink/avc_1080p_24_gop{12,48}_bf0.json`.
+- **Next:** optional Play/decode ChG residual probe, or Later backlog.
 
 ---
 
 ## Next up
-
-Refactor plan from the 2026-10-08 codebase review. One bullet ≈ one PR; keep order. Group 3 → `AGENTS.md` Pre-edit gate (mediabunny cite) per PR. Update the matching `.ai/` row in the same PR (not ahead of code).
-
-### 3. Behavior-adjacent (mediabunny cite required)
-
-1. Drop `thread_local!` coalescing (`app::defer_scrub_pointer`, `hover_thumb.rs`) — breaks the 1–2 source invariant. `hover_thumb` defer → `leptos-use` `use_throttle_fn` (trailing) in `HoverThumbPreview` scope.
 
 ### Play / decode
 

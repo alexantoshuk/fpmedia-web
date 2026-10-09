@@ -6,14 +6,14 @@
 //!
 //! Feature `thumbs` (default on): real paint. Soft stubs when off.
 //! Play+pause hover; host hides only while scrubbing (`mediabunny:` separate
-//! thumb `CanvasSink`).
+//! thumb `CanvasSink`). Paint coalesce: per-instance `leptos-use` trailing
+//! throttle (not process-global `thread_local!`).
 
 use std::rc::Rc;
 
 use leptos::html::Canvas;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlCanvasElement, HtmlElement};
 
 use crate::VideoRef;
@@ -25,7 +25,7 @@ pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = 90;
 
 /// Coalesce window before deferred `paint_hover_thumb` (ms). Engine aim-decode
 /// floor is separate (`PLAY_THUMB_AIM_DECODE_MIN_MS` = 800).
-const DEFER_HOVER_PAINT_MS: i32 = 150;
+const DEFER_HOVER_PAINT_MS: f64 = 150.0;
 
 /// Scrubber-facing handle — call from track `pointermove` / leave / scrub start.
 #[derive(Clone)]
@@ -45,60 +45,6 @@ impl HoverThumbApi {
     }
 }
 
-#[cfg(feature = "thumbs")]
-thread_local! {
-    static HOVER_PAINT_PENDING: std::cell::RefCell<Option<(u32, HtmlCanvasElement, u32, u32)>> =
-        const { std::cell::RefCell::new(None) };
-    static HOVER_PAINT_SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Drop coalesced aim so clip switch / leave cannot paint a stale frame.
-fn clear_deferred_hover_paint() {
-    #[cfg(feature = "thumbs")]
-    {
-        HOVER_PAINT_PENDING.with(|p| {
-            *p.borrow_mut() = None;
-        });
-    }
-}
-
-/// Coalesce Exact downscales: debounce then one aim. Do **not** cancel on every
-/// pointermove — only [`VideoRef::cancel_hover_thumb`] on leave / scrub / open.
-fn defer_hover_paint(video: VideoRef, frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32) {
-    #[cfg(not(feature = "thumbs"))]
-    {
-        let _ = (video, frame, dest, max_w, max_h);
-        return;
-    }
-    #[cfg(feature = "thumbs")]
-    {
-        HOVER_PAINT_PENDING.with(|p| {
-            *p.borrow_mut() = Some((frame, dest, max_w, max_h));
-        });
-        if HOVER_PAINT_SCHEDULED.with(|s| s.get()) {
-            return;
-        }
-        HOVER_PAINT_SCHEDULED.with(|s| s.set(true));
-        spawn_local(async move {
-            webmedia::timer::sleep_ms(DEFER_HOVER_PAINT_MS).await;
-            let pending = HOVER_PAINT_PENDING.with(|p| p.borrow_mut().take());
-            if let Some((frame, dest, max_w, max_h)) = pending {
-                // Clip switch sets ready=false — do not paint into a retiring sink.
-                if video.ready.get_untracked() {
-                    video.paint_hover_thumb(frame, dest, max_w, max_h);
-                }
-            }
-            HOVER_PAINT_SCHEDULED.with(|s| s.set(false));
-            if video.ready.get_untracked()
-                && let Some((frame, dest, max_w, max_h)) =
-                    HOVER_PAINT_PENDING.with(|p| p.borrow().clone())
-            {
-                defer_hover_paint(video, frame, dest, max_w, max_h);
-            }
-        });
-    }
-}
-
 /// Hover preview canvas — place as a sibling of the scrubber track (absolute).
 ///
 /// Fill [`api`] once mounted; host calls [`HoverThumbApi::update`] /
@@ -113,11 +59,31 @@ pub fn HoverThumbPreview(
 ) -> impl IntoView {
     let visible = RwSignal::new(false);
     let thumb_ref = NodeRef::<Canvas>::new();
+    // Bumped on hide / cleanup so a trailing throttle cannot paint a stale aim.
     let epoch = StoredValue::new_local(0u64);
+
+    #[cfg(feature = "thumbs")]
+    let throttled_paint = {
+        use leptos_use::{ThrottleOptions, use_throttle_fn_with_arg_and_options};
+        use_throttle_fn_with_arg_and_options(
+            move |(frame, dest, w, h, scheduled_epoch): (u32, HtmlCanvasElement, u32, u32, u64)| {
+                if epoch.get_value() != scheduled_epoch {
+                    return;
+                }
+                // Clip switch sets ready=false — do not paint into a retiring sink.
+                if video.ready.get_untracked() {
+                    video.paint_hover_thumb(frame, dest, w, h);
+                }
+            },
+            DEFER_HOVER_PAINT_MS,
+            // trailing: same 150 ms coalesce as the old TLS sleep; leading would
+            // decode on every cache miss under the finger.
+            ThrottleOptions::default().leading(false).trailing(true),
+        )
+    };
 
     let hide: Rc<dyn Fn()> = Rc::new(move || {
         visible.set(false);
-        clear_deferred_hover_paint();
         let e = epoch.get_value().wrapping_add(1);
         epoch.set_value(e);
         video.cancel_hover_thumb();
@@ -151,7 +117,8 @@ pub fn HoverThumbPreview(
                 if video.try_paint_hover_thumb(frame, canvas.clone(), max_w, max_h) {
                     return;
                 }
-                defer_hover_paint(video, frame, canvas, max_w, max_h);
+                let scheduled_epoch = epoch.get_value();
+                throttled_paint((frame, canvas, max_w, max_h, scheduled_epoch));
             }
         })
     };
@@ -173,8 +140,8 @@ pub fn HoverThumbPreview(
     }));
 
     on_cleanup(move || {
-        // `hide` is `Rc` (not Send) — clear TLS + engine cancel without capturing it.
-        clear_deferred_hover_paint();
+        let e = epoch.get_value().wrapping_add(1);
+        epoch.set_value(e);
         visible.set(false);
         video.cancel_hover_thumb();
         api.set_value(None);

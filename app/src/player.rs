@@ -14,7 +14,6 @@ use media_components::{
     HoverThumbApi, HoverThumbPreview, PipelineStats, ReadyFrameKind, Video, VideoRef,
 };
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::spawn_local;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 
 /// Forward shuttle ladder for demo J/L keys (K → 1× + play/pause).
@@ -91,44 +90,6 @@ fn jkl_step(rate: f64, dir: i32) -> f64 {
     let i = jkl_nearest_index(rate);
     let next = (i as i32 + dir).clamp(0, (JKL_STEPS.len() - 1) as i32) as usize;
     JKL_STEPS[next]
-}
-
-/// Defer scrub pointer work off the Leptos/tachys event callback (`RefCell`).
-/// Transport FSM + OpQueue own resume/settle; this only coalesces targets.
-fn defer_scrub_pointer(video: VideoRef, frame: u32, phase: ScrubPointerPhase) {
-    thread_local! {
-        static PENDING: std::cell::Cell<Option<(u32, ScrubPointerPhase)>> =
-            const { std::cell::Cell::new(None) };
-        static SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-    PENDING.with(|p| p.set(Some((frame, phase))));
-    if SCHEDULED.with(|s| s.get()) {
-        return;
-    }
-    SCHEDULED.with(|s| s.set(true));
-    spawn_local(async move {
-        while let Some((frame, phase)) = PENDING.with(|p| p.take()) {
-            match phase {
-                ScrubPointerPhase::Down => video.scrub_pointer_down(frame),
-                ScrubPointerPhase::Move => video.scrub_pointer_move(frame),
-                ScrubPointerPhase::Up => video.scrub_pointer_up(frame),
-            }
-            if PENDING.with(|p| p.get().is_none()) {
-                break;
-            }
-        }
-        SCHEDULED.with(|s| s.set(false));
-        if let Some((frame, phase)) = PENDING.with(|p| p.get()) {
-            defer_scrub_pointer(video, frame, phase);
-        }
-    });
-}
-
-#[derive(Clone, Copy)]
-enum ScrubPointerPhase {
-    Down,
-    Move,
-    Up,
 }
 
 #[component]
@@ -838,7 +799,8 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
     let finish_scrub = move || {
         scrubbing.set(false);
         let frame = video.playhead.get_untracked();
-        defer_scrub_pointer(video, frame, ScrubPointerPhase::Up);
+        // Direct transport call — Move is throttled inside `<Video>`; no process-global TLS.
+        video.scrub_pointer_up(frame);
     };
 
     // Canvas strips (1 px tall, CSS-stretched): many-stop CSS gradients blur on
@@ -937,10 +899,9 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 }
                 scrubbing.set(true);
                 if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
-                    // Playhead tracks the pointer immediately — deferred transport
-                    // work must not stall the bar.
+                    // Playhead sync first — engine/transport work must not stall the bar.
                     video.playhead.set(frame);
-                    defer_scrub_pointer(video, frame, ScrubPointerPhase::Down);
+                    video.scrub_pointer_down(frame);
                 }
             }
             on:pointermove=move |ev| {
@@ -950,7 +911,7 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 if scrubbing.get_untracked() {
                     if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
                         video.playhead.set(frame);
-                        defer_scrub_pointer(video, frame, ScrubPointerPhase::Move);
+                        video.scrub_pointer_move(frame);
                     }
                     return;
                 }

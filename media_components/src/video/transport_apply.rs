@@ -68,7 +68,7 @@ pub(super) fn sync_playing_from_transport(ctx: &HostCtx) {
 }
 
 /// Run reduce + queue engine cmds. Playhead updates sync; engine work is serialized
-/// on one microtask drain (same race class as the old demo `defer_scrub` TLS).
+/// on one microtask drain (pointer Move is rate-limited in `<Video>` via leptos-use).
 pub(super) fn dispatch_transport(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, event: TransportEvent) {
     let v = ctx.video;
     let engine_cmds = {
