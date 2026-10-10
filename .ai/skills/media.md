@@ -70,7 +70,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 - **Sample miss blocks Play** → URL/Blob return `want` (URL floors 0.5 MiB); quantum fill bg. Do not await 8 MiB on A/V path.
 - **fMP4 warm** → first moofs ready; chunked mfra backfill; adopt audio samples; provisional length from tfra; never bulk-read to mfra into WASM; settle must not `await_sync_verify_complete`.
 - **Lying sync / B-frames** → demote non-IDR/non-IRAP; index presentation order; cascade uses `decode_order`. Deferred verify + on-retrieve `ensure_key_verified`.
-- **re_mp4 QT mp4a v2** → workspace git pin (#35/#37); drop when crates.io catches up (`state.md`).
+- **re_mp4 QT mp4a v2 / PCM** → pin `rerun-io/re_mp4` git (#35/#38); crates.io 0.5.1 lacks both.
 
 ### WebCodecs / play
 

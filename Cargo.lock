@@ -2076,7 +2076,7 @@ dependencies = [
 [[package]]
 name = "re_mp4"
 version = "0.5.1"
-source = "git+https://github.com/alexantoshuk/re_mp4?rev=5b3cc258a50a278a62785bad426529037dab6129#5b3cc258a50a278a62785bad426529037dab6129"
+source = "git+https://github.com/rerun-io/re_mp4?rev=73e38d9160d3ae5ce5521be3c4875a59c2a26b35#73e38d9160d3ae5ce5521be3c4875a59c2a26b35"
 dependencies = [
  "byteorder",
  "num-rational",
