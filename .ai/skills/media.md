@@ -12,7 +12,8 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | After scrub: blink / hang + `Unsupported configuration` | `HwAccel` / `from_config` | scrub/thumb PreferSoftware; HW recreate → soft fallback |
 | New clip: Play disabled / audio dies | clip dispose | `Closed`+drop player; `Shared.disposed`; UrlSource orch abort |
 | Open locks until gray full / slow stss | open warm / `defer_avc_sync` | warm lead 96; bg verify + `ensure_key_verified` |
-| Local master ~0.75× (no AAC) | `PlaybackClock` wall time | PCM→silent; Chrome `currentTime` lags under decode load — advance from `performance.now` (keep muted graph for resume). AAC unchanged. Probe `e2e/player.play.residual.spec.ts` |
+| Local master ~0.75× (no AAC) | `PlaybackClock` wall time | PCM→silent; Chrome `currentTime` lags under decode load — wall time + muted graph. AAC unchanged. Probe `e2e/player.play.residual.spec.ts` |
+| Play residual fps_min≈23 @1 s | e2e residual / host rAF | Demo `sync_ui` ~100 ms — prefer `fps5s` / status fps meter; not engine judder. Parked. |
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
 | Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact; fault typing: `MediaError::from_codec_message` / `DecodeStall` |
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |

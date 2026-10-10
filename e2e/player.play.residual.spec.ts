@@ -11,13 +11,19 @@ import { DemoPlayer, type PipelineJson } from "./helpers/player";
 
 const SAMPLE_MS = 50;
 const WINDOW_MS = 1000;
+/** Longer window dilutes demo UI sync throttle (~100 ms) on playhead/status. */
+const WINDOW_MS_LONG = 5000;
 /** Windows at or below this fps (relative to clip) are “low” for correlation. */
 const LOW_FPS_ABS = 23.5;
 
 type Sample = {
   t: number;
   playhead: number | null;
+  /** Engine frame when status shows `(eng N)`; else same as playhead. */
+  engine: number | null;
   seconds: number | null;
+  /** Demo fps meter from status (`· 24.5 fps`), if present. */
+  uiFps: number | null;
   held_len: number | null;
   presentation_len: number;
   frames_skipped: number;
@@ -57,6 +63,10 @@ function percentile(sorted: number[], p: number): number | null {
   return sorted[idx]!;
 }
 
+function frameOf(s: Sample): number {
+  return s.engine ?? s.playhead ?? 0;
+}
+
 function fpsWindows(samples: Sample[], windowMs: number): FpsWindow[] {
   const out: FpsWindow[] = [];
   let j = 0;
@@ -67,7 +77,7 @@ function fpsWindows(samples: Sample[], windowMs: number): FpsWindow[] {
     }
     const b = samples[j]!;
     const dWall = (b.t - a.t) / 1000;
-    const dFrames = (b.playhead ?? 0) - (a.playhead ?? 0);
+    const dFrames = frameOf(b) - frameOf(a);
     if (dWall < windowMs / 1000 / 2 || dFrames < 0) continue;
 
     const slice = samples.slice(i, j + 1);
@@ -75,7 +85,7 @@ function fpsWindows(samples: Sample[], windowMs: number): FpsWindow[] {
     for (let k = 1; k < slice.length; k++) {
       const prev = slice[k - 1]!;
       const cur = slice[k]!;
-      if ((cur.playhead ?? 0) <= (prev.playhead ?? 0)) {
+      if (frameOf(cur) <= frameOf(prev)) {
         stallMs += cur.t - prev.t;
       }
     }
@@ -85,8 +95,8 @@ function fpsWindows(samples: Sample[], windowMs: number): FpsWindow[] {
     out.push({
       t0: a.t,
       t1: b.t,
-      playhead0: a.playhead ?? 0,
-      playhead1: b.playhead ?? 0,
+      playhead0: frameOf(a),
+      playhead1: frameOf(b),
       fps: dFrames / dWall,
       skipDelta: b.frames_skipped - a.frames_skipped,
       maxBehindMs: slice
@@ -99,6 +109,20 @@ function fpsWindows(samples: Sample[], windowMs: number): FpsWindow[] {
     });
   }
   return out;
+}
+
+function fpsStats(windows: FpsWindow[]) {
+  const fpsSeries = windows.map((w) => w.fps).sort((x, y) => x - y);
+  return {
+    n: fpsSeries.length,
+    min: fpsSeries[0] ?? null,
+    p05: percentile(fpsSeries, 0.05),
+    p50: percentile(fpsSeries, 0.5),
+    mean:
+      fpsSeries.length > 0
+        ? fpsSeries.reduce((a, b) => a + b, 0) / fpsSeries.length
+        : null,
+  };
 }
 
 function summarize(samples: Sample[], startAt: number, endAt: number) {
@@ -116,16 +140,20 @@ function summarize(samples: Sample[], startAt: number, endAt: number) {
     if (dWall > 1 && dMedia > 1) realtime = dMedia / dWall;
   }
 
-  const windows = fpsWindows(mid, WINDOW_MS);
-  const fpsSeries = windows.map((w) => w.fps).sort((x, y) => x - y);
+  const windows1s = fpsWindows(mid, WINDOW_MS);
+  const windows5s = fpsWindows(mid, WINDOW_MS_LONG);
   const heldSeries = mid
     .map((s) => finiteHeld(s.held_len))
     .filter((v): v is number => v != null);
   const presSeries = mid.map((s) => s.presentation_len);
   const heldSorted = [...heldSeries].sort((x, y) => x - y);
   const presSorted = [...presSeries].sort((x, y) => x - y);
+  const uiFpsSeries = mid
+    .map((s) => s.uiFps)
+    .filter((v): v is number => v != null)
+    .sort((x, y) => x - y);
 
-  const low = windows.filter((w) => w.fps <= LOW_FPS_ABS);
+  const low = windows1s.filter((w) => w.fps <= LOW_FPS_ABS);
   const lowByFps = [...low].sort((a, b) => a.fps - b.fps).slice(0, 8);
 
   const last = mid[mid.length - 1] ?? samples[samples.length - 1];
@@ -133,15 +161,19 @@ function summarize(samples: Sample[], startAt: number, endAt: number) {
     sampleCount: samples.length,
     midCount: mid.length,
     realtime,
-    fps: {
-      windowMs: WINDOW_MS,
-      n: fpsSeries.length,
-      min: fpsSeries[0] ?? null,
-      p05: percentile(fpsSeries, 0.05),
-      p50: percentile(fpsSeries, 0.5),
+    /** Demo play path syncs status ~10 Hz — 1 s Δplayhead can under-read by ~2–3 frames. */
+    uiSyncNote:
+      "play sync_ui throttled to ~100ms; prefer fps5s / uiFpsMeter vs fps1s.min",
+    fps: { windowMs: WINDOW_MS, ...fpsStats(windows1s) },
+    fps5s: { windowMs: WINDOW_MS_LONG, ...fpsStats(windows5s) },
+    uiFpsMeter: {
+      n: uiFpsSeries.length,
+      min: uiFpsSeries[0] ?? null,
+      p05: percentile(uiFpsSeries, 0.05),
+      p50: percentile(uiFpsSeries, 0.5),
       mean:
-        fpsSeries.length > 0
-          ? fpsSeries.reduce((a, b) => a + b, 0) / fpsSeries.length
+        uiFpsSeries.length > 0
+          ? uiFpsSeries.reduce((a, b) => a + b, 0) / uiFpsSeries.length
           : null,
     },
     held: {
@@ -170,7 +202,7 @@ function summarize(samples: Sample[], startAt: number, endAt: number) {
       .map((s) => s.last_behind_ms)
       .filter((v): v is number => v != null)
       .reduce((m, v) => Math.max(m, v), 0),
-    /** Skip / present / stall correlation in low-fps windows. */
+    /** Skip / present / stall correlation in low 1 s windows. */
     lowFps: {
       threshold: LOW_FPS_ABS,
       count: low.length,
@@ -283,10 +315,13 @@ test.describe("play residual (fps / held / presentation)", () => {
     while (Date.now() < deadline) {
       const st = await player.readStatus();
       const pipe: PipelineJson = await player.readPipelineJson();
+      const uiFpsMatch = st.raw.match(/·\s*([\d.]+)\s*fps/i);
       samples.push({
         t: Date.now(),
         playhead: st.playhead,
+        engine: st.engine,
         seconds: st.seconds,
+        uiFps: uiFpsMatch ? Number(uiFpsMatch[1]) : null,
         held_len: pipe.held_len,
         presentation_len: pipe.presentation_len ?? 0,
         frames_skipped: pipe.frames_skipped,
@@ -311,6 +346,7 @@ test.describe("play residual (fps / held / presentation)", () => {
       endPlayhead: samples[samples.length - 1]?.playhead ?? null,
       ...stats,
       fps_min: stats.fps.min,
+      fps5s_min: stats.fps5s.min,
       held_min: stats.held.min,
       pres_min: stats.presentation.min,
       faults: faults.slice(-20),
@@ -330,9 +366,8 @@ test.describe("play residual (fps / held / presentation)", () => {
       stats.holds.ms,
       `underrun hold too high: ${stats.holds.count}/${stats.holds.ms}ms`,
     ).toBeLessThan(800);
-    // AAC clock should hold ≈1×. Silent PlaybackClock on long masters can
-    // drop to ~0.75× — report still attaches; soft-fail only on AAC path.
-    if (stats.realtime != null && clock.kind === "aac") {
+    // Wall-driven silent clock + AAC should both hold ≈1× after keep-alive fix.
+    if (stats.realtime != null) {
       expect(stats.realtime, `realtime ${stats.realtime}`).toBeGreaterThan(
         0.85,
       );
