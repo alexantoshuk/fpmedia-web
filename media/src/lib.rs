@@ -32,7 +32,7 @@ pub mod timer;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use audio::{AudioOutput, OwnedAudioData};
-pub use audio::{AudioSampleEntry, AudioSampleId, Mp4AudioTrack, TimeStretcher};
+pub use audio::{AudioSampleEntry, AudioSampleId, Mp4AudioTrack, PcmFormat, TimeStretcher};
 
 pub use bitstream::{
     PacketType, accept_avc_recovery_point_sei, avc_nal_length_size, determine_avc_packet_type,

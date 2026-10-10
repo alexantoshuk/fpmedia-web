@@ -36,6 +36,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - Layout/state must allow **1–2 media sources** later (compare) — never hard-assume a single source forever.
 - `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain**-fit picture, metadata via the element API.
 - Continuous play keeps **A/V sync** on an audio-driven clock — also for clips without an audio track. The element API exposes volume / mute; it does not expose the clock. Clock design: `architecture.md` § Audio + media clock.
+- **Audio codecs (agreed):** AAC (`mp4a`) and common QT/ISO **PCM** (`in24` / `sowt` / `twos` / …) play through the same volume/mute/rate path; PCM does not use WebCodecs `AudioDecoder`. Unsupported audio sample entries are ignored (video still opens).
 - **Component vs demo:** element crates expose **API only**; keyboard / transport chrome belongs to the host (demo `app`).
 - **Hover thumbs:** Frame.io-style timeline preview. **Agreed UX:** Play **and** Pause, not while scrubbing; must not drive densify / buffer strips.
 - **Play first, scrub second:** smooth **1× play** must work for any supported clip (incl. 4K). Exactness is Pause/seek/step — not a reason to slow Play. Scrub/densify yields while playing. Do not retune Full-HD play defaults when tuning 4K.

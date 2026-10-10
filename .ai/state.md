@@ -8,7 +8,7 @@
 
 ### Handoff
 
-- **Branch:** `main` (user pushed). Silent-clock wall fix + residual probe landed.
+- **Branch:** `main` (ahead: re_mp4 pin + PCM audio play). PCM hear-ok after `wave/enda` LE fix.
 - **Group 3:** verified earlier (e2e 38 passed after TLS drop).
 - **Play residual:** parked — 1 s `fps_min`≈23 is demo `sync_ui` ~100 ms artifact; use `fps5s` / status fps meter (`skills/media.md`).
 

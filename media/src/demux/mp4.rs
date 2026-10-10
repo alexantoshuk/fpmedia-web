@@ -456,7 +456,9 @@ impl Mp4VideoTrack {
                 let prev_indexed = self.index.borrow().len();
                 // Delta Mp4: samples from the new moof(s) only — append, do not
                 // replace (`mediabunny: readFragment` grows the table).
-                let audio = build_audio_track(&mp4, Arc::clone(&self.sync_source))?;
+                // Fragment deltas: no full moov — PCM needs sound-desc from init
+                // open; AAC still works. Pass None (ulaw/alaw-only PCM fallback).
+                let audio = build_audio_track(&mp4, Arc::clone(&self.sync_source), None)?;
                 let new_entries = frame_entries_from_mp4(&mp4);
                 if new_entries.is_empty()
                     && audio
@@ -902,7 +904,8 @@ pub fn open_mp4_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
     fetch_map.mark_full(bytes.len() as u64);
     let mp4 = Mp4::read_bytes(bytes.as_ref())?;
     let source: Arc<dyn MediaSource> = Arc::new(MemorySource::new(bytes.clone()));
-    let timecode_start = crate::demux::timecode::find_moov_box(bytes.as_ref()).and_then(|moov| {
+    let moov = crate::demux::timecode::find_moov_box(bytes.as_ref());
+    let timecode_start = moov.and_then(|moov| {
         crate::demux::timecode::read_tmcd_start_sample_blocking(&mp4, moov, source.as_ref())
             .ok()
             .flatten()
@@ -916,6 +919,7 @@ pub fn open_mp4_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
             defer_avc_sync: false,
         },
         timecode_start,
+        moov,
     )?
     .require_av()
 }
@@ -938,8 +942,9 @@ pub async fn open_mp4(
     let fetch_map = Arc::new(FetchMap::new());
     let parsed =
         crate::demux::parse_mp4_progressive_with_backfill(source.as_ref(), &mut progress).await?;
+    let moov_bytes = parsed.moov_bytes;
     let timecode_start =
-        resolve_timecode_start(&parsed.mp4, parsed.moov_bytes.as_deref(), source.as_ref()).await;
+        resolve_timecode_start(&parsed.mp4, moov_bytes.as_deref(), source.as_ref()).await;
     let mut opened = build_opened(
         parsed.mp4,
         Arc::clone(&source),
@@ -949,6 +954,7 @@ pub async fn open_mp4(
             defer_avc_sync: false,
         },
         timecode_start,
+        moov_bytes.as_deref(),
     )?;
     if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
         v.arm_fragment_backfill(plan, Arc::clone(&source));
@@ -1050,9 +1056,10 @@ fn build_opened(
     fetch_map: Arc<FetchMap>,
     options: OpenMp4Options,
     timecode_start: Option<timecode::Timecode>,
+    moov_bytes: Option<&[u8]>,
 ) -> Result<OpenedMp4, MediaError> {
     let video = build_video_track(&mp4, Arc::clone(&source), options, timecode_start)?;
-    let audio = build_audio_track(&mp4, source)?;
+    let audio = build_audio_track(&mp4, source, moov_bytes)?;
     Ok(OpenedMp4 {
         video,
         audio,

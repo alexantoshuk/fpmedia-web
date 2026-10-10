@@ -1,11 +1,12 @@
-//! MP4 audio track demux (`mp4a` / AAC via `re_mp4`).
+//! MP4 audio track demux (`mp4a` AAC + QT/ISO PCM via `re_mp4`).
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::sync::Arc;
 
-use re_mp4::{Mp4, StsdBoxContent, TrackKind};
+use re_mp4::{Mp4, StsdBoxContent, TrackKind, is_pcm_sample_entry};
 
+use crate::audio::pcm_entry::{find_pcm_in_moov, pcm_from_fourcc_only};
 use crate::error::MediaError;
 use crate::source::MediaSource;
 use crate::types::{
@@ -222,14 +223,19 @@ impl Mp4AudioTrack {
 }
 
 /// Build the primary audio track from a parsed [`Mp4`], or `None` if absent.
+///
+/// `moov_bytes`: raw `moov` (with header) for PCM sound-description bodies
+/// (`re_mp4` drops them on `StsdBoxContent::Unknown`). Optional for mfra deltas.
 pub(crate) fn build_audio_track(
     mp4: &Mp4,
     source: Arc<dyn MediaSource>,
+    moov_bytes: Option<&[u8]>,
 ) -> Result<Option<Mp4AudioTrack>, MediaError> {
-    let Some(track) = mp4
+    let Some((track_id, track)) = mp4
         .tracks()
-        .values()
-        .find(|t| t.kind == Some(TrackKind::Audio))
+        .iter()
+        .find(|(_, t)| t.kind == Some(TrackKind::Audio))
+        .map(|(id, t)| (*id, t))
     else {
         return Ok(None);
     };
@@ -239,34 +245,67 @@ pub(crate) fn build_audio_track(
     }
 
     let stsd = &track.trak(mp4).mdia.minf.stbl.stsd.contents;
-    // Only AAC `mp4a` today — PCM / other audio sample entries: ignore track
-    // (do not fail open). Local re_mp4 PCM FourCC work stays out of this pin.
-    let StsdBoxContent::Mp4a(mp4a) = stsd else {
-        return Ok(None);
+    let codec_meta = match stsd {
+        StsdBoxContent::Mp4a(mp4a) => {
+            let sample_rate = u32::from(mp4a.samplerate.value()).max(1);
+            let number_of_channels = u32::from(mp4a.channelcount).max(1);
+
+            let (profile, freq_index, chan_conf) = mp4a
+                .esds
+                .as_ref()
+                .map(|esds| {
+                    let d = &esds.es_desc.dec_config.dec_specific;
+                    (d.profile, d.freq_index, d.chan_conf)
+                })
+                .unwrap_or((2, 4, number_of_channels.min(7) as u8));
+
+            // Prefer ASC channel/rate when present (mediabunny updates from ASC).
+            let number_of_channels = if chan_conf > 0 {
+                u32::from(chan_conf)
+            } else {
+                number_of_channels
+            };
+            let sample_rate = freq_index_hz(freq_index).unwrap_or(sample_rate);
+
+            let description = build_aac_asc(profile, freq_index, chan_conf.max(1));
+            let codec_string = format!("mp4a.40.{profile}");
+            AudioCodecConfig {
+                codec: AudioCodec::Aac,
+                codec_string: Some(codec_string),
+                description,
+                pcm: None,
+            }
+            .with_rate_channels(sample_rate, number_of_channels)
+        }
+        StsdBoxContent::Unknown(fourcc) if is_pcm_sample_entry(fourcc) => {
+            let desc = moov_bytes
+                .and_then(|moov| find_pcm_in_moov(moov, track_id))
+                .or_else(|| {
+                    // Fragment delta / no moov: only ulaw/alaw are unambiguous.
+                    pcm_from_fourcc_only(fourcc).ok().flatten().map(|format| {
+                        crate::audio::pcm_entry::PcmSoundDescription {
+                            track_id,
+                            fourcc: fourcc.value,
+                            sample_rate: track.timescale.max(1) as u32,
+                            number_of_channels: 2,
+                            format,
+                        }
+                    })
+                });
+            let Some(desc) = desc else {
+                // Need sound-description body for in24/etc. — ignore track.
+                return Ok(None);
+            };
+            AudioCodecConfig {
+                codec: AudioCodec::Pcm,
+                codec_string: Some(desc.format.codec_string()),
+                description: Vec::new(),
+                pcm: Some(desc.format),
+            }
+            .with_rate_channels(desc.sample_rate, desc.number_of_channels)
+        }
+        _ => return Ok(None),
     };
-
-    let sample_rate = u32::from(mp4a.samplerate.value()).max(1);
-    let number_of_channels = u32::from(mp4a.channelcount).max(1);
-
-    let (profile, freq_index, chan_conf) = mp4a
-        .esds
-        .as_ref()
-        .map(|esds| {
-            let d = &esds.es_desc.dec_config.dec_specific;
-            (d.profile, d.freq_index, d.chan_conf)
-        })
-        .unwrap_or((2, 4, number_of_channels.min(7) as u8));
-
-    // Prefer ASC channel/rate when present (mediabunny updates from AudioSpecificConfig).
-    let number_of_channels = if chan_conf > 0 {
-        u32::from(chan_conf)
-    } else {
-        number_of_channels
-    };
-    let sample_rate = freq_index_hz(freq_index).unwrap_or(sample_rate);
-
-    let description = build_aac_asc(profile, freq_index, chan_conf.max(1));
-    let codec_string = format!("mp4a.40.{profile}");
 
     let samples: Vec<AudioSampleEntry> = track
         .samples
@@ -285,16 +324,12 @@ pub(crate) fn build_audio_track(
         .collect();
 
     let metadata = AudioMetadata {
-        sample_rate,
-        number_of_channels,
+        sample_rate: codec_meta.sample_rate,
+        number_of_channels: codec_meta.number_of_channels,
         timescale: track.timescale,
         duration_ticks: track.duration,
         sample_count: samples.len() as u64,
-        codec: AudioCodecConfig {
-            codec: AudioCodec::Aac,
-            codec_string: Some(codec_string),
-            description,
-        },
+        codec: codec_meta.config,
     };
 
     Ok(Some(Mp4AudioTrack {
@@ -303,6 +338,26 @@ pub(crate) fn build_audio_track(
         samples: RefCell::new(samples),
         expect_more: Cell::new(false),
     }))
+}
+
+struct CodecMeta {
+    config: AudioCodecConfig,
+    sample_rate: u32,
+    number_of_channels: u32,
+}
+
+trait WithRateChannels {
+    fn with_rate_channels(self, sample_rate: u32, number_of_channels: u32) -> CodecMeta;
+}
+
+impl WithRateChannels for AudioCodecConfig {
+    fn with_rate_channels(self, sample_rate: u32, number_of_channels: u32) -> CodecMeta {
+        CodecMeta {
+            config: self,
+            sample_rate,
+            number_of_channels,
+        }
+    }
 }
 
 fn freq_index_hz(index: u8) -> Option<u32> {

@@ -8,11 +8,11 @@ use std::time::Instant;
 use webmedia::{
     GopProfile, MediaSource, MemorySource, Mp4VideoTrack, OpenMp4Options, OpenPhase, OpenedMp4,
     PacketType, ReadFuture, VideoCodec, avc_nal_length_size, determine_avc_packet_type, open_mp4,
-    open_mp4_path,
+    open_mp4_bytes, open_mp4_path,
 };
 
 #[cfg(feature = "hevc")]
-use webmedia::{determine_hevc_packet_type, hevc_nal_length_size, open_mp4_bytes};
+use webmedia::{determine_hevc_packet_type, hevc_nal_length_size};
 
 /// Progressive cached open, video only.
 async fn open_video_source(
@@ -448,6 +448,194 @@ fn demux_with_audio_track() {
     let sample = block_on(audio.encoded_sample(0)).expect("audio sample 0");
     assert!(!sample.data.is_empty());
     assert!(sample.composition_timestamp().seconds >= 0.0);
+}
+
+/// Ranged native file reads for large QT masters (FileSource still deferred).
+struct NativeFileSource {
+    path: std::path::PathBuf,
+    size: u64,
+}
+
+impl NativeFileSource {
+    fn open(path: impl Into<std::path::PathBuf>) -> std::io::Result<Self> {
+        let path = path.into();
+        let size = std::fs::metadata(&path)?.len();
+        Ok(Self { path, size })
+    }
+}
+
+impl MediaSource for NativeFileSource {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn read(&self, offset: u64, len: usize) -> ReadFuture<'_> {
+        let path = self.path.clone();
+        let size = self.size;
+        Box::pin(async move {
+            use std::io::{Read, Seek, SeekFrom};
+            if offset > size {
+                return Err(webmedia::MediaError::Mp4(format!(
+                    "read offset {offset} past EOF {size}"
+                )));
+            }
+            let want = (len as u64).min(size.saturating_sub(offset)) as usize;
+            let mut file = std::fs::File::open(&path)
+                .map_err(|e| webmedia::MediaError::Mp4(format!("open {}: {e}", path.display())))?;
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|e| webmedia::MediaError::Mp4(format!("seek: {e}")))?;
+            let mut buf = vec![0u8; want];
+            let mut filled = 0usize;
+            while filled < want {
+                let n = file
+                    .read(&mut buf[filled..])
+                    .map_err(|e| webmedia::MediaError::Mp4(format!("read: {e}")))?;
+                if n == 0 {
+                    break;
+                }
+                filled += n;
+            }
+            buf.truncate(filled);
+            Ok(bytes::Bytes::from(buf))
+        })
+    }
+}
+
+fn assert_pcm_track(audio: &webmedia::Mp4AudioTrack, label: &str) {
+    use webmedia::AudioCodec;
+
+    let meta = audio.metadata();
+    assert_eq!(
+        meta.codec.codec,
+        AudioCodec::Pcm,
+        "{label}: expected PCM, got {:?}",
+        meta.codec
+    );
+    let codec = meta
+        .codec
+        .codec_string
+        .as_deref()
+        .expect("pcm codec_string");
+    assert!(
+        codec.starts_with("pcm-") || codec == "ulaw" || codec == "alaw",
+        "{label}: codec_string={codec}"
+    );
+    assert!(
+        meta.codec.pcm.is_some(),
+        "{label}: missing pcm format on codec config"
+    );
+    assert!(
+        meta.sample_rate >= 8000,
+        "{label}: rate={}",
+        meta.sample_rate
+    );
+    assert!(
+        meta.number_of_channels >= 1,
+        "{label}: ch={}",
+        meta.number_of_channels
+    );
+    assert!(
+        audio.sample_count() > 0 && audio.sample_count() < 100_000,
+        "{label}: sample_count={} (expect chunk-coalesced, not per-PCM-frame)",
+        audio.sample_count()
+    );
+
+    let sample = block_on(audio.encoded_sample(0)).expect("pcm sample 0");
+    assert!(!sample.data.is_empty(), "{label}: empty sample 0");
+    let format = meta.codec.pcm.expect("pcm format");
+    let planar = format
+        .decode_interleaved_f32(&sample.data, meta.number_of_channels)
+        .expect("pcm decode");
+    assert_eq!(planar.len(), meta.number_of_channels as usize);
+    assert!(!planar[0].is_empty());
+    let peak = planar
+        .iter()
+        .flat_map(|ch| ch.iter())
+        .map(|s| s.abs())
+        .fold(0.0f32, f32::max);
+    eprintln!(
+        "webmedia pcm probe [{label}]: codec={codec} rate={} ch={} packets={} sample0_bytes={} peak={peak:.4}",
+        meta.sample_rate,
+        meta.number_of_channels,
+        audio.sample_count(),
+        sample.data.len(),
+    );
+    // Near-silent plates still have quantisation / dither; fail only if all-zero.
+    assert!(
+        peak > 0.0 || sample.data.iter().any(|&b| b != 0),
+        "{label}: all-zero PCM payload"
+    );
+}
+
+/// testvideo QT PCM plate — download to `public/` or set `WEBMEDIA_PCM_MOV`.
+#[test]
+fn demux_qt_pcm24_plate() {
+    let path = std::env::var_os("WEBMEDIA_PCM_MOV")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../public/avc_1080p_25_mov_pcm24_gop12_bf0.mov")
+        });
+    if !path.exists() {
+        eprintln!(
+            "skip: missing {} (curl testvideo v0.3.0 avc_1080p_25_mov_pcm24_gop12_bf0.mov)",
+            path.display()
+        );
+        return;
+    }
+    let t0 = Instant::now();
+    let bytes = std::fs::read(&path).expect("read pcm plate");
+    let opened = open_mp4_bytes(bytes).expect("open pcm plate");
+    let audio = opened.audio.expect("pcm audio track");
+    let _video = opened.video.expect("video");
+    assert_pcm_track(&audio, "testvideo-pcm24");
+    assert_eq!(
+        audio.metadata().codec.codec_string.as_deref(),
+        Some("pcm-s24"),
+        "ffmpeg plate is pcm_s24le; enda lives under wave"
+    );
+    eprintln!("open+probe in {:?}", t0.elapsed());
+}
+
+/// Local QT PCM master (e.g. ChG) — progressive ranged open, not full slurp.
+/// Set `WEBMEDIA_CHG_MOV` to the `.mov` path.
+#[test]
+fn demux_chg_pcm_master_progressive() {
+    let Some(path) = std::env::var_os("WEBMEDIA_CHG_MOV").map(std::path::PathBuf::from) else {
+        eprintln!("skip: set WEBMEDIA_CHG_MOV to a QT PCM .mov path");
+        return;
+    };
+    if !path.exists() {
+        eprintln!("skip: missing {}", path.display());
+        return;
+    }
+    let t0 = Instant::now();
+    let source: Arc<dyn MediaSource> =
+        Arc::new(NativeFileSource::open(&path).expect("open ChG file"));
+    let opened = block_on(open_mp4(
+        source,
+        OpenMp4Options {
+            verify_avc_sync: false,
+            defer_avc_sync: true,
+        },
+        |_| {},
+    ))
+    .expect("progressive ChG open");
+    let audio = opened.audio.expect("ChG pcm audio");
+    let video = opened.video.expect("ChG video");
+    eprintln!(
+        "ChG video {}x{} frames={} open {:?}",
+        video.metadata().width,
+        video.metadata().height,
+        video.frame_count(),
+        t0.elapsed()
+    );
+    assert_pcm_track(&audio, "ChG");
+    assert_eq!(
+        audio.metadata().codec.codec_string.as_deref(),
+        Some("pcm-s24"),
+        "ChG ffprobe is pcm_s24le"
+    );
 }
 
 /// testvideo HEVC plate — bitstream IRAP verify. Override with `WEBMEDIA_HEVC_URL`.

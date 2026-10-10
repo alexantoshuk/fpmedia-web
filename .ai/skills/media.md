@@ -12,7 +12,9 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | After scrub: blink / hang + `Unsupported configuration` | `HwAccel` / `from_config` | scrub/thumb PreferSoftware; HW recreate → soft fallback |
 | New clip: Play disabled / audio dies | clip dispose | `Closed`+drop player; `Shared.disposed`; UrlSource orch abort |
 | Open locks until gray full / slow stss | open warm / `defer_avc_sync` | warm lead 96; bg verify + `ensure_key_verified` |
-| Local master ~0.75× (no AAC) | `PlaybackClock` wall time | PCM→silent; Chrome `currentTime` lags under decode load — wall time + muted graph. AAC unchanged. Probe `e2e/player.play.residual.spec.ts` |
+| Local master ~0.75× (no audio clock) | `PlaybackClock` wall time | No AAC/PCM track → silent clock; Chrome `currentTime` lags under decode load — wall time + muted graph. Probe `e2e/player.play.residual.spec.ts` |
+| QT PCM master silent / ignored | `build_audio_track` / `audio::pcm` | PCM via moov sound-desc + f32 schedule (no `AudioDecoder`). `mediabunny: media-sink.ts PcmAudioDecoderWrapper` |
+| QT PCM = noise / static | `pcm_entry` `enda` in `wave` | Nested `wave/enda` sets LE (`in24`→`pcm-s24`); top-level-only scan → false BE. `mediabunny: isobmff-demuxer wave` |
 | Play residual fps_min≈23 @1 s | e2e residual / host rAF | Demo `sync_ui` ~100 ms — prefer `fps5s` / status fps meter; not engine judder. Parked. |
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
 | Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact; fault typing: `MediaError::from_codec_message` / `DecodeStall` |
@@ -49,7 +51,7 @@ host/          host_op_coalesce (OpQueue) · open_phase (open status)
 residency.rs   AimWindow (aim-distance eviction) · ScrubChunkStore · FrameRunIndex (native tests)
 bitstream/     AVC + HEVC packet type / sanitize
 source/        MediaSource, CachedSource, FetchMap, ReadOrchestrator (+ wasm Blob/Url)
-audio/         demux, stretch (WSOLA), output, PlaybackClock
+audio/         demux, pcm (+ pcm_entry moov), stretch (WSOLA), output, PlaybackClock
 demux/         boxes, coalesce, mp4, tmcd
 video_player/  mod · api · shared · open · control · clock_ctrl · present · decode_ops · play (`begin_play_session` / `play_raf_tick`) · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
 decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
@@ -70,7 +72,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 - **Sample miss blocks Play** → URL/Blob return `want` (URL floors 0.5 MiB); quantum fill bg. Do not await 8 MiB on A/V path.
 - **fMP4 warm** → first moofs ready; chunked mfra backfill; adopt audio samples; provisional length from tfra; never bulk-read to mfra into WASM; settle must not `await_sync_verify_complete`.
 - **Lying sync / B-frames** → demote non-IDR/non-IRAP; index presentation order; cascade uses `decode_order`. Deferred verify + on-retrieve `ensure_key_verified`.
-- **re_mp4 QT mp4a v2 / PCM** → pin `rerun-io/re_mp4` git (#35/#38); crates.io 0.5.1 lacks both.
+- **re_mp4 QT mp4a v2 / PCM coalesce** → pin `rerun-io/re_mp4` git (#35/#38); crates.io 0.5.1 lacks both. Play PCM: `audio::pcm` + moov sound-desc (re_mp4 `Unknown` drops body).
 
 ### WebCodecs / play
 

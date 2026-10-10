@@ -39,9 +39,16 @@ const AHEAD_SECS: f64 = 1.0;
 /// before returning (loop seam / underrun resume — avoid silent video).
 const WARM_PRIME_SECS: f64 = 0.08;
 
+enum PendingPayload {
+    /// AAC (WebCodecs `AudioData`).
+    Decoded(OwnedAudioData),
+    /// PCM already converted to f32 planar (`mediabunny: PcmAudioDecoderWrapper`).
+    Planar(Vec<Vec<f32>>),
+}
+
 struct PendingSample {
     timestamp_secs: f64,
-    data: OwnedAudioData,
+    payload: PendingPayload,
 }
 
 /// Optional audio sink attached to [`crate::VideoPlayer`].
@@ -74,11 +81,16 @@ pub struct AudioOutput {
 impl AudioOutput {
     pub async fn create(track: Mp4AudioTrack) -> Result<Self, MediaError> {
         let meta = track.metadata();
-        let codec = meta
-            .codec
-            .codec_string
-            .clone()
-            .ok_or(MediaError::UnsupportedCodec)?;
+        let is_pcm = meta.codec.codec == crate::types::AudioCodec::Pcm;
+        if !is_pcm {
+            let _ = meta
+                .codec
+                .codec_string
+                .as_ref()
+                .ok_or(MediaError::UnsupportedCodec)?;
+        } else if meta.codec.pcm.is_none() {
+            return Err(MediaError::UnsupportedCodec);
+        }
 
         let opts = AudioContextOptions::new();
         opts.set_sample_rate(meta.sample_rate as f32);
@@ -99,7 +111,7 @@ impl AudioOutput {
             let timestamp_secs = owned.timestamp() / 1_000_000.0;
             pending_out.borrow_mut().push_back(PendingSample {
                 timestamp_secs,
-                data: owned,
+                payload: PendingPayload::Decoded(owned),
             });
         }) as Box<dyn FnMut(JsValue)>);
 
@@ -116,12 +128,22 @@ impl AudioOutput {
             *error_out.borrow_mut() = Some(msg);
         }) as Box<dyn FnMut(JsValue)>);
 
-        let init = AudioDecoderInit::new(
-            on_error.as_ref().unchecked_ref(),
-            on_output.as_ref().unchecked_ref(),
-        );
-        let decoder = AudioDecoder::new(&init)?;
-        configure_decoder(&decoder, &meta, &codec).await?;
+        let decoder = if is_pcm {
+            None
+        } else {
+            let codec = meta
+                .codec
+                .codec_string
+                .as_deref()
+                .ok_or(MediaError::UnsupportedCodec)?;
+            let init = AudioDecoderInit::new(
+                on_error.as_ref().unchecked_ref(),
+                on_output.as_ref().unchecked_ref(),
+            );
+            let decoder = AudioDecoder::new(&init)?;
+            configure_decoder(&decoder, &meta, codec).await?;
+            Some(decoder)
+        };
 
         Ok(Self {
             track: Rc::new(track),
@@ -137,12 +159,16 @@ impl AudioOutput {
             queued: RefCell::new(Vec::new()),
             pending,
             error,
-            decoder: RefCell::new(Some(decoder)),
+            decoder: RefCell::new(decoder),
             stretch: RefCell::new(None),
             stretch_next_ctx: Cell::new(0.0),
             _on_output: on_output,
             _on_error: on_error,
         })
+    }
+
+    fn is_pcm(&self) -> bool {
+        self.track.metadata().codec.codec == crate::types::AudioCodec::Pcm
     }
 
     pub fn metadata(&self) -> AudioMetadata {
@@ -398,25 +424,28 @@ impl AudioOutput {
         *self.error.borrow_mut() = None;
         self.reset_stretch_for_rate();
 
-        let taken = self.decoder.borrow_mut().take();
-        if let Some(dec) = taken {
-            let meta = self.track.metadata();
-            let codec = meta
-                .codec
-                .codec_string
-                .as_deref()
-                .ok_or(MediaError::UnsupportedCodec)?;
-            configure_decoder(&dec, &meta, codec).await?;
-            *self.decoder.borrow_mut() = Some(dec);
+        if !self.is_pcm() {
+            let taken = self.decoder.borrow_mut().take();
+            if let Some(dec) = taken {
+                let meta = self.track.metadata();
+                let codec = meta
+                    .codec
+                    .codec_string
+                    .as_deref()
+                    .ok_or(MediaError::UnsupportedCodec)?;
+                configure_decoder(&dec, &meta, codec).await?;
+                *self.decoder.borrow_mut() = Some(dec);
+            }
         }
         web_sys::console::log_1(
             &format!(
-                "webmedia: audio begin t={:.3}s rate={} stretch={} ch={} samples={}",
+                "webmedia: audio begin t={:.3}s rate={} stretch={} ch={} samples={} pcm={}",
                 media_time_secs,
                 self.rate.get(),
                 self.wants_stretch(),
                 self.track.metadata().number_of_channels,
-                self.track.sample_count()
+                self.track.sample_count(),
+                self.is_pcm(),
             )
             .into(),
         );
@@ -441,19 +470,22 @@ impl AudioOutput {
         // Keep the decoder instance; soft reset+configure without repeating
         // `isConfigSupported` (already passed on open). Needed so loop seam
         // can seek to t=0 after an EOF flush without a cold `begin`.
-        let taken = self.decoder.borrow_mut().take();
-        if let Some(dec) = taken {
-            let meta = self.track.metadata();
-            let codec = meta
-                .codec
-                .codec_string
-                .as_deref()
-                .ok_or(MediaError::UnsupportedCodec)?;
-            let _ = dec.reset();
-            reconfigure_decoder_fast(&dec, &meta, codec)?;
-            *self.decoder.borrow_mut() = Some(dec);
-        } else {
-            return Err(MediaError::WebCodecs("audio decoder missing".into()));
+        // PCM has no AudioDecoder — skip.
+        if !self.is_pcm() {
+            let taken = self.decoder.borrow_mut().take();
+            if let Some(dec) = taken {
+                let meta = self.track.metadata();
+                let codec = meta
+                    .codec
+                    .codec_string
+                    .as_deref()
+                    .ok_or(MediaError::UnsupportedCodec)?;
+                let _ = dec.reset();
+                reconfigure_decoder_fast(&dec, &meta, codec)?;
+                *self.decoder.borrow_mut() = Some(dec);
+            } else {
+                return Err(MediaError::WebCodecs("audio decoder missing".into()));
+            }
         }
 
         web_sys::console::log_1(
@@ -510,7 +542,7 @@ impl AudioOutput {
                     return Ok(sample_idx);
                 }
                 let ts = pending.timestamp_secs;
-                self.schedule_pending(ts, &pending.data)?;
+                self.schedule_pending_sample(ts, pending.payload)?;
                 if ts >= prime_until {
                     return Ok(sample_idx);
                 }
@@ -537,7 +569,7 @@ impl AudioOutput {
             if self.epoch.get() != epoch {
                 break;
             }
-            self.schedule_pending(pending.timestamp_secs, &pending.data)?;
+            self.schedule_pending_sample(pending.timestamp_secs, pending.payload)?;
         }
         Ok(sample_idx)
     }
@@ -603,7 +635,7 @@ impl AudioOutput {
                     return Ok(());
                 }
                 let ts = pending.timestamp_secs;
-                self.schedule_pending(ts, &pending.data)?;
+                self.schedule_pending_sample(ts, pending.payload)?;
                 // Ahead throttle: media timeline at 1×; wall schedule when stretching.
                 loop {
                     let ahead = if self.wants_stretch() {
@@ -635,11 +667,13 @@ impl AudioOutput {
             }
         }
 
-        // Flush remaining outputs.
-        let taken = self.decoder.borrow_mut().take();
-        if let Some(dec) = taken {
-            let _ = JsFuture::from(dec.flush()).await;
-            *self.decoder.borrow_mut() = Some(dec);
+        // Flush remaining AAC decoder outputs (PCM has none).
+        if !self.is_pcm() {
+            let taken = self.decoder.borrow_mut().take();
+            if let Some(dec) = taken {
+                let _ = JsFuture::from(dec.flush()).await;
+                *self.decoder.borrow_mut() = Some(dec);
+            }
         }
         loop {
             let next = self.pending.borrow_mut().pop_front();
@@ -649,7 +683,7 @@ impl AudioOutput {
             if self.epoch.get() != epoch {
                 return Ok(());
             }
-            self.schedule_pending(pending.timestamp_secs, &pending.data)?;
+            self.schedule_pending_sample(pending.timestamp_secs, pending.payload)?;
         }
         if self.epoch.get() != epoch {
             return Ok(());
@@ -658,31 +692,68 @@ impl AudioOutput {
         Ok(())
     }
 
-    fn schedule_pending(
+    fn schedule_pending_sample(
         &self,
         timestamp_secs: f64,
-        data: &OwnedAudioData,
+        payload: PendingPayload,
     ) -> Result<(), MediaError> {
-        if self.wants_stretch() {
-            self.feed_stretch_and_schedule(data)
-        } else {
-            self.schedule_sample(timestamp_secs, data)
+        match payload {
+            PendingPayload::Decoded(data) => {
+                if self.wants_stretch() {
+                    let planar = audio_data_to_planar(&data)?;
+                    self.feed_stretch_planar(&planar)
+                } else {
+                    self.schedule_sample(timestamp_secs, &data)
+                }
+            }
+            PendingPayload::Planar(planar) => {
+                if self.wants_stretch() {
+                    self.feed_stretch_planar(&planar)
+                } else {
+                    self.schedule_planar_at(timestamp_secs, &planar)
+                }
+            }
         }
     }
 
-    fn feed_stretch_and_schedule(&self, data: &OwnedAudioData) -> Result<(), MediaError> {
-        let planar = audio_data_to_planar(data)?;
+    fn feed_stretch_planar(&self, planar: &[Vec<f32>]) -> Result<(), MediaError> {
         let out = {
             let mut stretch = self.stretch.borrow_mut();
             let Some(stretcher) = stretch.as_mut() else {
                 return Ok(());
             };
-            stretcher.append(&planar)
+            stretcher.append(planar)
         };
         if let Some(channels) = out {
             self.schedule_planar_buffer(&channels)?;
         }
         Ok(())
+    }
+
+    /// Schedule f32 planar at media timestamp (1× PCM / stretch-free path).
+    fn schedule_planar_at(
+        &self,
+        timestamp_secs: f64,
+        channels: &[Vec<f32>],
+    ) -> Result<(), MediaError> {
+        let Some(ctx_origin) = self.ctx_origin.get() else {
+            return Ok(());
+        };
+        if channels.is_empty() || channels[0].is_empty() {
+            return Ok(());
+        }
+        let frames = channels[0].len();
+        let rate = self.context.sample_rate();
+        let buffer = self
+            .context
+            .create_buffer(channels.len() as u32, frames as u32, rate)?;
+        for (ch, data) in channels.iter().enumerate() {
+            let f32_arr = Float32Array::new_with_length(data.len() as u32);
+            f32_arr.copy_from(data);
+            buffer.copy_to_channel_with_f32_array(f32_arr.as_ref(), ch as i32)?;
+        }
+        let start = ctx_origin + (timestamp_secs - self.media_at_start.get());
+        self.schedule_buffer_at(buffer, start, 1.0)
     }
 
     fn finalize_stretch(&self) -> Result<(), MediaError> {
@@ -761,6 +832,17 @@ impl AudioOutput {
     }
 
     fn feed_chunk(&self, sample: &crate::types::EncodedAudioSample) -> Result<(), MediaError> {
+        if self.is_pcm() {
+            let meta = self.track.metadata();
+            let format = meta.codec.pcm.ok_or(MediaError::UnsupportedCodec)?;
+            let planar = format.decode_interleaved_f32(&sample.data, meta.number_of_channels)?;
+            self.pending.borrow_mut().push_back(PendingSample {
+                timestamp_secs: sample.composition_timestamp().seconds,
+                payload: PendingPayload::Planar(planar),
+            });
+            return Ok(());
+        }
+
         let ts_us = (sample.composition_timestamp().seconds * 1_000_000.0).round() as i32;
         let ty = if sample.is_keyframe {
             EncodedAudioChunkType::Key

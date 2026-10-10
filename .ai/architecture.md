@@ -183,13 +183,16 @@ Traps (flush/idle, cold settle, dual-HW): `skills/media.md`.
 
 ```text
   audio::Mp4AudioTrack ──► audio::AudioOutput
-                                    │
-  MediaClock ◄── AudioContext (AAC) or silent PlaybackClock
+         │                        │
+         │              AAC: AudioDecoder → AudioData
+         │              PCM: bytes → f32 planar (no WebCodecs decoder)
+         │                        │
+  MediaClock ◄── AudioContext (AAC/PCM) or silent PlaybackClock
        ▼
   VideoPlayer::media_time() ──► present_due / host rAF
 ```
 
-Hosts never open `AudioContext` as a disposable clock. Rate/pitch: WSOLA ≤4× (`audio::TimeStretcher`); mediabunny has no rate API equivalent. UX rates: `product.md`.
+PCM sample-entry bodies are not in `re_mp4`’s `Unknown` payload — walk raw `moov` (same pattern as `tmcd`). Codec map + decode: mediabunny `isobmff-demuxer` FourCC map + `media-sink.ts` `PcmAudioDecoderWrapper`. Hosts never open `AudioContext` as a disposable clock. Rate/pitch: WSOLA ≤4× (`audio::TimeStretcher`); mediabunny has no rate API equivalent. UX rates: `product.md`.
 
 ---
 

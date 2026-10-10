@@ -247,16 +247,20 @@ impl EncodedSample {
 pub enum AudioCodec {
     /// AAC-LC / HE-AAC in MP4 (`mp4a`).
     Aac,
+    /// Uncompressed / G.711 PCM (`in24`, `sowt`, …) — no WebCodecs decoder.
+    Pcm,
     Other,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioCodecConfig {
     pub codec: AudioCodec,
-    /// WebCodecs `AudioDecoderConfig.codec` (e.g. `mp4a.40.2`).
+    /// WebCodecs `AudioDecoderConfig.codec` (e.g. `mp4a.40.2`) or PCM string (`pcm-s24be`).
     pub codec_string: Option<String>,
     /// AudioSpecificConfig bytes for `description` (rebuilt from esds when needed).
     pub description: Vec<u8>,
+    /// Set when [`AudioCodec::Pcm`] — used by `audio::pcm` to convert packets.
+    pub pcm: Option<crate::audio::pcm::PcmFormat>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
