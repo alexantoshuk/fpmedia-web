@@ -24,6 +24,9 @@ e2e/.cache/
 e2e/stress-reports/
 e2e/stress-reports-*/
 
+# Ad-hoc e2e / probe dumps (Tee-Object). Tracked baselines stay under e2e/baselines/.
+*.log
+
 # Editor
 .idea/
 .vscode/
