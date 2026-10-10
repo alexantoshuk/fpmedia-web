@@ -2,7 +2,7 @@
 //!
 //! - Always: [`demux`] (`Mp4AudioTrack`) + [`stretch`] (WSOLA pitch-preserving rate).
 //! - `wasm32` + `webcodecs`: [`output`] (`AudioDecoder` → `AudioContext`) + [`owned_audio_data`]
-//!   + [`playback_clock`] (silent `AudioContext` timeline when no AAC track —
+//!   + [`playback_clock`] (no-AAC timeline: wall time + muted `AudioContext` for resume —
 //!     mediabunny media-player `getPlaybackTime`).
 //!
 //! [`crate::clock::MediaClock`] stays shared (wall or audio-driven timeline).

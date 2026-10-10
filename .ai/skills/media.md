@@ -12,7 +12,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | After scrub: blink / hang + `Unsupported configuration` | `HwAccel` / `from_config` | scrub/thumb PreferSoftware; HW recreate → soft fallback |
 | New clip: Play disabled / audio dies | clip dispose | `Closed`+drop player; `Shared.disposed`; UrlSource orch abort |
 | Open locks until gray full / slow stss | open warm / `defer_avc_sync` | warm lead 96; bg verify + `ensure_key_verified` |
-| Local master judder ~25 fps | `frames_after_decode` + silent clock | ChG: skip gate + thin held; not holds |
+| Local master ~0.75× (no AAC) | `PlaybackClock` wall time | PCM→silent; Chrome `currentTime` lags under decode load — advance from `performance.now` (keep muted graph for resume). AAC unchanged. Probe `e2e/player.play.residual.spec.ts` |
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
 | Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact; fault typing: `MediaError::from_codec_message` / `DecodeStall` |
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
@@ -36,7 +36,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | fMP4 / URL open hang / Range stampede | mfra warm + orch | moof-only parallel; never bulk 0..mfra; settle ≠ await full sync verify |
 | UI stuck (not decode) | `skills/leptos.md` | OpQueue / playing / spawn |
 
-**Probes (paths):** `e2e/player.smoke.spec.ts`, `e2e/player.matrix.spec.ts`, `e2e/player.play.long-gop.spec.ts`, `e2e/player.play.gop12-url-vs-local.spec.ts`, `e2e/player.play.fmp4-warm-seam.spec.ts`, `e2e/player.scrub.cold-open.spec.ts`, `e2e/player.scrub.cold-resume.spec.ts`, `e2e/player.scrub.sticky-error.spec.ts`, `e2e/player.play.gray-first.spec.ts`, `e2e/player.stress.scrub-av.spec.ts`, `e2e/player.play.eof-loop.spec.ts`, `e2e/player.jkl.spec.ts`, `e2e/player.fetchmap.fmp4-gap.spec.ts`, `e2e/perf.scrub.*.spec.ts`, `e2e/perf.scrub.baseline.spec.ts`.
+**Probes (paths):** `e2e/player.smoke.spec.ts`, `e2e/player.matrix.spec.ts`, `e2e/player.play.long-gop.spec.ts`, `e2e/player.play.gop12-url-vs-local.spec.ts`, `e2e/player.play.residual.spec.ts`, `e2e/player.play.fmp4-warm-seam.spec.ts`, `e2e/player.scrub.cold-open.spec.ts`, `e2e/player.scrub.cold-resume.spec.ts`, `e2e/player.scrub.sticky-error.spec.ts`, `e2e/player.play.gray-first.spec.ts`, `e2e/player.stress.scrub-av.spec.ts`, `e2e/player.play.eof-loop.spec.ts`, `e2e/player.jkl.spec.ts`, `e2e/player.fetchmap.fmp4-gap.spec.ts`, `e2e/perf.scrub.*.spec.ts`, `e2e/perf.scrub.baseline.spec.ts`.
 
 ## Module map (`media/src`)
 
@@ -80,7 +80,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 - **Backpressure** → wait on new output/take (not buffered frames as progress); dual-async pump parks at `q==0` for consumer; densify cancel → hard reset, fill task returns.
 - **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout` — use `webmedia::timer` (engine + host).
 - **Op cancel** → `op_epoch`; Cancelled = soft; invalidate uses reset when checked out.
-- **Clock / rate** → `ClockState` + `media_time()`; soft-hold scrub/Pause; resume AudioContext before long prime; forward rates only; decrease snaps to displayed. UX ladder: `product.md`.
+- **Clock / rate** → `ClockState` + `media_time()`; soft-hold scrub/Pause; resume AudioContext before long prime; silent `PlaybackClock` advances on wall time (Chrome `currentTime` lags without audible output under WebCodecs load — diverge from mediabunny `getPlaybackTime`); AAC still context clock. UX ladder: `product.md`.
 - **Underrun** → HoldUnderrun + soft audio hold (keep decoder); not skip spiral. EOF: don’t End while presentation holds frames / while playhead mid at shuttle.
 - **Warm pump** → after take, retarget cursor (clear `saw_target` on retarget); park on capacity — don’t exit/respawn thrash. Short B-frame hole: `pts_aim_hole` + prune floor.
 - **Play VF pool** → densify off; behind cap 0 while playing; Exact trim farthest (not full wipe). Prefetch EOF `false` must await rAF (no spin).

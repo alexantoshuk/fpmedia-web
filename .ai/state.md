@@ -9,10 +9,9 @@
 ### Handoff
 
 - **Branch:** `main`, ahead of `origin`. Do not push unless asked.
-- **Group 3:** 3.1–3.3 landed (play session, transport Seek/Step, drop TLS coalesce). Refactor plan groups empty except optional Play/decode.
-- **e2e:** re-run after 3.3 (TLS drop) before treating group 3 fully verified.
+- **Group 3:** 3.1–3.3 verified — e2e **38 passed** (~5.5m, baseline compare) after TLS coalesce drop.
 - **Dirty (leave):** `e2e/baselines/pre-decode-sink/avc_1080p_24_gop{12,48}_bf0.json`.
-- **Next:** optional Play/decode ChG residual probe, or Later backlog.
+- **Silent clock:** `PlaybackClock` advances on wall time (Chrome `currentTime` lag under decode load). ChG original residual ≈ AAC remux (realtime≈1.0, fps_min≈22 / p05≈23 / p50≈25). Uncommitted: `playback_clock.rs` + `ConstantSourceNode` feature + probe/docs.
 
 ---
 
@@ -20,7 +19,8 @@
 
 ### Play / decode
 
-1. Optional: ChG-class play residual fps_min ≈ 23.5 — idea “relax series `held_min` → `pres_min`”. Metrics are not defined in code / e2e: write the probe first.
+1. Optional: remaining fps_min≈22–23 floor on ChG (AAC or silent+wall) — not skip path; thin held + full pres is steady-state. Or park residual as known / Later.
+2. Commit silent-clock fix when asked.
 
 ---
 

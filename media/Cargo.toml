@@ -80,6 +80,7 @@ web-sys = { workspace = true, optional = true, features = [
     "AudioNode",
     "AudioParam",
     "GainNode",
+    "ConstantSourceNode",
     "AudioBuffer",
     "AudioBufferSourceNode",
     "AudioScheduledSourceNode",
