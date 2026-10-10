@@ -216,10 +216,11 @@ impl VideoPlayer {
         self.shared.op_epoch.set(next);
     }
 
-    /// Cancel decode **and** background dense fill (play / hard abort).
-    pub(super) fn cancel_ops_and_scrub_fill(&self) {
+    /// Cancel decode **and** background dense fill (play / hard abort / drag).
+    pub fn cancel_ops_and_scrub_fill(&self) {
         self.cancel_ops();
-        self.abort_scrub_fill(true);
+        // Drag: rearm false so densify cannot adopt under the finger.
+        self.abort_scrub_fill(false);
         self.clear_scrub_direction();
     }
 

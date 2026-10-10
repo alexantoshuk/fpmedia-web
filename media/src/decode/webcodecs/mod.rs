@@ -18,7 +18,6 @@ mod core;
 mod pump;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -31,8 +30,8 @@ use crate::policy::{GopProfile, PlayPolicy};
 use crate::types::{FrameId, VideoMetadata};
 
 use self::core::{
-    DecoderConfig, DecoderCore, HwAccel, PruneFloorGuard, PruneInterim, REORDER_FEED_SLACK,
-    ensure_webcodecs_available,
+    DecoderConfig, DecoderCore, HwAccel, PruneFloorGuard, PruneInterim, PtsToFrameIds,
+    REORDER_FEED_SLACK, ensure_webcodecs_available, pts_map_push,
 };
 use self::pump::{
     FramePump, LivePump, PumpPlayCursor, PumpSignals, PumpStopGuard, await_outputs_if_pending,
@@ -307,14 +306,15 @@ impl WebCodecsDecoder {
             ticks_to_micros(entry.composition_timestamp_ticks, entry.timescale)
         };
         let gop_ids = track.index().gop_frame_ids(key_id).unwrap_or_default();
-        let mut pts_to_id: HashMap<i64, FrameId> = HashMap::with_capacity(gop_ids.len());
+        let mut pts_to_id = PtsToFrameIds::with_capacity(gop_ids.len());
         {
             let index = track.index();
             for id in &gop_ids {
                 let e = index
                     .get(*id)
                     .ok_or(MediaError::FrameOutOfRange(*id, track.frame_count()))?;
-                pts_to_id.insert(
+                pts_map_push(
+                    &mut pts_to_id,
                     ticks_to_micros(e.composition_timestamp_ticks, e.timescale),
                     *id,
                 );
@@ -928,14 +928,15 @@ impl WebCodecsDecoder {
                 .ok_or(MediaError::FrameOutOfRange(key_frame, track.frame_count()))?;
             (key_do, gop_ids)
         };
-        let mut pts_to_id: HashMap<i64, FrameId> = HashMap::with_capacity(gop_ids.len());
+        let mut pts_to_id = PtsToFrameIds::with_capacity(gop_ids.len());
         {
             let index = track.index();
             for id in &gop_ids {
                 let e = index
                     .get(*id)
                     .ok_or(MediaError::FrameOutOfRange(*id, track.frame_count()))?;
-                pts_to_id.insert(
+                pts_map_push(
+                    &mut pts_to_id,
                     ticks_to_micros(e.composition_timestamp_ticks, e.timescale),
                     *id,
                 );
@@ -1021,16 +1022,15 @@ impl WebCodecsDecoder {
             }
             let _ = JsFuture::from(sleep_promise_ms(0)).await;
         }
-        let pending = {
-            let c = core.borrow();
-            !c.input_timestamps.is_empty() || c.decode_queue_size() > 0
-        };
-        if pending {
-            // Settle abort must not wait out a 2s flush while exact owns HW.
-            if is_cancelled() {
-                return self.abort_gop_partial();
-            }
-            let _ = flush_with_timeout(&core).await;
+        // Always flush at GOP end — pending-only gate missed held B-frames when
+        // `decode_queue_size==0` and `input_timestamps` already drained.
+        // mediabunny: `await decoder.flush()` after packets exhaust. (PreferSoftware
+        // may still omit one presentation id; densify skip-bridge / ban-key handles that.)
+        if is_cancelled() {
+            return self.abort_gop_partial();
+        }
+        let _ = flush_with_timeout(&core).await;
+        {
             let mut c = core.borrow_mut();
             c.collect_outputs_into_held()?;
             c.flush_held_into_gop(on_frame, &mut pts_to_id);

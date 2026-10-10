@@ -18,7 +18,7 @@ use super::scrub_cold::{
     exact_scrub_ready, schedule_fetchmap_gap_fill, scrub_gop_bytes_warm, soft_cold_scrub_settle,
     try_resolve_pending_cold_exact, warm_scrub_gop_bytes,
 };
-use super::scrub_gap::{gop_sample_lead, next_gap_target, playhead_and_last};
+use super::scrub_gap::{gop_sample_lead, next_gap_target, next_gap_unbanned, playhead_and_last};
 use super::{
     PLAY_EXACT_VRAM_VF_SLACK, Shared, VideoPlayer, next_animation_frame, now_ms, sleep_ms,
     yield_microtask,
@@ -518,6 +518,7 @@ impl VideoPlayer {
             || self.is_playing()
             || !self.scrub_policy().densify
             || self.shared.scrub_densify_blocked.get()
+            || self.shared.scrub_gesture.get()
         {
             return;
         }
@@ -534,6 +535,7 @@ impl VideoPlayer {
             || self.is_playing()
             || !self.scrub_policy().densify
             || self.shared.scrub_densify_blocked.get()
+            || self.shared.scrub_gesture.get()
             || self.shared.engine.get().holds_exact()
         {
             if !self.shared.is_disposed() && self.shared.engine.get().holds_exact() {
@@ -555,6 +557,9 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
     let mut scrub_epoch = shared.scrub_epoch.get();
     let result = async {
         let mut idle_passes = 0u8;
+        // Keys that PreferSoftware densify finished with zero new residency —
+        // keep seeking other gaps instead of hammering the same GOP forever.
+        let mut banned_keys: std::collections::HashSet<FrameId> = std::collections::HashSet::new();
         loop {
             // Clip switch: exit permanently (do not adopt scrub_epoch like pause abort).
             if shared.is_disposed() {
@@ -564,6 +569,9 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                 || shared.playing.get()
                 || !shared.track.metadata_ref().scrub_policy().densify
                 || shared.scrub_densify_blocked.get()
+                // Drag owns the pointer — PreferSoftware densify under finger
+                // both lags the bar and steals Pause/settle progress.
+                || shared.scrub_gesture.get()
             {
                 return Ok(());
             }
@@ -592,98 +600,79 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             }
 
             apply_clip_budgets(&shared);
-            let Some(target) = next_gap_target(&shared) else {
-                // Pending kick may have been set while we were at a momentary full state.
-                if shared.densify.is_pending() {
-                    shared.densify.clear_pending();
-                    idle_passes = 0;
-                    sleep_ms(0).await;
-                    continue;
-                }
-                // Green saturated — gray is a separate task (must not hold `scrub_busy`).
+            let Some(target) = next_gap_unbanned(&shared, &banned_keys) else {
+                // Honest stop — do not clear-pending/`continue` spin.
+                shared.densify.clear_pending();
                 schedule_fetchmap_gap_fill(&shared);
                 return Ok(());
             };
 
-            // Cold open / URL: do not densify-decode until the GOP's sample bytes
-            // are resident (FetchMap) and the frame is indexed. Otherwise soft-drag
-            // right after open stamps Ranges + decode + ImageBitmap and freezes the
-            // tab. Prefetch / mfra backfill run; densify retries next pass.
-            // Local invention (mediabunny has no densify plane).
+            // Cold open / URL: wait for GOP bytes + index (local densify plane).
             let key = shared
                 .track
                 .index()
                 .nearest_keyframe(target)
                 .unwrap_or(target);
-            // Always kick prefetch: Blob cold-gate skips FetchMap for decode but
-            // gray advances only via `note_local_gray` on prefetch; URL no-ops
-            // when the GOP is already covered.
             warm_scrub_gop_bytes(&shared, key);
             if !scrub_gop_bytes_warm(&shared, key) {
-                idle_passes = 0;
+                // Bound cold waits — empty GOP / unindexed key used to rAF-spin
+                // forever with `scrub_busy` and a frozen strip.
+                idle_passes = idle_passes.saturating_add(1);
+                if idle_passes >= 30 {
+                    shared
+                        .fill_stalled_aim
+                        .set(Some(playhead_and_last(&shared).0));
+                    schedule_fetchmap_gap_fill(&shared);
+                    return Ok(());
+                }
                 next_animation_frame().await;
                 continue;
             }
-            // Soft cold settle: GOP bytes arrived — paint Exact blit if densify
-            // already has the aim (or after the fill below).
             try_resolve_pending_cold_exact(&shared);
 
             match fill_one_gap(Rc::clone(&shared), target, scrub_epoch).await {
-                Ok(made_progress) => {
-                    idle_passes = if made_progress {
-                        0
-                    } else {
-                        idle_passes.saturating_add(1)
-                    };
-                    // No progress repeatedly (oversized GOP / budget) — fall through
-                    // to gray hole fill instead of exiting with frozen FetchMap gaps.
-                    if idle_passes >= 3 {
-                        shared
-                            .fill_stalled_aim
-                            .set(Some(playhead_and_last(&shared).0));
+                Ok(true) => {
+                    idle_passes = 0;
+                    try_resolve_pending_cold_exact(&shared);
+                    // One rAF between GOPs — Chrome VRAM flash under densify burst.
+                    // mediabunny: CanvasSink poolSize stays tiny; local yield only.
+                    next_animation_frame().await;
+                }
+                Ok(false) => {
+                    // PreferSoftware Exact hole / refuse-at-cap — ban key and
+                    // pick another gap (no idle≥3 + fill_stalled second loop).
+                    banned_keys.insert(key);
+                    if next_gap_unbanned(&shared, &banned_keys).is_none() {
+                        shared.densify.clear_pending();
                         schedule_fetchmap_gap_fill(&shared);
                         return Ok(());
                     }
-                    if made_progress {
-                        try_resolve_pending_cold_exact(&shared);
-                        // One display frame after a GOP of VF→ImageBitmap so the
-                        // GPU process can reclaim before the next burst (Chrome
-                        // whole-window black flash under densify VRAM pressure).
-                        // Keep Exact blit at viewport size — do not shrink the window.
-                        // mediabunny: CanvasSink poolSize stays tiny; no equivalent
-                        // pacing — local yield only (`sleep_ms(0)` was too short).
-                        next_animation_frame().await;
-                    } else {
-                        // Macrotask so paused rAF can refresh the ready strip.
-                        sleep_ms(0).await;
-                    }
+                    sleep_ms(0).await;
                 }
                 Err(MediaError::Cancelled) => {
-                    // Settle/seek hold — exit so scrub HW yields immediately
-                    // (do not spin/sleep; was competing with exact after long drag).
                     if shared.engine.get().holds_exact() {
                         shared.densify.latch_pending();
                         return Ok(());
                     }
-                    // Play / abort(false): do not adopt — clear busy for PlayPrime.
                     if shared.engine.get().is_play()
                         || shared.playing.get()
                         || !shared.densify.is_pending()
                     {
                         return Ok(());
                     }
-                    // scrub_epoch bump with rearm — adopt and keep densifying.
                     idle_passes = 0;
                     sleep_ms(0).await;
                 }
                 Err(_) => {
-                    // Transient WebCodecs fault — keep densifying (do not kill the task).
+                    // Transient WebCodecs fault — retry a few times, then ban key.
                     idle_passes = idle_passes.saturating_add(1);
                     if idle_passes >= 3 {
-                        shared
-                            .fill_stalled_aim
-                            .set(Some(playhead_and_last(&shared).0));
-                        return Ok(());
+                        banned_keys.insert(key);
+                        idle_passes = 0;
+                        if next_gap_unbanned(&shared, &banned_keys).is_none() {
+                            schedule_fetchmap_gap_fill(&shared);
+                            return Ok(());
+                        }
                     }
                     sleep_ms(0).await;
                 }
@@ -708,7 +697,8 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
     let want_again = was_pending
         && shared.engine.get().allows_densify()
         && !shared.playing.get()
-        && next_gap_target(&shared).is_some();
+        && !shared.scrub_gesture.get()
+        && next_gap_target(&shared).is_some(); // banned set dies with the task
 
     if want_again {
         shared.densify.begin();
@@ -842,6 +832,7 @@ pub(super) async fn fill_one_gap(
         return Err(MediaError::Cancelled);
     }
     {
+        let aim = playhead_and_last(&shared).0;
         let index = shared.track.index().clone();
         let ids = index.gop_frame_ids(key).unwrap_or_default();
         // Skip only when markers **and** live blit cover the GOP. Markers alone
@@ -849,8 +840,20 @@ pub(super) async fn fill_one_gap(
         let cache = shared.scrub_chunks.borrow();
         let blit = shared.scrub_blit.borrow();
         let blit_complete = !ids.is_empty() && ids.iter().all(|id| blit.contains(*id));
-        if !ids.is_empty() && cache.gop_complete(&ids) && cache.has_frame(target) && blit_complete {
-            return Ok(true);
+        // Markers already solid for this GOP: skip re-decode when Exact is also
+        // complete, or when every missing blit slot would be refused at cap
+        // (would only shred a closer resident — same gate as `ScrubBlitLru::put`).
+        if !ids.is_empty() && cache.gop_complete(&ids) && cache.has_frame(target) {
+            if blit_complete {
+                return Ok(false);
+            }
+            let refuse_all_missing = ids.iter().all(|&id| {
+                blit.contains(id)
+                    || (blit.len() >= blit.max() && blit.would_evict_closer_than(id, aim))
+            });
+            if refuse_all_missing {
+                return Ok(false);
+            }
         }
     }
 
@@ -884,12 +887,21 @@ pub(super) async fn fill_one_gap(
 
     // Stream densify markers + blit as each remapped frame emerges so the ready
     // strip paints per-frame (not one tick-burst after the whole GOP).
-    // Progress ≠ frame_count growth: at capacity, evict+insert keeps len stable.
+    // Progress = new residency only (marker or Exact key). Refreshing an
+    // already-resident blit after Play wipe must not reset `idle_passes` or
+    // densify busy-spins PreferSoftware re-decode of the same island forever.
     let shared_for_cache = Rc::clone(&shared);
     let newly = std::rc::Rc::new(std::cell::Cell::new(0u32));
     let newly_cb = Rc::clone(&newly);
+    let outputs = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let outputs_cb = Rc::clone(&outputs);
     let mut on_frame = move |id: FrameId, video: OwnedVideoFrame| {
-        if ingest_scrub_frame_shared(&shared_for_cache, id, video, false) {
+        outputs_cb.set(outputs_cb.get().saturating_add(1));
+        let had_marker = shared_for_cache.scrub_chunks.borrow().has_frame(id);
+        let had_blit = shared_for_cache.scrub_blit.borrow().contains(id);
+        if ingest_scrub_frame_shared(&shared_for_cache, id, video, false)
+            && (!had_marker || !had_blit)
+        {
             newly_cb.set(newly_cb.get().saturating_add(1));
         }
     };
@@ -898,17 +910,41 @@ pub(super) async fn fill_one_gap(
         .await;
     match decoded {
         Ok(()) => {
-            if shared.is_disposed() {
+            // Progress = new ingest only. `has_frame(target)` alone was true for
+            // marker-complete GOPs that Exact refused at blit cap — densify
+            // treated every PreferSoftware re-decode as progress, reset
+            // `idle_passes`, and left `scrub_busy` for minutes with a frozen strip.
+            let n = newly.get();
+            let outs = outputs.get();
+            if n == 0 {
+                let has_marker = shared
+                    .scrub_chunks
+                    .try_borrow()
+                    .map(|c| c.has_frame(target))
+                    .unwrap_or(false);
+                // Skip-bridge: PreferSoftware often omits one presentation id
+                // (`outputs == gop_len - 1`). Insert Covered without Exact so
+                // gap-pick can advance; Exact-only miss → Ok(false) → ban key.
+                // Local densify plane (mediabunny: no equivalent).
+                let bridged = if outs > 0 && !has_marker {
+                    if let Ok(mut cache) = shared.scrub_chunks.try_borrow_mut() {
+                        cache.insert_chunk(target, ScrubChunk)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                let _ = decoder.reset();
                 drop(decoder);
+                Ok(bridged)
+            } else if shared.is_disposed() {
+                drop(decoder);
+                Ok(true)
             } else {
                 *shared.scrub_decoder.borrow_mut() = Some(decoder);
+                Ok(true)
             }
-            let got_target = shared
-                .scrub_chunks
-                .try_borrow()
-                .map(|c| c.has_frame(target))
-                .unwrap_or(false);
-            Ok(newly.get() > 0 || got_target)
         }
         Err(MediaError::Cancelled) => {
             let _ = decoder.reset();

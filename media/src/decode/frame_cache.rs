@@ -59,6 +59,19 @@ impl ScrubBlitLru {
         self.window.contains(frame)
     }
 
+    pub fn len(&self) -> usize {
+        self.window.len()
+    }
+
+    pub fn max(&self) -> usize {
+        self.window.max()
+    }
+
+    /// Same refuse gate as [`Self::put`] at capacity (no bitmap alloc).
+    pub fn would_evict_closer_than(&self, frame: FrameId, from: FrameId) -> bool {
+        self.window.would_evict_closer_than(frame, from)
+    }
+
     /// Closest live Exact blit to `target` (floor/ceil by `|id − target|`).
     pub fn nearest_frame(&self, target: FrameId) -> Option<FrameId> {
         self.window.nearest(target)

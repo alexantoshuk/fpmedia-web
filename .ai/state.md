@@ -8,9 +8,8 @@
 
 ### Handoff
 
-- **Branch:** `main` (ahead: re_mp4 pin + PCM audio play). PCM hear-ok after `wave/enda` LE fix.
-- **Group 3:** verified earlier (e2e 38 passed after TLS drop).
-- **Play residual:** parked — 1 s `fps_min`≈23 is demo `sync_ui` ~100 ms artifact; use `fps5s` / status fps meter (`skills/media.md`).
+- **Branch:** `main` — Pause densify greens on ChG (ban-key walk, skip-bridge, progress = new residency). Scrub drag kills densify under finger.
+- **Verify after pull:** hard-reload; Pause on ChG — Covered grows past Exact cap; scrub still OK.
 
 ---
 

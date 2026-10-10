@@ -27,8 +27,12 @@ pub struct NextGapDecision {
 /// Pick the next densify gap after blit/marker queries.
 ///
 /// - Clamp to `indexed_last` (fMP4 provisional length may exceed indexed samples).
-/// - Stalled at current playhead → no target (do not clear stall).
+/// - Stalled at current playhead → skip Exact blit retries (they made no
+///   residency progress); still take `marker_gap` so Covered can grow past
+///   the Exact MiB cap. Clear stall when leaving via markers / other aim.
 /// - Blit holes win over marker `no_gaps` (Play trims Exact, keeps markers).
+/// - When Exact blit has no gap (at cap / mid-island), still take `marker_gap`
+///   so Pause densify can grow dim green past the blit window (else busy-stall).
 #[allow(clippy::too_many_arguments)] // pure gap pick: playhead + blit/marker inputs
 pub fn decide_next_gap(
     playhead: FrameId,
@@ -42,28 +46,35 @@ pub fn decide_next_gap(
 ) -> NextGapDecision {
     let last = last.min(indexed_last);
     let playhead = playhead.min(last);
-    if fill_stalled_aim == Some(playhead) {
-        return NextGapDecision {
-            target: None,
-            clear_fill_stalled_aim: false,
-        };
-    }
-    let clear_fill_stalled_aim = fill_stalled_aim.is_some();
+    let stalled_here = fill_stalled_aim == Some(playhead);
+    // Blit-cap / no-progress stall: do not re-hammer Exact holes at this aim.
+    let blit_gap = if stalled_here { None } else { blit_gap };
+    let had_stall = fill_stalled_aim.is_some();
     if let Some(gap) = blit_gap {
         return NextGapDecision {
             target: Some(gap),
-            clear_fill_stalled_aim,
+            clear_fill_stalled_aim: had_stall,
         };
     }
-    if marker_saturated || !marker_armed {
+    if marker_saturated {
         return NextGapDecision {
             target: None,
-            clear_fill_stalled_aim,
+            // Saturated: drop a stale stall so a later aim move can densify again.
+            clear_fill_stalled_aim: had_stall,
+        };
+    }
+    // Exact blit idle (or stalled-skip): accept an outside marker gap even when
+    // mid-island `!armed` (armed gate is for joint blit+marker edge thrash).
+    if marker_armed || marker_gap.is_some() {
+        return NextGapDecision {
+            target: marker_gap,
+            // Expanding Covered past Exact cap — clear blit stall latch.
+            clear_fill_stalled_aim: had_stall,
         };
     }
     NextGapDecision {
-        target: marker_gap,
-        clear_fill_stalled_aim,
+        target: None,
+        clear_fill_stalled_aim: false,
     }
 }
 
@@ -102,8 +113,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stalled_at_playhead_blocks_without_clear() {
+    fn stalled_at_playhead_skips_blit_takes_marker() {
+        // Exact-cap idle stall must not freeze Covered — skip blit, grow markers.
         let d = decide_next_gap(10, 100, 100, Some(10), Some(12), false, true, Some(14));
+        assert_eq!(
+            d,
+            NextGapDecision {
+                target: Some(14),
+                clear_fill_stalled_aim: true
+            }
+        );
+    }
+
+    #[test]
+    fn stalled_at_playhead_no_marker_stops() {
+        let d = decide_next_gap(10, 100, 100, Some(10), Some(12), false, false, None);
         assert_eq!(
             d,
             NextGapDecision {
@@ -135,9 +159,10 @@ mod tests {
     }
 
     #[test]
-    fn marker_disarmed_yields_none() {
+    fn marker_gap_when_blit_idle_even_if_disarmed() {
+        // Pause densify: Exact at cap → blit_gap None; still grow Covered.
         let d = decide_next_gap(10, 100, 100, None, None, false, false, Some(14));
-        assert_eq!(d.target, None);
+        assert_eq!(d.target, Some(14));
     }
 
     #[test]

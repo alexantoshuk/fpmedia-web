@@ -207,7 +207,8 @@ fn enqueue_scrub_drag(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, frame: u32) {
         return;
     };
     p.clear_densify_hold();
-    p.cancel_ops();
+    // Kill densify under the finger (cancel_ops alone left fill running).
+    p.cancel_ops_and_scrub_fill();
     p.note_scrub_frame(u64::from(frame));
     if ctx.queue.enqueue(HostOp::ScrubDrag(frame)) {
         kick_drain();

@@ -5,7 +5,6 @@
 //! held across `.await` (`.ai/skills/media.md`).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use wasm_bindgen::JsValue;
@@ -473,7 +472,7 @@ pub(super) async fn feed_sample_gop(
     core: &Rc<RefCell<DecoderCore>>,
     sample: &EncodedSample,
     force_key: bool,
-    pts_to_id: &mut HashMap<i64, FrameId>,
+    pts_to_id: &mut super::core::PtsToFrameIds,
     on_frame: &mut dyn FnMut(FrameId, OwnedVideoFrame),
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), MediaError> {

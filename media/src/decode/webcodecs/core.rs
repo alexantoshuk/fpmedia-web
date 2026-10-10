@@ -5,7 +5,7 @@
 //! a `Closure` call (`.ai/skills/media.md`).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use js_sys::Uint8Array;
@@ -187,9 +187,34 @@ pub(super) struct HeldFrame {
 
 /// GOP densify drain target: PTS→id map plus the consumer callback.
 pub(super) type GopSink<'a> = (
-    &'a mut HashMap<i64, FrameId>,
+    &'a mut PtsToFrameIds,
     &'a mut dyn FnMut(FrameId, OwnedVideoFrame),
 );
+
+/// Decoder output PTS → one or more presentation [`FrameId`]s.
+///
+/// Duplicate composition timestamps in a GOP must not overwrite (HashMap
+/// single-value insert dropped 1/N densify frames: gop_len=33 outputs=32).
+/// `mediabunny: src/media-sink.ts` `inputTimestamps.shift()` — FIFO per stamp.
+pub(super) type PtsToFrameIds = HashMap<i64, VecDeque<FrameId>>;
+
+pub(super) fn pts_map_push(map: &mut PtsToFrameIds, pts_us: i64, id: FrameId) {
+    map.entry(pts_us).or_default().push_back(id);
+}
+
+pub(super) fn pts_map_take(map: &mut PtsToFrameIds, pts_us: i64) -> Option<FrameId> {
+    let pop = |map: &mut PtsToFrameIds, key: i64| -> Option<FrameId> {
+        let q = map.get_mut(&key)?;
+        let id = q.pop_front()?;
+        if q.is_empty() {
+            map.remove(&key);
+        }
+        Some(id)
+    };
+    pop(map, pts_us)
+        .or_else(|| pop(map, pts_us.saturating_sub(1)))
+        .or_else(|| pop(map, pts_us.saturating_add(1)))
+}
 
 /// Hands pruned PTS `< target` frames to the host instead of closing them.
 ///
@@ -201,7 +226,7 @@ pub(super) type GopSink<'a> = (
 /// farther ones are closed so the VideoFrame pool stays drained (mediabunny closes
 /// early samples in the output callback).
 pub(super) struct PruneInterim {
-    pub(super) pts_to_id: HashMap<i64, FrameId>,
+    pub(super) pts_to_id: PtsToFrameIds,
     pub(super) target_us: i64,
     pub(super) on_frame: Box<dyn FnMut(FrameId, OwnedVideoFrame)>,
 }
@@ -634,7 +659,7 @@ impl DecoderCore {
         if let Some(interim) = slot.as_mut() {
             let behind = interim.target_us.saturating_sub(pts_us);
             if behind <= INTERIM_SALVAGE_MAX_BEHIND_US
-                && let Some(id) = interim.pts_to_id.remove(&pts_us)
+                && let Some(id) = pts_map_take(&mut interim.pts_to_id, pts_us)
             {
                 (interim.on_frame)(id, frame);
                 return;
@@ -648,13 +673,13 @@ impl DecoderCore {
     pub(super) fn flush_held_into_gop(
         &mut self,
         on_frame: &mut dyn FnMut(FrameId, OwnedVideoFrame),
-        pts_to_id: &mut HashMap<i64, FrameId>,
+        pts_to_id: &mut PtsToFrameIds,
     ) {
         if self.held.is_empty() {
             return;
         }
         for h in self.held.drain(..) {
-            if let Some(id) = pts_to_id.remove(&h.pts_us) {
+            if let Some(id) = pts_map_take(pts_to_id, h.pts_us) {
                 on_frame(id, h.frame);
             } else {
                 drop(h.frame);
