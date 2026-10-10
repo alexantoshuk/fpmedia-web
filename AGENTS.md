@@ -160,12 +160,12 @@ Do **not** only “append to `media.md`” without choosing a canonical slot.
 ### State hygiene
 
 - `state.md` = **In progress** + **Next up** (+ optional **Later**). Never **Done**.
-- Finished work: delete the bullet (durable knowledge → skill/product/architecture).
+- Finished work: delete the bullet (durable knowledge → skill/product/architecture). On commit: see **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — state drop must ship in the same commit as the feature.
 - Keep Next up actionable and short; no session narrative; no paste of skill gotchas.
 - Handoff claims must not contradict `architecture.md` / skills — if they disagree, fix the canonical home.
 - **Chat handoff (hard):** when the user signals a move to another chat / session (e.g. «переходим в другой чат», «handoff», «new chat»), **refresh `.ai/state.md` before wrapping up** — accurate Handoff + Next up (what landed, what is unverified, what is still open). If skills were touched this session, **trim** obsolete/superseded skill lines in the same wrap-up. Do not leave a stale matrix or “re-verify” that already passed without saying so.
 
-**Before commit / PR push:** follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** (format, Clippy, checks, tests, size). Include `.ai/` when architecture, player UI, or a skill-worthy fix changed — and keep that `.ai/` diff compliant with the write gate (no duplicate essays).
+**Before commit / PR push:** follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** (format, Clippy, checks, tests, size, state-with-feature). Include `.ai/` when architecture, player UI, or a skill-worthy fix changed — and keep that `.ai/` diff compliant with the write gate (no duplicate essays).
 
 **End of session / chat handoff:** refresh `state.md` (drop finished items; update Handoff); trim skill triage + gotchas if any (do not grow skills “for the log”).
 

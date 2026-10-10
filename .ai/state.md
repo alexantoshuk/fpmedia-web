@@ -8,17 +8,15 @@
 
 ### Handoff
 
-- **Branch:** `main` — densify hole-fill; soft-drag Exact preview; Exact orphan farthest-evict every densify tick (not near-gap-idle gated).
-- **Verify:** rebuild WASM + hard-reload ChG — under-cap soft-drag + Pause: Exact 1 px past holes drop; scrub warm trail OK.
+- **Branch:** `main` (ahead of origin) — densify hole-fill + Exact orphan farthest-evict on densify ticks; soft-drag Exact preview kept.
+- **Verified (ChG):** Pause drops Exact 1 px past holes; scrub warm trail intact.
 - **Do not:** prune Exact on every drag `set_playhead`; soft-drag preview from Covered nearest.
 
 ---
 
 ## Next up
 
-- Strip UX (Pause densify OK; scrub must stay intact):
-  - Covered / Exact strip **1–2 px** flicker / snap noise on long clips.
-  - **Dim green** can lag behind scrub feel (Covered paint slower than pointer / blit) — often scrub Exact trail vs Pause PreferSoftware densify, not a paint bug; Pause densify speed not priority.
+_(empty — strip densify / Exact-orphan UX closed; pick from Later or a new symptom)_
 
 ---
 
