@@ -47,9 +47,20 @@ impl ScrubBlitLru {
     }
 
     pub fn set_playhead(&mut self, playhead: FrameId) {
-        // Aim only. Do not prune far Exact here or on settle — those bitmaps are
-        // the soft-drag warm-blit trail; cap eviction on `put` already bounds VRAM.
+        // Aim only — never prune here (soft-drag samples this every move).
         self.window.set_aim(playhead);
+    }
+
+    /// Farthest-from-aim eviction without a `put` (densify Covered-only / under-cap).
+    ///
+    /// Radius = blit cap in frames. Call from Pause densify every tick — not only
+    /// when Exact near-gap is None (soft-drag holes kept the idle gate from firing).
+    /// Not on drag `set_playhead`. Local (`mediabunny:` aim-sized pool).
+    pub fn evict_far_from_aim_when_idle(&mut self) {
+        let radius = self.window.max() as u64;
+        for (_, bmp) in self.window.take_farther_than(radius) {
+            bmp.close();
+        }
     }
 
     /// Frames with a live `ImageBitmap` (demo Exact strip / step-ready).

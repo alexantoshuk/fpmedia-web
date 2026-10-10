@@ -8,9 +8,9 @@
 
 ### Handoff
 
-- **Branch:** `main` — densify/strip fixes; soft-drag preview from Exact blit; Exact far-prune reverted (killed scrub warm trail).
-- **Verify:** rebuild WASM + hard-reload ChG — drag canvas responsive again; Covered fills; Exact 1 px trail ticks accepted (warm blit).
-- **Do not:** prune Exact on aim/settle (scrub regress); soft-drag preview from Covered nearest.
+- **Branch:** `main` — densify hole-fill; soft-drag Exact preview; Exact orphan farthest-evict every densify tick (not near-gap-idle gated).
+- **Verify:** rebuild WASM + hard-reload ChG — under-cap soft-drag + Pause: Exact 1 px past holes drop; scrub warm trail OK.
+- **Do not:** prune Exact on every drag `set_playhead`; soft-drag preview from Covered nearest.
 
 ---
 

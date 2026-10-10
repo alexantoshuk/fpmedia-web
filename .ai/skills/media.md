@@ -31,7 +31,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Gray fill floods drag / stays slow after | `scrub_gesture` + gray pace | drag: 1×quantum / 150 ms; idle: 2× / 16 ms; clear gesture on pipeline + `play` |
 | URL play ~0.6× / first-play lag | `CachedSource` sample miss | return `want` immediately; quantum fill bg |
 | Dense wiped / Next-Prev lag / Pause densify dead | Play trim + densify exit | budgets→park→densify; GOP-wide Covered skip-bridge (`outs>0`); ban only marker-complete GOP (else retry); unbanned walk = full indexed span (not 512); PTS multimap; drag kills densify |
-| Exact 1 px ticks stuck ~hundreds from playhead | Exact blit trail | soft-drag warm blit needs far Exact; pruning on aim/settle killed scrub preview — keep trail, cap eviction on `put` only |
+| Exact 1 px orphan past hole after Pause densify | `evict_exact_orphans_beyond_aim` | farthest-evict every densify tick (not gated on Exact near-gap idle — under-cap soft-drag holes skipped eviction); not on drag `set_playhead` |
 | Loop seam wipe / ~1 s underrun hold | loop_prime / `play_loop_seam` | `ResetForPlay`→HoldScrub across `loop_to_start`; warm-prefetch before resume; keep Covered+Exact; BeginPrepareLoop only |
 | Pause→Play / scrub→Play lag or no-op | seed + `ScrubRelease{then_play}` | host: `skills/leptos.md`; probes gray-first / cold-resume / stress |
 | Sticky error after Ok settle | `host_ops` clear error on Ok | `e2e/player.scrub.sticky-error.spec.ts` |

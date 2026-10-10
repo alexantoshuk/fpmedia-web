@@ -605,8 +605,14 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             }
 
             apply_clip_budgets(&shared);
+            // Farthest-evict every densify tick — do not wait for Exact near-gap
+            // None. Soft-drag trail often has holes (under blit cap), so the old
+            // idle gate left orphans past a hole forever; Covered-only puts never
+            // trigger Exact `put` eviction either. Drag densify is off.
+            evict_exact_orphans_beyond_aim(&shared);
             let Some(target) = next_gap_unbanned(&shared, &banned_keys) else {
                 // Honest stop — do not clear-pending/`continue` spin.
+                evict_exact_orphans_beyond_aim(&shared);
                 shared.densify.clear_pending();
                 schedule_fetchmap_gap_fill(&shared);
                 return Ok(());
@@ -661,6 +667,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                         }
                     }
                     if next_gap_unbanned(&shared, &banned_keys).is_none() {
+                        evict_exact_orphans_beyond_aim(&shared);
                         shared.densify.clear_pending();
                         schedule_fetchmap_gap_fill(&shared);
                         return Ok(());
@@ -688,6 +695,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                         banned_keys.insert(key);
                         idle_passes = 0;
                         if next_gap_unbanned(&shared, &banned_keys).is_none() {
+                            evict_exact_orphans_beyond_aim(&shared);
                             schedule_fetchmap_gap_fill(&shared);
                             return Ok(());
                         }
@@ -731,6 +739,24 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
         });
     }
     result
+}
+
+/// Drop Exact bitmaps farther from aim than the blit cap radius.
+///
+/// Same farthest-from-aim rule as `put`, without waiting for a put or for Exact
+/// near-gap to go idle (under-cap soft-drag trails keep near holes).
+fn evict_exact_orphans_beyond_aim(shared: &Shared) {
+    if shared.scrub_gesture.get() {
+        return;
+    }
+    let (playhead, last) = playhead_and_last(shared);
+    let indexed_last = shared.track.indexed_frame_count().saturating_sub(1);
+    let playhead = playhead.min(last.min(indexed_last));
+    let Ok(mut blit) = shared.scrub_blit.try_borrow_mut() else {
+        return;
+    };
+    blit.set_playhead(playhead);
+    blit.evict_far_from_aim_when_idle();
 }
 
 pub(super) fn apply_clip_budgets(shared: &Shared) {

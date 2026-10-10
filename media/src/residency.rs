@@ -70,6 +70,25 @@ impl<V> AimWindow<V> {
         self.aim = aim;
     }
 
+    /// Evict residents farther from aim than `radius` (inclusive keep).
+    ///
+    /// Used when the Exact plane is locally idle (no near gap / no `put`) so
+    /// farthest-from-aim still runs — otherwise Covered-only densify leaves
+    /// orphan bitmaps past a hole on the strip.
+    pub fn take_farther_than(&mut self, radius: u64) -> Vec<(FrameId, V)> {
+        let mut out = Vec::new();
+        while let Some(far) = self.farthest_evictable(None) {
+            if far.abs_diff(self.aim) <= radius {
+                break;
+            }
+            let Some(v) = self.items.remove(&far) else {
+                break;
+            };
+            out.push((far, v));
+        }
+        out
+    }
+
     pub fn contains(&self, frame: FrameId) -> bool {
         self.items.contains_key(&frame)
     }
@@ -683,6 +702,21 @@ mod tests {
     fn blit_next_gap_when_empty_returns_playhead() {
         let w: AimWindow<()> = AimWindow::new(8);
         assert_eq!(w.capped_next_gap(12, 100, 0, 10, 5), Some(12));
+    }
+
+    #[test]
+    fn take_farther_than_drops_orphans_past_hole() {
+        // Long Exact island at aim + orphan past a gap — densify Covered-only
+        // never Exact-puts, so farthest eviction must still drop the orphan.
+        let mut w = window_with(8, 1000, &[995, 996, 997, 998, 999, 1000, 1001, 1400]);
+        let dropped: Vec<_> = w
+            .take_farther_than(8)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(dropped, vec![1400]);
+        assert!(w.contains(1000) && w.contains(995));
+        assert!(!w.contains(1400));
     }
 
     #[test]
