@@ -47,6 +47,8 @@ impl ScrubBlitLru {
     }
 
     pub fn set_playhead(&mut self, playhead: FrameId) {
+        // Aim only. Do not prune far Exact here or on settle — those bitmaps are
+        // the soft-drag warm-blit trail; cap eviction on `put` already bounds VRAM.
         self.window.set_aim(playhead);
     }
 

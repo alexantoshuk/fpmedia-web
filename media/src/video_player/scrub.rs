@@ -7,6 +7,7 @@ use crate::decode::scrub_blit::draw_image_bitmap;
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::error::MediaError;
 use crate::model::engine_mode::EngineEvent;
+use crate::policy::scrub_plan::densify_skip_bridge_ids;
 use crate::policy::{
     GopProfile, ScrubPolicy, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
     scrub_blit_frame_budget,
@@ -451,13 +452,17 @@ impl VideoPlayer {
         self.enter_scrub_cache_pipeline(focus);
     }
 
-    /// Best interim canvas frame while exact `target` is missing from dense cache.
+    /// Best interim canvas frame while exact `target` is missing from Exact blit.
     ///
-    /// Prefer a cached neighbor when `|cached − target| ≤ |key − target|` (tie →
-    /// cache: already decoded, no key jump). Otherwise the nearest sync key.
+    /// Warm blit needs a live `ImageBitmap` — pick among Exact residents only.
+    /// Covered markers are gap geometry / strip; using them here chose ids with
+    /// no bitmap → silent no-op during soft-drag (worse after dense Covered +
+    /// Exact orphan prune). Prefer nearer Exact; else nearest sync **if** it
+    /// still has an Exact bitmap.
     pub(super) fn scrub_preview_frame(&self, target: FrameId) -> Option<FrameId> {
-        let key = self.key_for(target);
-        let cached = self.shared.scrub_chunks.borrow().nearest_frame(target);
+        let blit = self.shared.scrub_blit.borrow();
+        let cached = blit.nearest_frame(target);
+        let key = self.key_for(target).filter(|&k| blit.contains(k));
         crate::scrub_preview_choice(target, key, cached)
     }
 
@@ -639,9 +644,22 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                     next_animation_frame().await;
                 }
                 Ok(false) => {
-                    // PreferSoftware Exact hole / refuse-at-cap — ban key and
-                    // pick another gap (no idle≥3 + fill_stalled second loop).
-                    banned_keys.insert(key);
+                    // Exact refuse / empty decode. Ban only when Covered GOP is
+                    // already solid — otherwise retry (bridge may need another
+                    // pass) then soft-skip after idle so we do not abandon holes.
+                    let markers_done = {
+                        let ids = shared.track.index().gop_frame_ids(key).unwrap_or_default();
+                        shared.scrub_chunks.borrow().gop_complete(&ids)
+                    };
+                    if markers_done {
+                        banned_keys.insert(key);
+                    } else {
+                        idle_passes = idle_passes.saturating_add(1);
+                        if idle_passes >= 3 {
+                            banned_keys.insert(key);
+                            idle_passes = 0;
+                        }
+                    }
                     if next_gap_unbanned(&shared, &banned_keys).is_none() {
                         shared.densify.clear_pending();
                         schedule_fetchmap_gap_fill(&shared);
@@ -664,7 +682,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                     sleep_ms(0).await;
                 }
                 Err(_) => {
-                    // Transient WebCodecs fault — retry a few times, then ban key.
+                    // Transient WebCodecs fault — retry a few times, then skip key.
                     idle_passes = idle_passes.saturating_add(1);
                     if idle_passes >= 3 {
                         banned_keys.insert(key);
@@ -910,34 +928,36 @@ pub(super) async fn fill_one_gap(
         .await;
     match decoded {
         Ok(()) => {
-            // Progress = new ingest only. `has_frame(target)` alone was true for
-            // marker-complete GOPs that Exact refused at blit cap — densify
-            // treated every PreferSoftware re-decode as progress, reset
-            // `idle_passes`, and left `scrub_busy` for minutes with a frozen strip.
+            // Progress = new ingest or Covered skip-bridge. PreferSoftware often
+            // omits presentation ids / partial-fills a GOP — bridge every missing
+            // marker in the GOP (not only `target`) so Pause does not leave
+            // 1 px crumbs and unfilled holes. Local densify (mediabunny: none).
             let n = newly.get();
             let outs = outputs.get();
-            if n == 0 {
-                let has_marker = shared
-                    .scrub_chunks
-                    .try_borrow()
-                    .map(|c| c.has_frame(target))
-                    .unwrap_or(false);
-                // Skip-bridge: PreferSoftware often omits one presentation id
-                // (`outputs == gop_len - 1`). Insert Covered without Exact so
-                // gap-pick can advance; Exact-only miss → Ok(false) → ban key.
-                // Local densify plane (mediabunny: no equivalent).
-                let bridged = if outs > 0 && !has_marker {
-                    if let Ok(mut cache) = shared.scrub_chunks.try_borrow_mut() {
-                        cache.insert_chunk(target, ScrubChunk)
-                    } else {
-                        false
+            let gop_ids = shared.track.index().gop_frame_ids(key).unwrap_or_default();
+            let missing = {
+                let cache = shared.scrub_chunks.borrow();
+                densify_skip_bridge_ids(&gop_ids, |id| cache.has_frame(id))
+            };
+            let mut bridged = 0u32;
+            // Only bridge when decode remapped at least one frame — otherwise
+            // Pause would stamp Covered across GOPs with zero PreferSoftware
+            // output (false “decoded coverage”).
+            if outs > 0
+                && !missing.is_empty()
+                && let Ok(mut cache) = shared.scrub_chunks.try_borrow_mut()
+            {
+                for id in missing {
+                    if cache.insert_chunk(id, ScrubChunk) {
+                        bridged = bridged.saturating_add(1);
                     }
-                } else {
-                    false
-                };
+                }
+            }
+            let made_progress = n > 0 || bridged > 0;
+            if !made_progress {
                 let _ = decoder.reset();
                 drop(decoder);
-                Ok(bridged)
+                Ok(false)
             } else if shared.is_disposed() {
                 drop(decoder);
                 Ok(true)

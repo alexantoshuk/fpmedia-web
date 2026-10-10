@@ -518,6 +518,9 @@ impl ScrubChunkStore {
         self.window.aim()
     }
 
+    /// Nearest Covered marker (strip / gap geometry). Soft-drag preview must use
+    /// Exact [`crate::decode::frame_cache::ScrubBlitLru::nearest_frame`] instead.
+    #[allow(dead_code)] // kept for diagnostics / future marker-aim helpers
     pub fn nearest_frame(&self, target: FrameId) -> Option<FrameId> {
         self.window.nearest(target)
     }

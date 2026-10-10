@@ -93,7 +93,10 @@ pub(super) fn next_gap_unbanned(
     let playhead = playhead.min(last);
     let dir = shared.scrub_dir.get();
     let step: i64 = if dir < 0 { -1 } else { 1 };
-    for dist in 1i64..=512 {
+    // Walk the full indexed span — a 512-frame cap stopped Pause densify on
+    // Long-GOP masters (ChG) after a few banned keys left holes farther away.
+    let max_dist = last.saturating_add(1).max(1) as i64;
+    for dist in 1i64..=max_dist {
         for sign in [step, -step] {
             let delta = dist * sign;
             let cand = if delta >= 0 {

@@ -108,6 +108,22 @@ pub fn next_fetchmap_gap(gaps: &[(u64, u64)], focus_offset: u64) -> Option<(u64,
         })
 }
 
+/// PreferSoftware skip-bridge targets: presentation ids in the GOP still missing
+/// Covered markers (not only the gap `target`). Closing only `target` left ChG
+/// swiss-cheese / 1 px crumbs while Pause densify walked on.
+///
+/// Local densify plane (`mediabunny:` no equivalent).
+pub fn densify_skip_bridge_ids(
+    gop_ids: &[FrameId],
+    has_marker: impl Fn(FrameId) -> bool,
+) -> Vec<FrameId> {
+    gop_ids
+        .iter()
+        .copied()
+        .filter(|&id| !has_marker(id))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +205,15 @@ mod tests {
         assert_eq!(gop_sample_lead_frames(12), 12);
         assert_eq!(gop_sample_lead_frames(4), 8);
         assert_eq!(gop_sample_lead_frames(100), 24);
+    }
+
+    #[test]
+    fn densify_skip_bridge_lists_all_missing_markers() {
+        let gop = [10u64, 11, 12, 13, 14];
+        let resident = [10u64, 12, 14];
+        let missing = densify_skip_bridge_ids(&gop, |id| resident.contains(&id));
+        assert_eq!(missing, vec![11, 13]);
+        assert!(densify_skip_bridge_ids(&gop, |_| true).is_empty());
     }
 
     #[test]

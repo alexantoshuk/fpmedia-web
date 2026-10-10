@@ -8,10 +8,9 @@
 
 ### Handoff
 
-- **Branch:** `main` @ `b3c9392` — Pause densify greens on ChG (ban-key / skip-bridge / PTS multimap; progress = new residency; drag kills densify). Ahead of origin by 1 (not pushed).
-- **Verify:** hard-reload; Pause on ChG — Covered grows past Exact; scrub drag still OK (do not re-land drop_disconnected / extent_span compact — broke cold scrub).
-- **Do not:** re-land green soft-merge / min-px inflate, or invent densify exits that drop consumer-queue samples (`AGENTS.md` Mediabunny-first).
-- **Strip paint:** greens honest (sub-pixel drop, no soft-merge); gray still may inflate ticks.
+- **Branch:** `main` — densify/strip fixes; soft-drag preview from Exact blit; Exact far-prune reverted (killed scrub warm trail).
+- **Verify:** rebuild WASM + hard-reload ChG — drag canvas responsive again; Covered fills; Exact 1 px trail ticks accepted (warm blit).
+- **Do not:** prune Exact on aim/settle (scrub regress); soft-drag preview from Covered nearest.
 
 ---
 
