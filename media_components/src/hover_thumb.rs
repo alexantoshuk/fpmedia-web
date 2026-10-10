@@ -1,4 +1,4 @@
-//! Frame.io-style hover thumb chrome (not part of [`crate::Video`]).
+//! Frame.io-style hover thumb UI (not part of [`crate::Video`]).
 //!
 //! Hosts wire this next to a scrubber track and call [`HoverThumbApi`] from
 //! pointer handlers. Engine paint stays on [`crate::VideoRef`]; this module owns

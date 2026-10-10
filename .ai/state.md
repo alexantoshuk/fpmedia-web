@@ -28,4 +28,4 @@ _(empty — pick from Later or new work)_
 - Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).
 - Switch `re_mp4` from git pin to crates.io when a release includes #35 + #38.
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
-- Tab-hidden `AudioContinue`; pure `<Audio>` / `AudioPlayer` (reuses `webmedia::audio`); thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; publish crates; production chrome.
+- Tab-hidden `AudioContinue`; pure `<Audio>` / `AudioPlayer` (reuses `webmedia::audio`); thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; publish crates; production player UI.

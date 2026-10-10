@@ -17,7 +17,7 @@ export type ReadyFrameMarkJson = {
   kind: "Covered" | "Exact";
 };
 
-/** Parsed `data-testid="pipeline-json"` payload from demo chrome. */
+/** Parsed `data-testid="pipeline-json"` payload from demo player UI. */
 export type PipelineJson = {
   fetch_file_ranges: [number, number][];
   ready_frames: ReadyFrameMarkJson[];

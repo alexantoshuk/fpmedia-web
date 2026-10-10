@@ -274,7 +274,7 @@ impl Default for ThumbPreview {
     }
 }
 
-/// Draw a sized thumb bitmap into `dest` (hover chrome canvas).
+/// Draw a sized thumb bitmap into `dest` (hover-thumb canvas).
 pub fn paint_thumb_canvas(
     dest: &HtmlCanvasElement,
     bitmap: &ImageBitmap,

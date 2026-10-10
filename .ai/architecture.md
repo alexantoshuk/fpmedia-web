@@ -15,14 +15,14 @@
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — demo host (controls) + thin SSR shell |
-| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `strip` (scrubber strip pixel math) + `helpers` (chrome math) + `HoverThumbPreview`. Modules: `video`, `strip`, `helpers`, `hover_thumb` (`video` / `hover_thumb` wasm-only) |
+| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `strip` (scrubber strip pixel math) + `helpers` (host UI math) + `HoverThumbPreview`. Modules: `video`, `strip`, `helpers`, `hover_thumb` (`video` / `hover_thumb` wasm-only) |
 | Media engine | `webmedia` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `media_components/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
 
 ### Leptos UI rules
 
-Long-lived chrome lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Failure modes: `skills/leptos.md`.
+Long-lived host UI lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Failure modes: `skills/leptos.md`.
 
 **Browser APIs in `media_components/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the media crate owns (WebCodecs / `AudioContext`). Media clock is owned by `webmedia` — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
 
@@ -68,7 +68,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Full-stack Rust (Leptos) | One language for engine + UI |
 | CSR SPA | Simple mental model; static shell + WASM mount |
 | Isolated `webmedia` crate | Engine reusable without UI; no Leptos in demux/decode |
-| Isolated `media_components` crate | HTML `<video>` analog; reusable without demo chrome |
+| Isolated `media_components` crate | HTML `<video>` analog; reusable without demo host UI |
 | WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
 | `leptos-use` for browser helpers | Observers/events/rAF in UI crates; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |

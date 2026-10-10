@@ -1,4 +1,4 @@
-//! Shared UI math for media chrome (not engine decode / not keyboard bindings).
+//! Shared UI math for host player controls (not engine decode / not keyboard bindings).
 //!
 //! Scrubber strip pixel runs: [`crate::strip`] (re-exported here).
 

@@ -1,4 +1,4 @@
-//! Demo controls over [`media_components::Video`] — not production chrome.
+//! Demo controls over [`media_components::Video`] — not production player UI.
 
 use leptos::ev;
 use leptos::html::{Canvas, Div, Input};
@@ -98,39 +98,40 @@ pub fn DemoPlayer() -> impl IntoView {
     let url_input = NodeRef::<Input>::new();
     let player_root = NodeRef::<Div>::new();
     let fullscreen = RwSignal::new(false);
-    let chrome_visible = RwSignal::new(true);
-    let over_chrome = RwSignal::new(false);
+    // Fullscreen auto-hide of the control surface (not Google Chrome).
+    let controls_visible = RwSignal::new(true);
+    let over_controls = RwSignal::new(false);
 
-    const CHROME_IDLE_MS: f64 = 2200.0;
+    const CONTROLS_IDLE_MS: f64 = 2200.0;
     let UseTimeoutFnReturn {
-        start: start_chrome_hide,
-        stop: stop_chrome_hide,
+        start: start_controls_hide,
+        stop: stop_controls_hide,
         ..
     } = use_timeout_fn(
         move |_| {
-            if fullscreen.get_untracked() && !over_chrome.get_untracked() {
-                chrome_visible.set(false);
+            if fullscreen.get_untracked() && !over_controls.get_untracked() {
+                controls_visible.set(false);
             }
         },
-        CHROME_IDLE_MS,
+        CONTROLS_IDLE_MS,
     );
 
-    let bump_chrome = {
-        let start_chrome_hide = start_chrome_hide.clone();
-        let stop_chrome_hide = stop_chrome_hide.clone();
+    let bump_controls = {
+        let start_controls_hide = start_controls_hide.clone();
+        let stop_controls_hide = stop_controls_hide.clone();
         move || {
-            chrome_visible.set(true);
-            stop_chrome_hide();
+            controls_visible.set(true);
+            stop_controls_hide();
             if fullscreen.get_untracked() {
-                start_chrome_hide(());
+                start_controls_hide(());
             }
         }
     };
 
     // Keep signal in sync with Esc / browser UI exit.
     let _fs_change = use_event_listener(window(), ev::fullscreenchange, {
-        let bump_chrome = bump_chrome.clone();
-        let stop_chrome_hide = stop_chrome_hide.clone();
+        let bump_controls = bump_controls.clone();
+        let stop_controls_hide = stop_controls_hide.clone();
         move |_| {
             let active = window()
                 .and_then(|w| w.document())
@@ -138,20 +139,20 @@ pub fn DemoPlayer() -> impl IntoView {
                 .is_some();
             fullscreen.set(active);
             if active {
-                bump_chrome();
+                bump_controls();
             } else {
-                stop_chrome_hide();
-                chrome_visible.set(true);
-                over_chrome.set(false);
+                stop_controls_hide();
+                controls_visible.set(true);
+                over_controls.set(false);
             }
         }
     });
 
     let _fs_mousemove = use_event_listener(player_root, ev::mousemove, {
-        let bump_chrome = bump_chrome.clone();
+        let bump_controls = bump_controls.clone();
         move |_| {
             if fullscreen.get_untracked() {
-                bump_chrome();
+                bump_controls();
             }
         }
     });
@@ -230,8 +231,8 @@ pub fn DemoPlayer() -> impl IntoView {
     view! {
         <div
             class=move || {
-                if fullscreen.get() && !chrome_visible.get() {
-                    "wm-player is-chrome-hidden"
+                if fullscreen.get() && !controls_visible.get() {
+                    "wm-player is-controls-hidden"
                 } else {
                     "wm-player"
                 }
@@ -243,17 +244,17 @@ pub fn DemoPlayer() -> impl IntoView {
                 <Video video=video/>
             </div>
             <div
-                class="wm-chrome"
-                data-testid="chrome"
+                class="wm-player-ui"
+                data-testid="player-ui"
                 on:mouseenter=move |_| {
-                    over_chrome.set(true);
-                    chrome_visible.set(true);
-                    stop_chrome_hide();
+                    over_controls.set(true);
+                    controls_visible.set(true);
+                    stop_controls_hide();
                 }
                 on:mouseleave=move |_| {
-                    over_chrome.set(false);
+                    over_controls.set(false);
                     if fullscreen.get_untracked() {
-                        bump_chrome();
+                        bump_controls();
                     }
                 }
             >
@@ -750,7 +751,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     }}
                 </p>
                 // Machine-readable PipelineStats for e2e zone targeting / latency samples.
-                // Hidden; not production chrome.
+                // Hidden; not production player UI.
                 <pre
                     class="wm-pipeline-json"
                     data-testid="pipeline-json"
@@ -768,8 +769,8 @@ pub fn DemoPlayer() -> impl IntoView {
 /// Timeline scrubber — bar follows [`VideoRef::playhead`] (potential frame).
 ///
 /// Transport FSM (`VideoRef::scrub_pointer_*`) owns play↔scrub resume; this
-/// chrome only maps pointer events and keeps the bar in sync with the cursor.
-/// Hover thumbs: [`HoverThumbPreview`] chrome (Play+Pause; hide while scrubbing).
+/// host UI only maps pointer events and keeps the bar in sync with the cursor.
+/// Hover thumbs: [`HoverThumbPreview`] (Play+Pause; hide while scrubbing).
 #[component]
 fn Scrubber(video: VideoRef) -> impl IntoView {
     let scrubbing = RwSignal::new(false);

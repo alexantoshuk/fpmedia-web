@@ -23,7 +23,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 | Surface | Purpose |
 | ------- | ------- |
 | **`media_components` crate** | Leptos `<Video>` + `VideoRef` — media element API only (HTML `<video>` analog) |
-| **Demo app** | `app` / `frontend` — file picker, transport buttons, **keyboard (JKL/Space/arrows)**, status (not production chrome) |
+| **Demo app** | `app` / `frontend` — file picker, transport buttons, **keyboard (JKL/Space/arrows)**, status (not production player UI) |
 | **Library API** | `webmedia` crate — demux + frame index + `VideoPlayer`; audio under `audio/` |
 
 ---
@@ -37,7 +37,7 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain**-fit picture, metadata via the element API.
 - Continuous play keeps **A/V sync** on an audio-driven clock — also for clips without an audio track. The element API exposes volume / mute; it does not expose the clock. Clock design: `architecture.md` § Audio + media clock.
 - **Audio codecs (agreed):** AAC (`mp4a`) and common QT/ISO **PCM** (`in24` / `sowt` / `twos` / …) play through the same volume/mute/rate path; PCM does not use WebCodecs `AudioDecoder`. Unsupported audio sample entries are ignored (video still opens).
-- **Component vs demo:** element crates expose **API only**; keyboard / transport chrome belongs to the host (demo `app`).
+- **Component vs demo:** element crates expose **API only**; keyboard / transport UI belongs to the host (demo `app`).
 - **Hover thumbs:** Frame.io-style timeline preview. **Agreed UX:** Play **and** Pause, not while scrubbing; must not drive densify / buffer strips.
 - **Play first, scrub second:** smooth **1× play** must work for any supported clip (incl. 4K). Exactness is Pause/seek/step — not a reason to slow Play. Scrub/densify yields while playing. Do not retune Full-HD play defaults when tuning 4K.
 - **Play vs scrub residency (agreed):** Play stays light — no background scrub caching while playing. Demo scrubber strips: **gray** = fetched bytes, **dim green** = decoded coverage, **bright green** = instantly step-ready frames; strips stay crisp (no blur) on long clips. No separate buffer meter bars; live decode numbers live in the demo pipeline panel. Next/Prev near the playhead are instant when step-ready. Resize/fullscreen keeps the strips. Design: `architecture.md` § Play / scrub residency.
@@ -50,5 +50,5 @@ Alpha goal: open an MP4, seek/step/scrub by presentation frame, play/pause via W
 - Full FFmpeg-in-browser convert/mux toolkit (mediabunny’s full scope).
 - Multi-container write path; focus read + decode of MP4 (AVC; **HEVC** opt-in via cargo features — off by default).
 - Production auth, storage, or collaboration UI (lives in host apps).
-- Production player chrome — demo controls in `app` are temporary.
+- Production player UI — demo controls in `app` are temporary.
 - Production CORS / open media proxy — demo `/proxy` is localhost-only (local tests / e2e).

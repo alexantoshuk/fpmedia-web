@@ -49,7 +49,7 @@ body {
   padding: 1.25rem;
 }
 
-/* Demo fullscreen: video fills the screen; chrome overlays and auto-hides. */
+/* Demo fullscreen: video fills the screen; controls overlay and auto-hide. */
 .wm-player:fullscreen {
   display: flex;
   flex-direction: column;
@@ -85,7 +85,7 @@ body {
   min-height: 0;
 }
 
-.wm-player:fullscreen .wm-chrome {
+.wm-player:fullscreen .wm-player-ui {
   position: absolute;
   left: 0;
   right: 0;
@@ -110,17 +110,17 @@ body {
   color: #d4d4d4;
 }
 
-.wm-player:fullscreen.is-chrome-hidden {
+.wm-player:fullscreen.is-controls-hidden {
   cursor: none;
 }
 
-.wm-player:fullscreen.is-chrome-hidden .wm-chrome {
+.wm-player:fullscreen.is-controls-hidden .wm-player-ui {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
 }
 
-.wm-chrome {
+.wm-player-ui {
   display: flex;
   flex-direction: column;
   gap: 0;

@@ -305,7 +305,7 @@ impl VideoRef {
     /// Paint a Frame.io-style hover thumb into `dest`.
     ///
     /// Read-only: ThumbPreview cache / Exact downscale — does not decode or move
-    /// playhead/canvas. Prefer [`crate::HoverThumbPreview`] chrome; call
+    /// playhead/canvas. Prefer [`crate::HoverThumbPreview`]; call
     /// [`Self::cancel_hover_thumb`] on leave/scrub. Prefer
     /// [`Self::try_paint_hover_thumb`] on pointermove for cache hits.
     pub fn paint_hover_thumb(&self, frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32) {
