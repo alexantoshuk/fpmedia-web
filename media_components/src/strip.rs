@@ -18,7 +18,7 @@ pub const EXACT_STRIP_COLOR: &str = "#34d399";
 /// Gray FetchMap solid.
 pub const FETCH_STRIP_COLOR: &str = "#6b7280";
 
-/// Frame marks → snapped pixel runs on `width_px` (Covered soft-merges; Exact hard).
+/// Frame marks → snapped pixel runs on `width_px` (honest: no soft-merge / no min-px inflate).
 #[cfg(target_arch = "wasm32")]
 pub fn cache_strip_px_runs_for_width(
     marks: &[ReadyFrameMark],
@@ -32,24 +32,17 @@ pub fn cache_strip_px_runs_for_width(
         .map(|m| (m.frame, m.end.max(m.frame)))
         .collect();
     runs.sort_by_key(|&(lo, _)| lo);
-    ready_runs_to_width(&runs, kind == ReadyFrameKind::Covered, max, width_px)
+    ready_runs_to_width(&runs, max, width_px)
 }
 
 /// Sorted inclusive ready runs → snapped pixel runs on `width_px`.
-/// `soft_merge` closes sub-pixel holes (Covered); Exact keeps every hole.
+/// View = data feedback: holes stay; sub-pixel runs drop (no inflate).
 pub fn ready_runs_to_width(
     runs: &[(FrameId, FrameId)],
-    soft_merge: bool,
     max: f64,
     width_px: u16,
 ) -> Vec<StripPxRun> {
-    let max = max.max(1.0);
-    let merge_gap = if soft_merge {
-        strip_merge_gap_frames(max).saturating_mul(2)
-    } else {
-        0
-    };
-    frame_runs_to_width(runs, max, merge_gap, width_px)
+    frame_runs_to_width(runs, max.max(1.0), 0, width_px)
 }
 
 /// Device-pixel buffer width for a 1 px-tall strip canvas (`css_w × dpr`).
@@ -125,8 +118,8 @@ pub fn soft_merge_frame_runs(runs: &[(FrameId, FrameId)], max_gap: u64) -> Vec<(
 }
 
 /// Hold a painted scrubber edge until rasterized coverage moves by more than
-/// this many assumed scrubber pixels. Kills ±1 px soft-merge / densify /
-/// FetchMap swim (“sometimes” blur). mediabunny: no equivalent meter.
+/// this many assumed scrubber pixels. Kills ±1 px densify / FetchMap swim
+/// (“sometimes” blur). mediabunny: no equivalent meter.
 pub const STRIP_PAINT_STICKY_PX: u16 = 2;
 
 /// Inclusive-start / exclusive-end pixel runs on a scrubber of known width.
@@ -207,13 +200,16 @@ pub fn stabilize_strip_segments(
 }
 
 /// Snap percentage segments (`0…100`) to integer pixel runs on `width_px`.
+///
+/// `min_run_px == 0`: drop runs that round to empty (ready greens — honest).
+/// `min_run_px >= 1`: inflate short runs (gray FetchMap — keep visible ticks).
 pub fn snap_pct_runs_to_width(
     segments: impl IntoIterator<Item = (f64, f64)>,
     width_px: u16,
+    min_run_px: u16,
 ) -> Vec<StripPxRun> {
     let width_px = width_px.max(1);
     let w = f64::from(width_px);
-    let min_w = 1u16;
     let mut out: Vec<StripPxRun> = Vec::new();
     for (start, end) in segments {
         let start = start.clamp(0.0, 100.0);
@@ -222,8 +218,8 @@ pub fn snap_pct_runs_to_width(
         let mut hi = ((end / 100.0) * w).round() as i32;
         lo = lo.clamp(0, i32::from(width_px));
         hi = hi.clamp(0, i32::from(width_px));
-        if hi < lo + i32::from(min_w) {
-            hi = (lo + i32::from(min_w)).min(i32::from(width_px));
+        if min_run_px > 0 && hi < lo + i32::from(min_run_px) {
+            hi = (lo + i32::from(min_run_px)).min(i32::from(width_px));
         }
         if hi <= lo {
             continue;
@@ -243,7 +239,7 @@ pub fn snap_pct_runs_to_width(
 
 /// Snap to the historical assumed ~800 px scrubber (tests / soft-merge parity).
 pub fn snap_pct_runs_to_px(segments: impl IntoIterator<Item = (f64, f64)>) -> Vec<StripPxRun> {
-    snap_pct_runs_to_width(segments, STRIP_ASSUMED_SCRUBBER_PX as u16)
+    snap_pct_runs_to_width(segments, STRIP_ASSUMED_SCRUBBER_PX as u16, 1)
 }
 
 /// File-byte fetch fractions (`0…1`) → snapped pixel runs on `width_px`.
@@ -256,6 +252,7 @@ pub fn fetch_strip_px_runs_for_width(ranges: &[(f32, f32)], width_px: u16) -> Ve
             .iter()
             .map(|&(a, b)| (a as f64 * 100.0, b as f64 * 100.0)),
         width_px,
+        1,
     )
 }
 
@@ -265,6 +262,7 @@ pub fn fetch_strip_px_runs(ranges: &[(f32, f32)]) -> Vec<StripPxRun> {
 }
 
 /// Inclusive frame runs → snapped scrubber pixels (after optional soft-merge).
+/// Ready greens use `merge_gap = 0` + `min_run_px = 0` (view mirrors data).
 pub fn frame_runs_to_width(
     runs: &[(FrameId, FrameId)],
     max: f64,
@@ -283,6 +281,7 @@ pub fn frame_runs_to_width(
             (start, end)
         }),
         width_px,
+        0,
     )
 }
 
@@ -297,7 +296,7 @@ mod tests {
 
     #[test]
     fn empty_strips_are_empty_runs() {
-        assert!(ready_runs_to_width(&[], false, 10.0, 800).is_empty());
+        assert!(ready_runs_to_width(&[], 10.0, 800).is_empty());
         assert!(fetch_strip_px_runs(&[]).is_empty());
     }
 
@@ -315,15 +314,40 @@ mod tests {
     }
 
     #[test]
-    fn exact_does_not_soft_merge_holes() {
+    fn ready_greens_keep_holes_no_soft_merge() {
         let far = [(0, 0), (100, 100)];
-        let exact = ready_runs_to_width(&far, false, 8000.0, 800);
-        assert_eq!(exact.len(), 2, "Exact keeps holes: {exact:?}");
-        let c = ready_runs_to_width(&far, true, 8000.0, 800);
-        // soft-merge gap = 2*floor(8000/800)=20; hole 99 > 20 → two segments.
-        assert_eq!(c.len(), 2, "Covered keeps real holes: {c:?}");
-        let c2 = ready_runs_to_width(&[(0, 0), (15, 15)], true, 8000.0, 800);
-        assert_eq!(c2.len(), 1, "Covered soft-merges ≤2px gap: {c2:?}");
+        let exact = ready_runs_to_width(&far, 8000.0, 800);
+        let covered = ready_runs_to_width(&far, 8000.0, 800);
+        // On 8000 frames / 800 px each single frame is sub-pixel → both drop.
+        assert!(exact.is_empty(), "sub-pixel Exact drops: {exact:?}");
+        assert!(covered.is_empty(), "sub-pixel Covered drops: {covered:?}");
+        // Visible multi-frame runs keep a real hole between them.
+        let split = ready_runs_to_width(&[(0, 50), (200, 250)], 8000.0, 800);
+        assert_eq!(split.len(), 2, "ready greens keep holes: {split:?}");
+    }
+
+    #[test]
+    fn sparse_ready_build_not_wider_than_coalesced() {
+        // Long clip: sparse islands used to inflate to 1 px each and abut into a
+        // longer band than the later coalesced run (capacity-looking trail).
+        let max = 14_400.0;
+        let w = 800u16;
+        let sparse = [(100u64, 100), (102, 102), (104, 104), (106, 106)];
+        let coalesced = [(100u64, 106)];
+        let sparse_px = ready_runs_to_width(&sparse, max, w);
+        let solid_px = ready_runs_to_width(&coalesced, max, w);
+        let sparse_w: u32 = sparse_px
+            .iter()
+            .map(|&(lo, hi)| u32::from(hi.saturating_sub(lo)))
+            .sum();
+        let solid_w: u32 = solid_px
+            .iter()
+            .map(|&(lo, hi)| u32::from(hi.saturating_sub(lo)))
+            .sum();
+        assert!(
+            sparse_w <= solid_w,
+            "sparse build must not paint wider than coalesced: sparse={sparse_px:?} ({sparse_w}) solid={solid_px:?} ({solid_w})"
+        );
     }
 
     #[test]
@@ -434,29 +458,23 @@ mod tests {
     }
 
     #[test]
-    fn covered_soft_merge_flip_held_by_raster_latch() {
+    fn latch_holds_edge_thrash_on_visible_ready_runs() {
+        // Honest greens: multi-frame runs that survive sub-pixel drop; ±1 px edge.
         let w = 800u16;
-        let merge_gap = strip_merge_gap_frames(8000.0).saturating_mul(2);
-        let a = frame_runs_to_width(&[(0, 0), (15, 15)], 8000.0, merge_gap, w);
-        let b = frame_runs_to_width(&[(0, 0), (25, 25)], 8000.0, merge_gap, w);
-        assert!(
-            strip_raster_diff_px(&a, &b, w) > 0,
-            "merged vs split must differ before latch"
-        );
+        let a = ready_runs_to_width(&[(0, 399)], 8000.0, w); // → 40 px
+        let b = ready_runs_to_width(&[(0, 409)], 8000.0, w); // → 41 px
+        assert_eq!(a, vec![(0, 40)]);
+        assert_eq!(b, vec![(0, 41)]);
         let mut latch = StripPaintLatch::new();
         let _ = latch.resolve(&a, w);
         let mut unique = std::collections::BTreeSet::new();
         unique.insert(format!("{:?}", latch.accepted()));
         for i in 0..40 {
-            let cand = if i % 2 == 0 { &a } else { &b };
-            unique.insert(format!("{:?}", latch.resolve(cand, w)));
+            let end = if i % 2 == 0 { 399u64 } else { 409 };
+            let cand = ready_runs_to_width(&[(0, end)], 8000.0, w);
+            unique.insert(format!("{:?}", latch.resolve(&cand, w)));
         }
-        assert_eq!(
-            unique.len(),
-            1,
-            "Covered merge↔split near 1–2 px must hold: diff={}",
-            strip_raster_diff_px(&a, &b, w)
-        );
+        assert_eq!(unique.len(), 1, "sub-sticky ready edge thrash must hold");
     }
 
     #[test]

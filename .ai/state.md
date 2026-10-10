@@ -8,14 +8,18 @@
 
 ### Handoff
 
-- **Branch:** `main` — Pause densify greens on ChG (ban-key walk, skip-bridge, progress = new residency). Scrub drag kills densify under finger.
-- **Verify after pull:** hard-reload; Pause on ChG — Covered grows past Exact cap; scrub still OK.
+- **Branch:** `main` @ `b3c9392` — Pause densify greens on ChG (ban-key / skip-bridge / PTS multimap; progress = new residency; drag kills densify). Ahead of origin by 1 (not pushed).
+- **Verify:** hard-reload; Pause on ChG — Covered grows past Exact; scrub drag still OK (do not re-land drop_disconnected / extent_span compact — broke cold scrub).
+- **Do not:** re-land green soft-merge / min-px inflate, or invent densify exits that drop consumer-queue samples (`AGENTS.md` Mediabunny-first).
+- **Strip paint:** greens honest (sub-pixel drop, no soft-merge); gray still may inflate ticks.
 
 ---
 
 ## Next up
 
-_(empty — pick from Later or new work)_
+- Strip UX (Pause densify OK; scrub must stay intact):
+  - Covered / Exact strip **1–2 px** flicker / snap noise on long clips.
+  - **Dim green** can lag behind scrub feel (Covered paint slower than pointer / blit) — often scrub Exact trail vs Pause PreferSoftware densify, not a paint bug; Pause densify speed not priority.
 
 ---
 
