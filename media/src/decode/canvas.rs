@@ -10,6 +10,26 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlElement, VideoFra
 
 use crate::error::MediaError;
 
+/// Placeholder bitmap matching `<Video>` initial attrs — used after clip retire
+/// so the next open does not inherit the previous clip's intrinsic size.
+pub const PLACEHOLDER_CANVAS_W: u32 = 320;
+pub const PLACEHOLDER_CANVAS_H: u32 = 240;
+
+/// Clear prior-clip `aspect-ratio` + bitmap attrs on the **shared** stage canvas.
+///
+/// The DOM canvas outlives [`crate::VideoPlayer`]; without this, open B after A
+/// can size from A's intrinsic box (second open of B looks fine once attrs match).
+pub fn reset_canvas_layout(canvas: &HtmlCanvasElement) {
+    let el: &HtmlElement = canvas.unchecked_ref();
+    let _ = el.style().remove_property("aspect-ratio");
+    if canvas.width() != PLACEHOLDER_CANVAS_W {
+        canvas.set_width(PLACEHOLDER_CANVAS_W);
+    }
+    if canvas.height() != PLACEHOLDER_CANVAS_H {
+        canvas.set_height(PLACEHOLDER_CANVAS_H);
+    }
+}
+
 /// Pin CSS aspect-ratio and allocate the bitmap buffer once for this video.
 ///
 /// Call on open (and on container resize via [`crate::VideoPlayer::relayout`]) —
@@ -27,6 +47,8 @@ pub fn configure_canvas_for_video(
     el.style()
         .set_property("aspect-ratio", &format!("{src_w} / {src_h}"))
         .map_err(MediaError::from)?;
+    // Flush style → layout before reading parent/canvas client_* for buffer math.
+    let _ = el.offset_width();
 
     let (buf_w, buf_h) = buffer_size_for_layout(canvas, src_w, src_h);
     if canvas.width() != buf_w {
@@ -44,7 +66,7 @@ pub fn draw_frame_to_canvas(
     frame: &VideoFrame,
 ) -> Result<(), MediaError> {
     // Only configure when still at the placeholder size (first paint / no open hook).
-    if canvas.width() <= 320 && canvas.height() <= 240 {
+    if canvas.width() <= PLACEHOLDER_CANVAS_W && canvas.height() <= PLACEHOLDER_CANVAS_H {
         configure_canvas_for_video(canvas, frame.display_width(), frame.display_height())?;
     }
     let ctx = canvas_2d(canvas)?;

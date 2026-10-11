@@ -11,7 +11,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::MediaClock;
 use crate::audio::AudioOutput;
-use crate::decode::canvas::{canvas_2d, configure_canvas_for_video};
+use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, reset_canvas_layout};
 use crate::decode::frame_cache::ScrubBlitLru;
 use crate::decode::scrub_blit::BlitCanvasSlot;
 use crate::decode::webcodecs::WebCodecsDecoder;
@@ -114,6 +114,8 @@ impl VideoPlayer {
         file_size: u64,
     ) -> Result<Self, MediaError> {
         let meta = track.metadata();
+        // Shared stage canvas keeps the previous clip's attrs/aspect until reset.
+        reset_canvas_layout(&canvas);
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
         let ctx = canvas_2d(&canvas)?;

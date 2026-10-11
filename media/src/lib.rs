@@ -105,8 +105,9 @@ pub use types::{
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use decode::{
-    AsVideoFrame, OwnedVideoFrame, WebCodecsDecoder, canvas_2d, configure_canvas_for_video,
-    draw_frame_to_canvas, draw_frame_with_context,
+    AsVideoFrame, OwnedVideoFrame, PLACEHOLDER_CANVAS_H, PLACEHOLDER_CANVAS_W, WebCodecsDecoder,
+    canvas_2d, configure_canvas_for_video, draw_frame_to_canvas, draw_frame_with_context,
+    reset_canvas_layout,
 };
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs", feature = "thumbs"))]
 pub use decode::{ThumbPreview, ThumbSink};

@@ -111,6 +111,8 @@ impl HostCtx {
             // Bump thumb epoch while the sink still exists; Drop clears it.
             p.cancel_hover_thumb();
             p.pause();
+            // DOM canvas outlives the player — clear A’s aspect/buffer before B opens.
+            p.reset_stage_layout();
         }
         // `retiring` drops here → decoder/caches + UrlSource orch.dispose.
         // `ready=false` also hides HoverThumbPreview (Effect on ready).

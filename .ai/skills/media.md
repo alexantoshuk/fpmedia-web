@@ -90,7 +90,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 - **Underrun** → HoldUnderrun + soft audio hold (keep decoder); not skip spiral. EOF: don’t End while presentation holds frames / while playhead mid at shuttle.
 - **Warm pump** → after take, retarget cursor (clear `saw_target` on retarget); park on capacity — don’t exit/respawn thrash. Short B-frame hole: `pts_aim_hole` + prune floor.
 - **Play VF pool** → densify off; behind cap 0 while playing; Exact trim farthest (not full wipe). Prefetch EOF `false` must await rAF (no spin).
-- **Canvas size** → lock buffer + CSS aspect on open/`relayout`; fullscreen wipe → repaint `displayed`/blit; keep scrub markers.
+- **Canvas size** → lock buffer + CSS aspect on open/`relayout`; fullscreen wipe → repaint `displayed`/blit; keep scrub markers. Clip switch: `reset_canvas_layout` (shared DOM canvas) or open B inherits A’s intrinsic size.
 - **RAII frames** → move into caches; borrow to draw; `try_clone` → `Result`.
 - **No Blob/Url per-read `console.log`** → floods main thread on multi‑GB masters.
 

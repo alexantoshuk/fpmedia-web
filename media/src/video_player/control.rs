@@ -93,6 +93,11 @@ impl VideoPlayer {
         &self.shared.canvas
     }
 
+    /// Drop prior-clip stage layout on the shared DOM canvas (call from host retire).
+    pub fn reset_stage_layout(&self) {
+        crate::decode::canvas::reset_canvas_layout(&self.shared.canvas);
+    }
+
     pub fn is_playing(&self) -> bool {
         self.state().playing
     }

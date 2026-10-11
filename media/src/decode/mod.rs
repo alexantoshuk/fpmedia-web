@@ -11,7 +11,8 @@ pub(crate) mod thumb_preview;
 pub(crate) mod webcodecs;
 
 pub use canvas::{
-    canvas_2d, configure_canvas_for_video, draw_frame_to_canvas, draw_frame_with_context,
+    PLACEHOLDER_CANVAS_H, PLACEHOLDER_CANVAS_W, canvas_2d, configure_canvas_for_video,
+    draw_frame_to_canvas, draw_frame_with_context, reset_canvas_layout,
 };
 pub use owned_video_frame::{AsVideoFrame, OwnedVideoFrame};
 #[cfg(feature = "thumbs")]
