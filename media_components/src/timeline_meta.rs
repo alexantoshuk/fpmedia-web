@@ -55,6 +55,10 @@ pub fn TimelineMeta(
     let root_class = class.unwrap_or_default();
 
     Effect::new(move |_| {
+        // Track pipeline / count even when the canvas NodeRef is not ready yet —
+        // early-return before these reads left strips stuck until a resize.
+        let pipe = video.pipeline.get();
+        let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
         let css_w = css_width.get();
         let dpr = window()
             .map(|w| w.device_pixel_ratio())
@@ -64,8 +68,6 @@ pub fn TimelineMeta(
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
-        let pipe = video.pipeline.get();
-        let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
         let cand = match kind {
             TimelineMetaKind::Fetch => {
                 let ranges = pipe

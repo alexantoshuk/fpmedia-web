@@ -134,20 +134,25 @@ impl VideoPlayer {
     }
 
     pub fn pause(&self) {
-        self.pause_inner(false);
+        // Cold audio + densify (open / EOF / abort-prime tear-down).
+        self.pause_inner(false, true);
     }
 
-    /// Leave play with soft-held audio (no `AudioDecoder` reset) — Pause button
-    /// and scrub-while-play.
+    /// Leave play with soft-held audio — **no densify** (soft-drag under finger).
     ///
-    /// Hard [`Self::pause`] still tears down audio (open / EOF / abort-prime).
-    /// `mediabunny: examples/media-player/media-player.ts` `pause` / `play`
-    /// (nodes + iterator only; no reconfigure).
+    /// Pause **button** uses [`Self::pause_warm_idle`] (warm + densify).
+    /// Hard [`Self::pause`] tears down audio. `mediabunny: examples/media-player`
+    /// `pause` / `play` (nodes + iterator only; no reconfigure).
     pub fn pause_for_scrub(&self) {
-        self.pause_inner(true);
+        self.pause_inner(true, false);
     }
 
-    pub(super) fn pause_inner(&self, soft_audio: bool) {
+    /// Pause button: warm audio resume + densify / gray fill (idle scrub residency).
+    pub fn pause_warm_idle(&self) {
+        self.pause_inner(true, true);
+    }
+
+    pub(super) fn pause_inner(&self, soft_audio: bool, densify: bool) {
         // Leaving play: cancel decode + scrub fill epoch (pending latch restarts fill).
         // Already paused: do not bump scrub_epoch (UI steps call pause every time).
         let was_playing = self.shared.playing.get();
@@ -159,7 +164,13 @@ impl VideoPlayer {
         self.shared.playing.set(false);
         self.clear_play_session();
         self.clear_loop_prime();
-        self.apply_engine_event_gated(EngineEvent::EnterScrub { soft_audio }, was_playing);
+        self.apply_engine_event_gated(
+            EngineEvent::EnterScrub {
+                soft_audio,
+                densify,
+            },
+            was_playing,
+        );
         // `prepare_scrub_settle` latches ExactHold *before* the async scrub op;
         // `run_seek_or_step` always called `pause()` which used to clear that latch
         // and re-kick densify — exact settle then raced the scrub decoder
@@ -167,9 +178,9 @@ impl VideoPlayer {
         if self.shared.engine.get().holds_exact() {
             return;
         }
-        // Soft scrub-pause: aim only — PreferSoftware densify under the finger
-        // starves pointer/rAF. Hard Pause densify already applied via ScheduleDensify.
-        if soft_audio {
+        // Soft-drag: aim only — PreferSoftware densify under the finger starves
+        // pointer/rAF. Pause / hard idle densify via ScheduleDensify + re-kick.
+        if !densify {
             self.aim_scrub_cache(self.state().frame);
             return;
         }

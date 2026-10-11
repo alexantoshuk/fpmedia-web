@@ -19,7 +19,8 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
 | Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact; fault typing: `MediaError::from_codec_message` / `DecodeStall` |
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
-| Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only; `EnterScrub{soft}` → no `ScheduleDensify`; `apply_engine_event` runs cmds |
+| Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only; `EnterScrub{soft, densify:false}`; `apply_engine_event` runs cmds |
+| Pause strips don't grow / no hole-fill | `pause_warm_idle` | Pause button: `SoftPause{densify:true}` — not `pause_for_scrub` (drag-only) |
 | Soft-drag canvas frozen until pointerup | `scrub_preview_frame` | preview from Exact blit only — Covered nearest has no bitmap |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |

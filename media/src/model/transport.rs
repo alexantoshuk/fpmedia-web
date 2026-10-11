@@ -151,8 +151,10 @@ pub enum TransportCmd {
     /// button). Scrub-while-play keeps `false` so `SetPlayhead` aim is not
     /// overwritten — otherwise PlayPrime `seek_frame`s the ~100 ms-stale UI
     /// playhead and redoes Exact before warm resume.
+    /// `densify`: Pause idle residency (`true`); soft-drag under finger (`false`).
     SoftPause {
         align_playhead: bool,
+        densify: bool,
     },
     /// Open / EOF / abort-prime / leave-scrub — bump epoch, cold audio next Play.
     HardPause,
@@ -210,6 +212,7 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
             S::Ready,
             vec![C::SoftPause {
                 align_playhead: true,
+                densify: true,
             }],
         ),
         (S::PlayPriming { .. }, E::PausePressed) => (S::Ready, vec![C::HardPause]),
@@ -226,6 +229,7 @@ pub fn reduce(model: TransportModel, event: TransportEvent) -> (TransportModel, 
                 C::ClearEnded,
                 C::SoftPause {
                     align_playhead: false,
+                    densify: false,
                 },
                 C::SetPlayhead { frame },
                 // Present soft-blit while finger moves (same as paused scrub).
@@ -489,7 +493,8 @@ mod tests {
             }
         ));
         assert!(c.contains(&TransportCmd::SoftPause {
-            align_playhead: false
+            align_playhead: false,
+            densify: false,
         }));
         assert!(c.contains(&TransportCmd::EnqueueDrag { frame: 10 }));
 
@@ -613,7 +618,8 @@ mod tests {
         let (m, c) = step(m, TransportEvent::PausePressed);
         assert_eq!(m.state, TransportState::Ready);
         assert!(c.contains(&TransportCmd::SoftPause {
-            align_playhead: true
+            align_playhead: true,
+            densify: true,
         }));
         assert!(!c.contains(&TransportCmd::HardPause));
     }

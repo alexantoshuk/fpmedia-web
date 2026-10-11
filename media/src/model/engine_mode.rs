@@ -95,12 +95,15 @@ impl EngineModel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineEvent {
     EnterPlay,
-    /// Leave play (or reinforce scrub). `soft_audio` → Warm + SoftHoldClock.
-    /// Soft scrub = aim/blit only (no densify under the finger). Hard Pause
-    /// schedules densify when mode becomes [`EngineMode::Scrub`].
-    /// While [`EngineMode::ExactHold`], mode stays ExactHold (densify stays deferred).
+    /// Leave play (or reinforce scrub).
+    /// - `soft_audio` → Warm + SoftHoldClock (Pause button / scrub-while-play).
+    /// - `densify` → [`EngineCmd::ScheduleDensify`] when mode is Scrub.
+    ///   Pause / idle: `densify: true`. Soft-drag: `densify: false` (aim+blit only —
+    ///   PreferSoftware under the finger saturates JS). Hard tear-down: cold audio
+    ///   + densify. While [`EngineMode::ExactHold`], mode stays ExactHold.
     EnterScrub {
         soft_audio: bool,
+        densify: bool,
     },
     /// Settle / sync seek — densify waits.
     BeginExact,
@@ -139,7 +142,10 @@ pub fn reduce(model: EngineModel, event: EngineEvent) -> (EngineModel, Vec<Engin
             vec![C::AbortDensify { rearm: false }],
         ),
 
-        E::EnterScrub { soft_audio } => {
+        E::EnterScrub {
+            soft_audio,
+            densify,
+        } => {
             let mode = if model.mode == M::ExactHold {
                 M::ExactHold
             } else {
@@ -152,9 +158,7 @@ pub fn reduce(model: EngineModel, event: EngineEvent) -> (EngineModel, Vec<Engin
             } else {
                 cmds.push(C::HardStopClock);
             }
-            // Soft scrub-while-play / Pause-for-scrub: PreferSoftware densify under
-            // the finger saturates JS — aim+blit only. Hard Pause densifies.
-            if !soft_audio && mode == M::Scrub {
+            if densify && mode == M::Scrub {
                 cmds.push(C::ScheduleDensify);
             }
             (EngineModel { mode, audio }, cmds)
@@ -214,15 +218,38 @@ mod tests {
     }
 
     #[test]
-    fn scrub_soft_sets_warm() {
+    fn scrub_soft_drag_warm_no_densify() {
         let (next, cmds) = reduce(
             EngineModel::new(),
-            EngineEvent::EnterScrub { soft_audio: true },
+            EngineEvent::EnterScrub {
+                soft_audio: true,
+                densify: false,
+            },
         );
         assert_eq!(next.mode, EngineMode::Scrub);
         assert!(next.warm_audio());
         assert!(next.allows_densify());
         assert_eq!(cmds, vec![EngineCmd::SoftHoldClock]);
+    }
+
+    #[test]
+    fn pause_button_warm_and_densify() {
+        let (next, cmds) = reduce(
+            EngineModel {
+                mode: EngineMode::Play,
+                audio: AudioResume::Cold,
+            },
+            EngineEvent::EnterScrub {
+                soft_audio: true,
+                densify: true,
+            },
+        );
+        assert_eq!(next.mode, EngineMode::Scrub);
+        assert!(next.warm_audio());
+        assert_eq!(
+            cmds,
+            vec![EngineCmd::SoftHoldClock, EngineCmd::ScheduleDensify]
+        );
     }
 
     #[test]
@@ -232,7 +259,10 @@ mod tests {
                 mode: EngineMode::Play,
                 audio: AudioResume::Cold,
             },
-            EngineEvent::EnterScrub { soft_audio: false },
+            EngineEvent::EnterScrub {
+                soft_audio: false,
+                densify: true,
+            },
         );
         assert_eq!(next.mode, EngineMode::Scrub);
         assert!(!next.warm_audio());
@@ -248,7 +278,13 @@ mod tests {
             mode: EngineMode::ExactHold,
             audio: AudioResume::Cold,
         };
-        let (next, cmds) = reduce(m, EngineEvent::EnterScrub { soft_audio: true });
+        let (next, cmds) = reduce(
+            m,
+            EngineEvent::EnterScrub {
+                soft_audio: true,
+                densify: false,
+            },
+        );
         assert!(next.holds_exact());
         assert!(next.warm_audio());
         assert!(!next.allows_densify());

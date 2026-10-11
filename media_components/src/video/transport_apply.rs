@@ -128,7 +128,10 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd)
     let playhead = ctx.video.playhead;
     match cmd {
         TransportCmd::SetPlayhead { .. } | TransportCmd::ClearEnded => {}
-        TransportCmd::SoftPause { align_playhead } => {
+        TransportCmd::SoftPause {
+            align_playhead,
+            densify,
+        } => {
             if let Some(p) = player.borrow().as_ref().cloned() {
                 if align_playhead {
                     // Same as HardPause `stop_playback`: UI playhead lags ~100ms
@@ -149,8 +152,15 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd)
                 // Always soft-hold when the cmd fires (even if UI already synced
                 // off Playing) — matches prior SoftPause; clock/session may still
                 // be live for one microtask after transport left Playing.
-                web_sys::console::log_1(&"webmedia: soft pause (warm audio)".into());
-                p.pause_for_scrub();
+                // Pause button: densify idle residency. Soft-drag: aim only.
+                web_sys::console::log_1(
+                    &format!("webmedia: soft pause (warm audio, densify={densify})").into(),
+                );
+                if densify {
+                    p.pause_warm_idle();
+                } else {
+                    p.pause_for_scrub();
+                }
             }
         }
         TransportCmd::HardPause => {
