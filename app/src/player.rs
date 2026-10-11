@@ -1,16 +1,23 @@
 //! Demo controls over [`media_components::Video`] — not production player UI.
 
 use leptos::ev;
-use leptos::html::{Div, Input};
+use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
-use media_components::helpers::{format_metadata, format_timecode_at, playhead_width_css};
+use media_components::helpers::{
+    format_metadata, format_timecode_at, odd_frame_px_runs, paint_strip_canvas_1px,
+    playhead_width_css, strip_canvas_buffer_width,
+};
 use media_components::{
-    HoverThumb, PipelineStats, ReadyFrameKind, Scrubber, TimelineMeta, TimelineMetaKind, Video,
-    VideoRef,
+    HoverThumb, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, TimelineMeta,
+    TimelineMetaKind, Video, VideoRef,
 };
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
+
+/// Track zebra: odd frames darker than `.wm-scrubber-track` `#2a2a2a`
+/// (~35% toward black — 20% was invisible under fetch/progress).
+const FRAME_ZEBRA_ODD_COLOR: &str = "#1a1a1a";
 
 /// Forward shuttle ladder for demo J/L keys (K → 1× + play/pause).
 const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
@@ -772,6 +779,35 @@ pub fn DemoPlayer() -> impl IntoView {
     }
 }
 
+/// Odd-frame zebra on the progress track (demo chrome). Off when a frame is
+/// sub-pixel after the same snap as strip greens.
+#[component]
+fn FrameZebra() -> impl IntoView {
+    let ctx = use_context::<ScrubberCtx>().expect("FrameZebra must be used inside <Scrubber>");
+    let video = ctx.video;
+    let css_width = ctx.css_width;
+    let canvas_ref = NodeRef::<Canvas>::new();
+
+    Effect::new(move |_| {
+        let count = video.frame_count.get();
+        let css_w = css_width.get();
+        let dpr = window()
+            .map(|w| w.device_pixel_ratio())
+            .unwrap_or(1.0)
+            .max(1.0);
+        let buf_w = strip_canvas_buffer_width(css_w, dpr);
+        let Some(canvas) = canvas_ref.get() else {
+            return;
+        };
+        let runs = odd_frame_px_runs(count, buf_w);
+        let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, FRAME_ZEBRA_ODD_COLOR);
+    });
+
+    view! {
+        <canvas class="wm-scrubber-zebra" node_ref=canvas_ref aria-hidden="true" />
+    }
+}
+
 /// Demo scrubber chrome over headless [`Scrubber`] / [`TimelineMeta`] / [`HoverThumb`].
 #[component]
 fn DemoScrubber(video: VideoRef) -> impl IntoView {
@@ -779,6 +815,7 @@ fn DemoScrubber(video: VideoRef) -> impl IntoView {
         <Scrubber video=video class="wm-scrubber".to_string()>
             <HoverThumb class="wm-thumb-preview".to_string() />
             <div class="wm-scrubber-track">
+                <FrameZebra />
                 <TimelineMeta
                     kind=TimelineMetaKind::Fetch
                     class="wm-scrubber-fetched".to_string()

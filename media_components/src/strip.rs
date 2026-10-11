@@ -290,6 +290,59 @@ pub fn frame_runs_to_px(runs: &[(FrameId, FrameId)], max: f64, merge_gap: u64) -
     frame_runs_to_width(runs, max, merge_gap, STRIP_ASSUMED_SCRUBBER_PX as u16)
 }
 
+/// True when every frame slot `0 .. max` (`max = frame_count − 1`) rounds to ≥1
+/// device pixel on `width_px`. Same half-open mapping as [`frame_runs_to_width`]
+/// (the last frame id sits on the right edge). False for empty / single-frame.
+pub fn frame_slots_at_least_1px(frame_count: u32, width_px: u16) -> bool {
+    let max = frame_count.saturating_sub(1);
+    if max == 0 || width_px == 0 {
+        return false;
+    }
+    let w = f64::from(width_px);
+    let max_f = f64::from(max);
+    (0..max).all(|f| {
+        let lo = ((f as f64 / max_f) * w).round() as i32;
+        let hi = (((f as f64 + 1.0) / max_f) * w).round() as i32;
+        hi > lo
+    })
+}
+
+/// Odd presentation-frame slots as snapped pixel runs for a zebra track.
+/// Empty when [`frame_slots_at_least_1px`] is false (sub-pixel frames).
+///
+/// Does **not** use [`snap_pct_runs_to_width`]'s abut/+1 coalesce — that would
+/// bridge the even-frame gap and paint a solid bar.
+pub fn odd_frame_px_runs(frame_count: u32, width_px: u16) -> Vec<StripPxRun> {
+    if !frame_slots_at_least_1px(frame_count, width_px) {
+        return Vec::new();
+    }
+    let width_px = width_px.max(1);
+    let max = frame_count.saturating_sub(1);
+    let w = f64::from(width_px);
+    let max_f = f64::from(max);
+    let mut out: Vec<StripPxRun> = Vec::new();
+    for f in (1..max).step_by(2) {
+        let mut lo = ((f as f64 / max_f) * w).round() as i32;
+        let mut hi = (((f as f64 + 1.0) / max_f) * w).round() as i32;
+        lo = lo.clamp(0, i32::from(width_px));
+        hi = hi.clamp(0, i32::from(width_px));
+        if hi <= lo {
+            continue;
+        }
+        let lo = lo as u16;
+        let hi = hi as u16;
+        // Overlap / exact abut only — never bridge a 1 px even slot.
+        if let Some((_, prev_hi)) = out.last_mut()
+            && lo <= *prev_hi
+        {
+            *prev_hi = (*prev_hi).max(hi);
+            continue;
+        }
+        out.push((lo, hi));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,5 +549,22 @@ mod tests {
         }
         // Abutting after snap may coalesce — still ≪ raw island×4 CSS stops.
         assert!(runs.len() <= 200);
+    }
+
+    #[test]
+    fn frame_zebra_only_when_slots_are_full_pixels() {
+        // 101 frames → max=100; at 100 px every slot is 1 px.
+        assert!(frame_slots_at_least_1px(101, 100));
+        let runs = odd_frame_px_runs(101, 100);
+        assert_eq!(runs.len(), 50, "odd slots 1,3,…,99: {runs:?}");
+        assert_eq!(runs[0], (1, 2));
+        assert_eq!(runs[49], (99, 100));
+        // Sub-pixel: long clip on narrow bar → off.
+        assert!(!frame_slots_at_least_1px(8000, 800));
+        assert!(odd_frame_px_runs(8000, 800).is_empty());
+        assert!(!frame_slots_at_least_1px(1, 800));
+        // Two frames → one slot (frame 0); last id on the edge → no odd column.
+        assert!(frame_slots_at_least_1px(2, 1));
+        assert!(odd_frame_px_runs(2, 1).is_empty());
     }
 }

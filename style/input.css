@@ -212,13 +212,28 @@ body {
   flex: 0 0 auto;
 }
 
-/* File-byte fetch coverage (behind playhead). 1px canvas, CSS-stretched. */
+/* Odd-frame zebra (demo). Empty canvas when frames are sub-pixel. */
+.wm-scrubber-zebra {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+/* File-byte fetch coverage (behind playhead). 1px canvas, CSS-stretched.
+   Semi-transparent so the odd-frame zebra remains visible. */
 .wm-scrubber-fetched {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
+  z-index: 0;
+  opacity: 0.4;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
@@ -229,6 +244,7 @@ body {
   background: #e11d48;
   pointer-events: none;
   z-index: 1;
+  opacity: 0.55;
 }
 
 /* Cache / ahead readiness under the progress bar (frame ticks). */
