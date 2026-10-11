@@ -15,7 +15,7 @@
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — **all** player chrome (controls, scrubber composition, thumb labels) + thin SSR shell. Product boundary: `product.md` § Surfaces |
-| Media element | `media_components` — `<Video>` / `VideoRef` + agreed headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (see `product.md` § Element-layer helpers). Today: `strip` math, `helpers`, `HoverThumbPreview` (migrate toward `<HoverThumb>`). Modules: `video`, `strip`, `helpers`, `hover_thumb` |
+| Media element | `media_components` — `<Video>` / `VideoRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
 | Media engine | `webmedia` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `media_components/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
@@ -74,9 +74,9 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`). MB = sinks + examples; our `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` are Leptos adapters over `VideoPlayer`, not MB UI ports |
 | Progressive open via `MediaSource` | Ranged reads; parse `moov` (+ `moof` for single-file fMP4); keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Design: [Play / scrub residency](#play--scrub-residency). Traps: `skills/media.md`. |
-| Optional hover thumbs (`thumbs`) | Feature `thumbs` default on; runtime `ThumbPolicy`; 3rd decoder + `ThumbCache` / `ThumbPreview`. Host UI: agreed `<HoverThumb>` (`product.md`); today’s `HoverThumbPreview` is the interim wire-up |
+| Optional hover thumbs (`thumbs`) | Feature `thumbs` default on; runtime `ThumbPolicy`; 3rd decoder + `ThumbCache` / `ThumbPreview`. Host UI: `<HoverThumb>` (`product.md`); `HoverThumbPreview` kept as thin class-only wrapper |
 | Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. `audio/` has no canvas dependency. |
-| Component API like HTML media | Elements: open/play/seek/rate/volume + agreed `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `media_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
+| Component API like HTML media | Elements: open/play/seek/rate/volume + `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `media_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `webmedia::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
 

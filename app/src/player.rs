@@ -1,17 +1,13 @@
 //! Demo controls over [`media_components::Video`] — not production player UI.
 
 use leptos::ev;
-use leptos::html::{Canvas, Div, Input};
+use leptos::html::{Div, Input};
 use leptos::prelude::*;
-use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_resize_observer, use_timeout_fn};
-use media_components::helpers::{
-    COVERED_STRIP_COLOR, EXACT_STRIP_COLOR, FETCH_STRIP_COLOR, StripPaintLatch,
-    cache_strip_px_runs_for_width, fetch_strip_px_runs_for_width, format_metadata,
-    format_timecode_at, paint_strip_canvas_1px, playhead_width_css, scrub_frame_from_x,
-    strip_canvas_buffer_width,
-};
+use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
+use media_components::helpers::{format_metadata, format_timecode_at, playhead_width_css};
 use media_components::{
-    HoverThumbApi, HoverThumbPreview, PipelineStats, ReadyFrameKind, Video, VideoRef,
+    HoverThumb, PipelineStats, ReadyFrameKind, Scrubber, TimelineMeta, TimelineMetaKind, Video,
+    VideoRef,
 };
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
@@ -268,7 +264,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     }
                 }
             >
-                <Scrubber video=video/>
+                <DemoScrubber video=video/>
                 <p class="wm-meta" data-testid="meta">
                     {move || {
                         let mut s = video
@@ -776,189 +772,17 @@ pub fn DemoPlayer() -> impl IntoView {
     }
 }
 
-/// Timeline scrubber — bar follows [`VideoRef::playhead`] (potential frame).
-///
-/// Transport FSM (`VideoRef::scrub_pointer_*`) owns play↔scrub resume; this
-/// host UI only maps pointer events and keeps the bar in sync with the cursor.
-/// Hover thumbs: [`HoverThumbPreview`] (Play+Pause; hide while scrubbing).
+/// Demo scrubber chrome over headless [`Scrubber`] / [`TimelineMeta`] / [`HoverThumb`].
 #[component]
-fn Scrubber(video: VideoRef) -> impl IntoView {
-    let scrubbing = RwSignal::new(false);
-    let thumb_api = StoredValue::new_local(None::<HoverThumbApi>);
-
-    let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
-        if !video.ready.get_untracked() {
-            return None;
-        }
-        let rect = el.get_bounding_client_rect();
-        scrub_frame_from_x(
-            client_x,
-            rect.left(),
-            rect.width(),
-            video.frame_count.get_untracked(),
-        )
-    };
-
-    let hide_hover = move || {
-        thumb_api.with_value(|api| {
-            if let Some(api) = api.as_ref() {
-                api.hide();
-            }
-        });
-    };
-
-    let finish_scrub = move || {
-        scrubbing.set(false);
-        let frame = video.playhead.get_untracked();
-        // Direct transport call — Move is throttled inside `<Video>`; no process-global TLS.
-        video.scrub_pointer_up(frame);
-    };
-
-    // Canvas strips (1 px tall, CSS-stretched): many-stop CSS gradients blur on
-    // long clips (Chrome/Skia). Integer fillRect only. mediabunny: no meter.
-    let fetch_canvas = NodeRef::<Canvas>::new();
-    let covered_canvas = NodeRef::<Canvas>::new();
-    let exact_canvas = NodeRef::<Canvas>::new();
-    let scrubber_ref = NodeRef::<Div>::new();
-    let css_width = RwSignal::new(800.0_f64);
-    let fetch_latch = StoredValue::new_local(StripPaintLatch::new());
-    let covered_latch = StoredValue::new_local(StripPaintLatch::new());
-    let exact_latch = StoredValue::new_local(StripPaintLatch::new());
-
-    use_resize_observer(scrubber_ref, move |entries, _| {
-        let Some(entry) = entries.first() else {
-            return;
-        };
-        let w = entry.content_rect().width();
-        if w > 0.0 {
-            css_width.set(w);
-        }
-    });
-
-    let dpr = move || {
-        window()
-            .map(|w| w.device_pixel_ratio())
-            .unwrap_or(1.0)
-            .max(1.0)
-    };
-
-    let paint_all = move || {
-        let css_w = css_width.get();
-        let buf_w = strip_canvas_buffer_width(css_w, dpr());
-        let pipe = video.pipeline.get();
-        let ranges = pipe
-            .as_ref()
-            .map(|s| s.fetch_file_ranges.as_slice())
-            .unwrap_or(&[]);
-        let marks = pipe
-            .as_ref()
-            .map(|s| s.ready_frames.as_slice())
-            .unwrap_or(&[]);
-        let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
-
-        if let Some(canvas) = fetch_canvas.get() {
-            let cand = fetch_strip_px_runs_for_width(ranges, buf_w);
-            let mut runs = Vec::new();
-            fetch_latch.update_value(|latch| {
-                runs = latch.resolve(&cand, buf_w).to_vec();
-            });
-            let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, FETCH_STRIP_COLOR);
-        }
-        if let Some(canvas) = covered_canvas.get() {
-            let cand = cache_strip_px_runs_for_width(marks, ReadyFrameKind::Covered, max, buf_w);
-            let mut runs = Vec::new();
-            covered_latch.update_value(|latch| {
-                runs = latch.resolve(&cand, buf_w).to_vec();
-            });
-            let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, COVERED_STRIP_COLOR);
-        }
-        if let Some(canvas) = exact_canvas.get() {
-            let cand = cache_strip_px_runs_for_width(marks, ReadyFrameKind::Exact, max, buf_w);
-            let mut runs = Vec::new();
-            exact_latch.update_value(|latch| {
-                runs = latch.resolve(&cand, buf_w).to_vec();
-            });
-            let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, EXACT_STRIP_COLOR);
-        }
-    };
-
-    Effect::new(move |_| {
-        paint_all();
-    });
-
+fn DemoScrubber(video: VideoRef) -> impl IntoView {
     view! {
-        <div
-            class="wm-scrubber"
-            node_ref=scrubber_ref
-            data-testid="scrubber"
-            role="slider"
-            attr:aria-valuemin="0"
-            attr:aria-valuemax=move || video.frame_count.get().saturating_sub(1).to_string()
-            attr:aria-valuenow=move || video.playhead.get().to_string()
-            attr:aria-disabled=move || (!video.ready.get()).to_string()
-            data-playhead=move || video.playhead.get().to_string()
-            on:pointerdown=move |ev| {
-                if !video.ready.get_untracked() {
-                    return;
-                }
-                hide_hover();
-                let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
-                    return;
-                };
-                if let Ok(html) = el.clone().dyn_into::<web_sys::HtmlElement>() {
-                    let _ = html.set_pointer_capture(ev.pointer_id());
-                }
-                scrubbing.set(true);
-                if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
-                    // Playhead sync first — engine/transport work must not stall the bar.
-                    video.playhead.set(frame);
-                    video.scrub_pointer_down(frame);
-                }
-            }
-            on:pointermove=move |ev| {
-                let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
-                    return;
-                };
-                if scrubbing.get_untracked() {
-                    if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
-                        video.playhead.set(frame);
-                        video.scrub_pointer_move(frame);
-                    }
-                    return;
-                }
-                // Hover preview — Play+Pause (Frame.io). Hide only while scrubbing.
-                let Some(frame) = frame_from_client_x(&el, ev.client_x()) else {
-                    hide_hover();
-                    return;
-                };
-                let rect = el.get_bounding_client_rect();
-                let x = ev.client_x() - rect.left();
-                thumb_api.with_value(|api| {
-                    if let Some(api) = api.as_ref() {
-                        api.update(x, rect.width(), frame);
-                    }
-                });
-            }
-            on:pointerleave=move |_| {
-                if !scrubbing.get_untracked() {
-                    hide_hover();
-                }
-            }
-            on:pointerup=move |_| {
-                finish_scrub();
-            }
-            on:pointercancel=move |_| {
-                finish_scrub();
-            }
-        >
-            <HoverThumbPreview video=video api=thumb_api />
+        <Scrubber video=video class="wm-scrubber".to_string()>
+            <HoverThumb class="wm-thumb-preview".to_string() />
             <div class="wm-scrubber-track">
-                <canvas
-                    class="wm-scrubber-fetched"
-                    node_ref=fetch_canvas
-                    data-testid="scrubber-fetched"
-                    aria-hidden="true"
-                    title="Resident byte cache (recent ~8 MiB windows, bounded) — not densify"
+                <TimelineMeta
+                    kind=TimelineMetaKind::Fetch
+                    class="wm-scrubber-fetched".to_string()
+                    test_id="scrubber-fetched"
                 />
                 <div
                     class="wm-scrubber-progress"
@@ -973,16 +797,16 @@ fn Scrubber(video: VideoRef) -> impl IntoView {
                 aria-hidden="true"
                 title="Decode densify: dim=markers (kept on Play), bright=blit ImageBitmap"
             >
-                <canvas
-                    class="wm-ready-strip is-covered"
-                    node_ref=covered_canvas
+                <TimelineMeta
+                    kind=TimelineMetaKind::Covered
+                    class="wm-ready-strip is-covered".to_string()
                 />
-                <canvas
-                    class="wm-ready-strip is-exact"
-                    node_ref=exact_canvas
+                <TimelineMeta
+                    kind=TimelineMetaKind::Exact
+                    class="wm-ready-strip is-exact".to_string()
                 />
             </div>
-        </div>
+        </Scrubber>
     }
 }
 

@@ -1,25 +1,24 @@
-//! Frame.io-style hover thumb UI (not part of [`crate::Video`]).
+//! Hover timeline thumb — paint inside; host chrome via `children` / `class`.
 //!
-//! Hosts wire this next to a scrubber track and call [`HoverThumbApi`] from
-//! pointer handlers. Engine paint stays on [`crate::VideoRef`]; this module owns
-//! canvas, transform, coalesce, and cancel-on-leave.
+//! Spec: `.ai/product.md` § Element-layer helpers. Auto-wires into parent
+//! [`crate::Scrubber`] when present. Manual [`crate::HoverThumbApi`] escape hatch OK.
 //!
 //! Feature `thumbs` (default on): real paint. Soft stubs when off.
-//! Play+pause hover; host hides only while scrubbing (`mediabunny:` separate
-//! thumb `CanvasSink`). Paint coalesce: per-instance `leptos-use` trailing
-//! throttle (not process-global `thread_local!`).
+//! Play+pause hover; scrubber hides while scrubbing. Paint coalesce: per-instance
+//! `leptos-use` trailing throttle. `mediabunny:` separate thumb `CanvasSink`.
 
 use std::rc::Rc;
 
-use leptos::html::Canvas;
+use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, HtmlElement};
 
 use crate::VideoRef;
 use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
+use crate::scrubber::{HoverThumbApi, ScrubberCtx};
 
-/// Default CSS / canvas box (matches `.wm-thumb-preview` in `style/input.css`).
+/// Default canvas box (demo CSS historically used 160×90).
 pub const DEFAULT_HOVER_THUMB_MAX_W: u32 = 160;
 pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = 90;
 
@@ -27,40 +26,41 @@ pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = 90;
 /// floor is separate (`PLAY_THUMB_AIM_DECODE_MIN_MS` = 800).
 const DEFER_HOVER_PAINT_MS: f64 = 150.0;
 
-/// Scrubber-facing handle — call from track `pointermove` / leave / scrub start.
-#[derive(Clone)]
-pub struct HoverThumbApi {
-    hide: Rc<dyn Fn()>,
-    /// `x` = pointer X relative to track left; `track_width`; presentation `frame`.
-    update: Rc<dyn Fn(f64, f64, u32)>,
+/// Signals for host chrome under [`HoverThumb`] (`use_context`).
+#[derive(Clone, Copy)]
+pub struct HoverThumbCtx {
+    pub frame: RwSignal<Option<u32>>,
+    pub visible: RwSignal<bool>,
 }
 
-impl HoverThumbApi {
-    pub fn hide(&self) {
-        (self.hide)();
-    }
-
-    pub fn update(&self, x_in_track: f64, track_width: f64, frame: u32) {
-        (self.update)(x_in_track, track_width, frame);
-    }
-}
-
-/// Hover preview canvas — place as a sibling of the scrubber track (absolute).
+/// Hover preview: canvas inside; `children` = chrome; position on root.
 ///
-/// Fill [`api`] once mounted; host calls [`HoverThumbApi::update`] /
-/// [`HoverThumbApi::hide`] (scrub start / leave). Works during Play and Pause.
+/// Prefer nesting under [`crate::Scrubber`] (auto-wire). Optional [`api`] for a
+/// custom track. Optional [`video`] when not under a scrubber.
 #[component]
-pub fn HoverThumbPreview(
-    video: VideoRef,
-    /// Set to `Some` after mount; cleared on cleanup. Non-`Send` (`Rc` callbacks).
-    api: StoredValue<Option<HoverThumbApi>, LocalStorage>,
-    #[prop(default = DEFAULT_HOVER_THUMB_MAX_W)] max_w: u32,
-    #[prop(default = DEFAULT_HOVER_THUMB_MAX_H)] max_h: u32,
+pub fn HoverThumb(
+    #[prop(optional)] video: Option<VideoRef>,
+    /// Escape hatch / legacy wire-up — also filled when nested under [`crate::Scrubber`].
+    #[prop(optional)]
+    api: Option<StoredValue<Option<HoverThumbApi>, LocalStorage>>,
+    #[prop(default = DEFAULT_HOVER_THUMB_MAX_W)] width: u32,
+    #[prop(default = DEFAULT_HOVER_THUMB_MAX_H)] height: u32,
+    #[prop(optional)] class: Option<String>,
+    #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
+    let scrub_ctx = use_context::<ScrubberCtx>();
+    let video = video
+        .or_else(|| scrub_ctx.map(|c| c.video))
+        .expect("HoverThumb needs video=… or a parent <Scrubber>");
+
+    let frame = RwSignal::new(None::<u32>);
     let visible = RwSignal::new(false);
-    let thumb_ref = NodeRef::<Canvas>::new();
-    // Bumped on hide / cleanup so a trailing throttle cannot paint a stale aim.
+    provide_context(HoverThumbCtx { frame, visible });
+
+    let root_ref = NodeRef::<Div>::new();
+    let canvas_ref = NodeRef::<Canvas>::new();
     let epoch = StoredValue::new_local(0u64);
+    let root_class = class.unwrap_or_default();
 
     #[cfg(feature = "thumbs")]
     let throttled_paint = {
@@ -70,20 +70,18 @@ pub fn HoverThumbPreview(
                 if epoch.get_value() != scheduled_epoch {
                     return;
                 }
-                // Clip switch sets ready=false — do not paint into a retiring sink.
                 if video.ready.get_untracked() {
                     video.paint_hover_thumb(frame, dest, w, h);
                 }
             },
             DEFER_HOVER_PAINT_MS,
-            // trailing: same 150 ms coalesce as the old TLS sleep; leading would
-            // decode on every cache miss under the finger.
             ThrottleOptions::default().leading(false).trailing(true),
         )
     };
 
     let hide: Rc<dyn Fn()> = Rc::new(move || {
         visible.set(false);
+        frame.set(None);
         let e = epoch.get_value().wrapping_add(1);
         epoch.set_value(e);
         video.cancel_hover_thumb();
@@ -91,10 +89,10 @@ pub fn HoverThumbPreview(
 
     let update: Rc<dyn Fn(f64, f64, u32)> = {
         let hide = Rc::clone(&hide);
-        Rc::new(move |x: f64, track_width: f64, frame: u32| {
+        Rc::new(move |x: f64, track_width: f64, aim: u32| {
             #[cfg(not(feature = "thumbs"))]
             {
-                let _ = (x, track_width, frame, &video, &hide, max_w, max_h);
+                let _ = (x, track_width, aim, &video, &hide, width, height, root_ref);
                 return;
             }
             #[cfg(feature = "thumbs")]
@@ -103,28 +101,29 @@ pub fn HoverThumbPreview(
                     hide();
                     return;
                 }
-                let left = hover_thumb_left(x, track_width, max_w as f64);
-                let Some(canvas) = thumb_ref.get_untracked() else {
-                    return;
-                };
-                let html: &HtmlElement = canvas.unchecked_ref();
-                let _ = html
-                    .style()
-                    .set_property("transform", &hover_thumb_transform_css(left));
+                let left = hover_thumb_left(x, track_width, width as f64);
+                if let Some(root) = root_ref.get_untracked() {
+                    let html: &HtmlElement = root.unchecked_ref();
+                    let _ = html
+                        .style()
+                        .set_property("transform", &hover_thumb_transform_css(left));
+                }
+                frame.set(Some(aim));
                 if !visible.get_untracked() {
                     visible.set(true);
                 }
-                if video.try_paint_hover_thumb(frame, canvas.clone(), max_w, max_h) {
+                let Some(canvas) = canvas_ref.get_untracked() else {
+                    return;
+                };
+                if video.try_paint_hover_thumb(aim, canvas.clone(), width, height) {
                     return;
                 }
                 let scheduled_epoch = epoch.get_value();
-                throttled_paint((frame, canvas, max_w, max_h, scheduled_epoch));
+                throttled_paint((aim, canvas, width, height, scheduled_epoch));
             }
         })
     };
 
-    // Clip switch / close: `retire_clip` clears ready — hide without waiting for
-    // pointerleave (stale preview canvas otherwise stays visible).
     Effect::new({
         let hide = Rc::clone(&hide);
         move |_| {
@@ -134,33 +133,67 @@ pub fn HoverThumbPreview(
         }
     });
 
-    api.set_value(Some(HoverThumbApi {
-        hide: Rc::clone(&hide),
-        update,
-    }));
+    let register = HoverThumbApi::new(Rc::clone(&hide), update);
+    if let Some(api) = api {
+        api.set_value(Some(register.clone()));
+    }
+    if let Some(ctx) = scrub_ctx {
+        ctx.hover.set_value(Some(register));
+    }
 
     on_cleanup(move || {
         let e = epoch.get_value().wrapping_add(1);
         epoch.set_value(e);
         visible.set(false);
+        frame.set(None);
         video.cancel_hover_thumb();
-        api.set_value(None);
+        if let Some(api) = api {
+            api.set_value(None);
+        }
+        if let Some(ctx) = scrub_ctx {
+            ctx.hover.set_value(None);
+        }
     });
 
     view! {
-        <canvas
-            node_ref=thumb_ref
+        <div
+            node_ref=root_ref
             class=move || {
                 if visible.get() {
-                    "wm-thumb-preview is-visible"
+                    format!("{root_class} is-visible")
                 } else {
-                    "wm-thumb-preview"
+                    root_class.clone()
                 }
             }
             data-testid="scrubber-thumb"
-            width=max_w.to_string()
-            height=max_h.to_string()
             aria-hidden="true"
+        >
+            <canvas
+                node_ref=canvas_ref
+                width=width.to_string()
+                height=height.to_string()
+                aria-hidden="true"
+            />
+            {children.map(|c| c())}
+        </div>
+    }
+}
+
+/// Interim canvas-only thumb (class `wm-thumb-preview`). Prefer [`HoverThumb`].
+#[component]
+pub fn HoverThumbPreview(
+    video: VideoRef,
+    api: StoredValue<Option<HoverThumbApi>, LocalStorage>,
+    #[prop(default = DEFAULT_HOVER_THUMB_MAX_W)] max_w: u32,
+    #[prop(default = DEFAULT_HOVER_THUMB_MAX_H)] max_h: u32,
+) -> impl IntoView {
+    view! {
+        <HoverThumb
+            video=video
+            api=api
+            width=max_w
+            height=max_h
+            class="wm-thumb-preview".to_string()
         />
     }
 }

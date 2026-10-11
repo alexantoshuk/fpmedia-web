@@ -26,6 +26,8 @@ js-sys = { workspace = true }
 web-sys = { workspace = true, features = [
     "Window",
     "Document",
+    "Element",
+    "DomRect",
     "HtmlElement",
     "HtmlCanvasElement",
     "CanvasRenderingContext2d",

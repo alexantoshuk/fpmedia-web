@@ -26,7 +26,7 @@
 | **`media_components` crate** | Element analogs + headless track helpers (below) — hide engine/transport/`pipeline` from host UI authors. **No** player chrome. |
 | **Demo app** | `app` / `frontend` — **all** player UI: file picker, transport buttons, keyboard (JKL/Space/arrows), progress look, ticks, strip layout/colors, thumb chrome, status. Not production player UI. |
 
-### Element-layer helpers (agreed)
+### Element-layer helpers (shipped)
 
 Headless / paint-inside components in `media_components` (compose in demo; chrome stays in demo):
 

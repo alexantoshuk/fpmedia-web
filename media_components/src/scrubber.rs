@@ -1,0 +1,177 @@
+//! Headless timeline scrubber — gesture + container + context.
+//!
+//! Hides transport / scrub phases from the host. Chrome (progress, ticks, layout)
+//! is composed by the host via [`children`]. Spec: `.ai/product.md` § Element-layer
+//! helpers; phases: `.ai/architecture.md` § Scrub phases.
+
+use std::rc::Rc;
+
+use leptos::html::Div;
+use leptos::prelude::*;
+use leptos_use::use_resize_observer;
+use wasm_bindgen::JsCast;
+use web_sys::Element;
+
+use crate::VideoRef;
+use crate::helpers::scrub_frame_from_x;
+
+/// Scrubber → hover wire — call from track `pointermove` / leave / scrub start.
+#[derive(Clone)]
+pub struct HoverThumbApi {
+    pub(crate) hide: Rc<dyn Fn()>,
+    /// `x` = pointer X relative to track left; `track_width`; presentation `frame`.
+    pub(crate) update: Rc<dyn Fn(f64, f64, u32)>,
+}
+
+impl HoverThumbApi {
+    pub fn hide(&self) {
+        (self.hide)();
+    }
+
+    pub fn update(&self, x_in_track: f64, track_width: f64, frame: u32) {
+        (self.update)(x_in_track, track_width, frame);
+    }
+
+    pub(crate) fn new(hide: Rc<dyn Fn()>, update: Rc<dyn Fn(f64, f64, u32)>) -> Self {
+        Self { hide, update }
+    }
+}
+
+/// Shared by nested [`crate::TimelineMeta`] / [`crate::HoverThumb`].
+#[derive(Clone, Copy)]
+pub struct ScrubberCtx {
+    pub video: VideoRef,
+    pub scrubbing: RwSignal<bool>,
+    pub css_width: RwSignal<f64>,
+    /// Filled by a nested hover thumb (auto-wire).
+    pub(crate) hover: StoredValue<Option<HoverThumbApi>, LocalStorage>,
+}
+
+/// Track hit-target: pointer → playhead + `scrub_pointer_*`. Host supplies children.
+#[component]
+pub fn Scrubber(
+    video: VideoRef,
+    #[prop(optional)] class: Option<String>,
+    children: Children,
+) -> impl IntoView {
+    let scrubbing = RwSignal::new(false);
+    let css_width = RwSignal::new(800.0_f64);
+    let hover = StoredValue::new_local(None::<HoverThumbApi>);
+    let scrubber_ref = NodeRef::<Div>::new();
+
+    provide_context(ScrubberCtx {
+        video,
+        scrubbing,
+        css_width,
+        hover,
+    });
+
+    use_resize_observer(scrubber_ref, move |entries, _| {
+        let Some(entry) = entries.first() else {
+            return;
+        };
+        let w = entry.content_rect().width();
+        if w > 0.0 {
+            css_width.set(w);
+        }
+    });
+
+    let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
+        if !video.ready.get_untracked() {
+            return None;
+        }
+        let rect = el.get_bounding_client_rect();
+        scrub_frame_from_x(
+            client_x,
+            rect.left(),
+            rect.width(),
+            video.frame_count.get_untracked(),
+        )
+    };
+
+    let hide_hover = move || {
+        hover.with_value(|api| {
+            if let Some(api) = api.as_ref() {
+                api.hide();
+            }
+        });
+    };
+
+    let finish_scrub = move || {
+        if !scrubbing.get_untracked() {
+            return;
+        }
+        scrubbing.set(false);
+        let frame = video.playhead.get_untracked();
+        video.scrub_pointer_up(frame);
+    };
+
+    let root_class = class.unwrap_or_default();
+
+    view! {
+        <div
+            class=root_class
+            node_ref=scrubber_ref
+            data-testid="scrubber"
+            role="slider"
+            attr:aria-valuemin="0"
+            attr:aria-valuemax=move || video.frame_count.get().saturating_sub(1).to_string()
+            attr:aria-valuenow=move || video.playhead.get().to_string()
+            attr:aria-disabled=move || (!video.ready.get()).to_string()
+            data-playhead=move || video.playhead.get().to_string()
+            on:pointerdown=move |ev| {
+                if !video.ready.get_untracked() {
+                    return;
+                }
+                hide_hover();
+                let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
+                    return;
+                };
+                if let Ok(html) = el.clone().dyn_into::<web_sys::HtmlElement>() {
+                    let _ = html.set_pointer_capture(ev.pointer_id());
+                }
+                scrubbing.set(true);
+                if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
+                    video.playhead.set(frame);
+                    video.scrub_pointer_down(frame);
+                }
+            }
+            on:pointermove=move |ev| {
+                let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
+                    return;
+                };
+                if scrubbing.get_untracked() {
+                    if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
+                        video.playhead.set(frame);
+                        video.scrub_pointer_move(frame);
+                    }
+                    return;
+                }
+                let Some(frame) = frame_from_client_x(&el, ev.client_x()) else {
+                    hide_hover();
+                    return;
+                };
+                let rect = el.get_bounding_client_rect();
+                let x = ev.client_x() - rect.left();
+                hover.with_value(|api| {
+                    if let Some(api) = api.as_ref() {
+                        api.update(x, rect.width(), frame);
+                    }
+                });
+            }
+            on:pointerleave=move |_| {
+                if !scrubbing.get_untracked() {
+                    hide_hover();
+                }
+            }
+            on:pointerup=move |_| {
+                finish_scrub();
+            }
+            on:pointercancel=move |_| {
+                finish_scrub();
+            }
+        >
+            {children()}
+        </div>
+    }
+}

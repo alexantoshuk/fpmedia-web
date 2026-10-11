@@ -8,7 +8,7 @@
 
 ### Handoff
 
-- **Branch:** `main` (ahead of origin) — densify hole-fill + Exact orphan farthest-evict on densify ticks; soft-drag Exact preview kept.
+- **Branch:** `main` (ahead of origin) — headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` shipped; demo composes chrome without raw `pipeline` paint.
 - **Verified (ChG):** Pause drops Exact 1 px past holes; scrub warm trail intact.
 - **Do not:** prune Exact on every drag `set_playhead`; soft-drag preview from Covered nearest.
 
@@ -16,7 +16,7 @@
 
 ## Next up
 
-- Implement agreed `media_components` surface: `<Scrubber>` + `<TimelineMeta>` + `<HoverThumb>` (canvas inside; demo chrome via children/`class`); migrate demo scrubber off raw `pipeline` paint. Spec: `product.md` § Element-layer helpers; phases: `architecture.md` § Scrub phases.
+_(empty — pick from Later or a new symptom)_
 
 ---
 

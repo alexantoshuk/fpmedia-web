@@ -174,28 +174,34 @@ body {
 }
 
 /* Frame.io-style hover thumb — Play+Pause; hide while scrubbing.
-   Position via compositor `transform` (set from pointermove); pixels update when paint is ready. */
+   Root gets `transform` from <HoverThumb>; canvas is inside (host chrome = children). */
 .wm-thumb-preview {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
   width: 160px;
-  height: 90px;
   max-width: 40%;
-  object-fit: contain;
   background: #0a0a0a;
   border: 1px solid #404040;
   border-radius: 2px;
   pointer-events: none;
   z-index: 5;
   display: none;
+  flex-direction: column;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
   will-change: transform;
   transform: translate3d(0, 0, 0);
 }
 
 .wm-thumb-preview.is-visible {
+  display: flex;
+}
+
+.wm-thumb-preview > canvas {
   display: block;
+  width: 160px;
+  height: 90px;
+  object-fit: contain;
 }
 
 .wm-scrubber-track {
