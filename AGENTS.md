@@ -116,6 +116,7 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 | ----- | -------------- | --------- |
 | Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
 | Approve-before-edit / ask-before-commit | `AGENTS.md` | Do not restate |
+| Fix commit hygiene (integrate, strip debris) | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |
 | Doc write gate / skill budgets | `AGENTS.md` | Do not restate |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
@@ -174,6 +175,14 @@ Do **not** only “append to `media.md`” without choosing a canonical slot.
 **Ask first (hard):** never create a git commit unless the user explicitly asks (e.g. `commit`, `commi`, «закоммить», «сделай коммит»). Finishing a task, `go` / `ok` on an edit plan, or “impl …” is **not** consent to commit. Do not push unless asked.
 
 When the user does ask to commit: follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for message format, size limits, and mandatory pre-commit / pre-push gates (including `cargo clippy … -- -D warnings`). Do not restate those rules here.
+
+### Before commit (fix) — integrate, don’t bolt on
+
+Diagnosis often leaves a working side-path. **Do not commit that shape.** Before asking to commit a fix:
+
+1. **Integrate into the architecture** — reshape the working fix into the existing control flow / policy surface (same layer, named step, mediabunny-shaped path). Do not leave a bolted-on branch that only exists because the search landed there first.
+2. **Strip search debris** — remove superseded branches, dead helpers, and probe-only comments from the same change.
+3. **Docs follow the real design** — if the integrated path is a durable shipped rule, update its one home per [Documentation write gate](#documentation-write-gate--hard-stop) (`architecture.md` for design, skill for traps only).
 
 ## Dev commands
 
