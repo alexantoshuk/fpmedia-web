@@ -5,9 +5,10 @@ use std::rc::Rc;
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::scrub_blit::draw_image_bitmap;
 use crate::decode::webcodecs::WebCodecsDecoder;
+use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::model::engine_mode::EngineEvent;
-use crate::policy::scrub_plan::densify_skip_bridge_ids;
+use crate::policy::scrub_plan::{densify_should_ban_after_no_progress, densify_skip_bridge_ids};
 use crate::policy::{
     GopProfile, ScrubPolicy, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
     scrub_blit_frame_budget,
@@ -650,21 +651,30 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                     next_animation_frame().await;
                 }
                 Ok(false) => {
-                    // Exact refuse / empty decode. Ban only when Covered GOP is
-                    // already solid — otherwise retry (bridge may need another
-                    // pass) then soft-skip after idle so we do not abandon holes.
-                    let markers_done = {
-                        let ids = shared.track.index().gop_frame_ids(key).unwrap_or_default();
-                        shared.scrub_chunks.borrow().gop_complete(&ids)
+                    // Soft-ban on Exact only — see `densify_should_ban_after_no_progress`.
+                    let ids = shared.track.index().gop_frame_ids(key).unwrap_or_default();
+                    let aim = playhead_and_last(&shared).0;
+                    let (blit_complete, refuse_all_missing) = {
+                        let blit = shared.scrub_blit.borrow();
+                        let blit_complete =
+                            !ids.is_empty() && ids.iter().all(|id| blit.contains(*id));
+                        let refuse_all_missing = !ids.is_empty()
+                            && ids.iter().all(|&id| {
+                                blit.contains(id)
+                                    || (blit.len() >= blit.max()
+                                        && blit.would_evict_closer_than(id, aim))
+                            });
+                        (blit_complete, refuse_all_missing)
                     };
-                    if markers_done {
+                    let (ban, next_idle) = densify_should_ban_after_no_progress(
+                        blit_complete,
+                        refuse_all_missing,
+                        idle_passes,
+                        3,
+                    );
+                    idle_passes = next_idle;
+                    if ban {
                         banned_keys.insert(key);
-                    } else {
-                        idle_passes = idle_passes.saturating_add(1);
-                        if idle_passes >= 3 {
-                            banned_keys.insert(key);
-                            idle_passes = 0;
-                        }
                     }
                     if next_gap_unbanned(&shared, &banned_keys).is_none() {
                         evict_exact_orphans_beyond_aim(&shared);
@@ -949,62 +959,119 @@ pub(super) async fn fill_one_gap(
             newly_cb.set(newly_cb.get().saturating_add(1));
         }
     };
+    // Fill order: `architecture.md` § Predictive densify.
     let decoded = decoder
         .decode_gop(&track, key, &cancelled, &mut on_frame)
         .await;
-    match decoded {
-        Ok(()) => {
-            // Progress = new ingest or Covered skip-bridge. PreferSoftware often
-            // omits presentation ids / partial-fills a GOP — bridge every missing
-            // marker in the GOP (not only `target`) so Pause does not leave
-            // 1 px crumbs and unfilled holes. Local densify (mediabunny: none).
-            let n = newly.get();
-            let outs = outputs.get();
-            let gop_ids = shared.track.index().gop_frame_ids(key).unwrap_or_default();
-            let missing = {
-                let cache = shared.scrub_chunks.borrow();
-                densify_skip_bridge_ids(&gop_ids, |id| cache.has_frame(id))
-            };
-            let mut bridged = 0u32;
-            // Only bridge when decode remapped at least one frame — otherwise
-            // Pause would stamp Covered across GOPs with zero PreferSoftware
-            // output (false “decoded coverage”).
-            if outs > 0
-                && !missing.is_empty()
-                && let Ok(mut cache) = shared.scrub_chunks.try_borrow_mut()
-            {
-                for id in missing {
-                    if cache.insert_chunk(id, ScrubChunk) {
-                        bridged = bridged.saturating_add(1);
-                    }
+    if let Err(e) = decoded {
+        return_scrub_decoder(&shared, decoder, true);
+        return Err(e);
+    }
+
+    let outs = outputs.get();
+    let gop_ids = shared.track.index().gop_frame_ids(key).unwrap_or_default();
+    let salvaged = if outs > 0 {
+        match salvage_gop_exact_blit(&shared, &mut decoder, &track, &gop_ids, &cancelled).await {
+            Ok(n) => n,
+            Err(e) => {
+                return_scrub_decoder(&shared, decoder, true);
+                return Err(e);
+            }
+        }
+    } else {
+        0
+    };
+    let n = newly.get().saturating_add(salvaged);
+
+    let bridged = if outs > 0 {
+        skip_bridge_gop_markers(&shared, &gop_ids)
+    } else {
+        0
+    };
+    let made_progress = n > 0 || bridged > 0;
+    if !made_progress {
+        let _ = decoder.reset();
+        drop(decoder);
+        Ok(false)
+    } else if shared.is_disposed() {
+        drop(decoder);
+        Ok(true)
+    } else {
+        *shared.scrub_decoder.borrow_mut() = Some(decoder);
+        Ok(true)
+    }
+}
+
+fn return_scrub_decoder(shared: &Shared, mut decoder: WebCodecsDecoder, reset: bool) {
+    if reset {
+        let _ = decoder.reset();
+    }
+    if !shared.is_disposed() {
+        *shared.scrub_decoder.borrow_mut() = Some(decoder);
+    }
+}
+
+/// PreferSoftware `decode_gop` may omit presentation ids — Exact key→N salvage.
+/// `mediabunny: samplesAtTimestamps` (vs `samples()` / decode_gop range).
+async fn salvage_gop_exact_blit(
+    shared: &Rc<Shared>,
+    decoder: &mut WebCodecsDecoder,
+    track: &Rc<Mp4VideoTrack>,
+    gop_ids: &[FrameId],
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<u32, MediaError> {
+    let aim = playhead_and_last(shared).0;
+    let missing_blit: Vec<FrameId> = {
+        let blit = shared.scrub_blit.borrow();
+        gop_ids
+            .iter()
+            .copied()
+            .filter(|&id| {
+                if blit.contains(id) {
+                    return false;
+                }
+                !(blit.len() >= blit.max() && blit.would_evict_closer_than(id, aim))
+            })
+            .collect()
+    };
+    let mut n = 0u32;
+    for id in missing_blit {
+        if is_cancelled() {
+            return Err(MediaError::Cancelled);
+        }
+        match decoder.decode_frame(track, id, is_cancelled).await {
+            Ok(video) => {
+                let had_marker = shared.scrub_chunks.borrow().has_frame(id);
+                let had_blit = shared.scrub_blit.borrow().contains(id);
+                if ingest_scrub_frame_shared(shared, id, video, false) && (!had_marker || !had_blit)
+                {
+                    n = n.saturating_add(1);
                 }
             }
-            let made_progress = n > 0 || bridged > 0;
-            if !made_progress {
-                let _ = decoder.reset();
-                drop(decoder);
-                Ok(false)
-            } else if shared.is_disposed() {
-                drop(decoder);
-                Ok(true)
-            } else {
-                *shared.scrub_decoder.borrow_mut() = Some(decoder);
-                Ok(true)
-            }
-        }
-        Err(MediaError::Cancelled) => {
-            let _ = decoder.reset();
-            if !shared.is_disposed() {
-                *shared.scrub_decoder.borrow_mut() = Some(decoder);
-            }
-            Err(MediaError::Cancelled)
-        }
-        Err(e) => {
-            let _ = decoder.reset();
-            if !shared.is_disposed() {
-                *shared.scrub_decoder.borrow_mut() = Some(decoder);
-            }
-            Err(e)
+            Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
+            Err(_) => {}
         }
     }
+    Ok(n)
+}
+
+/// Covered markers for GOP ids still absent after Exact salvage (`outs > 0`).
+fn skip_bridge_gop_markers(shared: &Shared, gop_ids: &[FrameId]) -> u32 {
+    let missing = {
+        let cache = shared.scrub_chunks.borrow();
+        densify_skip_bridge_ids(gop_ids, |id| cache.has_frame(id))
+    };
+    if missing.is_empty() {
+        return 0;
+    }
+    let Ok(mut cache) = shared.scrub_chunks.try_borrow_mut() else {
+        return 0;
+    };
+    let mut bridged = 0u32;
+    for id in missing {
+        if cache.insert_chunk(id, ScrubChunk) {
+            bridged = bridged.saturating_add(1);
+        }
+    }
+    bridged
 }

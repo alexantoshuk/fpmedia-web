@@ -70,8 +70,8 @@ pub(super) fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     decision.target
 }
 
-/// [`next_gap_target`] skipping GOPs in `banned_keys` (PreferSoftware densify
-/// made no new residency — usually an Exact-only hole after skip-bridge).
+/// [`next_gap_target`] skipping GOPs in `banned_keys` (densify `Ok(false)` /
+/// Exact cannot improve — see `densify_should_ban_after_no_progress`).
 pub(super) fn next_gap_unbanned(
     shared: &Shared,
     banned_keys: &HashSet<FrameId>,

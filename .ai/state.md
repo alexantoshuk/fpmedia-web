@@ -10,6 +10,7 @@
 
 - **Branch:** `main` (ahead of origin) — headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` shipped; demo composes chrome without raw `pipeline` paint.
 - **Verified (ChG):** Pause drops Exact 1 px past holes; scrub warm trail intact.
+- **Verified (ААААА / aaa-probe):** Pause densify Exact 1‑frame/GOP holes — `fill_one_gap` salvage; design in `architecture.md` § Predictive densify.
 - **Do not:** prune Exact on every drag `set_playhead`; soft-drag preview from Covered nearest.
 
 ---

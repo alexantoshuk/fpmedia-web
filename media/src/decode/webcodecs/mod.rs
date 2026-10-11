@@ -1024,8 +1024,9 @@ impl WebCodecsDecoder {
         }
         // Always flush at GOP end — pending-only gate missed held B-frames when
         // `decode_queue_size==0` and `input_timestamps` already drained.
-        // mediabunny: `await decoder.flush()` after packets exhaust. (PreferSoftware
-        // may still omit one presentation id; densify skip-bridge / ban-key handles that.)
+        // mediabunny: `await decoder.flush()` after packets exhaust.
+        // PreferSoftware may still omit a presentation id — Exact salvage in
+        // `fill_one_gap` (`decode_frame` / samplesAtTimestamps).
         if is_cancelled() {
             return self.abort_gop_partial();
         }

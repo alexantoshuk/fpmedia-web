@@ -31,7 +31,8 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Gray holes never fill (pause/URL) | `schedule_fetchmap_gap_fill` + FetchMap accumulate | own `SingleFlight` (`gray_fill`); never share densify flight; URL accumulate |
 | Gray fill floods drag / stays slow after | `scrub_gesture` + gray pace | drag: 1×quantum / 150 ms; idle: 2× / 16 ms; clear gesture on pipeline + `play` |
 | URL play ~0.6× / first-play lag | `CachedSource` sample miss | return `want` immediately; quantum fill bg |
-| Dense wiped / Next-Prev lag / Pause densify dead | Play trim + densify exit | budgets→park→densify; GOP-wide Covered skip-bridge (`outs>0`); ban only marker-complete GOP (else retry); unbanned walk = full indexed span (not 512); PTS multimap; drag kills densify |
+| Dense wiped / Next-Prev lag / Pause densify dead | Play trim + densify exit | budgets→park→densify; fill order `architecture.md` § Predictive densify; unbanned walk = full indexed span; PTS multimap; drag kills densify |
+| Exact 1‑frame holes every GOP (Pause densify) | `fill_one_gap` | PreferSoftware `decode_gop` omit → Exact `decode_frame` salvage before Covered skip-bridge |
 | Exact 1 px orphan past hole after Pause densify | `evict_exact_orphans_beyond_aim` | farthest-evict every densify tick (not gated on Exact near-gap idle — under-cap soft-drag holes skipped eviction); not on drag `set_playhead` |
 | Loop seam wipe / ~1 s underrun hold | loop_prime / `play_loop_seam` | `ResetForPlay`→HoldScrub across `loop_to_start`; warm-prefetch before resume; keep Covered+Exact; BeginPrepareLoop only |
 | Pause→Play / scrub→Play lag or no-op | seed + `ScrubRelease{then_play}` | host: `skills/leptos.md`; probes gray-first / cold-resume / stress |
@@ -82,7 +83,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 - **Secure context** → gate before `isConfigSupported` or UI freezes on create.
 - **First packet sanitize** → strip Chromium-hostile AVC NALs; HEVC NAL-order + drop RASL after CRA (`sanitize_*` / `has_hevc_rasl_picture`).
 - **Lifecycle** → feed-ahead over flush; soft sequential next-key on Play; after flush clear warm state; `take_decoder` ~5s wall-clock. All-Intra: never hard-recreate on every key when idle.
-- **Held / PTS** → park `PTS >= target`; prune_floor + cascade through aim; main HW prefer Hd+Uhd; scrub/thumb `PreferSoftware` (not no-preference); HW configure fail → PreferSoftware sticky; `optimizeForLatency: false`. `mediabunny: src/media-sink.ts` alpha prefer-software.
+- **Held / PTS** → park `PTS >= target`; prune_floor + cascade through aim; PTS assign = FIFO fed stamps (`inputTimestamps.shift`); main HW prefer Hd+Uhd; scrub/thumb `PreferSoftware`; HW configure fail → PreferSoftware sticky; `optimizeForLatency: false`. `mediabunny: media-sink.ts sampleHandler` / alpha prefer-software.
 - **Backpressure** → wait on new output/take (not buffered frames as progress); dual-async pump parks at `q==0` for consumer; densify cancel → hard reset, fill task returns.
 - **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout` — use `webmedia::timer` (engine + host).
 - **Op cancel** → `op_epoch`; Cancelled = soft; invalidate uses reset when checked out.
@@ -97,7 +98,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 ### Scrub / thumbs
 
 - Model: `architecture.md` § Play / scrub residency.
-- Soft-drag: blit + aim only — densify task exits on `scrub_gesture` / drag `cancel_ops_and_scrub_fill`. Pause: warm audio + pipeline (budgets→park→densify); blit cap full → keep marker gaps; `next_gap` none → exit (no pending-spin busy). Settle: second densify yield before soft-cold skip Exact. Strip sticky: accept coverage growth. no 1:1 — densify local.
+- Soft-drag: blit + aim only — densify task exits on `scrub_gesture` / drag `cancel_ops_and_scrub_fill`. Pause: warm audio + pipeline (budgets→park→densify); fill order `architecture.md` § Predictive densify; blit cap full → keep marker gaps; `next_gap` none → exit. Settle: second densify yield before soft-cold skip Exact. Strip sticky: accept coverage growth.
 - Do not cancel in-flight GOP densify on aim move; do not blit interim; do not wipe markers on settle/Play; do not drop prune salvage “to clean the strip” (re-decodes GOP — `AGENTS.md` Suboptimal).
 - Step: ring → blit → soft goto without abort densify. Pause after Play: refill blit gaps (`next_gap` prefers blit holes). Exact `put` refuses far inserts at cap (no origin/EOF thrash).
 - **GopProfile** → Short on **max** GOP only (scene-cut spread must not force Long).

@@ -108,11 +108,8 @@ pub fn next_fetchmap_gap(gaps: &[(u64, u64)], focus_offset: u64) -> Option<(u64,
         })
 }
 
-/// PreferSoftware skip-bridge targets: presentation ids in the GOP still missing
-/// Covered markers (not only the gap `target`). Closing only `target` left ChG
-/// swiss-cheese / 1 px crumbs while Pause densify walked on.
-///
-/// Local densify plane (`mediabunny:` no equivalent).
+/// GOP presentation ids still missing Covered markers (after Exact salvage).
+/// Local densify plane — `architecture.md` § Predictive densify step (3).
 pub fn densify_skip_bridge_ids(
     gop_ids: &[FrameId],
     has_marker: impl Fn(FrameId) -> bool,
@@ -122,6 +119,28 @@ pub fn densify_skip_bridge_ids(
         .copied()
         .filter(|&id| !has_marker(id))
         .collect()
+}
+
+/// Soft-ban GOP key after densify `Ok(false)`?
+///
+/// Gate on Exact only (`blit_complete` / cap refuse-all / idle retries) — not
+/// Covered solidity. Fill order: `architecture.md` § Predictive densify.
+pub fn densify_should_ban_after_no_progress(
+    blit_complete: bool,
+    refuse_all_missing_blit: bool,
+    idle_passes: u8,
+    idle_ban_after: u8,
+) -> (bool, u8) {
+    if blit_complete || refuse_all_missing_blit {
+        return (true, 0);
+    }
+    let idle = idle_passes.saturating_add(1);
+    let after = idle_ban_after.max(1);
+    if idle >= after {
+        (true, 0)
+    } else {
+        (false, idle)
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +233,30 @@ mod tests {
         let missing = densify_skip_bridge_ids(&gop, |id| resident.contains(&id));
         assert_eq!(missing, vec![11, 13]);
         assert!(densify_skip_bridge_ids(&gop, |_| true).is_empty());
+    }
+
+    #[test]
+    fn densify_ban_after_no_progress_needs_exact_or_idle() {
+        assert_eq!(
+            densify_should_ban_after_no_progress(false, false, 0, 3),
+            (false, 1)
+        );
+        assert_eq!(
+            densify_should_ban_after_no_progress(false, false, 1, 3),
+            (false, 2)
+        );
+        assert_eq!(
+            densify_should_ban_after_no_progress(false, false, 2, 3),
+            (true, 0)
+        );
+        assert_eq!(
+            densify_should_ban_after_no_progress(true, false, 0, 3),
+            (true, 0)
+        );
+        assert_eq!(
+            densify_should_ban_after_no_progress(false, true, 0, 3),
+            (true, 0)
+        );
     }
 
     #[test]

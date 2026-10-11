@@ -543,39 +543,12 @@ impl DecoderCore {
         Ok(())
     }
 
-    /// PTS for a decoded frame: prefer the chunk timestamp retained on the
-    /// `VideoFrame` when it matches a fed stamp; otherwise FIFO (mediabunny
-    /// non-WebKit). Do not drop the FIFO head on an unmatched chunk PTS.
+    /// Next earliest fed stamp (FIFO). Ignores browser `VideoFrame.timestamp`.
     ///
-    /// Chromium **HW** may regenerate presentation timestamps with ±1 µs vs
-    /// truncating `ticks_to_micros` (24 fps @ timescale 12288: 512 ticks →
-    /// trunc 41666, round 41667). Exact match then fails → FIFO on B-frame
-    /// reorder desyncs the whole trail (`flush/idle` aim missing, held≈N-2).
-    /// Firefox / many Edge paths keep the chunk timestamp. Match ±1 µs and
-    /// **keep our fed stamp** so `take_held` still finds the aim.
-    fn assign_output_pts(&mut self, frame: &OwnedVideoFrame) -> Option<i64> {
-        let chunk_pts = {
-            let ts = frame.as_web_sys().timestamp();
-            if ts.is_finite() {
-                Some(ts.round() as i64)
-            } else {
-                None
-            }
-        };
-        if let Some(pts) = chunk_pts {
-            if let Some(i) = self.input_timestamps.iter().position(|&t| t == pts) {
-                self.input_timestamps.remove(i);
-                return Some(pts);
-            }
-            // ±1 µs: Chromium HW round vs trunc (see above).
-            if let Some(i) = self
-                .input_timestamps
-                .iter()
-                .position(|&t| (t - pts).abs() <= 1)
-            {
-                return Some(self.input_timestamps.remove(i));
-            }
-        }
+    /// `mediabunny: src/media-sink.ts sampleHandler` non-WebKit —
+    /// `inputTimestamps.shift()` then overwrite sample timestamp. Parks our fed
+    /// µs on `held` so Chromium HW ±1 µs regenerations still match `take_held`.
+    fn assign_output_pts(&mut self, _frame: &OwnedVideoFrame) -> Option<i64> {
         let pts = self.input_timestamps.first().copied()?;
         self.input_timestamps.remove(0);
         Some(pts)
