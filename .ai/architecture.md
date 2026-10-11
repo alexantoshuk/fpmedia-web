@@ -14,8 +14,8 @@
 | Framework | Leptos CSR — `mount_to_body` SPA; static `index.html` shell |
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
-| App UI | `app` crate — demo host (controls) + thin SSR shell |
-| Media element | `media_components` crate — Leptos `<Video>` / `VideoRef` (API-only) + `strip` (scrubber strip pixel math) + `helpers` (host UI math) + `HoverThumbPreview`. Modules: `video`, `strip`, `helpers`, `hover_thumb` (`video` / `hover_thumb` wasm-only) |
+| App UI | `app` crate — **all** player chrome (controls, scrubber composition, thumb labels) + thin SSR shell. Product boundary: `product.md` § Surfaces |
+| Media element | `media_components` — `<Video>` / `VideoRef` + agreed headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (see `product.md` § Element-layer helpers). Today: `strip` math, `helpers`, `HoverThumbPreview` (migrate toward `<HoverThumb>`). Modules: `video`, `strip`, `helpers`, `hover_thumb` |
 | Media engine | `webmedia` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `media_components/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
@@ -33,7 +33,7 @@ Long-lived host UI lives **outside** matched routes when routes are added. **Res
 ```
 webmedia/
 ├── media/                 ← crate name `webmedia`: demux + FrameIndex + VideoPlayer
-├── media_components/      ← crate name `media_components`: Leptos <Video>
+├── media_components/      ← crate name `media_components`: <Video> + headless scrub helpers
 ├── timecode/              ← crate name `timecode`: SMPTE frames ↔ HH:MM:SS:FF (DF/NDF)
 ├── app/                   ← demo host UI + shell()
 ├── frontend/              ← wasm mount (hydrate)
@@ -68,15 +68,15 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Full-stack Rust (Leptos) | One language for engine + UI |
 | CSR SPA | Simple mental model; static shell + WASM mount |
 | Isolated `webmedia` crate | Engine reusable without UI; no Leptos in demux/decode |
-| Isolated `media_components` crate | HTML `<video>` analog; reusable without demo host UI |
+| Isolated `media_components` crate | HTML `<video>` analog + headless track helpers; **no** player chrome (`product.md` Elements first) |
 | WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
 | `leptos-use` for browser helpers | Observers/events/rAF in UI crates; media crate stays free of Leptos |
-| Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`) |
+| Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`). MB = sinks + examples; our `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` are Leptos adapters over `VideoPlayer`, not MB UI ports |
 | Progressive open via `MediaSource` | Ranged reads; parse `moov` (+ `moof` for single-file fMP4); keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Design: [Play / scrub residency](#play--scrub-residency). Traps: `skills/media.md`. |
-| Optional hover thumbs (`thumbs`) | Feature `thumbs` default on; runtime `ThumbPolicy`; 3rd decoder + `ThumbCache` / `ThumbPreview`; UI `HoverThumbPreview`. UX: `product.md`. |
+| Optional hover thumbs (`thumbs`) | Feature `thumbs` default on; runtime `ThumbPolicy`; 3rd decoder + `ThumbCache` / `ThumbPreview`. Host UI: agreed `<HoverThumb>` (`product.md`); today’s `HoverThumbPreview` is the interim wire-up |
 | Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. `audio/` has no canvas dependency. |
-| Component API like HTML media | Element crates: open/play/seek/rate/volume. Strip math: `media_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns JKL/Space/arrows. |
+| Component API like HTML media | Elements: open/play/seek/rate/volume + agreed `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `media_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `webmedia::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
 
@@ -148,7 +148,21 @@ Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). U
 | `ScrubBlitLru` | Live densify bitmaps; cap from `scrub_blit_frame_budget` |
 | `ThumbCache` / `ThumbPreview` | Hover filmstrip (3rd decoder); feature `thumbs` |
 
-**Modes:** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify`. Soft-drag → aim+blit only (no densify under finger — PreferSoftware saturates JS). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Eviction: farthest from aim — one `residency::AimWindow` under markers + blit. `mediabunny:` CanvasSink pool idea — no still-encode store.
+**Modes (summary):** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify`. Soft-drag → aim+blit only (no densify under finger — PreferSoftware saturates JS). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Eviction: farthest from aim — one `residency::AimWindow` under markers + blit. `mediabunny:` CanvasSink pool idea — no still-encode store.
+
+### Scrub phases
+
+Host gesture × engine (FSM homes: `webmedia::transport`, `webmedia::engine_mode`). Exactness = settle / seek / step / Pause canvas — not soft-drag (`product.md` Exact vs Play). Hover thumb: Play + Pause only, not while `Scrubbing` (`product.md`).
+
+| Phase | Host `TransportState` | `EngineMode` | Densify | Picture | Entry |
+| ----- | --------------------- | ------------ | ------- | ------- | ----- |
+| Play | `Playing` | `Play` | off | presentation queue | play / rAF |
+| Soft-drag | `Scrubbing` | `Scrub` (+ soft audio hold) | off under finger | aim + Exact blit preview | `VideoRef::scrub_pointer_down/move` → `note_scrub_frame` |
+| Pause / idle scrub | `Ready` (paused) | `Scrub` | on if `ScrubPolicy::densify` | densify → blit + markers | `enter_scrub_cache_pipeline` |
+| Settle | `Settling` | `ExactHold` | deferred (yield) | Exact key→N | `scrub_pointer_up` → `ScrubRelease` |
+| Resume | `PlayPriming` → `Playing`, or stay paused | → `Play` / `Scrub` | per mode | prime / hold frame | `ScrubRelease { then_play }` |
+
+Traps: `skills/media.md`. Host playhead / `scrub_pointer_*`: `skills/leptos.md`.
 
 ### Predictive densify
 

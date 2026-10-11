@@ -18,7 +18,7 @@
 | Progress bar stuck on old frame | `player.take()` before zeroing counts; paused rAF `sync_ui` |
 | URL open CORS / `/proxy` 403 / CL mismatch | same-origin proxy, loopback only — `architecture.md` Progressive open |
 | Gray vs green strips lie / blur | 1 px canvas `paint_strip_canvas_1px`; greens honest snap (no soft-merge / min-px) — UX: `product.md` |
-| Hover jank on Play / lag until paint | `HoverThumbPreview` trailing throttle 150 ms (per instance); sync DOM transform first; engine: `skills/media.md` |
+| Hover jank on Play / lag until paint | `HoverThumbPreview` (interim; agreed `<HoverThumb>` → `product.md`) trailing 150 ms; sync transform first; engine: `skills/media.md` |
 | `RefCell already borrowed` (tachys / Loop) | no borrow across await; scrub → `scrub_pointer_*` sync (Move throttled in `<Video>`); no demo TLS |
 | Start stutter / Play lag after scrub | clock origins after prime; no `seek_frame` from `VideoRef::play` |
 | Scrub bar lags / pointer jank / hold jumps | sync playhead on move; `<Video>` Move throttle 50 ms; paused rAF `sync_ui` ≤10 Hz (150 ms while `Scrubbing`) |

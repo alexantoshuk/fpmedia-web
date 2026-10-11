@@ -16,7 +16,7 @@
 
 ## Next up
 
-_(empty — strip densify / Exact-orphan UX closed; pick from Later or a new symptom)_
+- Implement agreed `media_components` surface: `<Scrubber>` + `<TimelineMeta>` + `<HoverThumb>` (canvas inside; demo chrome via children/`class`); migrate demo scrubber off raw `pipeline` paint. Spec: `product.md` § Element-layer helpers; phases: `architecture.md` § Scrub phases.
 
 ---
 

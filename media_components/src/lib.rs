@@ -3,10 +3,10 @@
 //! - [`video`] — frame-accurate `<Video>` + [`VideoRef`]
 //! - [`strip`] — scrubber strip pixel runs (fetch / Covered / Exact) + 1 px canvas paint
 //! - [`helpers`] — playhead / scrub-x CSS math, hover-thumb geometry, metadata formatters
-//! - [`hover_thumb`] — Frame.io-style scrubber UI (`HoverThumbPreview`) — not inside `<Video>`
+//! - [`hover_thumb`] — hover paint helper (`HoverThumbPreview`; agreed `<HoverThumb>` in `.ai/product.md`) — not player chrome
 //! - `audio` — planned pure-audio host (`AudioRef`)
 //!
-//! Host UI (keyboard, transport buttons) stays in the demo `app` crate.
+//! Player chrome (keyboard, transport, scrubber look) stays in the demo `app` crate.
 
 pub mod helpers;
 #[cfg(target_arch = "wasm32")]
