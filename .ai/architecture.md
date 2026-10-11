@@ -159,7 +159,7 @@ Host gesture × engine (FSM homes: `webmedia::transport`, `webmedia::engine_mode
 | Play | `Playing` | `Play` | off | presentation queue | play / rAF |
 | Soft-drag | `Scrubbing` | `Scrub` (+ soft audio hold) | off under finger | aim + Exact blit preview | `VideoRef::scrub_pointer_down/move` → `note_scrub_frame` |
 | Pause / idle scrub | `Ready` (paused) | `Scrub` | on if `ScrubPolicy::densify` | densify → blit + markers | `enter_scrub_cache_pipeline` |
-| Settle | `Settling` | `ExactHold` | deferred (yield) | Exact key→N | `scrub_pointer_up` → `ScrubRelease` |
+| Settle | `Settling` | `ExactHold` | deferred (yield) | Exact key→N | `scrub_pointer_up` → `ScrubRelease` — **do not** full-clear Exact blit here (see `skills/media.md` soft-drag frozen) |
 | Resume | `PlayPriming` → `Playing`, or stay paused | → `Play` / `Scrub` | per mode | prime / hold frame | `ScrubRelease { then_play }` |
 
 Traps: `skills/media.md`. Host playhead / `scrub_pointer_*`: `skills/leptos.md`.

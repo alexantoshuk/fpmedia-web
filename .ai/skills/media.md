@@ -21,7 +21,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
 | Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only; `EnterScrub{soft, densify:false}`; `apply_engine_event` runs cmds |
 | Pause strips don't grow / no hole-fill | `pause_warm_idle` | Pause button: `SoftPause{densify:true}` — not `pause_for_scrub` (drag-only) |
-| Soft-drag canvas frozen until pointerup | `scrub_preview_frame` | preview from Exact blit only — Covered nearest has no bitmap |
+| Soft-drag / cold scrub canvas frozen (no frame change) | `scrub_preview_frame` / Exact blit | preview = Exact only — **never** `blit.clear` / full Exact wipe on settle, seek prep, or pointer-up (`b8206d1` `clear_exact_for_aim` broke scrub). Aim/evict OK; full clear not |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Hover CPU / freeze / stuck far | ThumbPreview isolation | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
@@ -99,6 +99,7 @@ Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md
 
 - Model: `architecture.md` § Play / scrub residency.
 - Soft-drag: blit + aim only — densify task exits on `scrub_gesture` / drag `cancel_ops_and_scrub_fill`. Pause: warm audio + pipeline (budgets→park→densify); fill order `architecture.md` § Predictive densify; blit cap full → keep marker gaps; `next_gap` none → exit. Settle: second densify yield before soft-cold skip Exact. Strip sticky: accept coverage growth.
+- **Do not wipe Exact to “unstick” seek/settle** → `scrub_preview_frame` reads Exact only; `blit.clear` / full Exact trim on pointer-up or seek prep freezes cold scrub (regressed in `b8206d1`). Keep trail; retarget aim + farthest-evict; fix densify yield / gap pick instead. Do not gate all Exact puts behind Covered-only `fill_exact` such that Exact never rebuilds under the finger.
 - Do not cancel in-flight GOP densify on aim move; do not blit interim; do not wipe markers on settle/Play; do not drop prune salvage “to clean the strip” (re-decodes GOP — `AGENTS.md` Suboptimal).
 - Step: ring → blit → soft goto without abort densify. Pause after Play: refill blit gaps (`next_gap` prefers blit holes). Exact `put` refuses far inserts at cap (no origin/EOF thrash).
 - **GopProfile** → Short on **max** GOP only (scene-cut spread must not force Long).
