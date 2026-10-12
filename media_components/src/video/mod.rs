@@ -8,11 +8,15 @@ mod ctx;
 mod host_ops;
 mod op_queue;
 mod open_url;
+mod pipeline_interest;
 mod session;
 mod transport_apply;
 
 pub use component::Video;
-pub use webmedia::{PipelineStats, ReadyFrameKind, ReadyFrameMark, ThumbPolicy, VideoMetadata};
+pub use pipeline_interest::{PipelineInterestLease, PipelinePlane};
+pub use webmedia::{
+    PipelineInterest, PipelineStats, ReadyFrameKind, ReadyFrameMark, ThumbPolicy, VideoMetadata,
+};
 
 use std::rc::Rc;
 
@@ -50,6 +54,8 @@ pub struct VideoRef {
     pub playback_rate: RwSignal<f64>,
     /// Non-`Send` callbacks registered by the mounted [`Video`] component.
     pub(crate) ops: StoredValue<Option<VideoOps>, LocalStorage>,
+    /// Refcounts for [`PipelineInterest`] planes (strips / debug meters).
+    pipeline_interest_counts: StoredValue<pipeline_interest::InterestCounts, LocalStorage>,
 }
 
 #[derive(Clone)]
@@ -104,6 +110,9 @@ impl VideoRef {
             muted: RwSignal::new(false),
             playback_rate: RwSignal::new(1.0),
             ops: StoredValue::new_local(None),
+            pipeline_interest_counts: StoredValue::new_local(
+                pipeline_interest::InterestCounts::default(),
+            ),
         }
     }
 

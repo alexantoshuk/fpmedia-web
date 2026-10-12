@@ -58,6 +58,33 @@ impl ReadyFrameMark {
     }
 }
 
+/// Which [`PipelineStats`] planes to fill — host interest from composed strips / debug UI.
+///
+/// Empty planes stay at [`Default`] (no coalesce / no FetchMap snap).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PipelineInterest {
+    /// Gray FetchMap file-fraction ranges.
+    pub fetch: bool,
+    /// Keyframes / Covered / Exact ready marks.
+    pub ready: bool,
+    /// Decode / underrun / cache counters (debug panel).
+    pub meters: bool,
+}
+
+impl PipelineInterest {
+    pub const fn none() -> Self {
+        Self {
+            fetch: false,
+            ready: false,
+            meters: false,
+        }
+    }
+
+    pub const fn any(self) -> bool {
+        self.fetch || self.ready || self.meters
+    }
+}
+
 /// Live decode / prefetch counters for the demo UI (and host apps).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PipelineStats {

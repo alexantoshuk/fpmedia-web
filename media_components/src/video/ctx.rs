@@ -67,7 +67,8 @@ impl HostCtx {
             // Do NOT sync `playing` from the engine — transport FSM owns UI
             // `playing` (`TransportState::ui_playing`).
             v.looping.set(st.looping);
-            v.pipeline.set(Some(p.pipeline_stats()));
+            v.pipeline
+                .set(Some(p.pipeline_stats(v.pipeline_interest())));
         }
     }
 

@@ -94,7 +94,7 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
                     status.set(OpenPhase::Ready.label());
                     fps_meter.borrow_mut().reset();
                     fps.set(None);
-                    pipeline.set(Some(p.pipeline_stats()));
+                    pipeline.set(Some(p.pipeline_stats(ctx.video.pipeline_interest())));
                     ctx.sync_ui();
                 }
                 Err(e) if e.is_cancelled() => {

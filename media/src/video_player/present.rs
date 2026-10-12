@@ -63,76 +63,86 @@ impl VideoPlayer {
         }
         Ok(())
     }
-    pub fn pipeline_stats(&self) -> PipelineStats {
-        // Do not hold `presentation` across the dense-cache borrow — park/fill
-        // may re-enter on VideoFrame drop and need the queue RefCell.
-        let (presentation_len, presentation_from, presentation_to) = {
-            let presentation = self.shared.presentation.borrow();
-            (
-                presentation.len(),
-                presentation.front().map(|q| q.frame),
-                presentation.back().map(|q| q.frame),
-            )
-        };
-        let (cache_chunks, cache_frames, cache_cap, cache_no_gaps, ready_frames, win_from, win_to) = {
+    /// Snapshot pipeline planes requested by [`PipelineInterest`] (strips / debug UI).
+    ///
+    /// Unrequested planes stay at [`PipelineStats`] defaults — no ready coalesce /
+    /// FetchMap snap / meter reads.
+    pub fn pipeline_stats(&self, want: super::PipelineInterest) -> PipelineStats {
+        if !want.any() {
+            return PipelineStats::default();
+        }
+
+        let mut out = PipelineStats::default();
+
+        if want.meters {
+            // Do not hold `presentation` across the dense-cache borrow — park/fill
+            // may re-enter on VideoFrame drop and need the queue RefCell.
+            let (presentation_len, presentation_from, presentation_to) = {
+                let presentation = self.shared.presentation.borrow();
+                (
+                    presentation.len(),
+                    presentation.front().map(|q| q.frame),
+                    presentation.back().map(|q| q.frame),
+                )
+            };
+            let (held_len, decode_queue_size) = match self.decoder.borrow().as_ref() {
+                Some(d) => (d.held_len(), d.browser_decode_queue_size()),
+                None => (usize::MAX, u32::MAX),
+            };
+            out.presentation_len = presentation_len;
+            out.presentation_cap = self.play_presentation_cap();
+            out.presentation_from = presentation_from;
+            out.presentation_to = presentation_to;
+            out.held_len = held_len;
+            out.decode_queue_size = decode_queue_size;
+            out.frames_skipped = self.shared.frames_skipped.get();
+            out.last_behind_ms = self.shared.last_behind_ms.get();
+            out.underrun_holds = self.shared.underrun_holds.get();
+            out.underrun_hold_ms = self.underrun_hold_ms_now();
+            out.scrub_busy = self.shared.densify.is_busy();
+            out.gop_profile = self.shared.track.metadata_ref().gop_profile;
+        }
+
+        if want.ready || want.meters {
             let cache = self.shared.scrub_chunks.borrow();
             let blit = self.shared.scrub_blit.borrow();
-            let extent = cache.extent();
-            let mut ready = Vec::new();
-            // Structural sync ticks (GOP starts) — not densify residency.
-            for id in self.shared.track.index().sync_frame_ids() {
-                ready.push(ReadyFrameMark::run(id, id, ReadyFrameKind::Keyframes));
+            if want.meters {
+                let extent = cache.extent();
+                out.cache_chunks = cache.chunk_count();
+                out.cache_frames = cache.frame_count();
+                out.cache_cap = cache.max_frames();
+                out.cache_no_gaps = cache.no_gaps();
+                out.scrub_window_from = extent.map(|(a, _)| a);
+                out.scrub_window_to = extent.map(|(_, b)| b);
             }
-            // Solid strip runs only (markers + blit). Prefetch VF rings are meters,
-            // not painted on the scrubber (no ahead/behind ticks).
-            for (lo, hi) in coalesce_frame_runs(cache.cached_frame_ids()) {
-                ready.push(ReadyFrameMark::run(lo, hi, ReadyFrameKind::Covered));
+            if want.ready {
+                let mut ready = Vec::new();
+                // Structural sync ticks (GOP starts) — not densify residency.
+                for id in self.shared.track.index().sync_frame_ids() {
+                    ready.push(ReadyFrameMark::run(id, id, ReadyFrameKind::Keyframes));
+                }
+                // Solid strip runs only (markers + blit). Prefetch VF rings are meters,
+                // not painted on the scrubber (no ahead/behind ticks).
+                for (lo, hi) in coalesce_frame_runs(cache.cached_frame_ids()) {
+                    ready.push(ReadyFrameMark::run(lo, hi, ReadyFrameKind::Covered));
+                }
+                for (lo, hi) in coalesce_frame_runs(blit.cached_frame_ids()) {
+                    ready.push(ReadyFrameMark::run(lo, hi, ReadyFrameKind::Exact));
+                }
+                ready.sort_by(|a, b| {
+                    a.frame.cmp(&b.frame).then_with(|| {
+                        ready_kind_paint_order(a.kind).cmp(&ready_kind_paint_order(b.kind))
+                    })
+                });
+                out.ready_frames = ready;
             }
-            for (lo, hi) in coalesce_frame_runs(blit.cached_frame_ids()) {
-                ready.push(ReadyFrameMark::run(lo, hi, ReadyFrameKind::Exact));
-            }
-            ready.sort_by(|a, b| {
-                a.frame.cmp(&b.frame).then_with(|| {
-                    ready_kind_paint_order(a.kind).cmp(&ready_kind_paint_order(b.kind))
-                })
-            });
-            (
-                cache.chunk_count(),
-                cache.frame_count(),
-                cache.max_frames(),
-                cache.no_gaps(),
-                ready,
-                extent.map(|(a, _)| a),
-                extent.map(|(_, b)| b),
-            )
-        };
-        // While decode owns the decoder (`None` in the slot), report busy.
-        let (held_len, decode_queue_size) = match self.decoder.borrow().as_ref() {
-            Some(d) => (d.held_len(), d.browser_decode_queue_size()),
-            None => (usize::MAX, u32::MAX),
-        };
-        PipelineStats {
-            presentation_len,
-            presentation_cap: self.play_presentation_cap(),
-            presentation_from,
-            presentation_to,
-            held_len,
-            decode_queue_size,
-            frames_skipped: self.shared.frames_skipped.get(),
-            last_behind_ms: self.shared.last_behind_ms.get(),
-            underrun_holds: self.shared.underrun_holds.get(),
-            underrun_hold_ms: self.underrun_hold_ms_now(),
-            cache_chunks,
-            cache_frames,
-            cache_cap,
-            cache_no_gaps,
-            scrub_busy: self.shared.densify.is_busy(),
-            scrub_window_from: win_from,
-            scrub_window_to: win_to,
-            ready_frames,
-            gop_profile: self.shared.track.metadata_ref().gop_profile,
-            fetch_file_ranges: self.shared.fetch_map.file_fractions(self.shared.file_size),
         }
+
+        if want.fetch {
+            out.fetch_file_ranges = self.shared.fetch_map.file_fractions(self.shared.file_size);
+        }
+
+        out
     }
 
     pub fn frame_duration_seconds(&self) -> Result<f64, MediaError> {

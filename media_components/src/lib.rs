@@ -33,5 +33,6 @@ pub use scrubber::{HoverThumbApi, Scrubber, ScrubberCtx};
 pub use timeline_meta::{TimelineMeta, TimelineMetaKind};
 #[cfg(target_arch = "wasm32")]
 pub use video::{
-    PipelineStats, ReadyFrameKind, ReadyFrameMark, ThumbPolicy, Video, VideoMetadata, VideoRef,
+    PipelineInterest, PipelineInterestLease, PipelinePlane, PipelineStats, ReadyFrameKind,
+    ReadyFrameMark, ThumbPolicy, Video, VideoMetadata, VideoRef,
 };

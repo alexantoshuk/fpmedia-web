@@ -9,7 +9,7 @@ use media_components::helpers::{
     playhead_width_css, strip_canvas_buffer_width,
 };
 use media_components::{
-    HoverThumb, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, TimelineMeta,
+    HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, TimelineMeta,
     TimelineMetaKind, Video, VideoRef,
 };
 use wasm_bindgen::JsCast;
@@ -109,6 +109,9 @@ fn jkl_step(rate: f64, dir: i32) -> f64 {
 #[component]
 pub fn DemoPlayer() -> impl IntoView {
     let video = VideoRef::new();
+    // Debug pipeline line + `pipeline-json` e2e — request meter plane only while demo lives.
+    let meters_lease = video.lease_pipeline_plane(PipelinePlane::Meters);
+    on_cleanup(move || drop(meters_lease));
     let url_input = NodeRef::<Input>::new();
     let player_root = NodeRef::<Div>::new();
     let fullscreen = RwSignal::new(false);

@@ -7,6 +7,7 @@ use leptos::html::Canvas;
 use leptos::prelude::*;
 use web_sys::window;
 
+use crate::PipelinePlane;
 use crate::ReadyFrameKind;
 use crate::helpers::{
     COVERED_STRIP_COLOR, EXACT_STRIP_COLOR, FETCH_STRIP_COLOR, KEYFRAME_STRIP_COLOR,
@@ -37,6 +38,13 @@ impl TimelineMetaKind {
             Self::Exact => EXACT_STRIP_COLOR,
         }
     }
+
+    fn pipeline_plane(self) -> PipelinePlane {
+        match self {
+            Self::Fetch => PipelinePlane::Fetch,
+            Self::Keyframes | Self::Covered | Self::Exact => PipelinePlane::Ready,
+        }
+    }
 }
 
 /// Single 1 px-tall canvas strip; CSS-stretch via host `class`.
@@ -56,6 +64,10 @@ pub fn TimelineMeta(
     let latch = StoredValue::new_local(StripPaintLatch::new());
     let paint_color = color.unwrap_or_else(|| kind.default_color().to_string());
     let root_class = class.unwrap_or_default();
+
+    // Compose → interest: only this plane is filled in `pipeline_stats`.
+    let interest_lease = video.lease_pipeline_plane(kind.pipeline_plane());
+    on_cleanup(move || drop(interest_lease));
 
     Effect::new(move |_| {
         // Track pipeline / count even when the canvas NodeRef is not ready yet —

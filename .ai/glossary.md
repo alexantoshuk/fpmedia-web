@@ -173,7 +173,7 @@ Headless gesture + track context: pointer → playhead / scrub phases. Host supp
 
 ### `<TimelineMeta>`
 
-One meta strip for a kind (`Fetch` / `Keyframes` / `Covered` / `Exact`): pipeline runs → 1px canvas paint. Host owns color and DOM placement. `Keyframes` = sync sample ticks from the frame index (not densify residency).
+One meta strip for a kind (`Fetch` / `Keyframes` / `Covered` / `Exact`): pipeline runs → 1px canvas paint. Host owns color and DOM placement. `Keyframes` = sync sample ticks from the frame index (not densify residency). Mount acquires a refcounted `PipelineInterest` plane (`Fetch` or `Ready`); debug meters use a separate lease.
 
 ### `<HoverThumb>`
 

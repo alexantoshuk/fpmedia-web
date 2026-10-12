@@ -35,7 +35,7 @@ Headless / paint-inside components in `media_components` (compose in demo; chrom
 | ----- | ---- |
 | `<Video>` / `VideoRef` | Stage + element API (open/play/seek/rate/volume). |
 | `<Scrubber>` | Gesture + track container + context. Owns pointer → playhead + `scrub_pointer_*` / transport / scrub phases. Host: children + CSS; may observe `scrubbing`. Does **not** ship progress fill, ticks, or strip layout. |
-| `<TimelineMeta kind>` | One timeline meta strip (`Fetch` / `Keyframes` / `Covered` / `Exact`). Hides `pipeline` → px-runs → 1 px canvas paint. Host: `class` / color + DOM placement (overlay vs stacked rows). |
+| `<TimelineMeta kind>` | One timeline meta strip (`Fetch` / `Keyframes` / `Covered` / `Exact`). Hides `pipeline` → px-runs → 1 px canvas paint. Host: `class` / color + DOM placement (overlay vs stacked rows). Mount leases `PipelineInterest` (Fetch vs Ready) so unused planes are not built each `sync_ui`. |
 | `<HoverThumb>` | Hover preview: canvas **inside**; props `width` / `height` / `class`; `children` = chrome (border, timecode, frame #); exposes `frame` / `visible`. Position (`transform`) computed from scrubber `update(x, track_w, frame)`. Auto-wire when under `<Scrubber>`; manual API escape hatch OK. |
 
 `video.pipeline` may remain for a **debug** panel — not required for scrubber UI. Math helpers (`playhead_width_*`, `scrub_frame_from_x`, `strip::*`) stay for custom chrome. Phases design: `architecture.md` § Scrub phases.
