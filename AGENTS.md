@@ -18,7 +18,7 @@ Canonical project knowledge lives in **`AGENTS.md`** + **`.ai/`** (+ **`CONTRIBU
 3. Read `.ai/state.md` — in progress + next up. No Done list.
 4. Scan `.ai/skills/` filenames.
 5. **Read the relevant skill before touching code that imports its topic** — start with its **Triage** table, then the sections it points to (read the full skill when the change is broad).
-6. Unfamiliar scrub / residency / densify wording → [`.ai/glossary.md`](.ai/glossary.md) (do not invent parallel definitions in chat-only notes).
+6. **Do not** preload [`.ai/glossary.md`](.ai/glossary.md) every session. Open it only when a term is unfamiliar or when adding/changing vocabulary (see [Glossary hygiene](#glossary-hygiene)). Prefer product / architecture / skill triage first.
 7. **Media work (mandatory):** see [Mediabunny-first](#mediabunny-first) below.
 
 All `.ai/` documentation is English.
@@ -149,13 +149,14 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 
 ### Glossary hygiene
 
-`.ai/glossary.md` is the **only** home for shared term definitions.
+`.ai/glossary.md` is the **only** home for shared term definitions. Stays under `.ai/` for now (developer onboarding + agent lookup) — **not** a start-of-session must-read.
 
-1. **Add** — when a new stable term enters product/architecture/code review vocabulary (settle, densify, skip-bridge, …), add an entry in the same doc change (or the same PR as the feature). Prefer a short expanded definition over a one-liner when ambiguity has already burned time.
-2. **Edit** — when behaviour or naming changes, update the entry in the **same** change; do not leave a definition that contradicts `architecture.md` / `product.md`.
-3. **Delete** — when a term is retired or renamed away, **remove** the old entry (or replace with a one-line “see \<new term\>”); no `Was:` / changelog archaeology in the glossary.
-4. **Not for** — UX invariants (product), design tables/FSMs (architecture), backlog (state), failure recipes (skills). Glossary may **point** at those files; it must not restate their essays.
-5. **Elsewhere** — skills/product/architecture use the term and, if needed, a one-line pointer (`see glossary.md § …`). Do not paste a second full definition.
+1. **Context** — **do not** load the full glossary into the session unless a term is unclear or you are editing vocabulary. Default stack remains product → architecture → state → relevant skill.
+2. **Add** — when a new stable term enters product/architecture/code review vocabulary (settle, densify, skip-bridge, …), add an entry in the **same** doc change (or the same PR as the feature). Prefer a short expanded definition over a one-liner when ambiguity has already burned time.
+3. **Edit** — when behaviour or naming changes, update the entry in the **same** change; do not leave a definition that contradicts `architecture.md` / `product.md`.
+4. **Delete** — when a term is retired or renamed away, **remove** the old entry (or replace with a one-line “see \<new term\>”); no `Was:` / changelog archaeology in the glossary.
+5. **Not for** — UX invariants (product), design tables/FSMs (architecture), backlog (state), failure recipes (skills). Glossary may **point** at those files; it must not restate their essays.
+6. **Elsewhere** — skills/product/architecture use the term and, if needed, a one-line pointer (`see glossary.md § …`). Do not paste a second full definition.
 
 ### After-fix doc update
 
