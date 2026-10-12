@@ -79,6 +79,10 @@ impl VideoPlayer {
             let blit = self.shared.scrub_blit.borrow();
             let extent = cache.extent();
             let mut ready = Vec::new();
+            // Structural sync ticks (GOP starts) — not densify residency.
+            for id in self.shared.track.index().sync_frame_ids() {
+                ready.push(ReadyFrameMark::run(id, id, ReadyFrameKind::Keyframes));
+            }
             // Solid strip runs only (markers + blit). Prefetch VF rings are meters,
             // not painted on the scrubber (no ahead/behind ticks).
             for (lo, hi) in coalesce_frame_runs(cache.cached_frame_ids()) {

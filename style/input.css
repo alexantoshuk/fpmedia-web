@@ -271,12 +271,16 @@ body {
   image-rendering: crisp-edges;
 }
 
-.wm-ready-strip.is-covered {
+.wm-ready-strip.is-keyframes {
   z-index: 0;
 }
 
-.wm-ready-strip.is-exact {
+.wm-ready-strip.is-covered {
   z-index: 1;
+}
+
+.wm-ready-strip.is-exact {
+  z-index: 2;
 }
 
 .wm-meta {

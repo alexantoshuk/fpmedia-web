@@ -18,7 +18,12 @@ pub const EXACT_STRIP_COLOR: &str = "#34d399";
 /// Gray FetchMap solid.
 pub const FETCH_STRIP_COLOR: &str = "#6b7280";
 
-/// Frame marks → snapped pixel runs on `width_px` (honest: no soft-merge / no min-px inflate).
+/// Yellow keyframe / sync ticks on the ready strip.
+pub const KEYFRAME_STRIP_COLOR: &str = "#eab308";
+
+/// Frame marks → snapped pixel runs on `width_px`.
+/// Covered/Exact: honest (no soft-merge / no min-px inflate).
+/// Keyframes: `min_run_px = 1` so sync ticks stay visible on long clips.
 #[cfg(target_arch = "wasm32")]
 pub fn cache_strip_px_runs_for_width(
     marks: &[ReadyFrameMark],
@@ -32,7 +37,12 @@ pub fn cache_strip_px_runs_for_width(
         .map(|m| (m.frame, m.end.max(m.frame)))
         .collect();
     runs.sort_by_key(|&(lo, _)| lo);
-    ready_runs_to_width(&runs, max, width_px)
+    match kind {
+        ReadyFrameKind::Keyframes => keyframe_runs_to_width(&runs, max, width_px),
+        ReadyFrameKind::Covered | ReadyFrameKind::Exact => {
+            ready_runs_to_width(&runs, max, width_px)
+        }
+    }
 }
 
 /// Sorted inclusive ready runs → snapped pixel runs on `width_px`.
@@ -43,6 +53,27 @@ pub fn ready_runs_to_width(
     width_px: u16,
 ) -> Vec<StripPxRun> {
     frame_runs_to_width(runs, max.max(1.0), 0, width_px)
+}
+
+/// Sync / keyframe ticks → snapped pixel runs; inflate to ≥1 device px.
+pub fn keyframe_runs_to_width(
+    runs: &[(FrameId, FrameId)],
+    max: f64,
+    width_px: u16,
+) -> Vec<StripPxRun> {
+    let max = max.max(1.0);
+    if runs.is_empty() {
+        return Vec::new();
+    }
+    snap_pct_runs_to_width(
+        runs.iter().map(|&(lo, hi)| {
+            let start = (lo as f64 / max) * 100.0;
+            let end = ((hi as f64 + 1.0) / max) * 100.0;
+            (start, end)
+        }),
+        width_px,
+        1,
+    )
 }
 
 /// Device-pixel buffer width for a 1 px-tall strip canvas (`css_w × dpr`).
@@ -377,6 +408,17 @@ mod tests {
         // Visible multi-frame runs keep a real hole between them.
         let split = ready_runs_to_width(&[(0, 50), (200, 250)], 8000.0, 800);
         assert_eq!(split.len(), 2, "ready greens keep holes: {split:?}");
+    }
+
+    #[test]
+    fn keyframe_ticks_inflate_to_one_px() {
+        let far = [(0, 0), (100, 100)];
+        let ticks = keyframe_runs_to_width(&far, 8000.0, 800);
+        assert_eq!(ticks.len(), 2, "keyframe ticks stay visible: {ticks:?}");
+        assert!(
+            ticks.iter().all(|&(lo, hi)| hi == lo + 1),
+            "each tick is 1 device px: {ticks:?}"
+        );
     }
 
     #[test]

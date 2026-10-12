@@ -38,6 +38,7 @@ fn pipeline_stats_json(stats: Option<PipelineStats>) -> String {
         .iter()
         .map(|m| {
             let kind = match m.kind {
+                ReadyFrameKind::Keyframes => "Keyframes",
                 ReadyFrameKind::Covered => "Covered",
                 ReadyFrameKind::Exact => "Exact",
             };
@@ -829,6 +830,10 @@ fn DemoScrubber(video: VideoRef) -> impl IntoView {
                     }
                 />
             </div>
+            // Keyframes strip (yellow sync ticks) is debug-only — off by default
+            // (distracting). Re-enable:
+            //   <TimelineMeta kind=TimelineMetaKind::Keyframes class="wm-ready-strip is-keyframes".to_string() />
+            // under Covered in the ready row.
             <div
                 class="wm-scrubber-ready"
                 aria-hidden="true"

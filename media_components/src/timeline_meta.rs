@@ -9,9 +9,9 @@ use web_sys::window;
 
 use crate::ReadyFrameKind;
 use crate::helpers::{
-    COVERED_STRIP_COLOR, EXACT_STRIP_COLOR, FETCH_STRIP_COLOR, StripPaintLatch,
-    cache_strip_px_runs_for_width, fetch_strip_px_runs_for_width, paint_strip_canvas_1px,
-    strip_canvas_buffer_width,
+    COVERED_STRIP_COLOR, EXACT_STRIP_COLOR, FETCH_STRIP_COLOR, KEYFRAME_STRIP_COLOR,
+    StripPaintLatch, cache_strip_px_runs_for_width, fetch_strip_px_runs_for_width,
+    paint_strip_canvas_1px, strip_canvas_buffer_width,
 };
 use crate::scrubber::ScrubberCtx;
 
@@ -20,6 +20,8 @@ use crate::scrubber::ScrubberCtx;
 pub enum TimelineMetaKind {
     /// Ever-fetched byte ranges (`FetchMap` fractions).
     Fetch,
+    /// Sync / keyframe positions (structural ticks).
+    Keyframes,
     /// Densify markers (Covered).
     Covered,
     /// Step-ready Exact blit frames.
@@ -30,6 +32,7 @@ impl TimelineMetaKind {
     fn default_color(self) -> &'static str {
         match self {
             Self::Fetch => FETCH_STRIP_COLOR,
+            Self::Keyframes => KEYFRAME_STRIP_COLOR,
             Self::Covered => COVERED_STRIP_COLOR,
             Self::Exact => EXACT_STRIP_COLOR,
         }
@@ -75,6 +78,13 @@ pub fn TimelineMeta(
                     .map(|s| s.fetch_file_ranges.as_slice())
                     .unwrap_or(&[]);
                 fetch_strip_px_runs_for_width(ranges, buf_w)
+            }
+            TimelineMetaKind::Keyframes => {
+                let marks = pipe
+                    .as_ref()
+                    .map(|s| s.ready_frames.as_slice())
+                    .unwrap_or(&[]);
+                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Keyframes, max, buf_w)
             }
             TimelineMetaKind::Covered => {
                 let marks = pipe

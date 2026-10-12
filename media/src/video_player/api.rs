@@ -21,17 +21,20 @@ pub struct PlayerState {
 /// Why a frame is marked ready on the demo timeline strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadyFrameKind {
+    /// Sync / keyframe positions from the frame index (structural, not densify).
+    Keyframes,
     /// Scrub store marker (coverage / gap geometry). May lack live blit.
     Covered,
     /// Live densify `ImageBitmap` (step-ready).
     Exact,
 }
 
-/// Paint order for overlapping strips (Covered under Exact).
+/// Paint order for overlapping strips (Keyframes under Covered under Exact).
 pub(super) fn ready_kind_paint_order(kind: ReadyFrameKind) -> u8 {
     match kind {
-        ReadyFrameKind::Covered => 0,
-        ReadyFrameKind::Exact => 1,
+        ReadyFrameKind::Keyframes => 0,
+        ReadyFrameKind::Covered => 1,
+        ReadyFrameKind::Exact => 2,
     }
 }
 
@@ -79,7 +82,7 @@ pub struct PipelineStats {
     /// Inclusive cache extent `[from, to]` (presentation frames), if any.
     pub scrub_window_from: Option<FrameId>,
     pub scrub_window_to: Option<FrameId>,
-    /// Frames ready in cache / presentation queue (timeline strip). Sorted by frame.
+    /// Timeline strip marks (Keyframes / Covered / Exact). Sorted by frame.
     pub ready_frames: Vec<ReadyFrameMark>,
     /// Keyframe spacing class (scrub budget / fill policy).
     pub gop_profile: GopProfile,
