@@ -18,7 +18,8 @@ Canonical project knowledge lives in **`AGENTS.md`** + **`.ai/`** (+ **`CONTRIBU
 3. Read `.ai/state.md` — in progress + next up. No Done list.
 4. Scan `.ai/skills/` filenames.
 5. **Read the relevant skill before touching code that imports its topic** — start with its **Triage** table, then the sections it points to (read the full skill when the change is broad).
-6. **Media work (mandatory):** see [Mediabunny-first](#mediabunny-first) below.
+6. Unfamiliar scrub / residency / densify wording → [`.ai/glossary.md`](.ai/glossary.md) (do not invent parallel definitions in chat-only notes).
+7. **Media work (mandatory):** see [Mediabunny-first](#mediabunny-first) below.
 
 All `.ai/` documentation is English.
 
@@ -78,7 +79,7 @@ If the plan changes mid-work (scope creep, different files), stop and re-approve
 | `.ai/skills/leptos.md` | Leptos UI / `<Video>` / CSR mount / resources / host OpQueue |
 
 New trap → follow [Documentation write gate](#documentation-write-gate--hard-stop) (usually triage row + tight gotcha). Add a skills-index row only if a **new** skill file is created.
-Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, session logs) — extend the table above only when a new skill topic is real and recurring.
+Do **not** create extra doc types (`history.md`, `decisions.md`, session logs) — extend the table above only when a new skill topic is real and recurring. **`.ai/glossary.md` is allowed** — see [Glossary hygiene](#glossary-hygiene).
 
 ## Documentation (`.ai/`)
 
@@ -86,6 +87,7 @@ Do **not** create extra doc types (`glossary.md`, `history.md`, `decisions.md`, 
 | ---- | -------------- | ---------------- |
 | **`product.md`** | Domain or UX decision stabilises | Model, surfaces, business invariants. One row/paragraph per decision — no session notes, no store/policy knobs unless the user sees them. |
 | **`architecture.md`** | Stack, layers, or policy stabilises | Layout, layer rules, code conventions, ADRs, design tables (caches / Play·Scrub·Settle policy). Point to skills for failure modes. **No backlog / Still-open lists** — those live in `state.md`. |
+| **`glossary.md`** | New stable project term, or an existing term’s meaning changes / dies | Shared **vocabulary** (what a word means). Not UX decisions, ADRs, backlog, or trap recipes — those stay in product / architecture / state / skills. English only. |
 | **`state.md`** | End of session; **chat handoff**; before commit if priorities shifted | **In progress** + **Next up** (+ optional **Later**) only (no Done list). Drop finished specs; don’t duplicate product/architecture. |
 | **`skills/*.md`** | Reusable trap or API mismatch fixed in code | Triage + tight gotchas (+ optional one-crate module map). Not backlog, design essays, Dev commands, or session history. |
 
@@ -97,10 +99,11 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 | ------------ | -------------- |
 | UX / product invariant | `product.md` |
 | Stack, layers, ADR, policy/design table, FSM domain | `architecture.md` |
+| Shared term / vocabulary (“what does X mean?”) | `glossary.md` |
 | Backlog / parked / “later” / next-up | `state.md` |
 | Symptom → how not to re-break (engine) | `skills/media.md` |
 | Symptom → how not to re-break (host/UI) | `skills/leptos.md` |
-| Agent workflow / Mediabunny-first / approve / Dev cheat sheet | `AGENTS.md` |
+| Agent workflow / Mediabunny-first / approve / Dev cheat sheet / glossary hygiene | `AGENTS.md` |
 | Commit format / Clippy gates / PR size | `CONTRIBUTING.md` |
 
 **Hard rules:**
@@ -120,6 +123,8 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 | Doc write gate / skill budgets | `AGENTS.md` | Do not restate |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
+| Term definitions (settle, densify, Exact, …) | `glossary.md` | One-line pointer only — do not fork definitions in skills/chat docs |
+| Glossary maintenance rules | `AGENTS.md` § Glossary hygiene | Do not restate |
 | Crate layout, layers, ADRs, cache/policy design | `architecture.md` | Skills: module map + traps only; pointer to design sections |
 | State machines over flag soup | `architecture.md` § State machines over flags | One-line pointer only — do not restate domain table in skills |
 | Backlog / Still open / priorities | `state.md` | Never a Done list; never in skills; never a Still-open section in architecture |
@@ -142,6 +147,16 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 - **Soft size budgets** (trim/move before append): `skills/media.md` ≲ **200** lines; `skills/leptos.md` ≲ **80** lines. Oversized → cleanup in the same change, not “add a paragraph”.
 - After a fix: update/trim triage; tighten or replace the gotcha; **delete** obsolete claims (wrong clock, “planned” that shipped, reverted half-ports).
 
+### Glossary hygiene
+
+`.ai/glossary.md` is the **only** home for shared term definitions.
+
+1. **Add** — when a new stable term enters product/architecture/code review vocabulary (settle, densify, skip-bridge, …), add an entry in the same doc change (or the same PR as the feature). Prefer a short expanded definition over a one-liner when ambiguity has already burned time.
+2. **Edit** — when behaviour or naming changes, update the entry in the **same** change; do not leave a definition that contradicts `architecture.md` / `product.md`.
+3. **Delete** — when a term is retired or renamed away, **remove** the old entry (or replace with a one-line “see \<new term\>”); no `Was:` / changelog archaeology in the glossary.
+4. **Not for** — UX invariants (product), design tables/FSMs (architecture), backlog (state), failure recipes (skills). Glossary may **point** at those files; it must not restate their essays.
+5. **Elsewhere** — skills/product/architecture use the term and, if needed, a one-line pointer (`see glossary.md § …`). Do not paste a second full definition.
+
 ### After-fix doc update
 
 For a skill-worthy fix, the plan or commit must state **one** of:
@@ -149,6 +164,7 @@ For a skill-worthy fix, the plan or commit must state **one** of:
 - triage row added/updated; and/or gotcha tightened (not a new essay), or
 - durable design → `architecture.md`, or
 - UX decision → `product.md`, or
+- new/changed/retired vocabulary → `glossary.md`, or
 - finished work dropped from `state.md`
 
 Do **not** only “append to `media.md`” without choosing a canonical slot.

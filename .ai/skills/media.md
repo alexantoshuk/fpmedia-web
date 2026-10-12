@@ -64,7 +64,7 @@ decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview
 
 Host-facing `VideoPlayer` = methods `media_components` calls (`pub`); sibling-only helpers = `pub(super)` (e.g. scrub pipeline / clock stop).
 
-Design (caches, Play/Scrub/Settle policy, audio clock diagram): `architecture.md` § Play / scrub residency.
+Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `architecture.md` § Play / scrub residency / Decode flows.
 
 ## Gotchas
 

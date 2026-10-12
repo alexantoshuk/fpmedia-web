@@ -3,6 +3,7 @@
 > Stable domain and UX context. Read at start of every session.
 > Change only after a product decision proves itself across sessions.
 > Implementation traps → `.ai/skills/`; stack/design → `.ai/architecture.md`.
+> Shared vocabulary (settle, densify, Exact, Covered, …) → `.ai/glossary.md`.
 
 ---
 

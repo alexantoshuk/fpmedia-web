@@ -3,6 +3,7 @@
 > Stable stack and code-structure context. Read at start of every session.
 > Change only after a technical decision proves itself across sessions.
 > Backlog / Still open → `.ai/state.md` only (`AGENTS.md` doc write gate).
+> Shared vocabulary (settle, densify, Exact, Covered, …) → `.ai/glossary.md`.
 
 ---
 
@@ -129,16 +130,7 @@ Do **not** wire probes to Downloads / third-party hosts. In skills prefer meta (
 
 ## Play / scrub residency
 
-Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). UX strip colors: `product.md`.
-
-```text
-  Play path                          Scrub / pause path
-  main VideoDecoder                  scrub VideoDecoder
-       │                                    │
-  presentation queue                 densify → ImageBitmap (ScrubBlitLru)
-  (ahead small + behind on Pause)    + ScrubChunkStore (resident markers)
-       └──────────► canvas ◄────────────────┘
-```
+Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). UX strip colors: `product.md`. Vocabulary: `glossary.md`.
 
 | Store | Role |
 | ----- | ---- |
@@ -149,6 +141,94 @@ Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). U
 | `ThumbCache` / `ThumbPreview` | Hover filmstrip (3rd decoder); feature `thumbs` |
 
 **Modes (summary):** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify`. Soft-drag → aim+blit only (no densify under finger — PreferSoftware saturates JS). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Eviction: farthest from aim — one `residency::AimWindow` under markers + blit. `mediabunny:` CanvasSink pool idea — no still-encode store.
+
+### Decode flows
+
+Shipped control flow (not backlog). Terms: `glossary.md`. Phase × mode table: [Scrub phases](#scrub-phases) below. Failure modes: `skills/media.md`.
+
+**Overview — who decodes what**
+
+```mermaid
+flowchart LR
+  subgraph main["Main VideoDecoder<br/>prefer-hardware"]
+    PQ["Presentation queue<br/>+ step behind ring"]
+  end
+  subgraph scrub["Scrub VideoDecoder<br/>PreferSoftware"]
+    DEN["Densify fill_one_gap"]
+    EX["ScrubBlitLru Exact"]
+    CV["ScrubChunkStore Covered"]
+    DEN --> EX
+    DEN --> CV
+  end
+  subgraph thumb["Thumb VideoDecoder<br/>PreferSoftware · feature thumbs"]
+    TP["ThumbPreview"]
+    TC["ThumbCache"]
+    TP --> TC
+  end
+  SRC["Mp4VideoTrack<br/>samples / key→N"] --> main
+  SRC --> scrub
+  SRC --> thumb
+  ASRC["Mp4AudioTrack<br/>AAC or PCM"] --> AOUT["AudioOutput"]
+  AOUT --> CLK["MediaClock<br/>AudioContext or silent PlaybackClock"]
+  CLK --> MT["VideoPlayer::media_time"]
+  MT -.->|"Play present_due"| PQ
+  PQ --> CANVAS["Stage canvas"]
+  EX -->|"soft-drag preview<br/>or Pause present"| CANVAS
+  SEEK["Seek / settle ExactHold<br/>key→N on main or scrub"] --> CANVAS
+  TC --> HOVER["HoverThumb canvas<br/>not stage / not strips"]
+```
+
+Play paints from the presentation queue on the **main** decoder, paced by **`media_time()`** from the engine media clock (audio-driven when a track exists — including muted/silent graphs; see [Audio + media clock](#audio--media-clock)). Soft-drag paints neighbors from **Exact** blit only. Settle / seek Exact key→N yields densify (`ExactHold`) so the scrub session does not dual-HW race the main path. Pause idle runs densify on the scrub decoder into Exact + Covered. Hosts never open `AudioContext` as their own clock.
+
+**Hover thumbs** (optional `thumbs`): a **third** PreferSoftware decoder + `ThumbCache` / `ThumbPreview`. Host `<HoverThumb>` paints its **own** canvas. UX: Play and Pause only — **not** while scrubbing; must not drive densify or Fetch/Covered/Exact strips (`product.md`). Never reuse the densify scrub decoder for thumbs. Play: no sparse key_fill; aim decode is throttled (engine ~800 ms + host UI defer) — traps: `skills/media.md`.
+
+**Play — present + warm pump**
+
+```mermaid
+flowchart TD
+  START(["begin_play_session"]) --> RAF["play_raf_tick / host rAF"]
+  RAF --> MT["media_time from MediaClock<br/>audio context or silent wall clock"]
+  MT --> DUE{"Frame due<br/>vs presentation queue?"}
+  DUE -->|yes| PRESENT["present_due → canvas"]
+  DUE -->|underrun| HOLD["HoldUnderrun<br/>soft audio hold — keep decoder"]
+  PRESENT --> WARM["Warm pump on main decoder<br/>feed-ahead / key cascade<br/>park PTS ≥ target"]
+  HOLD --> WARM
+  WARM --> CAP{"presentation_cap<br/>reached?"}
+  CAP -->|no| FEED["Feed next packets<br/>take_held when ready"]
+  CAP -->|yes| PARK["Park pump — wait consumer take"]
+  FEED --> RAF
+  PARK --> RAF
+```
+
+While Playing: densify is off (epoch cancel); Exact trail uses farthest-evict trim only — never a full Exact wipe. Continuous Play prioritizes cadence and A/V sync over painting every presentation frame (`product.md` Exact vs Play). Shuttle may drop overdue frames. Prefer mediabunny present + clock patterns; silent clock uses wall time when there is no audible audio graph.
+
+**Scrub — soft-drag / Pause densify / settle**
+
+```mermaid
+flowchart TD
+  IN["Scrub input"] --> KIND{Phase}
+  KIND -->|"pointer move<br/>soft-drag"| SD["EnterScrub soft densify:false<br/>aim + note_scrub_frame"]
+  SD --> PREV["scrub_preview_frame<br/>Exact blit nearest only"]
+  PREV --> CANVAS1["Canvas preview"]
+  KIND -->|"Pause / idle<br/>densify:true"| DZ["enter_scrub_cache_pipeline<br/>scrub_cache_fill_task"]
+  DZ --> GAP["next_gap distance-first to aim"]
+  GAP -->|none| STOP["Exit densify<br/>optional FetchMap gray fill"]
+  GAP -->|some| FILL["fill_one_gap one GOP"]
+  FILL --> G1["1. PreferSoftware decode_gop<br/>stream markers + Exact"]
+  G1 --> G2["2. Exact salvage decode_frame<br/>samplesAtTimestamps-shaped"]
+  G2 --> G3["3. Covered skip-bridge<br/>if outs > 0"]
+  G3 --> PROG{"Progress or Exact done?"}
+  PROG -->|yes| YIELD["rAF between GOPs"]
+  PROG -->|no| BAN["Soft-ban GOP key<br/>Exact-gated idle / refuse"]
+  YIELD --> GAP
+  BAN --> GAP
+  KIND -->|"pointer up settle"| ST["ExactHold — densify yield"]
+  ST --> EXN["Exact key→N to aim<br/>do not blit.clear Exact"]
+  EXN --> CANVAS2["Canvas Exact frame"]
+  EXN --> REARM["ScrubRelease → Pause densify<br/>or PlayPrime"]
+```
+
+Soft-drag must not run PreferSoftware densify under the finger. Settle must not wipe Exact blit (soft-drag trail). Densify soft-ban stops infinite re-decode; residual pin-holes on constrained machines are accepted strip cosmetics (`product.md`).
 
 ### Scrub phases
 
@@ -197,18 +277,27 @@ Traps (flush/idle, cold settle, dual-HW): `skills/media.md`.
 
 ### Audio + media clock
 
-```text
-  audio::Mp4AudioTrack ──► audio::AudioOutput
-         │                        │
-         │              AAC: AudioDecoder → AudioData
-         │              PCM: bytes → f32 planar (no WebCodecs decoder)
-         │                        │
-  MediaClock ◄── AudioContext (AAC/PCM) or silent PlaybackClock
-       ▼
-  VideoPlayer::media_time() ──► present_due / host rAF
+Terms: `glossary.md`. Overview link: [Decode flows](#decode-flows).
+
+```mermaid
+flowchart TD
+  AT["audio::Mp4AudioTrack"] --> AO["audio::AudioOutput"]
+  AT --> KIND{Sample entry}
+  KIND -->|AAC mp4a| AAC["WebCodecs AudioDecoder<br/>→ AudioData → AudioContext"]
+  KIND -->|PCM in24/sowt/…| PCM["moov sound-desc bytes<br/>→ f32 planar — no AudioDecoder"]
+  AAC --> AO
+  PCM --> AO
+  AO --> CTX{"Audible graph?"}
+  CTX -->|yes| AC["AudioContext clock"]
+  CTX -->|no / no track| SIL["silent PlaybackClock<br/>wall time under decode load"]
+  AC --> MC["MediaClock"]
+  SIL --> MC
+  MC --> MT["VideoPlayer::media_time()"]
+  MT --> PLAY["present_due / play_raf_tick"]
+  RATE["Rate ≤4×: WSOLA TimeStretcher<br/>>4×: wall + mute — product.md"] --> AO
 ```
 
-PCM sample-entry bodies are not in `re_mp4`’s `Unknown` payload — walk raw `moov` (same pattern as `tmcd`). Codec map + decode: mediabunny `isobmff-demuxer` FourCC map + `media-sink.ts` `PcmAudioDecoderWrapper`. Hosts never open `AudioContext` as a disposable clock. Rate/pitch: WSOLA ≤4× (`audio::TimeStretcher`); mediabunny has no rate API equivalent. UX rates: `product.md`.
+PCM sample-entry bodies are not in `re_mp4`’s `Unknown` payload — walk raw `moov` (same pattern as `tmcd`). Codec map + decode: mediabunny `isobmff-demuxer` FourCC map + `media-sink.ts` `PcmAudioDecoderWrapper`. Hosts never open `AudioContext` as a disposable clock. Soft-hold on scrub/Pause keeps the graph; underrun holds audio without tearing the decoder down. mediabunny has no rate API equivalent — WSOLA is local. UX rates: `product.md`.
 
 ---
 
