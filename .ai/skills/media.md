@@ -33,6 +33,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | URL play ~0.6× / first-play lag | `CachedSource` sample miss | return `want` immediately; quantum fill bg |
 | Dense wiped / Next-Prev lag / Pause densify dead | Play trim + densify exit | budgets→park→densify; fill order `architecture.md` § Predictive densify; unbanned walk = full indexed span; PTS multimap; drag kills densify |
 | Exact 1‑frame holes every GOP (Pause densify) | `fill_one_gap` | PreferSoftware `decode_gop` omit → Exact `decode_frame` salvage before Covered skip-bridge |
+| Covered+Exact pin-holes after Pause (slow PC / bad I/O) | densify soft-ban | Accepted strip cosmetics for now (`product.md`); not settle/seek break — do not Exact wipe. Revisit: `state.md` Later |
 | Exact 1 px orphan past hole after Pause densify | `evict_exact_orphans_beyond_aim` | farthest-evict every densify tick (not gated on Exact near-gap idle — under-cap soft-drag holes skipped eviction); not on drag `set_playhead` |
 | Loop seam wipe / ~1 s underrun hold | loop_prime / `play_loop_seam` | `ResetForPlay`→HoldScrub across `loop_to_start`; warm-prefetch before resume; keep Covered+Exact; BeginPrepareLoop only |
 | Pause→Play / scrub→Play lag or no-op | seed + `ScrubRelease{then_play}` | host: `skills/leptos.md`; probes gray-first / cold-resume / stress |

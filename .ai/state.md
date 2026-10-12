@@ -8,21 +8,22 @@
 
 ### Handoff
 
-- **Base (work here):** `3316d0d` `feat(scrubber): add odd-frame zebra when slots are >=1px` — **soft-drag scrub paints** (Exact trail intact on settle).
-- **Ignore / do not land on `main`:** `b8206d1` `fix(media): stop densify from blocking seek Exact follow` and any follow-ups that depended on it. **Root scrub break:** `clear_exact_for_aim` (`blit.clear`) on settle/seek — soft-drag preview is Exact-only (`scrub_preview_frame`), so wipe → frozen cold scrub. Also `fill_exact` Covered-only path + ExactHold-before-yield. Seek Exact-follow goal is real; that approach is wrong.
-- **Open (Wing It @ `3316d0d`):** holes in **both** green strips (Covered + Exact), classic ~1673-class pin-holes. PreferSoftware omit / marker `insert` refuse / salvage — fix **without** Exact wipe on settle.
-- **Do not:** prune Exact on every drag `set_playhead`; soft-drag preview from Covered nearest; wipe Exact on settle — `skills/media.md` triage «Soft-drag / cold scrub canvas frozen».
+- **HEAD:** soft-drag scrub paints; Exact trail intact on settle (`skills/media.md` triage «Soft-drag / cold scrub canvas frozen»).
+- **Ignore / do not land on `main`:** `b8206d1` Exact `blit.clear` / wipe-on-settle — freezes cold scrub. Seek Exact-follow goal is real; that approach is wrong.
+- **Parked (known):** residual Covered+Exact pin-holes after Pause densify on constrained machines (PreferSoftware omit / densify soft-ban) — accepted strip cosmetics (`product.md` Play vs scrub residency). Do not Exact-wipe to “fix”. Revisit: Later.
+- **Do not:** prune Exact on every drag `set_playhead`; soft-drag preview from Covered nearest; wipe Exact on settle.
 
 ---
 
 ## Next up
 
-- Fix Covered + Exact densify pin-holes on Wing It from `3316d0d` (no `b8206d1` Exact-clear). Cite mediabunny `samplesAtTimestamps` / skip-bridge `put_chunk` as needed; keep soft-drag scrub working.
+_(empty — pick from Later or a new symptom)_
 
 ---
 
 ## Later
 
+- Optional: harden Pause densify pin-holes on slow PreferSoftware (salvage + skip-bridge `put_chunk`; no Exact wipe) — only if strip cosmetics stop being acceptable (`product.md`).
 - Revisit seek Exact follow **without** wiping Exact on settle (densify yield / unbanned walk only — prove scrub still paints).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
