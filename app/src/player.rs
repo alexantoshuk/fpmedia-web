@@ -5,7 +5,7 @@ use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
 use media_components::helpers::{
-    format_metadata, format_timecode_at, odd_frame_px_runs, playhead_width_css,
+    format_metadata, format_timecode_at, odd_frame_px_runs, playhead_tip_css, playhead_width_css,
     strip_canvas_buffer_width,
 };
 use media_components::{
@@ -866,6 +866,31 @@ fn paint_frame_zebra(
     true
 }
 
+/// Opaque 1-frame tip at the progress end (integer CSS px — no subpixel flicker).
+#[component]
+fn ScrubPlayheadTip() -> impl IntoView {
+    let ctx =
+        use_context::<ScrubberCtx>().expect("ScrubPlayheadTip must be used inside <Scrubber>");
+    let video = ctx.video;
+    let css_width = ctx.css_width;
+    let tip = Memo::new(move |_| {
+        playhead_tip_css(
+            video.playhead.get(),
+            video.frame_count.get(),
+            css_width.get(),
+        )
+    });
+    view! {
+        <div
+            class="wm-scrubber-playhead"
+            data-testid="scrubber-playhead"
+            aria-hidden="true"
+            style:left=move || tip.get().0
+            style:width=move || tip.get().1
+        />
+    }
+}
+
 /// Demo scrubber chrome over headless [`Scrubber`] / [`TimelineMeta`] / [`HoverThumb`].
 #[component]
 fn DemoScrubber(video: VideoRef) -> impl IntoView {
@@ -886,6 +911,7 @@ fn DemoScrubber(video: VideoRef) -> impl IntoView {
                         playhead_width_css(video.playhead.get(), video.frame_count.get())
                     }
                 />
+                <ScrubPlayheadTip />
             </div>
             // Keyframes strip (yellow sync ticks) is debug-only — off by default
             // (distracting). Re-enable:

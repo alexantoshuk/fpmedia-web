@@ -16,6 +16,52 @@ pub fn playhead_width_css(playhead: u32, frame_count: u32) -> String {
     format!("{:.3}%", playhead_width_pct(playhead, frame_count))
 }
 
+/// Min CSS width for the playhead tip. 1 px flickers on Chromium (device-pixel
+/// round-trip); 2 px stays stable when the frame slot is sub-pixel.
+pub const PLAYHEAD_TIP_MIN_PX: u32 = 2;
+
+/// Integer CSS-pixel span for the opaque current-frame tip: `(left, width)`.
+///
+/// Same half-open snap as zebra / strip runs (`round(f/max·w)` …). Width is at
+/// least [`PLAYHEAD_TIP_MIN_PX`]; on the last frame (point at the right edge)
+/// the tip is pinned inside the track. Pass track width in **CSS** px (not
+/// device px).
+pub fn playhead_tip_px(playhead: u32, frame_count: u32, track_css_w: f64) -> (u32, u32) {
+    let w = track_css_w.floor().max(0.0) as u32;
+    if frame_count == 0 || w == 0 {
+        return (0, 0);
+    }
+    let max = frame_count.saturating_sub(1);
+    let min_w = PLAYHEAD_TIP_MIN_PX.min(w.max(1));
+    if max == 0 {
+        // Single frame: tip fills the track (still ≥ min).
+        return (0, w.max(min_w));
+    }
+    let max_f = f64::from(max);
+    let wf = f64::from(w);
+    let f = playhead.min(max);
+    if f >= max {
+        return (w.saturating_sub(min_w), min_w);
+    }
+    let lo = ((f as f64 / max_f) * wf).round() as i32;
+    let hi = (((f as f64 + 1.0) / max_f) * wf).round() as i32;
+    let lo = lo.clamp(0, w as i32) as u32;
+    let hi = hi.clamp(0, w as i32) as u32;
+    let width = hi.saturating_sub(lo).max(min_w);
+    let left = if lo.saturating_add(width) > w {
+        w.saturating_sub(width)
+    } else {
+        lo
+    };
+    (left, width)
+}
+
+/// Same as [`playhead_tip_px`], formatted for `style:left` / `style:width`.
+pub fn playhead_tip_css(playhead: u32, frame_count: u32, track_css_w: f64) -> (String, String) {
+    let (left, width) = playhead_tip_px(playhead, frame_count, track_css_w);
+    (format!("{left}px"), format!("{width}px"))
+}
+
 /// Map a pointer X on a scrubber element to a presentation frame.
 pub fn scrub_frame_from_x(
     client_x: f64,
@@ -79,6 +125,22 @@ mod tests {
     fn playhead_pct_edges() {
         assert!((playhead_width_pct(0, 100) - 0.0).abs() < 1e-9);
         assert!((playhead_width_pct(99, 100) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn playhead_tip_snaps_integer_px_and_floors_width() {
+        // 101 frames → max=100; at 100 px each slot is 1 px → floor to 2 px.
+        assert_eq!(playhead_tip_px(50, 101, 100.0), (50, 2));
+        assert_eq!(playhead_tip_px(100, 101, 100.0), (98, 2));
+        // Sub-pixel slots (8000 frames / 800 px): ≥2 px floor.
+        let (lo, w) = playhead_tip_px(4000, 8000, 800.0);
+        assert_eq!(w, 2);
+        assert!(lo < 800);
+        assert_eq!(playhead_tip_px(0, 0, 800.0), (0, 0));
+        assert_eq!(
+            playhead_tip_css(50, 101, 100.0),
+            ("50px".into(), "2px".into())
+        );
     }
 
     #[test]

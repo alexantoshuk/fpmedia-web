@@ -247,6 +247,16 @@ body {
   opacity: 0.55;
 }
 
+/* Opaque current-frame tip (integer CSS px from helpers — min 2px). */
+.wm-scrubber-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #e8e8e8;
+  pointer-events: none;
+  z-index: 2;
+}
+
 /* Cache / ahead readiness under the progress bar (frame ticks). */
 .wm-scrubber-ready {
   position: relative;
