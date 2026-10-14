@@ -5,8 +5,8 @@ use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
 use media_components::helpers::{
-    format_metadata, format_timecode_at, odd_frame_px_runs, paint_strip_canvas_1px,
-    playhead_width_css, strip_canvas_buffer_width,
+    format_metadata, format_timecode_at, odd_frame_px_runs, playhead_width_css,
+    strip_canvas_buffer_width,
 };
 use media_components::{
     HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, TimelineMeta,
@@ -15,9 +15,24 @@ use media_components::{
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 
-/// Track zebra: odd frames darker than `.wm-scrubber-track` `#2a2a2a`
-/// (~35% toward black — 20% was invisible under fetch/progress).
-const FRAME_ZEBRA_ODD_COLOR: &str = "#1a1a1a";
+/// Matches `.wm-scrubber-track` background (`#2a2a2a`). Zebra even/odd =
+/// this ± `contrast` per channel (demo chrome).
+const SCRUBBER_TRACK_BASE: u8 = 0x2a;
+
+/// Default zebra amplitude (~odd `#1a1a1a` under previous hard-coded paint).
+const FRAME_ZEBRA_CONTRAST: u8 = 16;
+
+fn gray_hex(v: u8) -> String {
+    format!("#{v:02x}{v:02x}{v:02x}")
+}
+
+/// Even / odd zebra colors from track base ± `contrast` (saturating).
+fn zebra_pair_hex(contrast: u8) -> (String, String) {
+    (
+        gray_hex(SCRUBBER_TRACK_BASE.saturating_add(contrast)),
+        gray_hex(SCRUBBER_TRACK_BASE.saturating_sub(contrast)),
+    )
+}
 
 /// Forward shuttle ladder for demo J/L keys (K → 1× + play/pause).
 const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
@@ -783,10 +798,11 @@ pub fn DemoPlayer() -> impl IntoView {
     }
 }
 
-/// Odd-frame zebra on the progress track (demo chrome). Off when a frame is
-/// sub-pixel after the same snap as strip greens.
+/// Frame zebra on the progress track (demo chrome). `contrast` is added to
+/// track-base brightness on even slots and subtracted on odd. Off when a
+/// frame is sub-pixel after the same snap as strip greens.
 #[component]
-fn FrameZebra() -> impl IntoView {
+fn FrameZebra(contrast: u8) -> impl IntoView {
     let ctx = use_context::<ScrubberCtx>().expect("FrameZebra must be used inside <Scrubber>");
     let video = ctx.video;
     let css_width = ctx.css_width;
@@ -804,12 +820,50 @@ fn FrameZebra() -> impl IntoView {
             return;
         };
         let runs = odd_frame_px_runs(count, buf_w);
-        let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, FRAME_ZEBRA_ODD_COLOR);
+        let (even, odd) = zebra_pair_hex(contrast);
+        let _ = paint_frame_zebra(&canvas, buf_w, &runs, &even, &odd);
     });
 
     view! {
         <canvas class="wm-scrubber-zebra" node_ref=canvas_ref aria-hidden="true" />
     }
+}
+
+/// 1 px zebra: clear; if `odd_runs` empty leave transparent (CSS base); else
+/// full-width `even` then odd slots in `odd`.
+fn paint_frame_zebra(
+    canvas: &web_sys::HtmlCanvasElement,
+    buffer_width: u16,
+    odd_runs: &[(u16, u16)],
+    even: &str,
+    odd: &str,
+) -> bool {
+    let w = u32::from(buffer_width.max(1));
+    if canvas.width() != w || canvas.height() != 1 {
+        canvas.set_width(w);
+        canvas.set_height(1);
+    }
+    let Ok(Some(ctx_obj)) = canvas.get_context("2d") else {
+        return false;
+    };
+    let Ok(ctx) = ctx_obj.dyn_into::<web_sys::CanvasRenderingContext2d>() else {
+        return false;
+    };
+    let wf = f64::from(w);
+    ctx.clear_rect(0.0, 0.0, wf, 1.0);
+    if odd_runs.is_empty() {
+        return true;
+    }
+    ctx.set_fill_style_str(even);
+    ctx.fill_rect(0.0, 0.0, wf, 1.0);
+    ctx.set_fill_style_str(odd);
+    for &(lo, hi) in odd_runs {
+        if hi <= lo {
+            continue;
+        }
+        ctx.fill_rect(f64::from(lo), 0.0, f64::from(hi.saturating_sub(lo)), 1.0);
+    }
+    true
 }
 
 /// Demo scrubber chrome over headless [`Scrubber`] / [`TimelineMeta`] / [`HoverThumb`].
@@ -819,7 +873,7 @@ fn DemoScrubber(video: VideoRef) -> impl IntoView {
         <Scrubber video=video class="wm-scrubber".to_string()>
             <HoverThumb class="wm-thumb-preview".to_string() />
             <div class="wm-scrubber-track">
-                <FrameZebra />
+                <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />
                 <TimelineMeta
                     kind=TimelineMetaKind::Fetch
                     class="wm-scrubber-fetched".to_string()

@@ -27,6 +27,7 @@ web-sys = { workspace = true, optional = true, features = [
     "HtmlElement",
     "HtmlCanvasElement",
     "HtmlDivElement",
+    "CanvasRenderingContext2d",
     "Element",
     "Document",
     "DomRect",
