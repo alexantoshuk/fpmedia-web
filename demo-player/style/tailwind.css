@@ -168,6 +168,9 @@
   .hidden {
     display: none;
   }
+  .rounded {
+    border-radius: 0.25rem;
+  }
 }
 :root {
   --wm-bg: #e8e4dc;
@@ -369,6 +372,7 @@ body {
   position: absolute;
   top: 0;
   bottom: 0;
+  width: auto;
   background: #e8e8e8;
   pointer-events: none;
   z-index: 2;

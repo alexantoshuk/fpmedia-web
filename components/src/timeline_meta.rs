@@ -11,8 +11,8 @@ use crate::PipelinePlane;
 use crate::ReadyFrameKind;
 use crate::helpers::{
     COVERED_STRIP_COLOR, EXACT_STRIP_COLOR, FETCH_STRIP_COLOR, KEYFRAME_STRIP_COLOR,
-    StripPaintLatch, cache_strip_px_runs_for_width, fetch_strip_px_runs_for_width,
-    paint_strip_canvas_1px, strip_canvas_buffer_width,
+    StripPaintLatch, cache_strip_runs_for_width, fetch_strip_runs_for_width, paint_strip_canvas,
+    strip_canvas_buffer_width,
 };
 use crate::scrubber::ScrubberCtx;
 
@@ -47,7 +47,7 @@ impl TimelineMetaKind {
     }
 }
 
-/// Single 1 px-tall canvas strip; CSS-stretch via host `class`.
+/// Single 1 px-tall canvas strip (float `f/n` runs); CSS-stretch via host `class`.
 #[component]
 pub fn TimelineMeta(
     kind: TimelineMetaKind,
@@ -81,6 +81,7 @@ pub fn TimelineMeta(
             .unwrap_or(1.0)
             .max(1.0);
         let buf_w = strip_canvas_buffer_width(css_w, dpr);
+        let width = f64::from(buf_w);
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
@@ -90,35 +91,35 @@ pub fn TimelineMeta(
                     .as_ref()
                     .map(|s| s.fetch_file_ranges.as_slice())
                     .unwrap_or(&[]);
-                fetch_strip_px_runs_for_width(ranges, buf_w)
+                fetch_strip_runs_for_width(ranges, width)
             }
             TimelineMetaKind::Keyframes => {
                 let marks = pipe
                     .as_ref()
                     .map(|s| s.ready_frames.as_slice())
                     .unwrap_or(&[]);
-                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Keyframes, frame_count, buf_w)
+                cache_strip_runs_for_width(marks, ReadyFrameKind::Keyframes, frame_count, width)
             }
             TimelineMetaKind::Covered => {
                 let marks = pipe
                     .as_ref()
                     .map(|s| s.ready_frames.as_slice())
                     .unwrap_or(&[]);
-                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Covered, frame_count, buf_w)
+                cache_strip_runs_for_width(marks, ReadyFrameKind::Covered, frame_count, width)
             }
             TimelineMetaKind::Exact => {
                 let marks = pipe
                     .as_ref()
                     .map(|s| s.ready_frames.as_slice())
                     .unwrap_or(&[]);
-                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Exact, frame_count, buf_w)
+                cache_strip_runs_for_width(marks, ReadyFrameKind::Exact, frame_count, width)
             }
         };
         let mut runs = Vec::new();
         latch.update_value(|l| {
             runs = l.resolve(&cand, buf_w).to_vec();
         });
-        let _ = paint_strip_canvas_1px(&canvas, buf_w, &runs, &paint_color);
+        let _ = paint_strip_canvas(&canvas, buf_w, &runs, &paint_color);
     });
 
     let test_id = test_id.unwrap_or("");

@@ -212,7 +212,7 @@ body {
   flex: 0 0 auto;
 }
 
-/* Odd-frame zebra (demo). Empty canvas when frames are sub-pixel. */
+/* Odd-frame zebra (demo). 1px canvas, float w/n fillRect; off if step < 1px. */
 .wm-scrubber-zebra {
   position: absolute;
   inset: 0;
@@ -247,11 +247,12 @@ body {
   opacity: 0.55;
 }
 
-/* Opaque current-frame tip (integer CSS px from helpers — min 2px). */
+/* Opaque current-frame tip (left+right calc = f/n; width auto). */
 .wm-scrubber-playhead {
   position: absolute;
   top: 0;
   bottom: 0;
+  width: auto;
   background: #e8e8e8;
   pointer-events: none;
   z-index: 2;

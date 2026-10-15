@@ -1,7 +1,7 @@
 //! Demo controls over [`fpmedia_web_components::Video`] — not production player UI.
 
 use fpmedia_web_components::helpers::{
-    format_metadata, format_timecode_at, odd_frame_px_runs, playhead_tip_css, playhead_width_css,
+    format_metadata, format_timecode_at, odd_frame_runs, playhead_tip_css, playhead_width_css,
     strip_canvas_buffer_width,
 };
 use fpmedia_web_components::{
@@ -791,9 +791,8 @@ pub fn DemoPlayer() -> impl IntoView {
     }
 }
 
-/// Frame zebra on the progress track (demo chrome). `contrast` is added to
-/// track-base brightness on even slots and subtracted on odd. Off when a
-/// frame is sub-pixel after the same snap as strip greens.
+/// Frame zebra on the progress track (demo chrome). Continuous `w/n` float
+/// `fillRect` slots (same [`frame_slot`] as tip); off when step &lt; 1 px.
 #[component]
 fn FrameZebra(contrast: u8) -> impl IntoView {
     let ctx = use_context::<ScrubberCtx>().expect("FrameZebra must be used inside <Scrubber>");
@@ -803,16 +802,14 @@ fn FrameZebra(contrast: u8) -> impl IntoView {
 
     Effect::new(move |_| {
         let count = video.frame_count.get();
-        let css_w = css_width.get();
-        let dpr = window()
-            .map(|w| w.device_pixel_ratio())
-            .unwrap_or(1.0)
-            .max(1.0);
-        let buf_w = strip_canvas_buffer_width(css_w, dpr);
+        let css_w = css_width.get().max(0.0);
+        // Canvas buffer = rounded CSS width; slot math uses that same float width.
+        let buf_w = strip_canvas_buffer_width(css_w, 1.0);
+        let width = f64::from(buf_w);
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
-        let runs = odd_frame_px_runs(count, buf_w);
+        let runs = odd_frame_runs(count, width);
         let (even, odd) = zebra_pair_hex(contrast);
         let _ = paint_frame_zebra(&canvas, buf_w, &runs, &even, &odd);
     });
@@ -822,12 +819,11 @@ fn FrameZebra(contrast: u8) -> impl IntoView {
     }
 }
 
-/// 1 px zebra: clear; if `odd_runs` empty leave transparent (CSS base); else
-/// full-width `even` then odd slots in `odd`.
+/// 1 px zebra: clear; if `odd_runs` empty leave transparent; else even + float odds.
 fn paint_frame_zebra(
     canvas: &web_sys::HtmlCanvasElement,
     buffer_width: u16,
-    odd_runs: &[(u16, u16)],
+    odd_runs: &[(f64, f64)],
     even: &str,
     odd: &str,
 ) -> bool {
@@ -851,35 +847,44 @@ fn paint_frame_zebra(
     ctx.fill_rect(0.0, 0.0, wf, 1.0);
     ctx.set_fill_style_str(odd);
     for &(lo, hi) in odd_runs {
-        if hi <= lo {
-            continue;
+        let span = hi - lo;
+        if span > 0.0 {
+            ctx.fill_rect(lo, 0.0, span, 1.0);
         }
-        ctx.fill_rect(f64::from(lo), 0.0, f64::from(hi.saturating_sub(lo)), 1.0);
     }
     true
 }
 
-/// Opaque 1-frame tip at the progress end (integer CSS px — no subpixel flicker).
+/// Opaque 1-frame tip — continuous `left`+`right` calc (same `f/n` as float zebra).
 #[component]
 fn ScrubPlayheadTip() -> impl IntoView {
     let ctx =
         use_context::<ScrubberCtx>().expect("ScrubPlayheadTip must be used inside <Scrubber>");
     let video = ctx.video;
-    let css_width = ctx.css_width;
-    let tip = Memo::new(move |_| {
-        playhead_tip_css(
-            video.playhead.get(),
-            video.frame_count.get(),
-            css_width.get(),
-        )
-    });
+    let tip = Memo::new(move |_| playhead_tip_css(video.playhead.get(), video.frame_count.get()));
     view! {
         <div
             class="wm-scrubber-playhead"
             data-testid="scrubber-playhead"
             aria-hidden="true"
             style:left=move || tip.get().0
-            style:width=move || tip.get().1
+            style:right=move || tip.get().1
+        />
+    }
+}
+
+/// Progress fill to tip left — continuous `calc(100% * f / n)`.
+#[component]
+fn ScrubProgress() -> impl IntoView {
+    let ctx = use_context::<ScrubberCtx>().expect("ScrubProgress must be used inside <Scrubber>");
+    let video = ctx.video;
+    let width =
+        Memo::new(move |_| playhead_width_css(video.playhead.get(), video.frame_count.get()));
+    view! {
+        <div
+            class="wm-scrubber-progress"
+            data-testid="scrubber-progress"
+            style:width=move || width.get()
         />
     }
 }
@@ -897,13 +902,7 @@ fn DemoScrubber(video: VideoRef) -> impl IntoView {
                     class="wm-scrubber-fetched".to_string()
                     test_id="scrubber-fetched"
                 />
-                <div
-                    class="wm-scrubber-progress"
-                    data-testid="scrubber-progress"
-                    style:width=move || {
-                        playhead_width_css(video.playhead.get(), video.frame_count.get())
-                    }
-                />
+                <ScrubProgress />
                 <ScrubPlayheadTip />
             </div>
             // Keyframes strip (yellow sync ticks) is debug-only — off by default

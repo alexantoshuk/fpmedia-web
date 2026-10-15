@@ -1,7 +1,8 @@
-//! Scrubber strip paint math: frame runs / fetch fractions → integer pixel runs.
+//! Scrubber strip paint math: frame runs / fetch fractions → continuous runs.
 //!
-//! Hosts paint with a 1 px-tall canvas + integer `fillRect` (Chrome blurs
-//! many-stop CSS gradients on long clips). mediabunny: no meter.
+//! Hosts paint with a 1 px-tall canvas + float `fillRect` on the same `f/n·w`
+//! grid as tip / zebra (Chrome blurs many-stop CSS gradients on long clips).
+//! mediabunny: no meter.
 
 #[cfg(target_arch = "wasm32")]
 use crate::video::{ReadyFrameKind, ReadyFrameMark};
@@ -21,17 +22,16 @@ pub const FETCH_STRIP_COLOR: &str = "#6b7280";
 /// Yellow keyframe / sync ticks on the ready strip.
 pub const KEYFRAME_STRIP_COLOR: &str = "#eab308";
 
-/// Frame marks → snapped pixel runs on `width_px`.
+/// Frame marks → continuous runs on `width` (same `f/n` as tip / zebra).
 /// Covered/Exact: honest (no soft-merge / no min-px inflate).
 /// Keyframes: `min_run_px = 1` so sync ticks stay visible on long clips.
-/// `frame_count` = presentation frame count (same divisor as tip / zebra).
 #[cfg(target_arch = "wasm32")]
-pub fn cache_strip_px_runs_for_width(
+pub fn cache_strip_runs_for_width(
     marks: &[ReadyFrameMark],
     kind: ReadyFrameKind,
     frame_count: f64,
-    width_px: u16,
-) -> Vec<StripPxRun> {
+    width: f64,
+) -> Vec<StripRun> {
     let mut runs: Vec<(FrameId, FrameId)> = marks
         .iter()
         .filter(|m| m.kind == kind)
@@ -39,25 +39,56 @@ pub fn cache_strip_px_runs_for_width(
         .collect();
     runs.sort_by_key(|&(lo, _)| lo);
     match kind {
-        ReadyFrameKind::Keyframes => keyframe_runs_to_width(&runs, frame_count, width_px),
+        ReadyFrameKind::Keyframes => keyframe_runs_to_width(&runs, frame_count, width),
         ReadyFrameKind::Covered | ReadyFrameKind::Exact => {
-            ready_runs_to_width(&runs, frame_count, width_px)
+            ready_runs_to_width(&runs, frame_count, width)
         }
     }
 }
 
-/// Sorted inclusive ready runs → snapped pixel runs on `width_px`.
-/// View = data feedback: holes stay; sub-pixel runs drop (no inflate).
+/// Sorted inclusive ready runs → continuous runs on `width`.
+/// View = data feedback: holes stay; no min-px inflate (hairlines OK).
 pub fn ready_runs_to_width(
+    runs: &[(FrameId, FrameId)],
+    frame_count: f64,
+    width: f64,
+) -> Vec<StripRun> {
+    frame_runs_to_width(runs, frame_count.max(1.0), 0, width)
+}
+
+/// Sync / keyframe ticks → continuous runs; inflate to ≥1 px.
+pub fn keyframe_runs_to_width(
+    runs: &[(FrameId, FrameId)],
+    frame_count: f64,
+    width: f64,
+) -> Vec<StripRun> {
+    let n = frame_count.max(1.0);
+    if runs.is_empty() {
+        return Vec::new();
+    }
+    snap_pct_runs_to_width(
+        runs.iter().map(|&(lo, hi)| {
+            let start = (lo as f64 / n) * 100.0;
+            let end = ((hi as f64 + 1.0) / n) * 100.0;
+            (start, end)
+        }),
+        width,
+        1.0,
+    )
+}
+
+/// Sorted inclusive ready runs → snapped integer pixel runs on `width_px`.
+/// Kept for sticky/unit probes; paint path uses [`ready_runs_to_width`].
+pub fn ready_runs_to_width_px(
     runs: &[(FrameId, FrameId)],
     frame_count: f64,
     width_px: u16,
 ) -> Vec<StripPxRun> {
-    frame_runs_to_width(runs, frame_count.max(1.0), 0, width_px)
+    frame_runs_to_width_px(runs, frame_count.max(1.0), 0, width_px)
 }
 
-/// Sync / keyframe ticks → snapped pixel runs; inflate to ≥1 device px.
-pub fn keyframe_runs_to_width(
+/// Sync / keyframe ticks → snapped integer runs; inflate to ≥1 device px.
+pub fn keyframe_runs_to_width_px(
     runs: &[(FrameId, FrameId)],
     frame_count: f64,
     width_px: u16,
@@ -66,7 +97,7 @@ pub fn keyframe_runs_to_width(
     if runs.is_empty() {
         return Vec::new();
     }
-    snap_pct_runs_to_width(
+    snap_pct_runs_to_width_px(
         runs.iter().map(|&(lo, hi)| {
             let start = (lo as f64 / n) * 100.0;
             let end = ((hi as f64 + 1.0) / n) * 100.0;
@@ -84,14 +115,13 @@ pub fn strip_canvas_buffer_width(css_width: f64, device_pixel_ratio: f64) -> u16
     (w as u16).max(1)
 }
 
-/// Paint opaque runs into a **1 px-tall** canvas with integer `fillRect`.
-/// Stretch the canvas in CSS to the strip height. `runs` must already be in
-/// `buffer_width` space. Returns `false` if the 2d context is unavailable.
+/// Paint opaque runs into a **1 px-tall** canvas with float `fillRect`.
+/// Stretch the canvas in CSS to the strip height. `runs` in buffer space.
 #[cfg(target_arch = "wasm32")]
-pub fn paint_strip_canvas_1px(
+pub fn paint_strip_canvas(
     canvas: &web_sys::HtmlCanvasElement,
     buffer_width: u16,
-    runs: &[StripPxRun],
+    runs: &[StripRun],
     color: &str,
 ) -> bool {
     let w = u32::from(buffer_width.max(1));
@@ -109,13 +139,10 @@ pub fn paint_strip_canvas_1px(
     ctx.clear_rect(0.0, 0.0, wf, 1.0);
     ctx.set_fill_style_str(color);
     for &(lo, hi) in runs {
-        if hi <= lo {
-            continue;
+        let span = hi - lo;
+        if span > 0.0 {
+            ctx.fill_rect(lo, 0.0, span, 1.0);
         }
-        // Integer device pixels only — no subpixel fillRect.
-        let x = f64::from(lo);
-        let rw = f64::from(hi.saturating_sub(lo));
-        ctx.fill_rect(x, 0.0, rw, 1.0);
     }
     true
 }
@@ -154,15 +181,16 @@ pub fn soft_merge_frame_runs(runs: &[(FrameId, FrameId)], max_gap: u64) -> Vec<(
 /// (“sometimes” blur). mediabunny: no equivalent meter.
 pub const STRIP_PAINT_STICKY_PX: u16 = 2;
 
-/// Inclusive-start / exclusive-end pixel runs on a scrubber of known width.
+/// Inclusive-start / exclusive-end integer pixel runs (sticky / unit probes).
 pub type StripPxRun = (u16, u16);
 
-/// Sticky paint latch: keep last accepted runs until the candidate differs by
-/// more than [`STRIP_PAINT_STICKY_PX`] rasterized pixels. Tracks buffer width
-/// so a resize clears the hold.
+/// Continuous half-open runs on buffer width (paint path / tip / zebra grid).
+pub type StripRun = (f64, f64);
+
+/// Sticky paint latch for continuous runs: sample coverage on integer columns.
 #[derive(Debug, Clone, Default)]
 pub struct StripPaintLatch {
-    accepted: Vec<StripPxRun>,
+    accepted: Vec<StripRun>,
     width: u16,
 }
 
@@ -171,7 +199,7 @@ impl StripPaintLatch {
         Self::default()
     }
 
-    pub fn resolve(&mut self, candidate: &[StripPxRun], width: u16) -> &[StripPxRun] {
+    pub fn resolve(&mut self, candidate: &[StripRun], width: u16) -> &[StripRun] {
         let width = width.max(1);
         if width != self.width {
             self.width = width;
@@ -180,7 +208,7 @@ impl StripPaintLatch {
         }
         let next =
             stabilize_strip_segments(&self.accepted, candidate, STRIP_PAINT_STICKY_PX, width);
-        if next.as_slice() != self.accepted.as_slice() {
+        if !strip_runs_eq(&next, &self.accepted) {
             self.accepted = next;
         }
         &self.accepted
@@ -191,12 +219,21 @@ impl StripPaintLatch {
         self.width = 0;
     }
 
-    pub fn accepted(&self) -> &[StripPxRun] {
+    pub fn accepted(&self) -> &[StripRun] {
         &self.accepted
     }
 }
 
-/// Hamming distance of two run lists rasterized onto `width` pixels.
+fn strip_runs_eq(a: &[StripRun], b: &[StripRun]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .all(|(&(lo0, hi0), &(lo1, hi1))| (lo0 - lo1).abs() < 1e-9 && (hi0 - hi1).abs() < 1e-9)
+}
+
+/// Hamming distance of two integer run lists rasterized onto `width` pixels.
 pub fn strip_raster_diff_px(a: &[StripPxRun], b: &[StripPxRun], width: u16) -> u32 {
     let mut diff = 0u32;
     for x in 0..width {
@@ -211,9 +248,24 @@ fn run_covers(runs: &[StripPxRun], x: u16) -> bool {
     runs.iter().any(|&(lo, hi)| x >= lo && x < hi)
 }
 
-/// Paint hysteresis via raster diff: empty `next` clears; empty `prev` takes
-/// `next`; coverage diff ≤ `sticky_px` keeps `prev`. Else take `next`.
-pub fn stabilize_strip_segments(
+fn run_covers_mid(runs: &[StripRun], x_mid: f64) -> bool {
+    runs.iter().any(|&(lo, hi)| x_mid >= lo && x_mid < hi)
+}
+
+/// Sample continuous runs on integer column centers; count coverage mismatches.
+pub fn strip_raster_diff(a: &[StripRun], b: &[StripRun], width: u16) -> u32 {
+    let mut diff = 0u32;
+    for x in 0..width {
+        let mid = f64::from(x) + 0.5;
+        if run_covers_mid(a, mid) != run_covers_mid(b, mid) {
+            diff += 1;
+        }
+    }
+    diff
+}
+
+/// Paint hysteresis via raster diff (integer runs — unit probes).
+pub fn stabilize_strip_segments_px(
     prev: &[StripPxRun],
     next: &[StripPxRun],
     sticky_px: u16,
@@ -231,11 +283,65 @@ pub fn stabilize_strip_segments(
     next.to_vec()
 }
 
+/// Paint hysteresis for continuous runs (sample integer column centers).
+pub fn stabilize_strip_segments(
+    prev: &[StripRun],
+    next: &[StripRun],
+    sticky_px: u16,
+    width: u16,
+) -> Vec<StripRun> {
+    if next.is_empty() {
+        return Vec::new();
+    }
+    if prev.is_empty() {
+        return next.to_vec();
+    }
+    if strip_raster_diff(prev, next, width.max(1)) <= u32::from(sticky_px) {
+        return prev.to_vec();
+    }
+    next.to_vec()
+}
+
+/// Continuous percentage segments (`0…100`) → float runs on `width`.
+///
+/// `min_run_px == 0`: drop empty spans. `min_run_px > 0`: inflate short runs
+/// (Fetch / Keyframes — keep visible ticks).
+pub fn snap_pct_runs_to_width(
+    segments: impl IntoIterator<Item = (f64, f64)>,
+    width: f64,
+    min_run_px: f64,
+) -> Vec<StripRun> {
+    let w = width.max(1.0);
+    let mut out: Vec<StripRun> = Vec::new();
+    for (start, end) in segments {
+        let start = start.clamp(0.0, 100.0);
+        let end = end.clamp(0.0, 100.0);
+        let mut lo = (start / 100.0) * w;
+        let mut hi = (end / 100.0) * w;
+        lo = lo.clamp(0.0, w);
+        hi = hi.clamp(0.0, w);
+        if min_run_px > 0.0 && hi < lo + min_run_px {
+            hi = (lo + min_run_px).min(w);
+        }
+        if hi <= lo {
+            continue;
+        }
+        if let Some((_, prev_hi)) = out.last_mut()
+            && lo <= *prev_hi
+        {
+            *prev_hi = (*prev_hi).max(hi);
+            continue;
+        }
+        out.push((lo, hi));
+    }
+    out
+}
+
 /// Snap percentage segments (`0…100`) to integer pixel runs on `width_px`.
 ///
 /// `min_run_px == 0`: drop runs that round to empty (ready greens — honest).
 /// `min_run_px >= 1`: inflate short runs (gray FetchMap — keep visible ticks).
-pub fn snap_pct_runs_to_width(
+pub fn snap_pct_runs_to_width_px(
     segments: impl IntoIterator<Item = (f64, f64)>,
     width_px: u16,
     min_run_px: u16,
@@ -271,7 +377,21 @@ pub fn snap_pct_runs_to_width(
 
 /// Snap to the historical assumed ~800 px scrubber (tests / soft-merge parity).
 pub fn snap_pct_runs_to_px(segments: impl IntoIterator<Item = (f64, f64)>) -> Vec<StripPxRun> {
-    snap_pct_runs_to_width(segments, STRIP_ASSUMED_SCRUBBER_PX as u16, 1)
+    snap_pct_runs_to_width_px(segments, STRIP_ASSUMED_SCRUBBER_PX as u16, 1)
+}
+
+/// File-byte fetch fractions (`0…1`) → continuous runs on `width` (min 1 px).
+pub fn fetch_strip_runs_for_width(ranges: &[(f32, f32)], width: f64) -> Vec<StripRun> {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    snap_pct_runs_to_width(
+        ranges
+            .iter()
+            .map(|&(a, b)| (a as f64 * 100.0, b as f64 * 100.0)),
+        width,
+        1.0,
+    )
 }
 
 /// File-byte fetch fractions (`0…1`) → snapped pixel runs on `width_px`.
@@ -279,7 +399,7 @@ pub fn fetch_strip_px_runs_for_width(ranges: &[(f32, f32)], width_px: u16) -> Ve
     if ranges.is_empty() {
         return Vec::new();
     }
-    snap_pct_runs_to_width(
+    snap_pct_runs_to_width_px(
         ranges
             .iter()
             .map(|&(a, b)| (a as f64 * 100.0, b as f64 * 100.0)),
@@ -293,10 +413,32 @@ pub fn fetch_strip_px_runs(ranges: &[(f32, f32)]) -> Vec<StripPxRun> {
     fetch_strip_px_runs_for_width(ranges, STRIP_ASSUMED_SCRUBBER_PX as u16)
 }
 
-/// Inclusive frame runs → snapped scrubber pixels (after optional soft-merge).
-/// Ready greens use `merge_gap = 0` + `min_run_px = 0` (view mirrors data).
-/// `frame_count` = presentation frame count (unified with tip / zebra).
+/// Inclusive frame runs → continuous scrubber spans (after optional soft-merge).
+/// Ready greens: `merge_gap = 0` + `min_run_px = 0` (view mirrors data).
 pub fn frame_runs_to_width(
+    runs: &[(FrameId, FrameId)],
+    frame_count: f64,
+    merge_gap: u64,
+    width: f64,
+) -> Vec<StripRun> {
+    let n = frame_count.max(1.0);
+    let merged = soft_merge_frame_runs(runs, merge_gap);
+    if merged.is_empty() {
+        return Vec::new();
+    }
+    snap_pct_runs_to_width(
+        merged.iter().map(|&(lo, hi)| {
+            let start = (lo as f64 / n) * 100.0;
+            let end = ((hi as f64 + 1.0) / n) * 100.0;
+            (start, end)
+        }),
+        width,
+        0.0,
+    )
+}
+
+/// Inclusive frame runs → snapped scrubber pixels (after optional soft-merge).
+pub fn frame_runs_to_width_px(
     runs: &[(FrameId, FrameId)],
     frame_count: f64,
     merge_gap: u64,
@@ -307,7 +449,7 @@ pub fn frame_runs_to_width(
     if merged.is_empty() {
         return Vec::new();
     }
-    snap_pct_runs_to_width(
+    snap_pct_runs_to_width_px(
         merged.iter().map(|&(lo, hi)| {
             let start = (lo as f64 / n) * 100.0;
             let end = ((hi as f64 + 1.0) / n) * 100.0;
@@ -324,7 +466,7 @@ pub fn frame_runs_to_px(
     frame_count: f64,
     merge_gap: u64,
 ) -> Vec<StripPxRun> {
-    frame_runs_to_width(
+    frame_runs_to_width_px(
         runs,
         frame_count,
         merge_gap,
@@ -334,7 +476,7 @@ pub fn frame_runs_to_px(
 
 /// Half-open pixel span for presentation frame `frame` on a `frame_count` grid.
 ///
-/// Same mapping as tip / zebra / [`frame_runs_to_width`]:  
+/// Integer snap for strip paint:  
 /// `round(f/n·w) .. round((f+1)/n·w)` clamped into `[0, width_px]`.
 pub fn frame_slot_px(frame: u32, frame_count: u32, width_px: u32) -> (u32, u32) {
     if frame_count == 0 || width_px == 0 {
@@ -349,44 +491,62 @@ pub fn frame_slot_px(frame: u32, frame_count: u32, width_px: u32) -> (u32, u32) 
     (lo, hi)
 }
 
-/// True when every frame slot `0 .. frame_count` rounds to ≥1 device pixel on
-/// `width_px`. Same half-open mapping as [`frame_slot_px`] / strips. False for
-/// empty clip or `width_px == 0`.
-pub fn frame_slots_at_least_1px(frame_count: u32, width_px: u16) -> bool {
+/// Half-open span matching [`scrub_frame_from_x`]: column `x` → `floor(x/w·n)`.
+///
+/// `lo = ceil(f·w/n)`, `hi = ceil((f+1)·w/n)` (integer). Kept for strip probes;
+/// tip / zebra demo path uses [`frame_slot`].
+pub fn frame_slot_floor_px(frame: u32, frame_count: u32, width_px: u32) -> (u32, u32) {
     if frame_count == 0 || width_px == 0 {
-        return false;
+        return (0, 0);
     }
-    let w = u32::from(width_px);
-    (0..frame_count).all(|f| {
-        let (lo, hi) = frame_slot_px(f, frame_count, w);
-        hi > lo
-    })
+    let n = u64::from(frame_count);
+    let w = u64::from(width_px);
+    let f = u64::from(frame.min(frame_count - 1));
+    let lo = (f * w).div_ceil(n).min(w) as u32;
+    let hi = ((f + 1) * w).div_ceil(n).min(w) as u32;
+    (lo, hi.max(lo))
 }
 
-/// Odd presentation-frame slots as snapped pixel runs for a zebra track.
-/// Empty when [`frame_slots_at_least_1px`] is false (sub-pixel frames).
-///
-/// Does **not** use [`snap_pct_runs_to_width`]'s abut/+1 coalesce — that would
-/// bridge the even-frame gap and paint a solid bar.
-pub fn odd_frame_px_runs(frame_count: u32, width_px: u16) -> Vec<StripPxRun> {
-    if !frame_slots_at_least_1px(frame_count, width_px) {
+/// Continuous half-open slot: `[f/n·w, (f+1)/n·w)` — no integer snap.
+pub fn frame_slot(frame: u32, frame_count: u32, width: f64) -> (f64, f64) {
+    if frame_count == 0 || width <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let n = f64::from(frame_count);
+    let f = f64::from(frame.min(frame_count - 1));
+    ((f / n) * width, ((f + 1.0) / n) * width)
+}
+
+/// Equal continuous step `w/n` (0 when empty / non-positive width).
+pub fn frame_zebra_step(frame_count: u32, width: f64) -> f64 {
+    if frame_count == 0 || width <= 0.0 {
+        return 0.0;
+    }
+    width / f64::from(frame_count)
+}
+
+/// Zebra visibility gate: `floor(width_px / frame_count)` (CSS px).
+pub fn frame_zebra_slot_px(frame_count: u32, width_px: u32) -> u32 {
+    if frame_count == 0 || width_px == 0 {
+        return 0;
+    }
+    width_px / frame_count
+}
+
+/// True when continuous step `w/n ≥ 1` (same threshold as integer floor gate).
+pub fn frame_slots_at_least_1px(frame_count: u32, width_px: u16) -> bool {
+    frame_zebra_step(frame_count, f64::from(width_px)) >= 1.0
+}
+
+/// Odd-frame runs as continuous `[lo, hi)` on width (canvas `fillRect` floats).
+pub fn odd_frame_runs(frame_count: u32, width: f64) -> Vec<(f64, f64)> {
+    if frame_zebra_step(frame_count, width) < 1.0 {
         return Vec::new();
     }
-    let width_px = width_px.max(1);
-    let w = u32::from(width_px);
-    let mut out: Vec<StripPxRun> = Vec::new();
+    let mut out = Vec::new();
     for f in (1..frame_count).step_by(2) {
-        let (lo, hi) = frame_slot_px(f, frame_count, w);
+        let (lo, hi) = frame_slot(f, frame_count, width);
         if hi <= lo {
-            continue;
-        }
-        let lo = lo as u16;
-        let hi = hi as u16;
-        // Overlap / exact abut only — never bridge a 1 px even slot.
-        if let Some((_, prev_hi)) = out.last_mut()
-            && lo <= *prev_hi
-        {
-            *prev_hi = (*prev_hi).max(hi);
             continue;
         }
         out.push((lo, hi));
@@ -400,7 +560,7 @@ mod tests {
 
     #[test]
     fn empty_strips_are_empty_runs() {
-        assert!(ready_runs_to_width(&[], 10.0, 800).is_empty());
+        assert!(ready_runs_to_width_px(&[], 10.0, 800).is_empty());
         assert!(fetch_strip_px_runs(&[]).is_empty());
     }
 
@@ -420,20 +580,20 @@ mod tests {
     #[test]
     fn ready_greens_keep_holes_no_soft_merge() {
         let far = [(0, 0), (100, 100)];
-        let exact = ready_runs_to_width(&far, 8000.0, 800);
-        let covered = ready_runs_to_width(&far, 8000.0, 800);
+        let exact = ready_runs_to_width_px(&far, 8000.0, 800);
+        let covered = ready_runs_to_width_px(&far, 8000.0, 800);
         // On 8000 frames / 800 px each single frame is sub-pixel → both drop.
         assert!(exact.is_empty(), "sub-pixel Exact drops: {exact:?}");
         assert!(covered.is_empty(), "sub-pixel Covered drops: {covered:?}");
         // Visible multi-frame runs keep a real hole between them.
-        let split = ready_runs_to_width(&[(0, 50), (200, 250)], 8000.0, 800);
+        let split = ready_runs_to_width_px(&[(0, 50), (200, 250)], 8000.0, 800);
         assert_eq!(split.len(), 2, "ready greens keep holes: {split:?}");
     }
 
     #[test]
     fn keyframe_ticks_inflate_to_one_px() {
         let far = [(0, 0), (100, 100)];
-        let ticks = keyframe_runs_to_width(&far, 8000.0, 800);
+        let ticks = keyframe_runs_to_width_px(&far, 8000.0, 800);
         assert_eq!(ticks.len(), 2, "keyframe ticks stay visible: {ticks:?}");
         assert!(
             ticks.iter().all(|&(lo, hi)| hi == lo + 1),
@@ -449,8 +609,8 @@ mod tests {
         let w = 800u16;
         let sparse = [(100u64, 100), (102, 102), (104, 104), (106, 106)];
         let coalesced = [(100u64, 106)];
-        let sparse_px = ready_runs_to_width(&sparse, max, w);
-        let solid_px = ready_runs_to_width(&coalesced, max, w);
+        let sparse_px = ready_runs_to_width_px(&sparse, max, w);
+        let solid_px = ready_runs_to_width_px(&coalesced, max, w);
         let sparse_w: u32 = sparse_px
             .iter()
             .map(|&(lo, hi)| u32::from(hi.saturating_sub(lo)))
@@ -502,15 +662,15 @@ mod tests {
         let w = 800u16;
         let prev = vec![(0, 100)];
         assert_eq!(
-            stabilize_strip_segments(&prev, &[(0, 101)], STRIP_PAINT_STICKY_PX, w),
+            stabilize_strip_segments_px(&prev, &[(0, 101)], STRIP_PAINT_STICKY_PX, w),
             prev
         );
         assert_eq!(
-            stabilize_strip_segments(&prev, &[(1, 100)], STRIP_PAINT_STICKY_PX, w),
+            stabilize_strip_segments_px(&prev, &[(1, 100)], STRIP_PAINT_STICKY_PX, w),
             prev
         );
         assert_eq!(
-            stabilize_strip_segments(&prev, &[(0, 99)], STRIP_PAINT_STICKY_PX, w),
+            stabilize_strip_segments_px(&prev, &[(0, 99)], STRIP_PAINT_STICKY_PX, w),
             prev
         );
     }
@@ -520,16 +680,16 @@ mod tests {
         let prev = vec![(0, 100)];
         let next = vec![(0, 103)];
         assert_eq!(
-            stabilize_strip_segments(&prev, &next, STRIP_PAINT_STICKY_PX, 800),
+            stabilize_strip_segments_px(&prev, &next, STRIP_PAINT_STICKY_PX, 800),
             next
         );
     }
 
     #[test]
     fn stabilize_accepts_clear_and_first_paint() {
-        assert!(stabilize_strip_segments(&[(0, 10)], &[], 2, 800).is_empty());
+        assert!(stabilize_strip_segments_px(&[(0, 10)], &[], 2, 800).is_empty());
         assert_eq!(
-            stabilize_strip_segments(&[], &[(0, 10)], 2, 800),
+            stabilize_strip_segments_px(&[], &[(0, 10)], 2, 800),
             vec![(0, 10)]
         );
     }
@@ -538,17 +698,20 @@ mod tests {
     fn latch_kills_raf_edge_thrash() {
         let w = 800u16;
         let mut latch = StripPaintLatch::new();
-        assert_eq!(latch.resolve(&[(0, 200)], w).to_vec(), vec![(0, 200)]);
+        assert!(strip_runs_eq(
+            latch.resolve(&[(0.0, 200.0)], w),
+            &[(0.0, 200.0)]
+        ));
         let mut unique = std::collections::BTreeSet::new();
         unique.insert(format!("{:?}", latch.accepted()));
         for i in 0..60 {
-            let end = if i % 2 == 0 { 201 } else { 199 };
-            let runs = latch.resolve(&[(0, end)], w).to_vec();
+            let end = if i % 2 == 0 { 201.0 } else { 199.0 };
+            let runs = latch.resolve(&[(0.0, end)], w).to_vec();
             unique.insert(format!("{runs:?}"));
         }
         assert_eq!(unique.len(), 1, "sub-sticky thrash must not rewrite runs");
-        let grown = latch.resolve(&[(0, 220)], w).to_vec();
-        assert_eq!(grown, vec![(0, 220)]);
+        let grown = latch.resolve(&[(0.0, 220.0)], w).to_vec();
+        assert!(strip_runs_eq(&grown, &[(0.0, 220.0)]));
         unique.insert(format!("{grown:?}"));
         assert_eq!(unique.len(), 2);
     }
@@ -556,16 +719,17 @@ mod tests {
     #[test]
     fn latch_fetch_fraction_jitter() {
         let w = 800u16;
+        let wf = f64::from(w);
         let mut latch = StripPaintLatch::new();
-        let a = fetch_strip_px_runs_for_width(&[(0.0, 0.5)], w);
+        let a = fetch_strip_runs_for_width(&[(0.0, 0.5)], wf);
         let painted = latch.resolve(&a, w).to_vec();
         let mut unique = std::collections::BTreeSet::new();
         unique.insert(format!("{painted:?}"));
         for i in 0..30 {
             let alt = if i % 2 == 0 {
-                fetch_strip_px_runs_for_width(&[(0.0, 0.50125)], w)
+                fetch_strip_runs_for_width(&[(0.0, 0.50125)], wf)
             } else {
-                fetch_strip_px_runs_for_width(&[(0.0, 0.5)], w)
+                fetch_strip_runs_for_width(&[(0.0, 0.5)], wf)
             };
             unique.insert(format!("{:?}", latch.resolve(&alt, w)));
         }
@@ -574,64 +738,93 @@ mod tests {
 
     #[test]
     fn latch_holds_edge_thrash_on_visible_ready_runs() {
-        // Honest greens: multi-frame runs that survive sub-pixel drop; ±1 px edge.
         let w = 800u16;
-        let a = ready_runs_to_width(&[(0, 399)], 8000.0, w); // → 40 px
-        let b = ready_runs_to_width(&[(0, 409)], 8000.0, w); // → 41 px
-        assert_eq!(a, vec![(0, 40)]);
-        assert_eq!(b, vec![(0, 41)]);
+        let wf = f64::from(w);
+        let a = ready_runs_to_width(&[(0, 399)], 8000.0, wf); // → 40.0
+        let b = ready_runs_to_width(&[(0, 409)], 8000.0, wf); // → 41.0
+        assert_eq!(a.len(), 1);
+        assert!((a[0].1 - 40.0).abs() < 1e-9);
+        assert!((b[0].1 - 41.0).abs() < 1e-9);
         let mut latch = StripPaintLatch::new();
         let _ = latch.resolve(&a, w);
         let mut unique = std::collections::BTreeSet::new();
         unique.insert(format!("{:?}", latch.accepted()));
         for i in 0..40 {
             let end = if i % 2 == 0 { 399u64 } else { 409 };
-            let cand = ready_runs_to_width(&[(0, end)], 8000.0, w);
+            let cand = ready_runs_to_width(&[(0, end)], 8000.0, wf);
             unique.insert(format!("{:?}", latch.resolve(&cand, w)));
         }
         assert_eq!(unique.len(), 1, "sub-sticky ready edge thrash must hold");
     }
 
     #[test]
-    fn many_holes_snap_to_integer_device_pixels() {
-        // Long-clip FetchMap: 200 islands → canvas path uses integer rects on
-        // real buffer width (not a 800-stop CSS gradient).
+    fn many_holes_float_runs_on_buffer() {
+        // Long-clip FetchMap: continuous runs on real buffer (not CSS gradient).
         let w = 1280u16;
+        let wf = f64::from(w);
         let mut fracs = Vec::new();
         for i in 0..200 {
             let a = i as f32 / 400.0;
             let b = a + 0.001;
             fracs.push((a, b.min(1.0)));
         }
-        let runs = fetch_strip_px_runs_for_width(&fracs, w);
+        let runs = fetch_strip_runs_for_width(&fracs, wf);
         assert!(!runs.is_empty());
         for &(lo, hi) in &runs {
             assert!(lo < hi);
-            assert!(hi <= w);
+            assert!(hi <= wf + 1e-9);
         }
-        // Abutting after snap may coalesce — still ≪ raw island×4 CSS stops.
         assert!(runs.len() <= 200);
     }
 
     #[test]
-    fn frame_zebra_only_when_slots_are_full_pixels() {
-        // 100 frames / 100 px → every slot is 1 px (n = frame_count).
+    fn ready_keeps_equal_step_hairlines() {
+        // Continuous grid: single-frame marks stay as w/n hairlines (not dropped).
+        let far = [(0u64, 0), (100, 100)];
+        let runs = ready_runs_to_width(&far, 8000.0, 800.0);
+        assert_eq!(runs.len(), 2);
+        assert!((runs[0].1 - runs[0].0 - 0.1).abs() < 1e-9);
+        let split = ready_runs_to_width(&[(0, 50), (200, 250)], 8000.0, 800.0);
+        assert_eq!(split.len(), 2, "ready greens keep holes: {split:?}");
+    }
+
+    #[test]
+    fn frame_zebra_gate_is_floor_slot_at_least_1px() {
+        assert_eq!(frame_zebra_slot_px(50, 100), 2);
+        assert!(frame_slots_at_least_1px(50, 100));
+        assert_eq!(frame_zebra_slot_px(100, 100), 1);
         assert!(frame_slots_at_least_1px(100, 100));
-        let runs = odd_frame_px_runs(100, 100);
-        assert_eq!(runs.len(), 50, "odd slots 1,3,…,99: {runs:?}");
-        assert_eq!(runs[0], (1, 2));
-        assert_eq!(runs[49], (99, 100));
-        // 101 frames on 100 px → some slots round empty.
-        assert!(!frame_slots_at_least_1px(101, 100));
-        // Sub-pixel: long clip on narrow bar → off.
+        assert_eq!(frame_zebra_slot_px(8000, 800), 0);
         assert!(!frame_slots_at_least_1px(8000, 800));
-        assert!(odd_frame_px_runs(8000, 800).is_empty());
-        // Single frame fills the track.
-        assert!(frame_slots_at_least_1px(1, 800));
-        assert!(odd_frame_px_runs(1, 800).is_empty());
-        // Two frames on 1 px: second slot collapses after clamp.
-        assert!(!frame_slots_at_least_1px(2, 1));
-        assert!(odd_frame_px_runs(2, 1).is_empty());
+        assert_eq!(frame_zebra_slot_px(0, 100), 0);
+    }
+
+    #[test]
+    fn frame_slot_floor_matches_scrub_columns() {
+        // w=100, n=3 — columns use floor(x/w·n).
+        assert_eq!(frame_slot_floor_px(0, 3, 100), (0, 34));
+        assert_eq!(frame_slot_floor_px(1, 3, 100), (34, 67));
+        assert_eq!(frame_slot_floor_px(2, 3, 100), (67, 100));
+        for x in 0..100u32 {
+            let frame = (u64::from(x) * 3 / 100) as u32;
+            let (lo, hi) = frame_slot_floor_px(frame, 3, 100);
+            assert!(x >= lo && x < hi, "x={x} frame={frame} slot=[{lo},{hi})");
+        }
+        let (lo, hi) = frame_slot_floor_px(299, 300, 800);
+        assert_eq!((lo, hi), (798, 800));
+    }
+
+    #[test]
+    fn frame_slot_is_equal_step() {
+        let (lo, hi) = frame_slot(1, 3, 100.0);
+        assert!((lo - 100.0 / 3.0).abs() < 1e-9);
+        assert!((hi - 200.0 / 3.0).abs() < 1e-9);
+        assert!((frame_zebra_step(300, 800.0) - 800.0 / 300.0).abs() < 1e-9);
+        let runs = odd_frame_runs(3, 100.0);
+        assert_eq!(runs.len(), 1);
+        assert!((runs[0].0 - 100.0 / 3.0).abs() < 1e-9);
+        assert!((runs[0].1 - 200.0 / 3.0).abs() < 1e-9);
+        assert!(odd_frame_runs(8000, 800.0).is_empty());
     }
 
     #[test]

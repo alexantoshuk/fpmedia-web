@@ -7,49 +7,39 @@ use fpmedia_web::VideoMetadata;
 
 /// Playhead as a CSS width percentage of the scrubber (`0…100`).
 ///
-/// Left edge of the current-frame slot on the unified `frame_count` grid
-/// ([`frame_slot_px`] / tip / zebra / strips).
+/// Left edge of the current-frame slot on the continuous `frame_count` grid.
 pub fn playhead_width_pct(playhead: u32, frame_count: u32) -> f64 {
     let n = frame_count.max(1) as f64;
     let f = playhead.min(frame_count.saturating_sub(1)) as f64;
     ((f / n) * 100.0).clamp(0.0, 100.0)
 }
 
-/// Same as [`playhead_width_pct`], formatted for `style:width`.
+/// Progress fill to tip left — continuous `calc(100% * f / n)` (no px snap).
 pub fn playhead_width_css(playhead: u32, frame_count: u32) -> String {
-    format!("{:.3}%", playhead_width_pct(playhead, frame_count))
-}
-
-/// Min CSS width for the playhead tip. 1 px flickers on Chromium (device-pixel
-/// round-trip); 2 px stays stable when the frame slot is sub-pixel.
-pub const PLAYHEAD_TIP_MIN_PX: u32 = 2;
-
-/// Integer CSS-pixel span for the opaque current-frame tip: `(left, width)`.
-///
-/// Same half-open `frame_count` slots as zebra / strip runs ([`frame_slot_px`]).
-/// Width is at least [`PLAYHEAD_TIP_MIN_PX`]; on sub-pixel slots the tip may
-/// extend past the track (host `overflow:hidden` clips — no end-pin hack).
-/// Pass track width in **CSS** px (not device px).
-pub fn playhead_tip_px(playhead: u32, frame_count: u32, track_css_w: f64) -> (u32, u32) {
-    let w = track_css_w.floor().max(0.0) as u32;
-    if frame_count == 0 || w == 0 {
-        return (0, 0);
+    if frame_count == 0 {
+        return "0".into();
     }
-    let min_w = PLAYHEAD_TIP_MIN_PX.min(w.max(1));
-    let (lo, hi) = frame_slot_px(playhead, frame_count, w);
-    let width = hi.saturating_sub(lo).max(min_w);
-    (lo, width)
+    let f = playhead.min(frame_count - 1);
+    format!("calc(100% * {f} / {frame_count})")
 }
 
-/// Same as [`playhead_tip_px`], formatted for `style:left` / `style:width`.
-pub fn playhead_tip_css(playhead: u32, frame_count: u32, track_css_w: f64) -> (String, String) {
-    let (left, width) = playhead_tip_px(playhead, frame_count, track_css_w);
-    (format!("{left}px"), format!("{width}px"))
+/// CSS `left` / `right` for tip — same continuous `f/n` ratio as float zebra
+/// (not absolute px from `round(css_w)`, which drifts vs CSS-stretched canvas).
+/// Host: omit `width` (auto fills left…right).
+pub fn playhead_tip_css(playhead: u32, frame_count: u32) -> (String, String) {
+    if frame_count == 0 {
+        return ("0".into(), "100%".into());
+    }
+    let n = frame_count;
+    let f = playhead.min(n - 1);
+    let left = format!("calc(100% * {f} / {n})");
+    let right = format!("calc(100% * {} / {n})", n - f - 1);
+    (left, right)
 }
 
 /// Map a pointer X on a scrubber element to a presentation frame.
 ///
-/// Hits the same half-open `frame_count` slot as [`frame_slot_px`] / tip / zebra.
+/// Hits continuous equal slots `[f/n,(f+1)/n)` — same as [`frame_slot`].
 pub fn scrub_frame_from_x(
     client_x: f64,
     rect_left: f64,
@@ -117,23 +107,20 @@ mod tests {
     }
 
     #[test]
-    fn playhead_tip_snaps_integer_px_and_floors_width() {
-        // 100 frames / 100 px → 1 px slots; min tip 2 px (may overhang).
-        assert_eq!(playhead_tip_px(50, 100, 100.0), (50, 2));
-        // Last frame: natural slot [99,100); floor to 2 px — no end-pin.
-        assert_eq!(playhead_tip_px(99, 100, 100.0), (99, 2));
-        // Sub-pixel slots (8000 frames / 800 px): ≥2 px floor.
-        let (lo, w) = playhead_tip_px(4000, 8000, 800.0);
-        assert_eq!(w, 2);
-        assert!(lo < 800);
-        assert_eq!(playhead_tip_px(0, 0, 800.0), (0, 0));
+    fn playhead_tip_uses_continuous_calc_slots() {
         assert_eq!(
-            playhead_tip_css(50, 100, 100.0),
-            ("50px".into(), "2px".into())
+            playhead_tip_css(1, 3),
+            ("calc(100% * 1 / 3)".into(), "calc(100% * 1 / 3)".into())
         );
-        // Short clip: equal full slots, including last (no shrink).
-        assert_eq!(playhead_tip_px(0, 10, 100.0), (0, 10));
-        assert_eq!(playhead_tip_px(9, 10, 100.0), (90, 10));
+        assert_eq!(
+            playhead_tip_css(299, 300),
+            (
+                "calc(100% * 299 / 300)".into(),
+                "calc(100% * 0 / 300)".into()
+            )
+        );
+        assert_eq!(playhead_width_css(1, 3), "calc(100% * 1 / 3)");
+        assert_eq!(playhead_tip_css(0, 0), ("0".into(), "100%".into()));
     }
 
     #[test]
