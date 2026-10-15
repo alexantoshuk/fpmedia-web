@@ -1,7 +1,7 @@
 /**
  * Chrome play stability on long-GOP plate (AVC 1080p 24fps GOP48 bf0).
  * Clip: testvideo `avc_1080p_24_gop48_bf0`.
- * Expects app on :3000 + network (`/proxy`).
+ * Expects app on :3000 + network (Trunk `/media/`).
  */
 import { expect, test } from "@playwright/test";
 import { DemoPlayer } from "./helpers/player";

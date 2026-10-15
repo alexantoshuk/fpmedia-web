@@ -7,14 +7,15 @@ with `save`, re-run with `compare` after decode/scrub changes.
 
 | Id | Meta | Asset |
 | -- | ---- | ----- |
-| `avc_1080p_24_gop12_bf0` | AVC 1080p 24 fps GOP12 bf0 ~60 s AAC | [testvideo v0.1.0](https://github.com/alexantoshuk/testvideo/releases/tag/v0.1.0) |
-| `avc_1080p_24_gop48_bf0` | AVC 1080p 24 fps GOP48 bf0 ~60 s AAC | same Release |
+| `avc_1080p_25_gop12_bf0` | AVC 1080p 25 fps GOP12 bf0 ~60 s AAC | [testvideo v0.3.0](https://github.com/alexantoshuk/testvideo/releases/tag/v0.3.0) |
+| `avc_1080p_25_gop48_bf0` | AVC 1080p 25 fps GOP48 bf0 ~60 s AAC | same Release |
 
-Opened via demo URL field → `app` rewrites to same-origin `/proxy` (GitHub Releases lack CORS; element crate does not rewrite).
-Override base URL with `TESTVIDEO_BASE`. Catalog: `e2e/helpers/testvideo.ts`.
+Opened via demo URL field as same-origin `/media/<stem>.mp4` (static files from
+`npm run media:fetch` into `demo-player/public/media/`). Catalog: `e2e/helpers/testvideo.ts`.
+Override download base with `TESTVIDEO_BASE`.
 
 **Do not** point baselines at Downloads / ad-hoc local movies. In-repo tiny
-fixtures (`public/`, `engine/tests/fixtures/`) are for smoke + Rust unit only.
+fixtures (`demo-player/public/`, `engine/tests/fixtures/`) are for smoke + Rust unit only.
 
 ## Scenarios (fixed)
 
@@ -29,7 +30,7 @@ other names is obsolete).
 
 ## Commands
 
-App must be up on `:3000` (`cargo leptos watch`).
+App must be up on `:3000` (`cd demo-player && trunk serve`).
 
 ```sh
 # Save under e2e/baselines/pre-decode-sink/{clipId}.json
@@ -38,7 +39,3 @@ npm run e2e:baseline:save
 # Re-run identical scenarios; fail on exact miss or settle/drag regression
 npm run e2e:baseline:compare
 ```
-
-Tag: `WEBMEDIA_BASELINE_TAG` (default `pre-decode-sink`).
-Budgets: `WEBMEDIA_SETTLE_BUDGET` (1.75×), `WEBMEDIA_DRAG_BUDGET` (2.0×),
-plus absolute slack env vars in `helpers/scrub-baseline.ts`.

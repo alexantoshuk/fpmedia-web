@@ -2,6 +2,7 @@
   "name": "fpmedia-web-e2e",
   "private": true,
   "scripts": {
+    "media:fetch": "node scripts/fetch-testvideo.mjs",
     "e2e": "playwright test",
     "e2e:matrix": "playwright test e2e/player.matrix.spec.ts",
     "e2e:stress": "playwright test e2e/player.stress.scrub-av.spec.ts",

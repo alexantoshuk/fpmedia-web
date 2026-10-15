@@ -9,9 +9,7 @@ use fpmedia_web_components::{
     TimelineMetaKind, Video, VideoRef,
 };
 use leptos::ev;
-#[cfg(not(feature = "static_host"))]
-use leptos::html::Input;
-use leptos::html::{Canvas, Div};
+use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
 use wasm_bindgen::JsCast;
@@ -23,6 +21,10 @@ const SCRUBBER_TRACK_BASE: u8 = 0x2a;
 
 /// Default zebra amplitude (~odd `#1a1a1a` under previous hard-coded paint).
 const FRAME_ZEBRA_CONTRAST: u8 = 16;
+
+/// Must match `demo-player/Trunk.toml` `[[proxy]]` backend (testvideo Release tag).
+const TESTVIDEO_DOWNLOAD_BASE: &str =
+    "https://github.com/alexantoshuk/testvideo/releases/download/v0.3.0/";
 
 fn gray_hex(v: u8) -> String {
     format!("#{v:02x}{v:02x}{v:02x}")
@@ -39,33 +41,25 @@ fn zebra_pair_hex(contrast: u8) -> (String, String) {
 /// Forward shuttle ladder for demo J/L keys (K → 1× + play/pause).
 const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
 
-/// Demo-only: rewrite remote `http(s):` to same-origin `/proxy?url=` so Range
-/// GETs work without CDN CORS (localhost Axum; see `server`). Element crate
-/// does not do this — hosts supply CORS-ok or proxied URLs themselves.
-/// Omitted from `static_host` builds (GitHub Pages — no public proxy).
-#[cfg(not(feature = "static_host"))]
-fn same_origin_media_proxy_url(remote: &str) -> Option<String> {
-    let trimmed = remote.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if !(lower.starts_with("https:") || lower.starts_with("http:")) {
-        return None;
+/// Map known testvideo Release URLs / root-relative `/media/…` to absolute http(s) URLs.
+/// `VideoRef::open_url` requires `http:`, `https:`, or `blob:` (not bare paths).
+fn resolve_demo_open_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let path = if let Some(rest) = trimmed.strip_prefix(TESTVIDEO_DOWNLOAD_BASE) {
+        format!("/media/{rest}")
+    } else {
+        trimmed.to_string()
+    };
+    if path.starts_with('/')
+        && let Some(origin) = window().and_then(|w| w.location().origin().ok())
+    {
+        return format!("{origin}{path}");
     }
-    if trimmed.contains("/proxy?") {
-        return None;
-    }
-    let window = window()?;
-    let origin = window.location().origin().ok()?;
-    if trimmed.starts_with(&origin) {
-        return None;
-    }
-    let enc = String::from(js_sys::encode_uri_component(trimmed));
-    Some(format!("{origin}/proxy?url={enc}"))
+    path
 }
 
-#[cfg(not(feature = "static_host"))]
-fn open_url_via_demo_proxy(video: &VideoRef, raw: String) {
-    let url = same_origin_media_proxy_url(&raw).unwrap_or(raw);
-    video.open_url(url);
+fn open_demo_url(video: &VideoRef, raw: String) {
+    video.open_url(resolve_demo_open_url(&raw));
 }
 
 /// Compact JSON for e2e (`data-testid="pipeline-json"`). Manual — app has no serde.
@@ -934,50 +928,42 @@ fn DemoScrubber(video: VideoRef) -> impl IntoView {
     }
 }
 
-/// Localhost demo: URL open via Axum `/proxy`. Empty on `static_host` (Pages).
+/// URL open — always shown. Local progressive: `/media/<stem>.mp4` from `public/media/`
+/// (`npm run media:fetch`). Pages: CORS-ok URL or Browse (Blob); GitHub lacks CORS.
 #[component]
 fn DemoUrlOpen(video: VideoRef) -> impl IntoView {
-    #[cfg(feature = "static_host")]
-    {
-        let _ = video;
-        return ().into_any();
-    }
-    #[cfg(not(feature = "static_host"))]
-    {
-        let url_input = NodeRef::<Input>::new();
-        view! {
-            <div class="wm-url-row">
-                <input
-                    type="url"
-                    class="wm-url-input"
-                    node_ref=url_input
-                    placeholder="https://… (proxied) or blob:…"
-                    data-testid="url-input"
-                    prop:disabled=move || video.busy.get()
-                    on:keydown=move |ev: leptos::ev::KeyboardEvent| {
-                        if ev.key() != "Enter" {
-                            return;
-                        }
-                        ev.prevent_default();
-                        let Some(input) = url_input.get() else { return };
-                        open_url_via_demo_proxy(&video, input.value());
+    let url_input = NodeRef::<Input>::new();
+    view! {
+        <div class="wm-url-row">
+            <input
+                type="url"
+                class="wm-url-input"
+                node_ref=url_input
+                placeholder="/media/….mp4 or https://… (CORS-ok)"
+                data-testid="url-input"
+                prop:disabled=move || video.busy.get()
+                on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                    if ev.key() != "Enter" {
+                        return;
                     }
-                />
-                <button
-                    type="button"
-                    class="wm-btn"
-                    data-testid="btn-open-url"
-                    prop:disabled=move || video.busy.get()
-                    on:click=move |_| {
-                        let Some(input) = url_input.get() else { return };
-                        open_url_via_demo_proxy(&video, input.value());
-                    }
-                >
-                    "Open URL"
-                </button>
-            </div>
-        }
-        .into_any()
+                    ev.prevent_default();
+                    let Some(input) = url_input.get() else { return };
+                    open_demo_url(&video, input.value());
+                }
+            />
+            <button
+                type="button"
+                class="wm-btn"
+                data-testid="btn-open-url"
+                prop:disabled=move || video.busy.get()
+                on:click=move |_| {
+                    let Some(input) = url_input.get() else { return };
+                    open_demo_url(&video, input.value());
+                }
+            >
+                "Open URL"
+            </button>
+        </div>
     }
 }
 

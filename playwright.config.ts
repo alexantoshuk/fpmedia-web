@@ -14,7 +14,8 @@ const chromeChannel =
 /**
  * Browser e2e for the demo player.
  *
- * Expects a running site (`cargo leptos watch` or serve after build) on :3000.
+ * Expects `trunk serve` in `demo-player/` on :3000.
+ * URL probes need `npm run media:fetch` → `demo-player/public/media/`.
  * Set WEBMEDIA_BASE_URL to override.
  */
 export default defineConfig({

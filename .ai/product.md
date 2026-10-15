@@ -25,7 +25,7 @@
 | ------- | ------- |
 | **`fpmedia-web` crate** | Engine — demux + frame index + `VideoPlayer`; audio under `audio/`. Using only this + hand-rolled demo UI ≈ mediabunny’s example style. |
 | **`fpmedia-web-components` crate** | Element analogs + headless track helpers (below) — hide engine/transport/`pipeline` from host UI authors. **No** player chrome. |
-| **Demo app** | `app` / `frontend` — **all** player UI: file picker, transport buttons, keyboard (JKL/Space/arrows), progress look, ticks, strip layout/colors, thumb chrome, status. Not production player UI. |
+| **Demo app** | `demo-player` (Trunk) — **all** player UI: file picker, URL open, transport buttons, keyboard (JKL/Space/arrows), progress look, ticks, strip layout/colors, thumb chrome, status. Not production player UI. |
 
 ### Element-layer helpers (shipped)
 
@@ -65,4 +65,4 @@ Headless / paint-inside components in `fpmedia-web-components` (compose in demo;
 - Multi-container write path; focus read + decode of MP4 (AVC; **HEVC** opt-in via cargo features — off by default).
 - Production auth, storage, or collaboration UI (lives in host apps).
 - Production player UI — demo controls in `app` are temporary.
-- Production CORS / open media proxy — demo `/proxy` is localhost-only (local tests / e2e).
+- Production CORS / open media proxy — local progressive URL = static `/media/` files; Pages has no media proxy.

@@ -3,9 +3,9 @@ import path from "node:path";
 import { resolveClip, type ResolvedClip } from "./clip";
 
 export const FIXTURES = {
-  shortGop: path.resolve("public/short_gop.mp4"),
-  withBFrames: path.resolve("public/with_b_frames.mp4"),
-  withAudio: path.resolve("public/with_audio.mp4"),
+  shortGop: path.resolve("demo-player/public/short_gop.mp4"),
+  withBFrames: path.resolve("demo-player/public/with_b_frames.mp4"),
+  withAudio: path.resolve("demo-player/public/with_audio.mp4"),
 } as const;
 
 /** Zone on the scrubber strip (product gray / dim green / bright green). */
@@ -170,7 +170,7 @@ export class DemoPlayer {
     await this.waitReady(timeout);
   }
 
-  /** Open via demo URL bar (rewrites remote → same-origin `/proxy`). */
+  /** Open via demo URL bar (local: `/media/…` from `public/media/`). */
   async openUrl(url: string, timeout = 120_000) {
     await this.page.getByTestId("url-input").fill(url);
     await this.page.getByTestId("btn-open-url").click();

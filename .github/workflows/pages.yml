@@ -1,4 +1,4 @@
-# Deploy CSR static demo to GitHub Pages (Blob open only — no /proxy).
+# Deploy CSR static demo to GitHub Pages (Trunk build — no Axum).
 #
 # Repo Settings → Pages → Source: GitHub Actions.
 # Repo must be public (or Pro) for Pages.
@@ -21,8 +21,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Project site: https://<user>.github.io/fpmedia-web/
-  FPMEDIA_SITE_BASE: /fpmedia-web
 
 jobs:
   build:
@@ -39,14 +37,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-targets: false
+          workspaces: ". -> target"
 
-      - name: Install cargo-leptos
+      - name: Install Trunk
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-leptos
+          tool: trunk
 
-      # style/input.css uses Tailwind v4 `@import "tailwindcss"` — v3 CLI fails
-      # looking for node_modules and cargo-leptos then reports "Failed to build".
+      # style/input.css uses Tailwind v4 `@import "tailwindcss"` — v3 CLI fails.
       - name: Install Tailwind CSS v4 CLI
         run: |
           curl -fsSL -o tailwindcss \
@@ -55,16 +53,14 @@ jobs:
           sudo mv tailwindcss /usr/local/bin/tailwindcss
           tailwindcss --help | head -n 2
 
-      - name: Build site (static_host)
-        run: cargo leptos build --release --lib-features static_host
-
-      - name: Export index.html
-        run: cargo run --release -p server --bin export_site
+      - name: Build site (Trunk)
+        working-directory: demo-player
+        run: trunk build --release --public-url /fpmedia-web/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: target/site
+          path: demo-player/dist
 
   deploy:
     needs: build

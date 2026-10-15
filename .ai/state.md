@@ -18,9 +18,9 @@
 
 ### Publish crates (`0.1.0-alpha`)
 
-Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. Demo `app` / `frontend` / `server` stay `publish = false`.
+Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. Demo `demo-player` stays `publish = false`.
 
-**DoD:** external Leptos CSR host `cargo add`s `fpmedia-web-components`, opens MP4 via Blob (and CORS-ok URL), play/pause/seek/scrub settle — no our Axum.
+**DoD:** external Leptos CSR host `cargo add`s `fpmedia-web-components`, opens MP4 via Blob (and CORS-ok URL), play/pause/seek/scrub settle — no our Axum / Trunk.
 
 **Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: docs/hygiene OK; `cargo publish` blocked. Keep git `re_mp4` pin until then.
 
@@ -29,11 +29,11 @@ Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. 
 
 ### Online demo (free static)
 
-Implementation in tree (`static_host`, `export_site`, `.github/workflows/pages.yml`).
+Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 
 - **Do:** enable Settings → Pages → Source: GitHub Actions; push/merge; confirm site loads WASM + Browse open.
-- **Out of scope:** public CORS proxy; sample buttons; large masters.
-- **Note:** private repo — Pages may need Pro; published URL is often world-readable.
+- **Out of scope:** public CORS / media proxy; sample buttons; large masters.
+- **Note:** private repo — Pages may need Pro; published URL is often world-readable. Local e2e URL probes: `npm run media:fetch` (testvideo v0.3.0 → `demo-player/public/media/`).
 
 ---
 

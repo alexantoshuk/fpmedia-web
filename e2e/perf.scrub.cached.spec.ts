@@ -44,7 +44,7 @@ test.describe.configure({ timeout: 300_000 });
 test("cached scrub latency", async ({ page }) => {
   test.skip(
     !CLIP || !fs.existsSync(CLIP),
-    `missing in-repo fixture (public/short_gop.mp4) or set WEBMEDIA_PERF_CLIP to an in-repo / testvideo-cached path`,
+    `missing in-repo fixture (demo-player/public/short_gop.mp4) or set WEBMEDIA_PERF_CLIP to an in-repo / testvideo-cached path`,
   );
 
   const consoleErrors: string[] = [];

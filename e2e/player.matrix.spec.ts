@@ -5,7 +5,7 @@
  * Optional HEVC: `WEBMEDIA_MATRIX_HEVC=1` **and** app built with
  * `fpmedia-web-components` cargo feature `hevc` (off by default).
  *
- * Expects app on :3000 + network (`/proxy`).
+ * Expects app on :3000 + network (Trunk `/media/`).
  *   npm run e2e:matrix
  */
 import { expect, test } from "@playwright/test";

@@ -11,22 +11,22 @@
 
 | Piece | Choice |
 | ----- | ------ |
-| Language | Rust, full-stack |
-| Framework | Leptos CSR — `mount_to_body` SPA; static `index.html` shell |
-| Server shell | Axum (`server/`) — static files + localhost `/proxy`; `export_site` bin writes `index.html` for Pages |
-| Static Pages demo | Same `app`/`frontend` with feature `static_host` (Blob only); GH Actions → GitHub Pages (`state.md`) |
-| Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
-| App UI | `app` crate — **all** player chrome (controls, scrubber composition, thumb labels) + thin SSR shell. Product boundary: `product.md` § Surfaces |
+| Language | Rust |
+| Framework | Leptos CSR — `mount_to_body` SPA |
+| Demo host | Trunk (`demo-player/`) — one CSR app for local + Pages; no Axum |
+| Local media URL | Same-origin `/media/*` from `demo-player/public/media/` (`npm run media:fetch` ← testvideo v0.3.0) |
+| Pages demo | `trunk build --release --public-url /fpmedia-web/` → `demo-player/dist` (`state.md`) |
+| Demo UI | `demo-player` — **all** player chrome (controls, scrubber composition, thumb labels). Product boundary: `product.md` § Surfaces |
 | Media element | `fpmedia-web-components` — `<Video>` / `VideoRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
 | Media engine | `fpmedia-web` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
-| Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `components/` / `app/` |
-| Styling | Tailwind in `style/input.css` |
+| Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `components/` / `demo-player/` |
+| Styling | Tailwind in `demo-player/style/input.css` (Trunk build hook) |
 
 ### Leptos UI rules
 
 Long-lived host UI lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Failure modes: `skills/leptos.md`.
 
-**Browser APIs in `components/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the engine crate owns (WebCodecs / `AudioContext`). Media clock is owned by `fpmedia-web` — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
+**Browser APIs in `components/` / `demo-player/`:** prefer [`leptos-use`](https://leptos-use.rs/) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the engine crate owns (WebCodecs / `AudioContext`). Media clock is owned by `fpmedia-web` — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
 
 ---
 
@@ -37,13 +37,8 @@ fpmedia-web/               ← GitHub repo
 ├── engine/                ← package `fpmedia-web`
 ├── components/            ← package `fpmedia-web-components`
 ├── timecode/              ← package `fpmedia-timecode`
-├── examples/blob_open/    ← minimal Blob CSR host (no Axum)
-├── app/                   ← demo host UI + shell()
-├── frontend/              ← wasm mount (hydrate)
-├── server/                ← Axum static site
+├── demo-player/           ← Trunk CSR demo (UI + style + public fixtures)
 ├── e2e/                   ← Playwright Chromium smoke (WebCodecs)
-├── style/input.css
-├── public/                ← sample MP4 fixtures served at /
 └── .ai/                   ← product / architecture / state / skills
 ```
 
@@ -54,13 +49,9 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Layer | Can import from |
 | ----- | --------------- |
 | `timecode/` (`fpmedia-timecode`) | nothing else in the workspace (leaf math) |
-| `engine/` (`fpmedia-web`) | `fpmedia-timecode`; nothing in `components` / `app` / Leptos framework |
+| `engine/` (`fpmedia-web`) | `fpmedia-timecode`; nothing in `components` / `demo-player` / Leptos framework |
 | `components/` (`fpmedia-web-components`) | `fpmedia-web` (with `webcodecs`), Leptos, `leptos-use` |
-| `app/` | `fpmedia-web-components` (csr), Leptos — not `fpmedia-web` directly |
-| `frontend/` | `app` |
-| `server/` | `app` (ssr shell only) |
-
-**Feature flags** on `app`: `ssr` (server binary) and `csr` (WASM client). Not enabled together on one build.
+| `demo-player/` | `fpmedia-web-components`, Leptos — not `fpmedia-web` directly |
 
 ---
 
@@ -68,7 +59,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 
 | Decision | Why |
 | -------- | --- |
-| Full-stack Rust (Leptos) | One language for engine + UI |
+| Rust + Leptos CSR (Trunk demo) | One language for engine + UI; demo has no Axum/SSR |
 | CSR SPA | Simple mental model; static shell + WASM mount |
 | Isolated `fpmedia-web` crate | Engine reusable without UI; no Leptos in demux/decode |
 | Isolated `fpmedia-web-components` crate | HTML `<video>` analog + headless track helpers; **no** player chrome (`product.md` Elements first) |
@@ -113,7 +104,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 
 **Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` (`ReadOrchestrator` + open-ended Range workers) / `MemorySource` + `CachedSource` (512 MiB LRU, 8 MiB quantum; orch cache mediabunny-default 64 MiB); gray strip via `FetchMap` (**accumulate** ever-fetched ranges — not a live LRU mirror). Top-level `ftyp`+`moov` (+ full `moof` for single-file fMP4) → `re_mp4`. Element `open_blob` / `open_url` (CORS-ok or same-origin URL — **no** auto `/proxy` in `fpmedia-web-components`). Async AVC sync verify after moov. One progressive entry `open_mp4(source, options, progress)` → `OpenedMp4` (always `CachedSource`; `mediabunny: src/input.ts Input`); sync `open_mp4_bytes` for fixtures/tests.
 
-**Demo `/proxy`:** localhost-only (loopback peer or **403**). Demo `app` rewrites remote URL open to `/proxy?url=`. Not a production CORS proxy. Host apps supply their own same-origin fetch path (`components/README.md`).
+**Demo URL open:** one UI everywhere. Progressive local URL = static `/media/*` under `demo-player/public/media/` (fetch script; gitignored). Demo may rewrite known testvideo Release download URLs to `/media/…`. No CORS/media proxy (Trunk→GitHub redirect broken). Pages: Browse (Blob) or CORS-ok URLs. Element crate never rewrites (`components/README.md`).
 
 **Out of scope:** stream-only / live fMP4; DASH/HLS; MSE remux; production open proxy. **Open work:** `.ai/state.md`.
 
@@ -123,7 +114,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 
 | Kind | Where |
 | ---- | ----- |
-| Tiny unit/smoke MP4s | `engine/tests/fixtures/` (+ copies in `public/` for e2e smoke) |
+| Tiny unit/smoke MP4s | `engine/tests/fixtures/` (+ copies in `demo-player/public/` for e2e smoke) |
 | FullHD A/V sync plates | **[testvideo](https://github.com/alexantoshuk/testvideo)** Releases — catalog `e2e/helpers/testvideo.ts` |
 
 Do **not** wire probes to Downloads / third-party hosts. In skills prefer meta (fps, GOP, resolution, bf); asset names = testvideo stems.
@@ -305,8 +296,6 @@ PCM sample-entry bodies are not in `re_mp4`’s `Unknown` payload — walk raw `
 
 ## Code rules
 
-- Gate server-only code: `#[cfg(feature = "ssr")]`.
-- Gate client UI: `#[cfg(feature = "csr")]`.
 - Errors: `thiserror`. A panic kills the whole wasm instance (player + `AudioContext`) until reload, so:
   - No panics on paths reachable from browser events, the environment (`window` / `document`) or external data (file bytes, network) — return `Err` / `let … else`.
   - `.unwrap()` is forbidden outside tests (enforced: workspace Clippy `unwrap_used = "deny"`).

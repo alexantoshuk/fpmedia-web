@@ -4,7 +4,7 @@
  *   WEBMEDIA_BASELINE_MODE=save    npm run e2e:baseline:save
  *   WEBMEDIA_BASELINE_MODE=compare npm run e2e:baseline:compare
  *
- * Requires app on :3000 + network (GitHub Release via demo `/proxy`).
+ * Requires app on :3000 + network (GitHub Release via Trunk `/media/`).
  * Clips: see `e2e/helpers/testvideo.ts`.
  */
 import { expect, test } from "@playwright/test";

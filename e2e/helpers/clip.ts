@@ -4,7 +4,7 @@
  * Accepts:
  *   - catalog alias: `gop12`, `gop48`, `fmp4`, `scenecut`, `gop12Bf2`, `gop12_60`, `hevc`
  *   - testvideo stem: `avc_1080p_24_gop48_bf0` (with or without `.mp4`)
- *   - HTTPS/HTTP URL (demo `/proxy`)
+ *   - HTTPS/HTTP URL (Trunk `/media/`)
  *   - local filesystem path to an `.mp4`
  *
  * Default: `gop48` (hardest scrub). Override base with `TESTVIDEO_BASE`.

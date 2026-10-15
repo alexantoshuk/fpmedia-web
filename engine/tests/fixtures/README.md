@@ -19,8 +19,8 @@ probes — not Downloads / third-party sample hosts.
 
 ### fMP4 via URL (testvideo)
 
-Default: AVC 1080p 24 fps fMP4 GOP12 bf0 from Release v0.1.0
-(`avc_1080p_24_fmp4_gop12_bf0.mp4`).
+Default: AVC 1080p 25 fps fMP4 GOP12 bf0 from Release v0.3.0
+(`avc_1080p_25_fmp4_gop12_bf0.mp4`).
 
 ```sh
 cargo test -p fpmedia-web --test demux_mp4 progressive_fmp4_from_url -- --ignored --nocapture
@@ -28,13 +28,13 @@ cargo test -p fpmedia-web --test demux_mp4 progressive_fmp4_from_url -- --ignore
 # FPMEDIA_WEB_FMP4_URL=https://… cargo test -p fpmedia-web --test demux_mp4 progressive_fmp4_from_url -- --ignored
 ```
 
-Also copy video fixtures into `public/` so the Leptos demo / smoke e2e can open them
-(`public/*.mp4` is gitignored — copy after clone):
+Also copy video fixtures into `demo-player/public/` so the Trunk demo / smoke e2e can open them
+(`*.mp4` is gitignored — copy after clone):
 
 ```sh
-cp engine/tests/fixtures/short_gop.mp4 public/short_gop.mp4
-cp engine/tests/fixtures/with_b_frames.mp4 public/with_b_frames.mp4
-cp engine/tests/fixtures/with_audio.mp4 public/with_audio.mp4
+cp engine/tests/fixtures/short_gop.mp4 demo-player/public/short_gop.mp4
+cp engine/tests/fixtures/with_b_frames.mp4 demo-player/public/with_b_frames.mp4
+cp engine/tests/fixtures/with_audio.mp4 demo-player/public/with_audio.mp4
 ```
 
 ### Regenerate
@@ -74,9 +74,9 @@ ffmpeg -y -f lavfi -i "color=c=black:s=64x64:d=1:r=5" \
   -movflags frag_keyframe+empty_moov+default_base_moof \
   engine/tests/fixtures/fragmented_tiny.mp4
 
-cp engine/tests/fixtures/short_gop.mp4 public/short_gop.mp4
-cp engine/tests/fixtures/with_b_frames.mp4 public/with_b_frames.mp4
-cp engine/tests/fixtures/with_audio.mp4 public/with_audio.mp4
+cp engine/tests/fixtures/short_gop.mp4 demo-player/public/short_gop.mp4
+cp engine/tests/fixtures/with_b_frames.mp4 demo-player/public/with_b_frames.mp4
+cp engine/tests/fixtures/with_audio.mp4 demo-player/public/with_audio.mp4
 ```
 
 Last frame of the 48-frame plates: **`f 47`** / **`00:00:01:23`**.

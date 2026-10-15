@@ -35,21 +35,19 @@ While iterating on a change, prefer `cargo check` (and targeted crate checks). D
 ```sh
 cargo fmt --all -- --check
 cargo clippy -p fpmedia-web --all-targets --all-features -- -D warnings
-cargo clippy --target wasm32-unknown-unknown -p frontend -- -D warnings
+cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-demo-player -- -D warnings
 cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-components -- -D warnings
 cargo clippy -p fpmedia-web-components --all-targets -- -D warnings
-cargo clippy -p server -- -D warnings
-cargo check -p server
-cargo check --target wasm32-unknown-unknown -p frontend
+cargo check --target wasm32-unknown-unknown -p fpmedia-web-demo-player
 cargo check --target wasm32-unknown-unknown -p fpmedia-web-components
 cargo test -p fpmedia-web
 cargo test -p fpmedia-web-components
-cargo leptos build
+(cd demo-player && trunk build)
 ```
 
 - Always run `cargo fmt` (rustfmt) before committing Rust changes; include any fmt-only touch-ups in the same commit.
 - Never commit code failing the gates above.
-- For UI/player behaviour changes that e2e covers: also run `npm run e2e` with the app up on `:3000` when practical.
+- For UI/player behaviour changes that e2e covers: also run `npm run e2e` with `trunk serve` (demo-player) on `:3000` when practical.
 
 ### Commit / PR size
 
@@ -64,5 +62,5 @@ atomic (rename/format, lockfile, generated assets).
 
 - One commit = one logical theme.
 - Prefer several small commits over one large mixed commit.
-- **One crate per commit when possible** (`engine` / `fpmedia-web`, `components` / `fpmedia-web-components`, `app`, `frontend`, `server`). Split demo UI bindings from engine fixes even if they land in the same session. Exception: a single atomic API change that must touch caller + callee together (then say so in the body). Related `.ai/` updates still ship with the crate they describe.
+- **One crate per commit when possible** (`engine` / `fpmedia-web`, `components` / `fpmedia-web-components`, `demo-player`). Split demo UI bindings from engine fixes even if they land in the same session. Exception: a single atomic API change that must touch caller + callee together (then say so in the body). Related `.ai/` updates still ship with the crate they describe.
 - Line counts exclude lockfiles and generated files when judging size.

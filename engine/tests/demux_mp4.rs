@@ -241,7 +241,7 @@ fn progressive_fragmented_mp4_open_matches_bytes() {
 }
 
 /// testvideo fMP4 plate (AVC 1080p 24fps fragmented GOP12). Override with `FPMEDIA_WEB_FMP4_URL`.
-const DEFAULT_FMP4_URL: &str = "https://github.com/alexantoshuk/testvideo/releases/download/v0.1.0/avc_1080p_24_fmp4_gop12_bf0.mp4";
+const DEFAULT_FMP4_URL: &str = "https://github.com/alexantoshuk/testvideo/releases/download/v0.3.0/avc_1080p_25_fmp4_gop12_bf0.mp4";
 
 fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, String> {
     let output = std::process::Command::new("curl")
@@ -569,14 +569,14 @@ fn assert_pcm_track(audio: &fpmedia_web::Mp4AudioTrack, label: &str) {
     );
 }
 
-/// testvideo QT PCM plate — download to `public/` or set `WEBMEDIA_PCM_MOV`.
+/// testvideo QT PCM plate — download to `demo-player/public/` or set `WEBMEDIA_PCM_MOV`.
 #[test]
 fn demux_qt_pcm24_plate() {
     let path = std::env::var_os("WEBMEDIA_PCM_MOV")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../public/avc_1080p_25_mov_pcm24_gop12_bf0.mov")
+                .join("../demo-player/public/avc_1080p_25_mov_pcm24_gop12_bf0.mov")
         });
     if !path.exists() {
         eprintln!(
@@ -643,7 +643,7 @@ fn demux_chg_pcm_master_progressive() {
 /// testvideo HEVC plate — bitstream IRAP verify. Override with `WEBMEDIA_HEVC_URL`.
 /// Requires `--features hevc`.
 #[cfg(feature = "hevc")]
-const DEFAULT_HEVC_URL: &str = "https://github.com/alexantoshuk/testvideo/releases/download/v0.1.0/hevc_1080p_24_gop12_bf0.mp4";
+const DEFAULT_HEVC_URL: &str = "https://github.com/alexantoshuk/testvideo/releases/download/v0.3.0/hevc_1080p_25_gop12_bf0.mp4";
 
 #[cfg(feature = "hevc")]
 #[test]

@@ -49,7 +49,7 @@ pub enum MediaError {
     CodecUnsupported(String),
 
     /// WebCodecs needs a secure context (HTTPS or localhost). LAN `http://IP`
-    /// (typical Android phone → desktop `cargo leptos watch`) has no `VideoDecoder`.
+    /// (typical Android phone → desktop `trunk serve`) has no `VideoDecoder`.
     #[error(
         "WebCodecs unavailable: open via https:// or http://localhost (not http://LAN-IP). On Android: adb reverse tcp:3000 tcp:3000 then http://127.0.0.1:3000"
     )]

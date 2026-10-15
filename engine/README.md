@@ -29,6 +29,6 @@ can switch to a crates.io version.
 - Layout / policy: `.ai/architecture.md`
 - Engine traps: `.ai/skills/media.md`
 - Element layer + CORS: [`../components/README.md`](../components/README.md)
-- Minimal Blob CSR host (no Axum): [`../examples/blob_open`](../examples/blob_open)
+- Demo host (Trunk): [`../demo-player`](../demo-player)
 
 License: MIT OR Apache-2.0 (see repo `LICENSE`).

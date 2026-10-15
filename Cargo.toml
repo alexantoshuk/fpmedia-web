@@ -4,10 +4,7 @@ members = [
     "engine",
     "components",
     "timecode",
-    "app",
-    "frontend",
-    "server",
-    "examples/blob_open",
+    "demo-player",
 ]
 
 [workspace.package]
@@ -29,8 +26,6 @@ opt-level = 'z'
 [workspace.dependencies]
 leptos = { version = "0.8" }
 leptos_meta = { version = "0.8" }
-leptos_router = { version = "0.8" }
-leptos_axum = { version = "0.8" }
 leptos-use = { version = "0.19", default-features = false, features = [
     "use_resize_observer",
     "use_raf_fn",
@@ -39,18 +34,13 @@ leptos-use = { version = "0.19", default-features = false, features = [
     "use_timeout_fn",
     "use_throttle_fn",
 ] }
-axum = "0.8.9"
 console_error_panic_hook = "0.1.7"
 console_log = "1.1.0"
 log = "0.4.33"
-simple_logger = "5.2.0"
 thiserror = "2.0.19"
 lru = "0.12"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 bytes = "1"
-tokio = { version = "1.53", features = ["full"] }
-tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.6.11", features = ["full"] }
 wasm-bindgen = "0.2.126"
 js-sys = "0.3"
 web-sys = "0.3"
@@ -59,21 +49,3 @@ wasm-bindgen-futures = "0.4"
 # crates.io 0.5.1 predates both — switch to a published version when one ships.
 # fpmedia-web ignores non-`mp4a` audio; coalesce is still required so long PCM masters open.
 re_mp4 = { git = "https://github.com/rerun-io/re_mp4", rev = "73e38d9160d3ae5ce5521be3c4875a59c2a26b35" }
-
-[[workspace.metadata.leptos]]
-name = "fpmedia-web"
-bin-package = "server"
-# Required once `server` has more than one bin (`export_site` for Pages).
-bin-target = "server"
-lib-package = "frontend"
-site-root = "target/site"
-site-pkg-dir = "pkg"
-tailwind-input-file = "style/input.css"
-assets-dir = "public"
-site-addr = "127.0.0.1:3000"
-reload-port = 3001
-browserquery = "defaults"
-bin-features = []
-bin-default-features = false
-lib-features = []
-lib-default-features = false

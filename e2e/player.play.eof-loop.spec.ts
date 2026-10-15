@@ -1,6 +1,6 @@
 /**
  * Chrome play / EOF / loop seam (AVC 1080p 24fps GOP12 bf0, ~60 s).
- * Clip: testvideo `avc_1080p_24_gop12_bf0` via `/proxy`.
+ * Clip: testvideo `avc_1080p_24_gop12_bf0` via Trunk `/media/`.
  * Seeks near EOF so the probe does not wait the full duration.
  * Expects app on :3000.
  */

@@ -9,24 +9,30 @@ Frame-accurate custom web media player (Rust + Leptos + WebCodecs).
 
 Crate guides (until crates.io / docs.rs publish): [`engine/`](engine/README.md) · [`components/`](components/README.md) · [`timecode/`](timecode/README.md).
 
-**Live demo:** [alexantoshuk.github.io/fpmedia-web](https://alexantoshuk.github.io/fpmedia-web/) (Browse / Blob only — no public `/proxy`).
+**Live demo:** [alexantoshuk.github.io/fpmedia-web](https://alexantoshuk.github.io/fpmedia-web/) (Browse / Blob; URL needs CORS-ok origin — no public media proxy).
 
 | Dir | Crate | Role |
 | --- | ----- | ---- |
 | [`engine/`](engine/) | `fpmedia-web` | demux + `VideoPlayer` |
 | [`components/`](components/) | `fpmedia-web-components` | `<Video>` + headless scrub helpers |
 | [`timecode/`](timecode/) | `fpmedia-timecode` | SMPTE frames ↔ HH:MM:SS:FF |
-| [`examples/blob_open/`](examples/blob_open/) | (demo) | minimal Blob CSR host — **no Axum** |
+| [`demo-player/`](demo-player/) | (demo) | Trunk CSR host — Browse + URL |
 
-Element open contract (CORS / no auto `/proxy`): [`components/README.md`](components/README.md).
+Element open contract (CORS / no auto proxy): [`components/README.md`](components/README.md).
 
-**Pages build:** [`.github/workflows/pages.yml`](.github/workflows/pages.yml) (`--lib-features static_host`). Local export:
+**Dev demo:**
 
 ```sh
-# optional: FPMEDIA_SITE_BASE=/fpmedia-web for project-pages asset prefix
-cargo leptos build --release --lib-features static_host
-cargo run --release -p server --bin export_site
-# serve target/site/ with any static host
+cd demo-player && trunk serve   # http://127.0.0.1:3000
+npm run media:fetch             # optional: testvideo → public/media/ for progressive URL
+```
+
+**Pages build:** [`.github/workflows/pages.yml`](.github/workflows/pages.yml):
+
+```sh
+cd demo-player
+trunk build --release --public-url /fpmedia-web/
+# serve dist/ with any static host
 ```
 
 License: [MIT OR Apache-2.0](LICENSE). Repo: [alexantoshuk/fpmedia-web](https://github.com/alexantoshuk/fpmedia-web).

@@ -1,7 +1,7 @@
 //! URL open path — Range probe, full-download fallback, staged open.
 //!
 //! Cross-origin hosts must allow CORS (or the host app must pass a same-origin
-//! URL). Demo `/proxy` rewrite lives in `app`, not here.
+//! URL). Demo Trunk `/media/` mapping lives in `demo-player`, not here.
 
 use fpmedia_web::{
     BlobSource, MediaError, MediaSource, OPEN_URL_PARALLELISM, OpenMp4Options, OpenPhase,

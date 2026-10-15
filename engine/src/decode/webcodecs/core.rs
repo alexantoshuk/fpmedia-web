@@ -54,7 +54,7 @@ impl Drop for PruneFloorGuard {
 }
 
 /// WebCodecs is `SecureContext`-only. LAN `http://192.168.x.x` (phone → desktop
-/// `cargo leptos watch`) leaves `VideoDecoder` undefined; calling
+/// `trunk serve`) leaves `VideoDecoder` undefined; calling
 /// `isConfigSupported` then panics the open task and freezes status on
 /// "creating decoder…".
 pub(super) fn ensure_webcodecs_available() -> Result<(), MediaError> {

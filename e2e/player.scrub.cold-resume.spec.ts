@@ -5,7 +5,7 @@
  * `warm_sample_bytes(24)` on a cold URL hole (7–16s). Fix: settle awaits one GOP
  * warm → Exact+seed so PlayPrime skips fill.
  *
- * Clip: testvideo progressive `avc_1080p_24_gop12_bf0` via `/proxy`.
+ * Clip: testvideo progressive `avc_1080p_24_gop12_bf0` via Trunk `/media/`.
  */
 import { expect, test } from "@playwright/test";
 import {

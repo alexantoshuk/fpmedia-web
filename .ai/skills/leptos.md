@@ -1,4 +1,4 @@
-# Leptos 0.8.x (`fpmedia-web-components` / `app`)
+# Leptos 0.8.x (`fpmedia-web-components` / `demo-player`)
 
 > Read before touching components, resources, or routing. Pins **Leptos 0.8.x**.
 > Engine decode/scrub hangs → `skills/media.md`. Stack/CSR/leptos-use → `architecture.md`.
@@ -16,7 +16,7 @@
 | Play after scrub no-op | `transport` + `ScrubRelease { then_play }`; soft-park on PlayPrime fail; no demo TLS play latch |
 | EOF not observed / decoder leak | `VideoRef::ended`; `close()` on unmount / handoff |
 | Progress bar stuck on old frame | `player.take()` before zeroing counts; paused rAF `sync_ui` |
-| URL open CORS / `/proxy` 403 / CL mismatch | element needs CORS-ok URL; demo wraps `/proxy` in `app` — `architecture.md` Progressive open + `components/README.md` |
+| URL open CORS / `/media/` 404 | element needs CORS-ok or same-origin URL; local `/media/` = `public/media/` after `npm run media:fetch` — `architecture.md` Progressive open + `components/README.md` |
 | Gray vs green strips lie / blur | `<TimelineMeta>` + 1 px `paint_strip_canvas_1px`; greens honest snap — UX: `product.md` |
 | Demo scrubber touches `pipeline` | compose `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` — `product.md` § Element-layer helpers |
 | Hover jank on Play / lag until paint | `<HoverThumb>` trailing 150 ms; sync transform on root first; engine: `skills/media.md` |
@@ -46,6 +46,6 @@ Tailwind: only literal class strings in `.rs`/`.css`; computed geometry → `sty
 5. **Playhead** — sync on pointerdown/move before `scrub_pointer_*`. `sync_ui` updates playhead only while playing or on new clip. Leaving play: snap playhead to engine. Hold ←/→: aim `engine±1`, not `playhead++`.
 6. **Clock / play session** — `VideoPlayer::media_time()` only; engine owns prefetch, underrun, loop seam, silent-clock arm (`play_raf_tick` / `begin_play_session`). Host: OpQueue prime + rAF tick + visibility → hold/resume APIs.
 7. **rAF** — `use_raf_fn` resume after prime; throttle `sync_ui`/fps ~10 Hz; call `play_raf_tick` (not host underrun/loop).
-8. **Open / clip switch** — file input uses wasm spawn; `retire_clip` before zeroing UI; remote URL → host CORS/proxy then UrlSource/blob (demo `/proxy` in `app`, not the element crate).
+8. **Open / clip switch** — file input uses wasm spawn; `retire_clip` before zeroing UI; remote URL → host CORS / same-origin then UrlSource/blob (demo `/media/` static files locally; not the element crate).
 9. **`ended` / `close`** — Ended only from engine EOF (loop off); clear on open/seek/play/scrub; `close` = cancel_all + drop player.
 10. **Cancelled** — soft (no error banner). Clear sticky `error` on Ok settle.

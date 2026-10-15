@@ -365,7 +365,7 @@ pub fn Video(
             // Do **not** latch `busy` across resolve — cancelled fetch used to
             // leave busy=true forever when drain had already ended. `!ready`
             // keeps Play disabled; Open enqueue sets busy for demux/seek.
-            // Cross-origin: host must pass a CORS-ok URL (demo wraps `/proxy`).
+            // Cross-origin: host must pass a CORS-ok or same-origin URL.
             status.set(OpenPhase::OpeningUrl { url: url.clone() }.label());
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("fpmedia-web: open_url start {url}").into());

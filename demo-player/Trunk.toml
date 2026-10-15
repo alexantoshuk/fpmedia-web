@@ -1,0 +1,15 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 3000
+
+# Progressive URL open: put testvideo files in public/media/ (see scripts/fetch-testvideo.mjs).
+# Trunk [[proxy]] to GitHub Releases is broken (redirect → Fastly "unknown domain github.com").
+
+[[hooks]]
+stage = "pre_build"
+command = "tailwindcss"
+command_arguments = ["-i", "style/input.css", "-o", "style/tailwind.css"]

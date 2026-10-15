@@ -3,7 +3,7 @@
  *
  * Ladder: 1 / 2 / 4 / 8. J slower, L faster, K → 1× + play/pause
  * (unlike Space, which toggles without resetting rate).
- * Expects app on :3000 + network (`/proxy`).
+ * Expects app on :3000 + network (Trunk `/media/`).
  */
 import { expect, test } from "@playwright/test";
 import { DemoPlayer } from "./helpers/player";

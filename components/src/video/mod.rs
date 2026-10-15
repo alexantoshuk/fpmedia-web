@@ -151,7 +151,7 @@ impl VideoRef {
     /// through fetch → Blob.
     ///
     /// Cross-origin URLs need a CORS-allowing host (or a same-origin proxy URL
-    /// the app supplies). This crate does **not** rewrite to `/proxy`.
+    /// the host supplies). This crate does **not** rewrite URLs.
     pub fn open_url(&self, url: impl Into<String>) {
         let url = url.into();
         if let Some(open) = self.op(|o| &o.open_url) {
