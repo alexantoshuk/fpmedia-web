@@ -1,4 +1,4 @@
-# Leptos 0.8.x (`media_components` / `app`)
+# Leptos 0.8.x (`fpmedia-web-leptos` / `app`)
 
 > Read before touching components, resources, or routing. Pins **Leptos 0.8.x**.
 > Engine decode/scrub hangs → `skills/media.md`. Stack/CSR/leptos-use → `architecture.md`.

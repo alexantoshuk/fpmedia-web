@@ -49,8 +49,8 @@ test.describe("cold scrub → Play resume", () => {
     page.on("console", (msg) => {
       const t = msg.text();
       if (
-        t.includes("webmedia: settle") ||
-        t.includes("webmedia: play prime")
+        t.includes("fpmedia-web: settle") ||
+        t.includes("fpmedia-web: play prime")
       ) {
         engineLogs.push(t);
       }

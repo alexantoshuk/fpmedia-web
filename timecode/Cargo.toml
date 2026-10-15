@@ -1,5 +1,5 @@
 [package]
-name = "timecode"
+name = "fpmedia-timecode"
 version = "0.1.0"
 edition = "2024"
 description = "SMPTE timecode math (frames ↔ HH:MM:SS:FF, drop-frame)"

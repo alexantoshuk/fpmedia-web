@@ -1,17 +1,17 @@
-//! Demo controls over [`media_components::Video`] — not production player UI.
+//! Demo controls over [`fpmedia_web_leptos::Video`] — not production player UI.
 
+use fpmedia_web_leptos::helpers::{
+    format_metadata, format_timecode_at, odd_frame_px_runs, playhead_tip_css, playhead_width_css,
+    strip_canvas_buffer_width,
+};
+use fpmedia_web_leptos::{
+    HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, TimelineMeta,
+    TimelineMetaKind, Video, VideoRef,
+};
 use leptos::ev;
 use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
 use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
-use media_components::helpers::{
-    format_metadata, format_timecode_at, odd_frame_px_runs, playhead_tip_css, playhead_width_css,
-    strip_canvas_buffer_width,
-};
-use media_components::{
-    HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, TimelineMeta,
-    TimelineMetaKind, Video, VideoRef,
-};
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 

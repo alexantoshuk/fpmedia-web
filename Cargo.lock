@@ -62,6 +62,7 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
+ "fpmedia-web-leptos",
  "js-sys",
  "leptos",
  "leptos-use",
@@ -69,7 +70,6 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "log",
- "media_components",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -708,6 +708,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fpmedia-timecode"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "fpmedia-web"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "fpmedia-timecode",
+ "futures",
+ "js-sys",
+ "lru",
+ "re_mp4",
+ "thiserror 2.0.20",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "fpmedia-web-leptos"
+version = "0.1.0"
+dependencies = [
+ "fpmedia-web",
+ "js-sys",
+ "leptos",
+ "leptos-use",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -1567,19 +1603,6 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
-name = "media_components"
-version = "0.1.0"
-dependencies = [
- "js-sys",
- "leptos",
- "leptos-use",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "webmedia",
-]
 
 [[package]]
 name = "memchr"
@@ -2793,13 +2816,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "timecode"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "tinystr"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3260,22 +3276,6 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "webmedia"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures",
- "js-sys",
- "lru",
- "re_mp4",
- "thiserror 2.0.20",
- "timecode",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]

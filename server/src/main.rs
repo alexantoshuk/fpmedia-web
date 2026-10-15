@@ -54,7 +54,7 @@ async fn main() {
 
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("webmedia-demo-proxy/0.1")
+        .user_agent("fpmedia-web-demo-proxy/0.1")
         .pool_max_idle_per_host(4)
         .build()
         .expect("reqwest client");

@@ -1,8 +1,8 @@
-/**
+﻿/**
  * Canonical e2e media: [testvideo](https://github.com/alexantoshuk/testvideo) Release assets.
  *
  * Do not point probes at Downloads / ad-hoc local paths. In-repo tiny fixtures
- * (`public/`, `media/tests/fixtures/`) remain for smoke + Rust unit demux only.
+ * (`public/`, `engine/tests/fixtures/`) remain for smoke + Rust unit demux only.
  *
  * Override base: `TESTVIDEO_BASE=https://…/download/vX.Y.Z`
  */

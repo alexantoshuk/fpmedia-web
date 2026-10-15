@@ -1,4 +1,4 @@
-# .agentignore — webmedia
+# .agentignore — fpmedia-web
 #
 # Tells AI agents which paths to skip when reading or indexing the project.
 # Syntax mirrors .gitignore (glob patterns, leading / = repo root).
@@ -15,7 +15,7 @@ Cargo.lock
 
 # Binary / media assets
 public/
-media/tests/fixtures/*.mp4
+engine/tests/fixtures/*.mp4
 
 # Rust editor artefacts
 **/*.rs.bk

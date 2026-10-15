@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["media", "media_components", "timecode", "app", "frontend", "server"]
+members = ["engine", "leptos", "timecode", "app", "frontend", "server"]
 
 [workspace.lints.clippy]
 # Production panics kill the whole wasm instance (player, AudioContext) until reload.
@@ -43,11 +43,11 @@ web-sys = "0.3"
 wasm-bindgen-futures = "0.4"
 # Upstream main: QT SoundDescriptionV2 (#35) + PCM chunk-coalesce (#38 / #37).
 # crates.io 0.5.1 predates both — switch to a published version when one ships.
-# webmedia ignores non-`mp4a` audio; coalesce is still required so long PCM masters open.
+# fpmedia-web ignores non-`mp4a` audio; coalesce is still required so long PCM masters open.
 re_mp4 = { git = "https://github.com/rerun-io/re_mp4", rev = "73e38d9160d3ae5ce5521be3c4875a59c2a26b35" }
 
 [[workspace.metadata.leptos]]
-name = "webmedia"
+name = "fpmedia-web"
 bin-package = "server"
 lib-package = "frontend"
 site-root = "target/site"

@@ -1,6 +1,6 @@
 # Glossary
 
-> Shared vocabulary for webmedia. **English only.** Term definitions live here.
+> Shared vocabulary for fpmedia-web. **English only.** Term definitions live here.
 > **Agents:** do **not** preload this file every session — open on demand (unfamiliar term, or add/edit/delete vocabulary). Maintenance: `AGENTS.md` § Glossary hygiene.
 > UX decisions → `product.md`. Design / FSM / caches / decode flows → `architecture.md`.
 > Traps → `skills/*`.

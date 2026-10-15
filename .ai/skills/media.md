@@ -1,4 +1,4 @@
-# Media engine (`webmedia`)
+# Media engine (`fpmedia-web`)
 
 Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`webcodecs`). No Leptos. Layout/layers: `architecture.md`. UX: `product.md`. Mediabunny-first: `AGENTS.md`.
 
@@ -46,7 +46,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 
 **Probes (paths):** `e2e/player.smoke.spec.ts`, `e2e/player.matrix.spec.ts`, `e2e/player.play.long-gop.spec.ts`, `e2e/player.play.gop12-url-vs-local.spec.ts`, `e2e/player.play.residual.spec.ts`, `e2e/player.play.fmp4-warm-seam.spec.ts`, `e2e/player.scrub.cold-open.spec.ts`, `e2e/player.scrub.cold-resume.spec.ts`, `e2e/player.scrub.sticky-error.spec.ts`, `e2e/player.play.gray-first.spec.ts`, `e2e/player.stress.scrub-av.spec.ts`, `e2e/player.play.eof-loop.spec.ts`, `e2e/player.jkl.spec.ts`, `e2e/player.fetchmap.fmp4-gap.spec.ts`, `e2e/perf.scrub.*.spec.ts`, `e2e/perf.scrub.baseline.spec.ts`.
 
-## Module map (`media/src`)
+## Module map (`engine/src`)
 
 ```
 lib.rs, types.rs, clock.rs, frame_index.rs, error.rs, util.rs, timer.rs (wasm)
@@ -62,7 +62,7 @@ video_player/  mod · api · shared · open · control · clock_ctrl · present 
 decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
 ```
 
-Host-facing `VideoPlayer` = methods `media_components` calls (`pub`); sibling-only helpers = `pub(super)` (e.g. scrub pipeline / clock stop).
+Host-facing `VideoPlayer` = methods `fpmedia-web-leptos` calls (`pub`); sibling-only helpers = `pub(super)` (e.g. scrub pipeline / clock stop).
 
 Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `architecture.md` § Play / scrub residency / Decode flows.
 
@@ -86,7 +86,7 @@ Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `a
 - **Lifecycle** → feed-ahead over flush; soft sequential next-key on Play; after flush clear warm state; `take_decoder` ~5s wall-clock. All-Intra: never hard-recreate on every key when idle.
 - **Held / PTS** → park `PTS >= target`; prune_floor + cascade through aim; PTS assign = FIFO fed stamps (`inputTimestamps.shift`); main HW prefer Hd+Uhd; scrub/thumb `PreferSoftware`; HW configure fail → PreferSoftware sticky; `optimizeForLatency: false`. `mediabunny: media-sink.ts sampleHandler` / alpha prefer-software.
 - **Backpressure** → wait on new output/take (not buffered frames as progress); dual-async pump parks at `q==0` for consumer; densify cancel → hard reset, fill task returns.
-- **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout` — use `webmedia::timer` (engine + host).
+- **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout` — use `fpmedia_web::timer` (engine + host).
 - **Op cancel** → `op_epoch`; Cancelled = soft; invalidate uses reset when checked out.
 - **Clock / rate** → `ClockState` + `media_time()`; soft-hold scrub/Pause; resume AudioContext before long prime; silent `PlaybackClock` advances on wall time (Chrome `currentTime` lags without audible output under WebCodecs load — diverge from mediabunny `getPlaybackTime`); AAC still context clock. UX ladder: `product.md`.
 - **Underrun** → HoldUnderrun + soft audio hold (keep decoder); not skip spiral. EOF: don’t End while presentation holds frames / while playhead mid at shuttle.

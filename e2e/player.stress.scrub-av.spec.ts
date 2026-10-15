@@ -194,14 +194,14 @@ test("stress: open → fast zone scrub → resume", async ({ page }) => {
   page.on("console", (msg) => {
     const t = msg.text();
     if (
-      t.includes("webmedia: settle") ||
-      t.includes("webmedia: take_decoder") ||
-      t.includes("webmedia: Exact") ||
-      t.includes("webmedia: PlayPrime") ||
-      t.includes("webmedia: play prime") ||
-      t.includes("webmedia: scrub release") ||
-      t.includes("webmedia: densify still busy") ||
-      t.includes("webmedia: decoder busy")
+      t.includes("fpmedia-web: settle") ||
+      t.includes("fpmedia-web: take_decoder") ||
+      t.includes("fpmedia-web: Exact") ||
+      t.includes("fpmedia-web: PlayPrime") ||
+      t.includes("fpmedia-web: play prime") ||
+      t.includes("fpmedia-web: scrub release") ||
+      t.includes("fpmedia-web: densify still busy") ||
+      t.includes("fpmedia-web: decoder busy")
     ) {
       engineLogs.push(t);
     }

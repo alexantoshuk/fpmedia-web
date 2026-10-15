@@ -1,4 +1,4 @@
-# AGENTS.md — webmedia
+# AGENTS.md — fpmedia-web
 
 Respect `.agentignore`.
 
@@ -211,12 +211,12 @@ cargo leptos watch                                      # dev → http://127.0.0
 cargo leptos build                                      # build → target/site/
 cargo check -p server                                   # server (ssr) type check
 cargo check --target wasm32-unknown-unknown -p frontend # CSR WASM client + UI
-cargo check --target wasm32-unknown-unknown -p media_components # <Video> element crate
-cargo check --target wasm32-unknown-unknown -p webmedia --features webcodecs # engine wasm-only code
-# Opt-in HEVC: `cargo test -p webmedia --features hevc`; demo WASM →
-# `media_components` feature `hevc` (e.g. default = ["thumbs", "hevc"] while testing)
-cargo test -p webmedia                                  # engine tests (native; wasm-only modules not covered)
-cargo test -p media_components                          # host UI math (native; wasm modules cfg'd out)
+cargo check --target wasm32-unknown-unknown -p fpmedia-web-leptos # <Video> element crate
+cargo check --target wasm32-unknown-unknown -p fpmedia-web --features webcodecs # engine wasm-only code
+# Opt-in HEVC: `cargo test -p fpmedia-web --features hevc`; demo WASM →
+# `fpmedia-web-leptos` feature `hevc` (e.g. default = ["thumbs", "hevc"] while testing)
+cargo test -p fpmedia-web                                  # engine tests (native; wasm-only modules not covered)
+cargo test -p fpmedia-web-leptos                          # host UI math (native; wasm modules cfg'd out)
 npm install && npm run e2e:install                      # once: Playwright (+ Chromium if CDN ok)
 npm run e2e                                             # browser smoke (app up on :3000; Win uses system Chrome)
 # Scrub perf probes: e2e/perf.scrub.*.spec.ts — listed in skills/media.md Triage

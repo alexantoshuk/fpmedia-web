@@ -1,0 +1,98 @@
+[package]
+name = "fpmedia-web"
+version = "0.1.0"
+edition = "2024"
+description = "Frame-accurate media engine (demux + player API)"
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = ["thumbs"]
+# Hover / filmstrip thumbs (ThumbPreview + ThumbCache). Soft stubs when off.
+thumbs = []
+# H.265 / HEVC (`hvc1` / `hev1`) open + bitstream verify + RASL sanitize.
+# Off by default — Chrome/Firefox often lack WebCodecs HEVC; dual-HW densify tax.
+# Enable: `-p fpmedia-web --features hevc` and `fpmedia-web-leptos` feature `hevc`.
+hevc = []
+webcodecs = [
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:web-sys",
+]
+
+[dependencies]
+re_mp4 = { workspace = true }
+fpmedia-timecode = { path = "../timecode" }
+thiserror = { workspace = true }
+lru = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = [
+    "Window",
+    "Document",
+    "Screen",
+    "Performance",
+    "Element",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "CssStyleDeclaration",
+    "CanvasRenderingContext2d",
+    "VideoDecoder",
+    "VideoDecoderInit",
+    "VideoDecoderConfig",
+    "VideoDecoderSupport",
+    "EncodedVideoChunk",
+    "EncodedVideoChunkInit",
+    "EncodedVideoChunkType",
+    "VideoFrame",
+    "HardwareAcceleration",
+    "Blob",
+    "BlobPropertyBag",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "Response",
+    "AbortController",
+    "AbortSignal",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "ReadableStreamReadResult",
+    "ImageBitmap",
+    "ImageEncodeOptions",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "Worker",
+    "MessageEvent",
+    "Url",
+    "console",
+    "AudioContext",
+    "AudioContextOptions",
+    "AudioContextState",
+    "BaseAudioContext",
+    "AudioDestinationNode",
+    "AudioNode",
+    "AudioParam",
+    "GainNode",
+    "ConstantSourceNode",
+    "AudioBuffer",
+    "AudioBufferSourceNode",
+    "AudioScheduledSourceNode",
+    "AudioDecoder",
+    "AudioDecoderInit",
+    "AudioDecoderConfig",
+    "AudioDecoderSupport",
+    "AudioData",
+    "AudioDataCopyToOptions",
+    "AudioSampleFormat",
+    "EncodedAudioChunk",
+    "EncodedAudioChunkInit",
+    "EncodedAudioChunkType",
+    "CodecState",
+] }

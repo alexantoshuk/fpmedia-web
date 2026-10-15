@@ -1,5 +1,5 @@
 {
-  "name": "webmedia-e2e",
+  "name": "fpmedia-web-e2e",
   "private": true,
   "scripts": {
     "e2e": "playwright test",

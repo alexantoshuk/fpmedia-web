@@ -240,9 +240,9 @@ function classifyClock(consoleLines: string[], meta: string): {
 } {
   const evidence = consoleLines.filter(
     (t) =>
-      t.includes("webmedia: audio") ||
-      t.includes("webmedia: PlaybackClock") ||
-      t.includes("webmedia: no audio"),
+      t.includes("fpmedia-web: audio") ||
+      t.includes("fpmedia-web: PlaybackClock") ||
+      t.includes("fpmedia-web: no audio"),
   );
   const metaHasAudio = /\baudio\b/i.test(meta);
   if (evidence.some((t) => t.includes("audio track ready"))) {

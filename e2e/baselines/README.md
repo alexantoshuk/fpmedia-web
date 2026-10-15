@@ -1,4 +1,4 @@
-# Scrub perf baselines
+﻿# Scrub perf baselines
 
 JSON baselines for **testvideo** Release clips (AVC 1080p sync plates). Capture
 with `save`, re-run with `compare` after decode/scrub changes.
@@ -14,7 +14,7 @@ Opened via demo `open_url` → same-origin `/proxy` (GitHub Releases lack CORS).
 Override base URL with `TESTVIDEO_BASE`. Catalog: `e2e/helpers/testvideo.ts`.
 
 **Do not** point baselines at Downloads / ad-hoc local movies. In-repo tiny
-fixtures (`public/`, `media/tests/fixtures/`) are for smoke + Rust unit only.
+fixtures (`public/`, `engine/tests/fixtures/`) are for smoke + Rust unit only.
 
 ## Scenarios (fixed)
 

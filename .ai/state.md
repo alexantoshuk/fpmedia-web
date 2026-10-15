@@ -19,25 +19,26 @@
 
 ### Publish crates (`0.1.0-alpha`)
 
-**Names (agreed):** package rename for crates.io (dirs may stay; `webmedia` / `timecode` names taken upstream):
+**Layout (agreed):** repo = product; dirs = role; package names for crates.io.
 
-| Package | Role | Was |
-| ------- | ---- | --- |
-| `fpmedia-web` | engine | `webmedia` (`media/`) |
-| `fpmedia-web-leptos` | `<Video>` + scrub helpers | `media_components` |
-| `fpmedia-timecode` | SMPTE frames ↔ HH:MM:SS:FF math | `timecode` |
+| Dir | Package | Role |
+| --- | ------- | ---- |
+| `engine/` | `fpmedia-web` | demux + player |
+| `leptos/` | `fpmedia-web-leptos` | `<Video>` + scrub helpers |
+| `timecode/` | `fpmedia-timecode` | SMPTE frames ↔ HH:MM:SS:FF |
+
+**GitHub repo:** `alexantoshuk/fpmedia-web` (dirs `engine/` / `leptos/` / `timecode/` shipped).
 
 `app` / `frontend` / `server` stay `publish = false` (demo only).
 
 **DoD:** external Leptos CSR host `cargo add`s leptos crate, opens MP4 via Blob (and CORS-ok URL), play/pause/seek/scrub settle — no our Axum.
 
-**Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: rename/docs/hygiene OK; `cargo publish` blocked.
+**Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: docs/hygiene OK; `cargo publish` blocked.
 
-1. **Rename + metadata** — package rename; `license` GPL, repo, readme; keep git `re_mp4` pin until upstream release.
-2. **Lib hygiene** — remove auto `/proxy` rewrite from leptos open_url (demo owns proxy); `#[doc(hidden)]` internals; host CORS contract in crate README.
-3. **Docs + example** — crate READMEs + root README; minimal Blob CSR example (no Axum).
-4. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
-5. **Ship** — CONTRIBUTING gates + e2e; lockstep `0.1.0-alpha.1` publish order timecode → engine → leptos; GH Release notes; drop this block from state.
+1. **Lib hygiene** — remove auto `/proxy` rewrite from leptos open_url (demo owns proxy); `#[doc(hidden)]` internals; host CORS contract in crate README.
+2. **Docs + example** — crate READMEs; minimal Blob CSR example (no Axum). Still: `license`/repo metadata; keep git `re_mp4` pin.
+3. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
+4. **Ship** — CONTRIBUTING gates + e2e; lockstep `0.1.0-alpha.1` publish order timecode → engine → leptos; GH Release notes; drop this block from state.
 
 ### Online demo (free static)
 

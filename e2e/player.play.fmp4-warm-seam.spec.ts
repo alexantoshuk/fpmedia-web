@@ -38,7 +38,7 @@ test.describe("fMP4 warm-seam first play (Chrome)", () => {
       const t = msg.text();
       if (
         t.includes("fragment backfill") ||
-        t.includes("webmedia:")
+        t.includes("fpmedia-web:")
       ) {
         consoleLines.push(t);
       }

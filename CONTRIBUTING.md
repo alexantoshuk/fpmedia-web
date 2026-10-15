@@ -1,4 +1,4 @@
-# Contributing to webmedia
+# Contributing to fpmedia-web
 
 ## Commits
 
@@ -34,16 +34,16 @@ While iterating on a change, prefer `cargo check` (and targeted crate checks). D
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy -p webmedia --all-targets --all-features -- -D warnings
+cargo clippy -p fpmedia-web --all-targets --all-features -- -D warnings
 cargo clippy --target wasm32-unknown-unknown -p frontend -- -D warnings
-cargo clippy --target wasm32-unknown-unknown -p media_components -- -D warnings
-cargo clippy -p media_components --all-targets -- -D warnings
+cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-leptos -- -D warnings
+cargo clippy -p fpmedia-web-leptos --all-targets -- -D warnings
 cargo clippy -p server -- -D warnings
 cargo check -p server
 cargo check --target wasm32-unknown-unknown -p frontend
-cargo check --target wasm32-unknown-unknown -p media_components
-cargo test -p webmedia
-cargo test -p media_components
+cargo check --target wasm32-unknown-unknown -p fpmedia-web-leptos
+cargo test -p fpmedia-web
+cargo test -p fpmedia-web-leptos
 cargo leptos build
 ```
 
@@ -64,5 +64,5 @@ atomic (rename/format, lockfile, generated assets).
 
 - One commit = one logical theme.
 - Prefer several small commits over one large mixed commit.
-- **One crate per commit when possible** (`media` / `webmedia`, `media_components`, `app`, `frontend`, `server`). Split demo UI bindings from engine fixes even if they land in the same session. Exception: a single atomic API change that must touch caller + callee together (then say so in the body). Related `.ai/` updates still ship with the crate they describe.
+- **One crate per commit when possible** (`engine` / `fpmedia-web`, `leptos` / `fpmedia-web-leptos`, `app`, `frontend`, `server`). Split demo UI bindings from engine fixes even if they land in the same session. Exception: a single atomic API change that must touch caller + callee together (then say so in the body). Related `.ai/` updates still ship with the crate they describe.
 - Line counts exclude lockfiles and generated files when judging size.

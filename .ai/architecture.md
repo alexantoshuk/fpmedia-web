@@ -16,26 +16,26 @@
 | Server shell | Axum (`server/`) — static files, optional fixture serving |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — **all** player chrome (controls, scrubber composition, thumb labels) + thin SSR shell. Product boundary: `product.md` § Surfaces |
-| Media element | `media_components` — `<Video>` / `VideoRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
-| Media engine | `webmedia` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
-| Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `media_components/` / `app/` |
+| Media element | `fpmedia-web-leptos` — `<Video>` / `VideoRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
+| Media engine | `fpmedia-web` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
+| Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `leptos/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
 
 ### Leptos UI rules
 
 Long-lived host UI lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Failure modes: `skills/leptos.md`.
 
-**Browser APIs in `media_components/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the media crate owns (WebCodecs / `AudioContext`). Media clock is owned by `webmedia` — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
+**Browser APIs in `leptos/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the engine crate owns (WebCodecs / `AudioContext`). Media clock is owned by `fpmedia-web` — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
 
 ---
 
 ## Layout
 
 ```
-webmedia/
-├── media/                 ← crate name `webmedia`: demux + FrameIndex + VideoPlayer
-├── media_components/      ← crate name `media_components`: <Video> + headless scrub helpers
-├── timecode/              ← crate name `timecode`: SMPTE frames ↔ HH:MM:SS:FF (DF/NDF)
+fpmedia-web/               ← GitHub repo
+├── engine/                ← package `fpmedia-web`
+├── leptos/                ← package `fpmedia-web-leptos`
+├── timecode/              ← package `fpmedia-timecode`
 ├── app/                   ← demo host UI + shell()
 ├── frontend/              ← wasm mount (hydrate)
 ├── server/                ← Axum static site
@@ -51,10 +51,10 @@ Engine module map (file triage): `.ai/skills/media.md`.
 
 | Layer | Can import from |
 | ----- | --------------- |
-| `timecode/` | nothing else in the workspace (leaf math) |
-| `media/` (`webmedia`) | `timecode`; nothing in `media_components` / `app` / Leptos |
-| `media_components/` | `webmedia` (with `webcodecs`), Leptos, `leptos-use` |
-| `app/` | `media_components` (csr), Leptos — not `webmedia` directly |
+| `timecode/` (`fpmedia-timecode`) | nothing else in the workspace (leaf math) |
+| `engine/` (`fpmedia-web`) | `fpmedia-timecode`; nothing in `leptos` / `app` / Leptos framework |
+| `leptos/` (`fpmedia-web-leptos`) | `fpmedia-web` (with `webcodecs`), Leptos, `leptos-use` |
+| `app/` | `fpmedia-web-leptos` (csr), Leptos — not `fpmedia-web` directly |
 | `frontend/` | `app` |
 | `server/` | `app` (ssr shell only) |
 
@@ -68,18 +68,18 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | -------- | --- |
 | Full-stack Rust (Leptos) | One language for engine + UI |
 | CSR SPA | Simple mental model; static shell + WASM mount |
-| Isolated `webmedia` crate | Engine reusable without UI; no Leptos in demux/decode |
-| Isolated `media_components` crate | HTML `<video>` analog + headless track helpers; **no** player chrome (`product.md` Elements first) |
+| Isolated `fpmedia-web` crate | Engine reusable without UI; no Leptos in demux/decode |
+| Isolated `fpmedia-web-leptos` crate | HTML `<video>` analog + headless track helpers; **no** player chrome (`product.md` Elements first) |
 | WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
 | `leptos-use` for browser helpers | Observers/events/rAF in UI crates; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`). MB = sinks + examples; our `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` are Leptos adapters over `VideoPlayer`, not MB UI ports |
 | Progressive open via `MediaSource` | Ranged reads; parse `moov` (+ `moof` for single-file fMP4); keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Design: [Play / scrub residency](#play--scrub-residency). Traps: `skills/media.md`. |
 | Optional hover thumbs (`thumbs`) | Feature `thumbs` default on; runtime `ThumbPolicy`; 3rd decoder + `ThumbCache` / `ThumbPreview`. Host UI: `<HoverThumb>` (`product.md`); `HoverThumbPreview` kept as thin class-only wrapper |
-| Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `webmedia::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. `audio/` has no canvas dependency. |
-| Component API like HTML media | Elements: open/play/seek/rate/volume + `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `media_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
+| Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `fpmedia_web::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. `audio/` has no canvas dependency. |
+| Component API like HTML media | Elements: open/play/seek/rate/volume + `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `fpmedia_web_leptos::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
-| Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `webmedia::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
+| Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
 
 ---
 
@@ -93,15 +93,15 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 
 | Domain | Machine |
 | ------ | ------- |
-| Host transport | `webmedia::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*` |
-| OpQueue | `webmedia::HostOp` / `apply_enqueue` (in place); epochs preserved on survivors |
-| Engine mode | `webmedia::engine_mode` (`Play` / `Scrub` / `ExactHold` + `AudioResume`) |
-| Decoder slot | `webmedia::decoder_slot` (`Idle` / `CheckedOut` + `reset_pending`) |
-| WorkloadMode | `webmedia::workload` (Play > Seek > Open > Bg) |
+| Host transport | `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*` |
+| OpQueue | `fpmedia_web::HostOp` / `apply_enqueue` (in place); epochs preserved on survivors |
+| Engine mode | `fpmedia_web::engine_mode` (`Play` / `Scrub` / `ExactHold` + `AudioResume`) |
+| Decoder slot | `fpmedia_web::decoder_slot` (`Idle` / `CheckedOut` + `reset_pending`) |
+| WorkloadMode | `fpmedia_web::workload` (Play > Seek > Open > Bg) |
 | Byte IO | `ReadOrchestrator` + `UrlSource` open-ended workers |
-| Open / backfill | `webmedia::open_phase` (`OpenPhase::label`) |
-| Media clock | `webmedia::clock_state` |
-| rAF session | `webmedia::session` |
+| Open / backfill | `fpmedia_web::open_phase` (`OpenPhase::label`) |
+| Media clock | `fpmedia_web::clock_state` |
+| rAF session | `fpmedia_web::session` |
 
 **Success bar:** a new race is fixed by a transition or coalesce row, not another flag. Failure modes: skills.
 
@@ -121,7 +121,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 
 | Kind | Where |
 | ---- | ----- |
-| Tiny unit/smoke MP4s | `media/tests/fixtures/` (+ copies in `public/` for e2e smoke) |
+| Tiny unit/smoke MP4s | `engine/tests/fixtures/` (+ copies in `public/` for e2e smoke) |
 | FullHD A/V sync plates | **[testvideo](https://github.com/alexantoshuk/testvideo)** Releases — catalog `e2e/helpers/testvideo.ts` |
 
 Do **not** wire probes to Downloads / third-party hosts. In skills prefer meta (fps, GOP, resolution, bf); asset names = testvideo stems.
@@ -232,7 +232,7 @@ Soft-drag must not run PreferSoftware densify under the finger. Settle must not 
 
 ### Scrub phases
 
-Host gesture × engine (FSM homes: `webmedia::transport`, `webmedia::engine_mode`). Exactness = settle / seek / step / Pause canvas — not soft-drag (`product.md` Exact vs Play). Hover thumb: Play + Pause only, not while `Scrubbing` (`product.md`).
+Host gesture × engine (FSM homes: `fpmedia_web::transport`, `fpmedia_web::engine_mode`). Exactness = settle / seek / step / Pause canvas — not soft-drag (`product.md` Exact vs Play). Hover thumb: Play + Pause only, not while `Scrubbing` (`product.md`).
 
 | Phase | Host `TransportState` | `EngineMode` | Densify | Picture | Entry |
 | ----- | --------------------- | ------------ | ------- | ------- | ----- |
