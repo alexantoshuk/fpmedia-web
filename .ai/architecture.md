@@ -13,7 +13,8 @@
 | ----- | ------ |
 | Language | Rust, full-stack |
 | Framework | Leptos CSR — `mount_to_body` SPA; static `index.html` shell |
-| Server shell | Axum (`server/`) — static files, optional fixture serving |
+| Server shell | Axum (`server/`) — static files + localhost `/proxy`; `export_site` bin writes `index.html` for Pages |
+| Static Pages demo | Same `app`/`frontend` with feature `static_host` (Blob only); GH Actions → GitHub Pages (`state.md`) |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — **all** player chrome (controls, scrubber composition, thumb labels) + thin SSR shell. Product boundary: `product.md` § Surfaces |
 | Media element | `fpmedia-web-leptos` — `<Video>` / `VideoRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |

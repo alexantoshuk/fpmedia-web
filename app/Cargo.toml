@@ -42,6 +42,8 @@ fpmedia-web-leptos = { path = "../leptos", optional = true }
 
 [features]
 default = []
+# Hosted static demo (GitHub Pages): Blob open only — no URL field / `/proxy`.
+static_host = []
 csr = [
     "leptos/csr",
     "dep:console_error_panic_hook",

@@ -209,6 +209,8 @@ Iteration cheat sheet. Mandatory **commit / PR** gates (Clippy, fmt check, build
 cargo fmt                                               # rustfmt
 cargo leptos watch                                      # dev → http://127.0.0.1:3000
 cargo leptos build                                      # build → target/site/
+# Pages static demo: cargo leptos build --release --lib-features static_host
+#   && cargo run --release -p server --bin export_site   # writes index.html
 cargo check -p server                                   # server (ssr) type check
 cargo check --target wasm32-unknown-unknown -p frontend # CSR WASM client + UI
 cargo check --target wasm32-unknown-unknown -p fpmedia-web-leptos # <Video> element crate

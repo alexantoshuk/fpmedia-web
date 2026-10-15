@@ -63,6 +63,8 @@ re_mp4 = { git = "https://github.com/rerun-io/re_mp4", rev = "73e38d9160d3ae5ce5
 [[workspace.metadata.leptos]]
 name = "fpmedia-web"
 bin-package = "server"
+# Required once `server` has more than one bin (`export_site` for Pages).
+bin-target = "server"
 lib-package = "frontend"
 site-root = "target/site"
 site-pkg-dir = "pkg"

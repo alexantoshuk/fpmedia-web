@@ -29,12 +29,11 @@ Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. 
 
 ### Online demo (free static)
 
-Hosted CSR demo without Axum / without public open `/proxy` (localhost proxy stays local/e2e only).
+Implementation in tree (`static_host`, `export_site`, `.github/workflows/pages.yml`).
 
-- **Host:** Cloudflare Pages or GitHub Pages — deploy `cargo leptos build` site (`target/site/`).
-- **Media:** file picker (Blob) + short same-origin samples from `public/`; no remote-URL open in the public build (or only CORS-ok same-origin assets).
-- **Out of scope:** public CORS proxy; shipping large 4K masters on free tier.
-- Independent of crates.io hard gate (`re_mp4`); can ship before or after alpha publish.
+- **Do:** enable Settings → Pages → Source: GitHub Actions; push/merge; confirm site loads WASM + Browse open.
+- **Out of scope:** public CORS proxy; sample buttons; large masters.
+- **Note:** private repo — Pages may need Pro; published URL is often world-readable.
 
 ---
 
