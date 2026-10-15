@@ -1,8 +1,13 @@
 # fpmedia-web
 
 [![pages](https://github.com/alexantoshuk/fpmedia-web/actions/workflows/pages.yml/badge.svg)](https://github.com/alexantoshuk/fpmedia-web/actions/workflows/pages.yml)
+[![docs fpmedia-web](https://img.shields.io/badge/docs-fpmedia--web-blue)](https://docs.rs/fpmedia-web)
+[![docs fpmedia-web-leptos](https://img.shields.io/badge/docs-fpmedia--web--leptos-blue)](https://docs.rs/fpmedia-web-leptos)
+[![docs fpmedia-timecode](https://img.shields.io/badge/docs-fpmedia--timecode-blue)](https://docs.rs/fpmedia-timecode)
 
 Frame-accurate custom web media player (Rust + Leptos + WebCodecs).
+
+Crate guides (until crates.io / docs.rs publish): [`engine/`](engine/README.md) · [`leptos/`](leptos/README.md) · [`timecode/`](timecode/README.md).
 
 **Live demo:** [alexantoshuk.github.io/fpmedia-web](https://alexantoshuk.github.io/fpmedia-web/) (Browse / Blob only — no public `/proxy`).
 

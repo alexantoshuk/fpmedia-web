@@ -1,5 +1,8 @@
 # fpmedia-timecode
 
+[![docs.rs](https://img.shields.io/badge/docs-docs.rs-blue)](https://docs.rs/fpmedia-timecode)
+[![crates.io](https://img.shields.io/badge/crates.io-fpmedia--timecode-orange)](https://crates.io/crates/fpmedia-timecode)
+
 SMPTE timecode math: absolute frames ↔ `HH:MM:SS:FF` (non-drop) / `HH:MM:SS;FF`
 (drop-frame). Leaf crate — no media I/O.
 
