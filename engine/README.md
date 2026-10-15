@@ -28,4 +28,4 @@ can switch to a crates.io version.
 - Element layer + CORS: [`../leptos/README.md`](../leptos/README.md)
 - Minimal Blob CSR host (no Axum): [`../examples/blob_open`](../examples/blob_open)
 
-License: GPL-3.0-only (see repo `LICENSE`).
+License: MIT OR Apache-2.0 (see repo `LICENSE`).

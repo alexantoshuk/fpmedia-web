@@ -18,4 +18,4 @@ Drop-frame uses the Heidelberger formulation of SMPTE ST 12-1 (same family of
 math as eoyilmaz/timecode). Embedded container start TC (`tmcd`) is handled in
 `fpmedia-web` demux, not here.
 
-License: GPL-3.0-only (see repo `LICENSE`).
+License: MIT OR Apache-2.0 (see repo `LICENSE`).

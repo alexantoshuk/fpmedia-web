@@ -20,6 +20,6 @@ cargo run --release -p server --bin export_site
 # serve target/site/ with any static host
 ```
 
-License: [GPL-3.0-only](LICENSE). Repo: [alexantoshuk/fpmedia-web](https://github.com/alexantoshuk/fpmedia-web).
+License: [MIT OR Apache-2.0](LICENSE). Repo: [alexantoshuk/fpmedia-web](https://github.com/alexantoshuk/fpmedia-web).
 
 Dev commands: [`AGENTS.md`](AGENTS.md) § Dev commands. Commit / PR gates: [`CONTRIBUTING.md`](CONTRIBUTING.md).
