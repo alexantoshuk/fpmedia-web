@@ -53,18 +53,28 @@ pub use demux::{
 };
 pub use error::{DecodeStall, MediaError};
 pub use frame_index::{FrameEntry, FrameIndex};
+// Host OpQueue / FSM — used by `fpmedia-web-leptos`; not part of the engine
+// consumer surface (VideoPlayer / demux / sources).
+#[doc(hidden)]
 pub use host::host_op_coalesce::{HostOp, apply_enqueue};
+#[doc(hidden)]
 pub use host::open_phase::{OpenPhase, OpenSourceKind};
+#[doc(hidden)]
 pub use model::bg_task::SingleFlight;
+#[doc(hidden)]
 pub use model::clock_state::{ClockCmd, ClockEvent, ClockState, reduce as clock_state_reduce};
+#[doc(hidden)]
 pub use model::decoder_slot::{
     DecoderSlotCmd, DecoderSlotEvent, DecoderSlotModel, DecoderSlotPhase,
     reduce as decoder_slot_reduce,
 };
+#[doc(hidden)]
 pub use model::engine_mode::{
     AudioResume, EngineCmd, EngineEvent, EngineMode, EngineModel, reduce as engine_mode_reduce,
 };
+#[doc(hidden)]
 pub use model::session::{SessionEvent, SessionModel, reduce as session_reduce};
+#[doc(hidden)]
 pub use model::transport::{
     TransportCmd, TransportEvent, TransportModel, TransportState, reduce as transport_reduce,
 };

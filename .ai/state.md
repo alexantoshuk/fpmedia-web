@@ -35,10 +35,9 @@
 
 **Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: docs/hygiene OK; `cargo publish` blocked.
 
-1. **Lib hygiene** — remove auto `/proxy` rewrite from leptos open_url (demo owns proxy); `#[doc(hidden)]` internals; host CORS contract in crate README.
-2. **Docs + example** — crate READMEs; minimal Blob CSR example (no Axum). Still: `license`/repo metadata; keep git `re_mp4` pin.
-3. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
-4. **Ship** — CONTRIBUTING gates + e2e; lockstep `0.1.0-alpha.1` publish order timecode → engine → leptos; GH Release notes; drop this block from state.
+1. **Docs + example** — crate READMEs (engine/timecode + root polish); minimal Blob CSR example (no Axum). Still: `license`/repo metadata; keep git `re_mp4` pin.
+2. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
+3. **Ship** — CONTRIBUTING gates + e2e; lockstep `0.1.0-alpha.1` publish order timecode → engine → leptos; GH Release notes; drop this block from state.
 
 ### Online demo (free static)
 

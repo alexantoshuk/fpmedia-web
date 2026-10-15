@@ -1,4 +1,7 @@
-//! URL open path — `/proxy` rewrite, Range probe, full-download fallback, staged open.
+//! URL open path — Range probe, full-download fallback, staged open.
+//!
+//! Cross-origin hosts must allow CORS (or the host app must pass a same-origin
+//! URL). Demo `/proxy` rewrite lives in `app`, not here.
 
 use fpmedia_web::{
     BlobSource, MediaError, MediaSource, OPEN_URL_PARALLELISM, OpenMp4Options, OpenPhase,
@@ -10,28 +13,6 @@ use web_sys::{HtmlCanvasElement, Response};
 
 /// Resolve `https:` via [`UrlSource`] (HTTP Range); `blob:` / no-Range hosts via
 /// full fetch → [`BlobSource`]. Status line only — no confirm dialogs.
-///
-/// Remote `http(s):` URLs are rewritten to same-origin `/proxy?url=…` when the
-/// page has a `window` (demo Axum shell) so GitHub Release / S3 CORS does not
-/// block Range GETs.
-pub(super) fn same_origin_media_proxy_url(remote: &str) -> Option<String> {
-    let trimmed = remote.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if !(lower.starts_with("https:") || lower.starts_with("http:")) {
-        return None;
-    }
-    if trimmed.contains("/proxy?") {
-        return None;
-    }
-    let window = web_sys::window()?;
-    let origin = window.location().origin().ok()?;
-    if trimmed.starts_with(&origin) {
-        return None;
-    }
-    let enc = String::from(js_sys::encode_uri_component(trimmed));
-    Some(format!("{origin}/proxy?url={enc}"))
-}
-
 pub(super) async fn resolve_url_source(
     url: &str,
     on_status: impl Fn(OpenPhase),

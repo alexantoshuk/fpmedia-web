@@ -36,6 +36,7 @@ web-sys = { workspace = true, optional = true, features = [
     "Blob",
     "KeyboardEvent",
     "Window",
+    "Location",
 ] }
 fpmedia-web-leptos = { path = "../leptos", optional = true }
 

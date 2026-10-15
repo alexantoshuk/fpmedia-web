@@ -148,7 +148,10 @@ impl VideoRef {
     /// `https:` / `http:` use progressive [`fpmedia_web::UrlSource`] (HTTP Range)
     /// when the server returns `206` + `Content-Range`; otherwise falls back to
     /// a full download → [`Self::open_blob`]. Same-document `blob:` always goes
-    /// through fetch → Blob. Needs CORS for cross-origin hosts.
+    /// through fetch → Blob.
+    ///
+    /// Cross-origin URLs need a CORS-allowing host (or a same-origin proxy URL
+    /// the app supplies). This crate does **not** rewrite to `/proxy`.
     pub fn open_url(&self, url: impl Into<String>) {
         let url = url.into();
         if let Some(open) = self.op(|o| &o.open_url) {

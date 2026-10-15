@@ -738,7 +738,6 @@ name = "fpmedia-web-leptos"
 version = "0.1.0"
 dependencies = [
  "fpmedia-web",
- "js-sys",
  "leptos",
  "leptos-use",
  "wasm-bindgen",

@@ -10,7 +10,7 @@ with `save`, re-run with `compare` after decode/scrub changes.
 | `avc_1080p_24_gop12_bf0` | AVC 1080p 24 fps GOP12 bf0 ~60 s AAC | [testvideo v0.1.0](https://github.com/alexantoshuk/testvideo/releases/tag/v0.1.0) |
 | `avc_1080p_24_gop48_bf0` | AVC 1080p 24 fps GOP48 bf0 ~60 s AAC | same Release |
 
-Opened via demo `open_url` → same-origin `/proxy` (GitHub Releases lack CORS).
+Opened via demo URL field → `app` rewrites to same-origin `/proxy` (GitHub Releases lack CORS; element crate does not rewrite).
 Override base URL with `TESTVIDEO_BASE`. Catalog: `e2e/helpers/testvideo.ts`.
 
 **Do not** point baselines at Downloads / ad-hoc local movies. In-repo tiny

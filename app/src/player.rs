@@ -37,6 +37,32 @@ fn zebra_pair_hex(contrast: u8) -> (String, String) {
 /// Forward shuttle ladder for demo J/L keys (K → 1× + play/pause).
 const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
 
+/// Demo-only: rewrite remote `http(s):` to same-origin `/proxy?url=` so Range
+/// GETs work without CDN CORS (localhost Axum; see `server`). Element crate
+/// does not do this — hosts supply CORS-ok or proxied URLs themselves.
+fn same_origin_media_proxy_url(remote: &str) -> Option<String> {
+    let trimmed = remote.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("https:") || lower.starts_with("http:")) {
+        return None;
+    }
+    if trimmed.contains("/proxy?") {
+        return None;
+    }
+    let window = window()?;
+    let origin = window.location().origin().ok()?;
+    if trimmed.starts_with(&origin) {
+        return None;
+    }
+    let enc = String::from(js_sys::encode_uri_component(trimmed));
+    Some(format!("{origin}/proxy?url={enc}"))
+}
+
+fn open_url_via_demo_proxy(video: &VideoRef, raw: String) {
+    let url = same_origin_media_proxy_url(&raw).unwrap_or(raw);
+    video.open_url(url);
+}
+
 /// Compact JSON for e2e (`data-testid="pipeline-json"`). Manual — app has no serde.
 fn pipeline_stats_json(stats: Option<PipelineStats>) -> String {
     let Some(s) = stats else {
@@ -675,7 +701,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 ev.prevent_default();
                                 let Some(input) = url_input.get() else { return };
                                 // Empty → component sets sticky "empty URL" (keeps player).
-                                video.open_url(input.value());
+                                open_url_via_demo_proxy(&video, input.value());
                             }
                         />
                         <button
@@ -686,7 +712,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             on:click=move |_| {
                                 let Some(input) = url_input.get() else { return };
                                 // Empty → component sets sticky "empty URL" (keeps player).
-                                video.open_url(input.value());
+                                open_url_via_demo_proxy(&video, input.value());
                             }
                         >
                             "Open URL"

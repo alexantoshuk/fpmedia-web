@@ -17,7 +17,7 @@ use web_sys::HtmlCanvasElement;
 use super::ctx::HostCtx;
 use super::host_ops::{SeekOrStep, run_open, run_play_prime, run_seek_or_step};
 use super::op_queue::{HostOp, OpQueue, OpenArgs};
-use super::open_url::{resolve_url_source, same_origin_media_proxy_url};
+use super::open_url::resolve_url_source;
 use super::transport_apply::{dispatch_transport, new_transport, note_transport};
 use super::{VideoOps, VideoRef};
 use fpmedia_web::timer::{next_animation_frame, now_ms};
@@ -365,8 +365,7 @@ pub fn Video(
             // Do **not** latch `busy` across resolve — cancelled fetch used to
             // leave busy=true forever when drain had already ended. `!ready`
             // keeps Play disabled; Open enqueue sets busy for demux/seek.
-            // Same-origin /proxy bypasses CDN CORS (GitHub Releases, S3, …).
-            let url = same_origin_media_proxy_url(&url).unwrap_or(url);
+            // Cross-origin: host must pass a CORS-ok URL (demo wraps `/proxy`).
             status.set(OpenPhase::OpeningUrl { url: url.clone() }.label());
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("fpmedia-web: open_url start {url}").into());
