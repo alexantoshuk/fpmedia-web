@@ -734,6 +734,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fpmedia-web-example-blob-open"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "fpmedia-web-leptos",
+ "leptos",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "fpmedia-web-leptos"
 version = "0.1.0"
 dependencies = [

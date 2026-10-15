@@ -1,8 +1,12 @@
 [package]
 name = "fpmedia-timecode"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "SMPTE timecode math (frames ↔ HH:MM:SS:FF, drop-frame)"
+readme = "README.md"
 publish = false
 
 [lints]

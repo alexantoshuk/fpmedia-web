@@ -19,6 +19,10 @@ Prefer Blob open for local files. For progressive URL open, the server should su
 - `thumbs` (default) — hover thumb decode path
 - `hevc` — opt-in H.265 (see engine crate)
 
+## Minimal host example
+
+[`examples/blob_open`](../examples/blob_open) — file picker → `open_blob`, Play/Pause, no Axum / no `/proxy`.
+
 ## Docs
 
 Product surfaces: repo `.ai/product.md`. Host traps: `.ai/skills/leptos.md`.

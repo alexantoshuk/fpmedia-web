@@ -1,0 +1,27 @@
+[package]
+name = "fpmedia-web-example-blob-open"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Minimal CSR Blob open demo (no Axum) for fpmedia-web-leptos"
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = { workspace = true, features = ["csr"] }
+console_error_panic_hook = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = [
+    "Blob",
+    "File",
+    "FileList",
+    "HtmlInputElement",
+] }
+fpmedia-web-leptos = { path = "../../leptos" }

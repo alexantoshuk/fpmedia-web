@@ -36,6 +36,7 @@ fpmedia-web/               ← GitHub repo
 ├── engine/                ← package `fpmedia-web`
 ├── leptos/                ← package `fpmedia-web-leptos`
 ├── timecode/              ← package `fpmedia-timecode`
+├── examples/blob_open/    ← minimal Blob CSR host (no Axum)
 ├── app/                   ← demo host UI + shell()
 ├── frontend/              ← wasm mount (hydrate)
 ├── server/                ← Axum static site

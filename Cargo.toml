@@ -1,6 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["engine", "leptos", "timecode", "app", "frontend", "server"]
+members = [
+    "engine",
+    "leptos",
+    "timecode",
+    "app",
+    "frontend",
+    "server",
+    "examples/blob_open",
+]
+
+[workspace.package]
+license = "GPL-3.0-only"
+repository = "https://github.com/alexantoshuk/fpmedia-web"
+homepage = "https://github.com/alexantoshuk/fpmedia-web"
+edition = "2024"
 
 [workspace.lints.clippy]
 # Production panics kill the whole wasm instance (player, AudioContext) until reload.

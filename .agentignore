@@ -9,6 +9,7 @@
 
 # Generated lock files (too large, not useful to read)
 Cargo.lock
+package-lock.json
 
 # Third-party packages
 **/node_modules/
@@ -16,6 +17,9 @@ Cargo.lock
 # Binary / media assets
 public/
 engine/tests/fixtures/*.mp4
+
+# Large e2e baseline JSON (keep e2e/baselines/**/README.md)
+e2e/baselines/**/*.json
 
 # Rust editor artefacts
 **/*.rs.bk

@@ -8,10 +8,9 @@
 
 ### Handoff
 
-- **HEAD:** soft-drag scrub paints; Exact trail intact on settle (`skills/media.md` triage «Soft-drag / cold scrub canvas frozen»).
-- **Ignore / do not land on `main`:** `b8206d1` Exact `blit.clear` / wipe-on-settle — freezes cold scrub. Seek Exact-follow goal is real; that approach is wrong.
-- **Parked (known):** residual Covered+Exact pin-holes after Pause densify on constrained machines (PreferSoftware omit / densify soft-ban) — accepted strip cosmetics (`product.md` Play vs scrub residency). Do not Exact-wipe to “fix”. Revisit: Later.
-- **Do not:** prune Exact on every drag `set_playhead`; soft-drag preview from Covered nearest; wipe Exact on settle.
+- **HEAD:** soft-drag Exact trail intact — `skills/media.md` triage «Soft-drag / cold scrub canvas frozen».
+- **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
+- **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
 ---
 
@@ -19,25 +18,14 @@
 
 ### Publish crates (`0.1.0-alpha`)
 
-**Layout (agreed):** repo = product; dirs = role; package names for crates.io.
-
-| Dir | Package | Role |
-| --- | ------- | ---- |
-| `engine/` | `fpmedia-web` | demux + player |
-| `leptos/` | `fpmedia-web-leptos` | `<Video>` + scrub helpers |
-| `timecode/` | `fpmedia-timecode` | SMPTE frames ↔ HH:MM:SS:FF |
-
-**GitHub repo:** `alexantoshuk/fpmedia-web` (dirs `engine/` / `leptos/` / `timecode/` shipped).
-
-`app` / `frontend` / `server` stay `publish = false` (demo only).
+Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. Demo `app` / `frontend` / `server` stay `publish = false`.
 
 **DoD:** external Leptos CSR host `cargo add`s leptos crate, opens MP4 via Blob (and CORS-ok URL), play/pause/seek/scrub settle — no our Axum.
 
-**Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: docs/hygiene OK; `cargo publish` blocked.
+**Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: docs/hygiene OK; `cargo publish` blocked. Keep git `re_mp4` pin until then.
 
-1. **Docs + example** — crate READMEs (engine/timecode + root polish); minimal Blob CSR example (no Axum). Still: `license`/repo metadata; keep git `re_mp4` pin.
-2. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
-3. **Ship** — CONTRIBUTING gates + e2e; lockstep `0.1.0-alpha.1` publish order timecode → engine → leptos; GH Release notes; drop this block from state.
+1. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
+2. **Ship** — CONTRIBUTING gates + e2e; lockstep `0.1.0-alpha.1` publish order timecode → engine → leptos; GH Release notes; drop this block from state.
 
 ### Online demo (free static)
 

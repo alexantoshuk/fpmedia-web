@@ -1,8 +1,12 @@
 [package]
 name = "fpmedia-web-leptos"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Leptos media elements (<Video>, later <Audio>) over the fpmedia-web engine"
+readme = "README.md"
 publish = false
 
 [lints]
