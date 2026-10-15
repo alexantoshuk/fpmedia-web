@@ -20,7 +20,7 @@
 | Media element | `fpmedia-web-components` — `<Video>` / `VideoRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
 | Media engine | `fpmedia-web` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `components/` / `demo-player/` |
-| Styling | Tailwind in `demo-player/style/input.css` (Trunk build hook) |
+| Styling | Tailwind in `demo-player/style/input.css` (Trunk `rel="tailwind-css"`, auto-download CLI) |
 
 ### Leptos UI rules
 

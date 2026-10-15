@@ -8,9 +8,8 @@ Trunk CSR demo: Browse (Blob) + URL open. Player chrome lives here; elements com
 ```sh
 rustup target add wasm32-unknown-unknown
 cargo install trunk   # once
-# Tailwind v4 CLI on PATH (same as Pages CI)
 cd demo-player
-trunk serve
+trunk serve           # auto-downloads Tailwind CLI (`[tools] tailwindcss` in Trunk.toml)
 ```
 
 Open http://127.0.0.1:3000 — file picker or URL.

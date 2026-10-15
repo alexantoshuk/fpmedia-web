@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use leptos::html::Div;
 use leptos::prelude::*;
-use leptos_use::use_resize_observer;
+use leptos_use::{UseElementSizeReturn, use_element_size};
 use wasm_bindgen::JsCast;
 use web_sys::Element;
 
@@ -42,7 +42,8 @@ impl HoverThumbApi {
 pub struct ScrubberCtx {
     pub video: VideoRef,
     pub scrubbing: RwSignal<bool>,
-    pub css_width: RwSignal<f64>,
+    /// Track CSS width from [`use_element_size`].
+    pub css_width: Signal<f64>,
     /// Filled by a nested hover thumb (auto-wire).
     pub(crate) hover: StoredValue<Option<HoverThumbApi>, LocalStorage>,
 }
@@ -55,25 +56,17 @@ pub fn Scrubber(
     children: Children,
 ) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
-    let css_width = RwSignal::new(800.0_f64);
     let hover = StoredValue::new_local(None::<HoverThumbApi>);
     let scrubber_ref = NodeRef::<Div>::new();
+    let UseElementSizeReturn {
+        width: css_width, ..
+    } = use_element_size(scrubber_ref);
 
     provide_context(ScrubberCtx {
         video,
         scrubbing,
         css_width,
         hover,
-    });
-
-    use_resize_observer(scrubber_ref, move |entries, _| {
-        let Some(entry) = entries.first() else {
-            return;
-        };
-        let w = entry.content_rect().width();
-        if w > 0.0 {
-            css_width.set(w);
-        }
     });
 
     let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {

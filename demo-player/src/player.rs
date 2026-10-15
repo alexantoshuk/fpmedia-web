@@ -1,8 +1,8 @@
 //! Demo controls over [`fpmedia_web_components::Video`] — not production player UI.
 
 use fpmedia_web_components::helpers::{
-    format_metadata, format_timecode_at, odd_frame_runs, playhead_tip_css, playhead_width_css,
-    strip_canvas_buffer_width,
+    FRAME_ZEBRA_MIN_SLOT_PX, format_metadata, format_timecode_at, frame_zebra_step, odd_frame_runs,
+    playhead_tip_css, playhead_width_css, strip_canvas_buffer_width,
 };
 use fpmedia_web_components::{
     HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, TimelineMeta,
@@ -11,7 +11,7 @@ use fpmedia_web_components::{
 use leptos::ev;
 use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
-use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_timeout_fn};
+use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_resize_observer, use_timeout_fn};
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 
@@ -792,18 +792,51 @@ pub fn DemoPlayer() -> impl IntoView {
 }
 
 /// Frame zebra on the progress track (demo chrome). Continuous `w/n` float
-/// `fillRect` slots (same [`frame_slot`] as tip); off when step &lt; 1 px.
+/// `fillRect` slots (same [`frame_slot`] as tip); off when step &lt; [`FRAME_ZEBRA_MIN_SLOT_PX`].
+///
+/// Measure a host **div** (not the canvas — `set_width` lies to RO/CSS). Below the
+/// gate the canvas is unmounted (`Show`) so a wide bitmap cannot mush into subpixels.
 #[component]
 fn FrameZebra(contrast: u8) -> impl IntoView {
     let ctx = use_context::<ScrubberCtx>().expect("FrameZebra must be used inside <Scrubber>");
     let video = ctx.video;
-    let css_width = ctx.css_width;
+    let host_ref = NodeRef::<Div>::new();
     let canvas_ref = NodeRef::<Canvas>::new();
+    let track_w = RwSignal::new(0.0_f64);
+
+    let measure_host = move || {
+        if let Some(el) = host_ref.get_untracked() {
+            let w = el.get_bounding_client_rect().width();
+            if w > 0.0 {
+                track_w.set(w);
+            }
+        }
+    };
+
+    use_resize_observer(host_ref, move |entries, _| {
+        let Some(entry) = entries.first() else {
+            return;
+        };
+        let w = entry.content_rect().width();
+        if w > 0.0 {
+            track_w.set(w);
+        }
+    });
+
+    if let Some(win) = window() {
+        let _resize_stop = use_event_listener(win, ev::resize, move |_| measure_host());
+    }
+
+    let visible = Memo::new(move |_| {
+        frame_zebra_step(video.frame_count.get(), track_w.get()) >= FRAME_ZEBRA_MIN_SLOT_PX
+    });
 
     Effect::new(move |_| {
+        if !visible.get() {
+            return;
+        }
         let count = video.frame_count.get();
-        let css_w = css_width.get().max(0.0);
-        // Canvas buffer = rounded CSS width; slot math uses that same float width.
+        let css_w = track_w.get().max(0.0);
         let buf_w = strip_canvas_buffer_width(css_w, 1.0);
         let width = f64::from(buf_w);
         let Some(canvas) = canvas_ref.get() else {
@@ -815,11 +848,15 @@ fn FrameZebra(contrast: u8) -> impl IntoView {
     });
 
     view! {
-        <canvas class="wm-scrubber-zebra" node_ref=canvas_ref aria-hidden="true" />
+        <div class="wm-scrubber-zebra-host" node_ref=host_ref aria-hidden="true">
+            <Show when=move || visible.get()>
+                <canvas class="wm-scrubber-zebra" node_ref=canvas_ref aria-hidden="true" />
+            </Show>
+        </div>
     }
 }
 
-/// 1 px zebra: clear; if `odd_runs` empty leave transparent; else even + float odds.
+/// 1 px-tall zebra canvas: clear; if `odd_runs` empty leave transparent; else even + odds.
 fn paint_frame_zebra(
     canvas: &web_sys::HtmlCanvasElement,
     buffer_width: u16,

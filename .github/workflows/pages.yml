@@ -44,14 +44,7 @@ jobs:
         with:
           tool: trunk
 
-      # style/input.css uses Tailwind v4 `@import "tailwindcss"` — v3 CLI fails.
-      - name: Install Tailwind CSS v4 CLI
-        run: |
-          curl -fsSL -o tailwindcss \
-            https://github.com/tailwindlabs/tailwindcss/releases/download/v4.3.3/tailwindcss-linux-x64
-          chmod +x tailwindcss
-          sudo mv tailwindcss /usr/local/bin/tailwindcss
-          tailwindcss --help | head -n 2
+      # Tailwind v4 CLI: Trunk auto-downloads via `[tools] tailwindcss` + `rel="tailwind-css"`.
 
       - name: Build site (Trunk)
         working-directory: demo-player

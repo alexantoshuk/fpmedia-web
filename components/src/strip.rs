@@ -525,7 +525,7 @@ pub fn frame_zebra_step(frame_count: u32, width: f64) -> f64 {
     width / f64::from(frame_count)
 }
 
-/// Zebra visibility gate: `floor(width_px / frame_count)` (CSS px).
+/// Integer floor slot width `floor(width_px / frame_count)` (probe / tests).
 pub fn frame_zebra_slot_px(frame_count: u32, width_px: u32) -> u32 {
     if frame_count == 0 || width_px == 0 {
         return 0;
@@ -533,14 +533,18 @@ pub fn frame_zebra_slot_px(frame_count: u32, width_px: u32) -> u32 {
     width_px / frame_count
 }
 
-/// True when continuous step `w/n ≥ 1` (same threshold as integer floor gate).
-pub fn frame_slots_at_least_1px(frame_count: u32, width_px: u16) -> bool {
-    frame_zebra_step(frame_count, f64::from(width_px)) >= 1.0
+/// Demo zebra min slot (CSS px): show when continuous step `w/n` is at least this.
+pub const FRAME_ZEBRA_MIN_SLOT_PX: f64 = 1.5;
+
+/// True when continuous step `w/n ≥ [`FRAME_ZEBRA_MIN_SLOT_PX`]`.
+pub fn frame_slots_at_least_min(frame_count: u32, width_px: u16) -> bool {
+    frame_zebra_step(frame_count, f64::from(width_px)) >= FRAME_ZEBRA_MIN_SLOT_PX
 }
 
 /// Odd-frame runs as continuous `[lo, hi)` on width (canvas `fillRect` floats).
+/// Empty when step `w/n < [`FRAME_ZEBRA_MIN_SLOT_PX`].
 pub fn odd_frame_runs(frame_count: u32, width: f64) -> Vec<(f64, f64)> {
-    if frame_zebra_step(frame_count, width) < 1.0 {
+    if frame_zebra_step(frame_count, width) < FRAME_ZEBRA_MIN_SLOT_PX {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -789,14 +793,19 @@ mod tests {
     }
 
     #[test]
-    fn frame_zebra_gate_is_floor_slot_at_least_1px() {
+    fn frame_zebra_gate_is_step_at_least_min_slot() {
         assert_eq!(frame_zebra_slot_px(50, 100), 2);
-        assert!(frame_slots_at_least_1px(50, 100));
+        assert!(frame_slots_at_least_min(50, 100)); // step = 2
         assert_eq!(frame_zebra_slot_px(100, 100), 1);
-        assert!(frame_slots_at_least_1px(100, 100));
+        assert!(!frame_slots_at_least_min(100, 100)); // step = 1 < 1.5
+        assert!(frame_slots_at_least_min(2, 3)); // step = 1.5
+        assert!(!frame_slots_at_least_min(2, 2)); // step = 1
         assert_eq!(frame_zebra_slot_px(8000, 800), 0);
-        assert!(!frame_slots_at_least_1px(8000, 800));
+        assert!(!frame_slots_at_least_min(8000, 800));
         assert_eq!(frame_zebra_slot_px(0, 100), 0);
+        assert!(frame_slots_at_least_min(1, 800));
+        assert!(odd_frame_runs(100, 100.0).is_empty());
+        assert!(!odd_frame_runs(50, 100.0).is_empty());
     }
 
     #[test]

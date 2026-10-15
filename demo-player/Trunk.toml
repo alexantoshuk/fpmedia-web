@@ -9,7 +9,6 @@ port = 3000
 # Progressive URL open: put testvideo files in public/media/ (see scripts/fetch-testvideo.mjs).
 # Trunk [[proxy]] to GitHub Releases is broken (redirect → Fastly "unknown domain github.com").
 
-[[hooks]]
-stage = "pre_build"
-command = "tailwindcss"
-command_arguments = ["-i", "style/input.css", "-o", "style/tailwind.css"]
+# Auto-download Tailwind CLI (v4 — matches `@import "tailwindcss"` in style/input.css).
+[tools]
+tailwindcss = "4.3.3"
