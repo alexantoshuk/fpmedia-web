@@ -1,5 +1,7 @@
 # fpmedia-web
 
+[![pages](https://github.com/alexantoshuk/fpmedia-web/actions/workflows/pages.yml/badge.svg)](https://github.com/alexantoshuk/fpmedia-web/actions/workflows/pages.yml)
+
 Frame-accurate custom web media player (Rust + Leptos + WebCodecs).
 
 **Live demo:** [alexantoshuk.github.io/fpmedia-web](https://alexantoshuk.github.io/fpmedia-web/) (Browse / Blob only — no public `/proxy`).
