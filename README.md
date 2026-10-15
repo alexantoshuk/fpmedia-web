@@ -2,6 +2,8 @@
 
 Frame-accurate custom web media player (Rust + Leptos + WebCodecs).
 
+**Live demo:** [alexantoshuk.github.io/fpmedia-web](https://alexantoshuk.github.io/fpmedia-web/) (Browse / Blob only — no public `/proxy`).
+
 | Dir | Crate | Role |
 | --- | ----- | ---- |
 | [`engine/`](engine/) | `fpmedia-web` | demux + `VideoPlayer` |
@@ -11,7 +13,7 @@ Frame-accurate custom web media player (Rust + Leptos + WebCodecs).
 
 Element open contract (CORS / no auto `/proxy`): [`leptos/README.md`](leptos/README.md).
 
-**Online demo (GitHub Pages):** workflow [`.github/workflows/pages.yml`](.github/workflows/pages.yml) builds with `--lib-features static_host` (Browse/Blob only — no public `/proxy`). Enable **Settings → Pages → Source: GitHub Actions**. Local export:
+**Pages build:** [`.github/workflows/pages.yml`](.github/workflows/pages.yml) (`--lib-features static_host`). Local export:
 
 ```sh
 # optional: FPMEDIA_SITE_BASE=/fpmedia-web for project-pages asset prefix
