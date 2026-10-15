@@ -23,6 +23,7 @@
 | `RefCell already borrowed` (tachys / Loop) | no borrow across await; scrub → `scrub_pointer_*` sync (Move throttled in `<Video>`); no demo TLS |
 | Start stutter / Play lag after scrub | clock origins after prime; no `seek_frame` from `VideoRef::play` |
 | Scrub bar lags / pointer jank / hold jumps | sync playhead on move; `<Video>` Move throttle 50 ms; paused rAF `sync_ui` ≤10 Hz (150 ms while `Scrubbing`) |
+| EOF: tip/stats on end−1/−2, canvas last frame | `stop_playback` snap when `leaving_play \|\| ended` — `Ended` clears `playing` before snap |
 | Ops dropped while busy | OpQueue coalesce — not `if busy { return }` (`host_op_coalesce`) |
 
 ## Quick reference

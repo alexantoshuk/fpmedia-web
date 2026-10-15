@@ -6,9 +6,13 @@ pub use crate::strip::*;
 use fpmedia_web::VideoMetadata;
 
 /// Playhead as a CSS width percentage of the scrubber (`0…100`).
+///
+/// Left edge of the current-frame slot on the unified `frame_count` grid
+/// ([`frame_slot_px`] / tip / zebra / strips).
 pub fn playhead_width_pct(playhead: u32, frame_count: u32) -> f64 {
-    let max = frame_count.saturating_sub(1).max(1) as f64;
-    ((playhead as f64 / max) * 100.0).clamp(0.0, 100.0)
+    let n = frame_count.max(1) as f64;
+    let f = playhead.min(frame_count.saturating_sub(1)) as f64;
+    ((f / n) * 100.0).clamp(0.0, 100.0)
 }
 
 /// Same as [`playhead_width_pct`], formatted for `style:width`.
@@ -22,38 +26,19 @@ pub const PLAYHEAD_TIP_MIN_PX: u32 = 2;
 
 /// Integer CSS-pixel span for the opaque current-frame tip: `(left, width)`.
 ///
-/// Same half-open snap as zebra / strip runs (`round(f/max·w)` …). Width is at
-/// least [`PLAYHEAD_TIP_MIN_PX`]; on the last frame (point at the right edge)
-/// the tip is pinned inside the track. Pass track width in **CSS** px (not
-/// device px).
+/// Same half-open `frame_count` slots as zebra / strip runs ([`frame_slot_px`]).
+/// Width is at least [`PLAYHEAD_TIP_MIN_PX`]; on sub-pixel slots the tip may
+/// extend past the track (host `overflow:hidden` clips — no end-pin hack).
+/// Pass track width in **CSS** px (not device px).
 pub fn playhead_tip_px(playhead: u32, frame_count: u32, track_css_w: f64) -> (u32, u32) {
     let w = track_css_w.floor().max(0.0) as u32;
     if frame_count == 0 || w == 0 {
         return (0, 0);
     }
-    let max = frame_count.saturating_sub(1);
     let min_w = PLAYHEAD_TIP_MIN_PX.min(w.max(1));
-    if max == 0 {
-        // Single frame: tip fills the track (still ≥ min).
-        return (0, w.max(min_w));
-    }
-    let max_f = f64::from(max);
-    let wf = f64::from(w);
-    let f = playhead.min(max);
-    if f >= max {
-        return (w.saturating_sub(min_w), min_w);
-    }
-    let lo = ((f as f64 / max_f) * wf).round() as i32;
-    let hi = (((f as f64 + 1.0) / max_f) * wf).round() as i32;
-    let lo = lo.clamp(0, w as i32) as u32;
-    let hi = hi.clamp(0, w as i32) as u32;
+    let (lo, hi) = frame_slot_px(playhead, frame_count, w);
     let width = hi.saturating_sub(lo).max(min_w);
-    let left = if lo.saturating_add(width) > w {
-        w.saturating_sub(width)
-    } else {
-        lo
-    };
-    (left, width)
+    (lo, width)
 }
 
 /// Same as [`playhead_tip_px`], formatted for `style:left` / `style:width`.
@@ -63,6 +48,8 @@ pub fn playhead_tip_css(playhead: u32, frame_count: u32, track_css_w: f64) -> (S
 }
 
 /// Map a pointer X on a scrubber element to a presentation frame.
+///
+/// Hits the same half-open `frame_count` slot as [`frame_slot_px`] / tip / zebra.
 pub fn scrub_frame_from_x(
     client_x: f64,
     rect_left: f64,
@@ -74,9 +61,10 @@ pub fn scrub_frame_from_x(
     }
     let w = rect_width.max(1.0);
     let x = (client_x - rect_left).clamp(0.0, w);
-    let max_frame = frame_count.saturating_sub(1);
-    let frame = ((x / w) * max_frame as f64).round() as u32;
-    Some(frame.min(max_frame))
+    let n = frame_count;
+    // x == w → floor(n) == n; clamp to last frame.
+    let frame = ((x / w) * n as f64).floor() as u32;
+    Some(frame.min(n - 1))
 }
 
 /// Clamp hover-thumb left so the preview stays inside the scrubber track.
@@ -124,29 +112,37 @@ mod tests {
     #[test]
     fn playhead_pct_edges() {
         assert!((playhead_width_pct(0, 100) - 0.0).abs() < 1e-9);
-        assert!((playhead_width_pct(99, 100) - 100.0).abs() < 1e-9);
+        // Left edge of last slot — not 100% (slot spans the final 1/n).
+        assert!((playhead_width_pct(99, 100) - 99.0).abs() < 1e-9);
     }
 
     #[test]
     fn playhead_tip_snaps_integer_px_and_floors_width() {
-        // 101 frames → max=100; at 100 px each slot is 1 px → floor to 2 px.
-        assert_eq!(playhead_tip_px(50, 101, 100.0), (50, 2));
-        assert_eq!(playhead_tip_px(100, 101, 100.0), (98, 2));
+        // 100 frames / 100 px → 1 px slots; min tip 2 px (may overhang).
+        assert_eq!(playhead_tip_px(50, 100, 100.0), (50, 2));
+        // Last frame: natural slot [99,100); floor to 2 px — no end-pin.
+        assert_eq!(playhead_tip_px(99, 100, 100.0), (99, 2));
         // Sub-pixel slots (8000 frames / 800 px): ≥2 px floor.
         let (lo, w) = playhead_tip_px(4000, 8000, 800.0);
         assert_eq!(w, 2);
         assert!(lo < 800);
         assert_eq!(playhead_tip_px(0, 0, 800.0), (0, 0));
         assert_eq!(
-            playhead_tip_css(50, 101, 100.0),
+            playhead_tip_css(50, 100, 100.0),
             ("50px".into(), "2px".into())
         );
+        // Short clip: equal full slots, including last (no shrink).
+        assert_eq!(playhead_tip_px(0, 10, 100.0), (0, 10));
+        assert_eq!(playhead_tip_px(9, 10, 100.0), (90, 10));
     }
 
     #[test]
     fn scrub_x_maps_ends() {
         assert_eq!(scrub_frame_from_x(0.0, 0.0, 100.0, 11), Some(0));
         assert_eq!(scrub_frame_from_x(100.0, 0.0, 100.0, 11), Some(10));
+        // Mid of frame-0 cell on 11-frame / 110 px track.
+        assert_eq!(scrub_frame_from_x(5.0, 0.0, 110.0, 11), Some(0));
+        assert_eq!(scrub_frame_from_x(15.0, 0.0, 110.0, 11), Some(1));
     }
 
     #[test]

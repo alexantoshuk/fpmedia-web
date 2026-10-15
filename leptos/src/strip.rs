@@ -24,11 +24,12 @@ pub const KEYFRAME_STRIP_COLOR: &str = "#eab308";
 /// Frame marks → snapped pixel runs on `width_px`.
 /// Covered/Exact: honest (no soft-merge / no min-px inflate).
 /// Keyframes: `min_run_px = 1` so sync ticks stay visible on long clips.
+/// `frame_count` = presentation frame count (same divisor as tip / zebra).
 #[cfg(target_arch = "wasm32")]
 pub fn cache_strip_px_runs_for_width(
     marks: &[ReadyFrameMark],
     kind: ReadyFrameKind,
-    max: f64,
+    frame_count: f64,
     width_px: u16,
 ) -> Vec<StripPxRun> {
     let mut runs: Vec<(FrameId, FrameId)> = marks
@@ -38,9 +39,9 @@ pub fn cache_strip_px_runs_for_width(
         .collect();
     runs.sort_by_key(|&(lo, _)| lo);
     match kind {
-        ReadyFrameKind::Keyframes => keyframe_runs_to_width(&runs, max, width_px),
+        ReadyFrameKind::Keyframes => keyframe_runs_to_width(&runs, frame_count, width_px),
         ReadyFrameKind::Covered | ReadyFrameKind::Exact => {
-            ready_runs_to_width(&runs, max, width_px)
+            ready_runs_to_width(&runs, frame_count, width_px)
         }
     }
 }
@@ -49,26 +50,26 @@ pub fn cache_strip_px_runs_for_width(
 /// View = data feedback: holes stay; sub-pixel runs drop (no inflate).
 pub fn ready_runs_to_width(
     runs: &[(FrameId, FrameId)],
-    max: f64,
+    frame_count: f64,
     width_px: u16,
 ) -> Vec<StripPxRun> {
-    frame_runs_to_width(runs, max.max(1.0), 0, width_px)
+    frame_runs_to_width(runs, frame_count.max(1.0), 0, width_px)
 }
 
 /// Sync / keyframe ticks → snapped pixel runs; inflate to ≥1 device px.
 pub fn keyframe_runs_to_width(
     runs: &[(FrameId, FrameId)],
-    max: f64,
+    frame_count: f64,
     width_px: u16,
 ) -> Vec<StripPxRun> {
-    let max = max.max(1.0);
+    let n = frame_count.max(1.0);
     if runs.is_empty() {
         return Vec::new();
     }
     snap_pct_runs_to_width(
         runs.iter().map(|&(lo, hi)| {
-            let start = (lo as f64 / max) * 100.0;
-            let end = ((hi as f64 + 1.0) / max) * 100.0;
+            let start = (lo as f64 / n) * 100.0;
+            let end = ((hi as f64 + 1.0) / n) * 100.0;
             (start, end)
         }),
         width_px,
@@ -294,21 +295,22 @@ pub fn fetch_strip_px_runs(ranges: &[(f32, f32)]) -> Vec<StripPxRun> {
 
 /// Inclusive frame runs → snapped scrubber pixels (after optional soft-merge).
 /// Ready greens use `merge_gap = 0` + `min_run_px = 0` (view mirrors data).
+/// `frame_count` = presentation frame count (unified with tip / zebra).
 pub fn frame_runs_to_width(
     runs: &[(FrameId, FrameId)],
-    max: f64,
+    frame_count: f64,
     merge_gap: u64,
     width_px: u16,
 ) -> Vec<StripPxRun> {
-    let max = max.max(1.0);
+    let n = frame_count.max(1.0);
     let merged = soft_merge_frame_runs(runs, merge_gap);
     if merged.is_empty() {
         return Vec::new();
     }
     snap_pct_runs_to_width(
         merged.iter().map(|&(lo, hi)| {
-            let start = (lo as f64 / max) * 100.0;
-            let end = ((hi as f64 + 1.0) / max) * 100.0;
+            let start = (lo as f64 / n) * 100.0;
+            let end = ((hi as f64 + 1.0) / n) * 100.0;
             (start, end)
         }),
         width_px,
@@ -317,23 +319,46 @@ pub fn frame_runs_to_width(
 }
 
 /// Inclusive frame runs → snapped pixels on the assumed 800 px scrubber.
-pub fn frame_runs_to_px(runs: &[(FrameId, FrameId)], max: f64, merge_gap: u64) -> Vec<StripPxRun> {
-    frame_runs_to_width(runs, max, merge_gap, STRIP_ASSUMED_SCRUBBER_PX as u16)
+pub fn frame_runs_to_px(
+    runs: &[(FrameId, FrameId)],
+    frame_count: f64,
+    merge_gap: u64,
+) -> Vec<StripPxRun> {
+    frame_runs_to_width(
+        runs,
+        frame_count,
+        merge_gap,
+        STRIP_ASSUMED_SCRUBBER_PX as u16,
+    )
 }
 
-/// True when every frame slot `0 .. max` (`max = frame_count − 1`) rounds to ≥1
-/// device pixel on `width_px`. Same half-open mapping as [`frame_runs_to_width`]
-/// (the last frame id sits on the right edge). False for empty / single-frame.
+/// Half-open pixel span for presentation frame `frame` on a `frame_count` grid.
+///
+/// Same mapping as tip / zebra / [`frame_runs_to_width`]:  
+/// `round(f/n·w) .. round((f+1)/n·w)` clamped into `[0, width_px]`.
+pub fn frame_slot_px(frame: u32, frame_count: u32, width_px: u32) -> (u32, u32) {
+    if frame_count == 0 || width_px == 0 {
+        return (0, 0);
+    }
+    let n = frame_count;
+    let f = frame.min(n - 1);
+    let nf = f64::from(n);
+    let wf = f64::from(width_px);
+    let lo = ((f as f64 / nf) * wf).round().clamp(0.0, wf) as u32;
+    let hi = (((f as f64 + 1.0) / nf) * wf).round().clamp(0.0, wf) as u32;
+    (lo, hi)
+}
+
+/// True when every frame slot `0 .. frame_count` rounds to ≥1 device pixel on
+/// `width_px`. Same half-open mapping as [`frame_slot_px`] / strips. False for
+/// empty clip or `width_px == 0`.
 pub fn frame_slots_at_least_1px(frame_count: u32, width_px: u16) -> bool {
-    let max = frame_count.saturating_sub(1);
-    if max == 0 || width_px == 0 {
+    if frame_count == 0 || width_px == 0 {
         return false;
     }
-    let w = f64::from(width_px);
-    let max_f = f64::from(max);
-    (0..max).all(|f| {
-        let lo = ((f as f64 / max_f) * w).round() as i32;
-        let hi = (((f as f64 + 1.0) / max_f) * w).round() as i32;
+    let w = u32::from(width_px);
+    (0..frame_count).all(|f| {
+        let (lo, hi) = frame_slot_px(f, frame_count, w);
         hi > lo
     })
 }
@@ -348,15 +373,10 @@ pub fn odd_frame_px_runs(frame_count: u32, width_px: u16) -> Vec<StripPxRun> {
         return Vec::new();
     }
     let width_px = width_px.max(1);
-    let max = frame_count.saturating_sub(1);
-    let w = f64::from(width_px);
-    let max_f = f64::from(max);
+    let w = u32::from(width_px);
     let mut out: Vec<StripPxRun> = Vec::new();
-    for f in (1..max).step_by(2) {
-        let mut lo = ((f as f64 / max_f) * w).round() as i32;
-        let mut hi = (((f as f64 + 1.0) / max_f) * w).round() as i32;
-        lo = lo.clamp(0, i32::from(width_px));
-        hi = hi.clamp(0, i32::from(width_px));
+    for f in (1..frame_count).step_by(2) {
+        let (lo, hi) = frame_slot_px(f, frame_count, w);
         if hi <= lo {
             continue;
         }
@@ -595,18 +615,29 @@ mod tests {
 
     #[test]
     fn frame_zebra_only_when_slots_are_full_pixels() {
-        // 101 frames → max=100; at 100 px every slot is 1 px.
-        assert!(frame_slots_at_least_1px(101, 100));
-        let runs = odd_frame_px_runs(101, 100);
+        // 100 frames / 100 px → every slot is 1 px (n = frame_count).
+        assert!(frame_slots_at_least_1px(100, 100));
+        let runs = odd_frame_px_runs(100, 100);
         assert_eq!(runs.len(), 50, "odd slots 1,3,…,99: {runs:?}");
         assert_eq!(runs[0], (1, 2));
         assert_eq!(runs[49], (99, 100));
+        // 101 frames on 100 px → some slots round empty.
+        assert!(!frame_slots_at_least_1px(101, 100));
         // Sub-pixel: long clip on narrow bar → off.
         assert!(!frame_slots_at_least_1px(8000, 800));
         assert!(odd_frame_px_runs(8000, 800).is_empty());
-        assert!(!frame_slots_at_least_1px(1, 800));
-        // Two frames → one slot (frame 0); last id on the edge → no odd column.
-        assert!(frame_slots_at_least_1px(2, 1));
+        // Single frame fills the track.
+        assert!(frame_slots_at_least_1px(1, 800));
+        assert!(odd_frame_px_runs(1, 800).is_empty());
+        // Two frames on 1 px: second slot collapses after clamp.
+        assert!(!frame_slots_at_least_1px(2, 1));
         assert!(odd_frame_px_runs(2, 1).is_empty());
+    }
+
+    #[test]
+    fn frame_slot_covers_last_frame() {
+        // Last frame owns [(n-1)/n, 1) — not a point on the right edge.
+        assert_eq!(frame_slot_px(9, 10, 100), (90, 100));
+        assert_eq!(frame_slot_px(0, 10, 100), (0, 10));
     }
 }

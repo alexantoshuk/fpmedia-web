@@ -73,7 +73,8 @@ pub fn TimelineMeta(
         // Track pipeline / count even when the canvas NodeRef is not ready yet —
         // early-return before these reads left strips stuck until a resize.
         let pipe = video.pipeline.get();
-        let max = video.frame_count.get().saturating_sub(1).max(1) as f64;
+        // Unified `frame_count` grid with tip / zebra / scrub hit-test.
+        let frame_count = video.frame_count.get().max(1) as f64;
         let css_w = css_width.get();
         let dpr = window()
             .map(|w| w.device_pixel_ratio())
@@ -96,21 +97,21 @@ pub fn TimelineMeta(
                     .as_ref()
                     .map(|s| s.ready_frames.as_slice())
                     .unwrap_or(&[]);
-                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Keyframes, max, buf_w)
+                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Keyframes, frame_count, buf_w)
             }
             TimelineMetaKind::Covered => {
                 let marks = pipe
                     .as_ref()
                     .map(|s| s.ready_frames.as_slice())
                     .unwrap_or(&[]);
-                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Covered, max, buf_w)
+                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Covered, frame_count, buf_w)
             }
             TimelineMetaKind::Exact => {
                 let marks = pipe
                     .as_ref()
                     .map(|s| s.ready_frames.as_slice())
                     .unwrap_or(&[]);
-                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Exact, max, buf_w)
+                cache_strip_px_runs_for_width(marks, ReadyFrameKind::Exact, frame_count, buf_w)
             }
         };
         let mut runs = Vec::new();

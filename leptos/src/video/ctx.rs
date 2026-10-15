@@ -90,7 +90,11 @@ impl HostCtx {
         // `sync_ui` skips playhead while paused (preserve scrub targets). Leaving
         // play must still align playhead to the committed canvas/engine frame —
         // otherwise Pause→Seek/Prev/Next use a ~100ms-stale playhead.
-        if leaving_play {
+        // EOF path: `note_transport(Ended)` clears `playing` *before*
+        // `stop_playback`, so `leaving_play` is already false — still snap via
+        // `ended` (throttled play sync can leave tip/stats 1–2 frames behind
+        // the painted last frame).
+        if leaving_play || v.ended.get_untracked() {
             v.playhead.set(v.frame.get_untracked());
         }
         // `busy` stays with the op queue (open/seek may still be draining).
