@@ -1,7 +1,7 @@
 # Deploy CSR static demo to GitHub Pages (Blob open only — no /proxy).
 #
 # Repo Settings → Pages → Source: GitHub Actions.
-# Private repo: Pages may need GitHub Pro; the published URL is often public.
+# Repo must be public (or Pro) for Pages.
 
 name: pages
 
@@ -45,11 +45,15 @@ jobs:
         with:
           tool: cargo-leptos
 
-      - name: Install Tailwind CLI
+      # style/input.css uses Tailwind v4 `@import "tailwindcss"` — v3 CLI fails
+      # looking for node_modules and cargo-leptos then reports "Failed to build".
+      - name: Install Tailwind CSS v4 CLI
         run: |
-          curl -sLO https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-linux-x64
-          chmod +x tailwindcss-linux-x64
-          sudo mv tailwindcss-linux-x64 /usr/local/bin/tailwindcss
+          curl -fsSL -o tailwindcss \
+            https://github.com/tailwindlabs/tailwindcss/releases/download/v4.3.3/tailwindcss-linux-x64
+          chmod +x tailwindcss
+          sudo mv tailwindcss /usr/local/bin/tailwindcss
+          tailwindcss --help | head -n 2
 
       - name: Build site (static_host)
         run: cargo leptos build --release --lib-features static_host
