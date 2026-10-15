@@ -20,12 +20,12 @@
 
 Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. Demo `app` / `frontend` / `server` stay `publish = false`.
 
-**DoD:** external Leptos CSR host `cargo add`s leptos crate, opens MP4 via Blob (and CORS-ok URL), play/pause/seek/scrub settle — no our Axum.
+**DoD:** external Leptos CSR host `cargo add`s `fpmedia-web-components`, opens MP4 via Blob (and CORS-ok URL), play/pause/seek/scrub settle — no our Axum.
 
 **Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: docs/hygiene OK; `cargo publish` blocked. Keep git `re_mp4` pin until then.
 
 1. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
-2. **Ship** — CONTRIBUTING gates + e2e; lockstep `0.1.0-alpha.1` publish order timecode → engine → leptos; GH Release notes; drop this block from state.
+2. **Ship** — CONTRIBUTING gates + e2e; lockstep `0.1.0-alpha.1` publish order timecode → engine → components; GH Release notes; drop this block from state.
 
 ### Online demo (free static)
 

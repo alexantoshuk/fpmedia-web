@@ -1,6 +1,6 @@
 //! Minimal CSR host: file picker → `VideoRef::open_blob` — no Axum, no `/proxy`.
 
-use fpmedia_web_leptos::{Video, VideoRef};
+use fpmedia_web_components::{Video, VideoRef};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;

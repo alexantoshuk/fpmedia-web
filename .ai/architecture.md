@@ -17,16 +17,16 @@
 | Static Pages demo | Same `app`/`frontend` with feature `static_host` (Blob only); GH Actions → GitHub Pages (`state.md`) |
 | Client shell | `frontend/` — `mount_to_body(App)` (export name `hydrate` for cargo-leptos) |
 | App UI | `app` crate — **all** player chrome (controls, scrubber composition, thumb labels) + thin SSR shell. Product boundary: `product.md` § Surfaces |
-| Media element | `fpmedia-web-leptos` — `<Video>` / `VideoRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
+| Media element | `fpmedia-web-components` — `<Video>` / `VideoRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
 | Media engine | `fpmedia-web` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
-| Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `leptos/` / `app/` |
+| Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `components/` / `app/` |
 | Styling | Tailwind in `style/input.css` |
 
 ### Leptos UI rules
 
 Long-lived host UI lives **outside** matched routes when routes are added. **Resources:** `resource.get()` in view closures is fine in CSR; show loading UI while `None`. Failure modes: `skills/leptos.md`.
 
-**Browser APIs in `leptos/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the engine crate owns (WebCodecs / `AudioContext`). Media clock is owned by `fpmedia-web` — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
+**Browser APIs in `components/` / `app/`:** prefer [`leptos-use`](https://leptos-use.rs/) over hand-rolled `web-sys` + `Closure`. Keep raw `web-sys` for media surfaces (`HtmlCanvasElement`, `Performance`, File) and anything the engine crate owns (WebCodecs / `AudioContext`). Media clock is owned by `fpmedia-web` — hosts call `VideoPlayer::media_time()`, they do not open `AudioContext` themselves.
 
 ---
 
@@ -35,7 +35,7 @@ Long-lived host UI lives **outside** matched routes when routes are added. **Res
 ```
 fpmedia-web/               ← GitHub repo
 ├── engine/                ← package `fpmedia-web`
-├── leptos/                ← package `fpmedia-web-leptos`
+├── components/            ← package `fpmedia-web-components`
 ├── timecode/              ← package `fpmedia-timecode`
 ├── examples/blob_open/    ← minimal Blob CSR host (no Axum)
 ├── app/                   ← demo host UI + shell()
@@ -54,9 +54,9 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Layer | Can import from |
 | ----- | --------------- |
 | `timecode/` (`fpmedia-timecode`) | nothing else in the workspace (leaf math) |
-| `engine/` (`fpmedia-web`) | `fpmedia-timecode`; nothing in `leptos` / `app` / Leptos framework |
-| `leptos/` (`fpmedia-web-leptos`) | `fpmedia-web` (with `webcodecs`), Leptos, `leptos-use` |
-| `app/` | `fpmedia-web-leptos` (csr), Leptos — not `fpmedia-web` directly |
+| `engine/` (`fpmedia-web`) | `fpmedia-timecode`; nothing in `components` / `app` / Leptos framework |
+| `components/` (`fpmedia-web-components`) | `fpmedia-web` (with `webcodecs`), Leptos, `leptos-use` |
+| `app/` | `fpmedia-web-components` (csr), Leptos — not `fpmedia-web` directly |
 | `frontend/` | `app` |
 | `server/` | `app` (ssr shell only) |
 
@@ -71,7 +71,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Full-stack Rust (Leptos) | One language for engine + UI |
 | CSR SPA | Simple mental model; static shell + WASM mount |
 | Isolated `fpmedia-web` crate | Engine reusable without UI; no Leptos in demux/decode |
-| Isolated `fpmedia-web-leptos` crate | HTML `<video>` analog + headless track helpers; **no** player chrome (`product.md` Elements first) |
+| Isolated `fpmedia-web-components` crate | HTML `<video>` analog + headless track helpers; **no** player chrome (`product.md` Elements first) |
 | WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
 | `leptos-use` for browser helpers | Observers/events/rAF in UI crates; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`). MB = sinks + examples; our `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` are Leptos adapters over `VideoPlayer`, not MB UI ports |
@@ -79,7 +79,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Design: [Play / scrub residency](#play--scrub-residency). Traps: `skills/media.md`. |
 | Optional hover thumbs (`thumbs`) | Feature `thumbs` default on; runtime `ThumbPolicy`; 3rd decoder + `ThumbCache` / `ThumbPreview`. Host UI: `<HoverThumb>` (`product.md`); `HoverThumbPreview` kept as thin class-only wrapper |
 | Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `fpmedia_web::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. `audio/` has no canvas dependency. |
-| Component API like HTML media | Elements: open/play/seek/rate/volume + `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `fpmedia_web_leptos::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
+| Component API like HTML media | Elements: open/play/seek/rate/volume + `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `fpmedia_web_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
 
@@ -111,9 +111,9 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 
 ## Progressive open (MediaSource)
 
-**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` (`ReadOrchestrator` + open-ended Range workers) / `MemorySource` + `CachedSource` (512 MiB LRU, 8 MiB quantum; orch cache mediabunny-default 64 MiB); gray strip via `FetchMap` (**accumulate** ever-fetched ranges — not a live LRU mirror). Top-level `ftyp`+`moov` (+ full `moof` for single-file fMP4) → `re_mp4`. Element `open_blob` / `open_url` (CORS-ok or same-origin URL — **no** auto `/proxy` in `fpmedia-web-leptos`). Async AVC sync verify after moov. One progressive entry `open_mp4(source, options, progress)` → `OpenedMp4` (always `CachedSource`; `mediabunny: src/input.ts Input`); sync `open_mp4_bytes` for fixtures/tests.
+**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` (`ReadOrchestrator` + open-ended Range workers) / `MemorySource` + `CachedSource` (512 MiB LRU, 8 MiB quantum; orch cache mediabunny-default 64 MiB); gray strip via `FetchMap` (**accumulate** ever-fetched ranges — not a live LRU mirror). Top-level `ftyp`+`moov` (+ full `moof` for single-file fMP4) → `re_mp4`. Element `open_blob` / `open_url` (CORS-ok or same-origin URL — **no** auto `/proxy` in `fpmedia-web-components`). Async AVC sync verify after moov. One progressive entry `open_mp4(source, options, progress)` → `OpenedMp4` (always `CachedSource`; `mediabunny: src/input.ts Input`); sync `open_mp4_bytes` for fixtures/tests.
 
-**Demo `/proxy`:** localhost-only (loopback peer or **403**). Demo `app` rewrites remote URL open to `/proxy?url=`. Not a production CORS proxy. Host apps supply their own same-origin fetch path (`leptos/README.md`).
+**Demo `/proxy`:** localhost-only (loopback peer or **403**). Demo `app` rewrites remote URL open to `/proxy?url=`. Not a production CORS proxy. Host apps supply their own same-origin fetch path (`components/README.md`).
 
 **Out of scope:** stream-only / live fMP4; DASH/HLS; MSE remux; production open proxy. **Open work:** `.ai/state.md`.
 

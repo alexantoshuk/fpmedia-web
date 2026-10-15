@@ -19,7 +19,7 @@ default = ["thumbs"]
 thumbs = []
 # H.265 / HEVC (`hvc1` / `hev1`) open + bitstream verify + RASL sanitize.
 # Off by default — Chrome/Firefox often lack WebCodecs HEVC; dual-HW densify tax.
-# Enable: `-p fpmedia-web --features hevc` and `fpmedia-web-leptos` feature `hevc`.
+# Enable: `-p fpmedia-web --features hevc` and `fpmedia-web-components` feature `hevc`.
 hevc = []
 webcodecs = [
     "dep:wasm-bindgen",

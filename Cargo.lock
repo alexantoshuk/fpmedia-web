@@ -62,7 +62,7 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
- "fpmedia-web-leptos",
+ "fpmedia-web-components",
  "js-sys",
  "leptos",
  "leptos-use",
@@ -734,18 +734,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fpmedia-web-example-blob-open"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "fpmedia-web-leptos",
- "leptos",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "fpmedia-web-leptos"
+name = "fpmedia-web-components"
 version = "0.1.0"
 dependencies = [
  "fpmedia-web",
@@ -753,6 +742,17 @@ dependencies = [
  "leptos-use",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "fpmedia-web-example-blob-open"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "fpmedia-web-components",
+ "leptos",
+ "wasm-bindgen",
  "web-sys",
 ]
 

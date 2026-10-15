@@ -1,4 +1,4 @@
-//! Demo host — Leptos CSR shell + controls over [`fpmedia_web_leptos::Video`].
+//! Demo host — Leptos CSR shell + controls over [`fpmedia_web_components::Video`].
 
 use leptos::prelude::*;
 

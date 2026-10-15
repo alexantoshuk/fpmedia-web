@@ -53,7 +53,7 @@ pub use demux::{
 };
 pub use error::{DecodeStall, MediaError};
 pub use frame_index::{FrameEntry, FrameIndex};
-// Host OpQueue / FSM — used by `fpmedia-web-leptos`; not part of the engine
+// Host OpQueue / FSM — used by `fpmedia-web-components`; not part of the engine
 // consumer surface (VideoPlayer / demux / sources).
 #[doc(hidden)]
 pub use host::host_op_coalesce::{HostOp, apply_enqueue};

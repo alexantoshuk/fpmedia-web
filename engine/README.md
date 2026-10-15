@@ -15,7 +15,7 @@ Frame-accurate media **engine** for the browser: MP4 demux + presentation frame 
 | `webcodecs` | off | WASM WebCodecs decode (required for `VideoPlayer` in browser) |
 
 Hosts that only demux on native can omit `webcodecs`. Browser players enable it
-(see `fpmedia-web-leptos`).
+(see `fpmedia-web-components`).
 
 ## Dependency note
 
@@ -28,7 +28,7 @@ can switch to a crates.io version.
 - Product / UX: repo `.ai/product.md`
 - Layout / policy: `.ai/architecture.md`
 - Engine traps: `.ai/skills/media.md`
-- Element layer + CORS: [`../leptos/README.md`](../leptos/README.md)
+- Element layer + CORS: [`../components/README.md`](../components/README.md)
 - Minimal Blob CSR host (no Axum): [`../examples/blob_open`](../examples/blob_open)
 
 License: MIT OR Apache-2.0 (see repo `LICENSE`).

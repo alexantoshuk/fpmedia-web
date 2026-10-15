@@ -62,7 +62,7 @@ video_player/  mod · api · shared · open · control · clock_ctrl · present 
 decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
 ```
 
-Host-facing `VideoPlayer` = methods `fpmedia-web-leptos` calls (`pub`); sibling-only helpers = `pub(super)` (e.g. scrub pipeline / clock stop).
+Host-facing `VideoPlayer` = methods `fpmedia-web-components` calls (`pub`); sibling-only helpers = `pub(super)` (e.g. scrub pipeline / clock stop).
 
 Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `architecture.md` § Play / scrub residency / Decode flows.
 

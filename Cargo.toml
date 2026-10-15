@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "engine",
-    "leptos",
+    "components",
     "timecode",
     "app",
     "frontend",

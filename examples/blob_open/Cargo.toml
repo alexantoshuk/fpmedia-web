@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Minimal CSR Blob open demo (no Axum) for fpmedia-web-leptos"
+description = "Minimal CSR Blob open demo (no Axum) for fpmedia-web-components"
 publish = false
 
 [lints]
@@ -24,4 +24,4 @@ web-sys = { workspace = true, features = [
     "FileList",
     "HtmlInputElement",
 ] }
-fpmedia-web-leptos = { path = "../../leptos" }
+fpmedia-web-components = { path = "../../components" }

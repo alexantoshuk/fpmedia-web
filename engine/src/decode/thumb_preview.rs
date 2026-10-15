@@ -23,7 +23,7 @@ use crate::model::bg_task::SingleFlight;
 use crate::policy::{hover_thumb_dims, next_missing_sync_key};
 use crate::types::{FrameId, VideoMetadata};
 
-/// Default hover box (matches `fpmedia_web_leptos` / `.wm-thumb-preview`).
+/// Default hover box (matches `fpmedia_web_components` / `.wm-thumb-preview`).
 pub const DEFAULT_THUMB_MAX_W: u32 = 160;
 pub const DEFAULT_THUMB_MAX_H: u32 = 90;
 

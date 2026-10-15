@@ -38,7 +38,7 @@ web-sys = { workspace = true, optional = true, features = [
     "Window",
     "Location",
 ] }
-fpmedia-web-leptos = { path = "../leptos", optional = true }
+fpmedia-web-components = { path = "../components", optional = true }
 
 [features]
 default = []
@@ -54,7 +54,7 @@ csr = [
     "dep:js-sys",
     "dep:web-sys",
     "dep:leptos-use",
-    "dep:fpmedia-web-leptos",
+    "dep:fpmedia-web-components",
 ]
 ssr = [
     "leptos/ssr",

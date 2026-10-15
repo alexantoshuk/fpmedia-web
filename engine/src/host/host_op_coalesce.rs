@@ -1,6 +1,6 @@
 //! Pure host OpQueue coalesce rules (CallSerializer / asyncId).
 //!
-//! Single entry: [`apply_enqueue`]. The live queue in `fpmedia_web_leptos` stores
+//! Single entry: [`apply_enqueue`]. The live queue in `fpmedia_web_components` stores
 //! `(epoch, HostOp)` entries and coalesces them in place: survivors keep their
 //! enqueue epoch — never rematerialize them with the current `async_id` (that
 //! revives work superseded by a bump, e.g. scrub after Pause, and can block Play).

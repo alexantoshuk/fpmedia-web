@@ -1,6 +1,6 @@
 # Blob open example (no Axum)
 
-Minimal Leptos CSR host: file picker → [`VideoRef::open_blob`](../../leptos).
+Minimal Leptos CSR host: file picker → [`VideoRef::open_blob`](../../components).
 No URL open, no `/proxy`, no demo chrome.
 
 ## Run
@@ -24,4 +24,4 @@ From the repo root:
 cargo check --target wasm32-unknown-unknown -p fpmedia-web-example-blob-open
 ```
 
-CORS / URL open contract for real hosts: [`../../leptos/README.md`](../../leptos/README.md).
+CORS / URL open contract for real hosts: [`../../components/README.md`](../../components/README.md).

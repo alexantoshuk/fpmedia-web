@@ -1,7 +1,7 @@
-# fpmedia-web-leptos
+# fpmedia-web-components
 
-[![docs.rs](https://img.shields.io/badge/docs-docs.rs-blue)](https://docs.rs/fpmedia-web-leptos)
-[![crates.io](https://img.shields.io/badge/crates.io-fpmedia--web--leptos-orange)](https://crates.io/crates/fpmedia-web-leptos)
+[![docs.rs](https://img.shields.io/badge/docs-docs.rs-blue)](https://docs.rs/fpmedia-web-components)
+[![crates.io](https://img.shields.io/badge/crates.io-fpmedia--web--components-orange)](https://crates.io/crates/fpmedia-web-components)
 
 Leptos element analogs (`<Video>`, `<Scrubber>`, `<TimelineMeta>`, `<HoverThumb>`)
 over the [`fpmedia-web`](../engine) engine. **No** player chrome — compose in the host.

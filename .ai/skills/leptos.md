@@ -1,4 +1,4 @@
-# Leptos 0.8.x (`fpmedia-web-leptos` / `app`)
+# Leptos 0.8.x (`fpmedia-web-components` / `app`)
 
 > Read before touching components, resources, or routing. Pins **Leptos 0.8.x**.
 > Engine decode/scrub hangs → `skills/media.md`. Stack/CSR/leptos-use → `architecture.md`.
@@ -16,7 +16,7 @@
 | Play after scrub no-op | `transport` + `ScrubRelease { then_play }`; soft-park on PlayPrime fail; no demo TLS play latch |
 | EOF not observed / decoder leak | `VideoRef::ended`; `close()` on unmount / handoff |
 | Progress bar stuck on old frame | `player.take()` before zeroing counts; paused rAF `sync_ui` |
-| URL open CORS / `/proxy` 403 / CL mismatch | element needs CORS-ok URL; demo wraps `/proxy` in `app` — `architecture.md` Progressive open + `leptos/README.md` |
+| URL open CORS / `/proxy` 403 / CL mismatch | element needs CORS-ok URL; demo wraps `/proxy` in `app` — `architecture.md` Progressive open + `components/README.md` |
 | Gray vs green strips lie / blur | `<TimelineMeta>` + 1 px `paint_strip_canvas_1px`; greens honest snap — UX: `product.md` |
 | Demo scrubber touches `pipeline` | compose `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` — `product.md` § Element-layer helpers |
 | Hover jank on Play / lag until paint | `<HoverThumb>` trailing 150 ms; sync transform on root first; engine: `skills/media.md` |

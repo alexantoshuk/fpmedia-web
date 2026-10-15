@@ -7,7 +7,7 @@
 //!   `AudioContext` for resume — mediabunny media-player `getPlaybackTime`).
 //!
 //! [`crate::clock::MediaClock`] stays shared (wall or audio-driven timeline).
-//! UI hosts (`fpmedia_web_leptos`) only call engine APIs —
+//! UI hosts (`fpmedia_web_components`) only call engine APIs —
 //! no keyboard host UI here.
 
 mod demux;

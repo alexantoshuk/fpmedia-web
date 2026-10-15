@@ -1,10 +1,10 @@
-//! Demo controls over [`fpmedia_web_leptos::Video`] — not production player UI.
+//! Demo controls over [`fpmedia_web_components::Video`] — not production player UI.
 
-use fpmedia_web_leptos::helpers::{
+use fpmedia_web_components::helpers::{
     format_metadata, format_timecode_at, odd_frame_px_runs, playhead_tip_css, playhead_width_css,
     strip_canvas_buffer_width,
 };
-use fpmedia_web_leptos::{
+use fpmedia_web_components::{
     HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, TimelineMeta,
     TimelineMetaKind, Video, VideoRef,
 };
