@@ -8,6 +8,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | ------- | ---------- | ----- |
 | Hang at `creating decoder…` (LAN HTTP) | `ensure_webcodecs_available` | HTTPS/`localhost` only |
 | `codec not supported` / HEVC | `classify_codec` / `create_with_policy` | default build: `hevc` off; with feature: HW retry **main only** |
+| `codec not supported: avc1.640003` (Telegram) | `canonicalize_avc_webcodecs_config` | SPS-first over lying `avcC` level; patch `description[1..4]`. MB header-only — no equiv |
 | Scrub flicker + Play dead (HEVC) | `create_scrub` | densify PreferSoftware; `scrub_densify_blocked` |
 | After scrub: blink / hang + `Unsupported configuration` | `HwAccel` / `from_config` | scrub/thumb PreferSoftware; HW recreate → soft fallback |
 | New clip: Play disabled / audio dies | clip dispose | `Closed`+drop player; `Shared.disposed`; UrlSource orch abort |

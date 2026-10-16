@@ -10,8 +10,8 @@ use re_mp4::{Mp4, TrackKind};
 use crate::audio::Mp4AudioTrack;
 use crate::audio::build_audio_track;
 use crate::bitstream::{
-    PacketType, avc_nal_length_size, determine_avc_packet_type, determine_hevc_packet_type,
-    hevc_nal_length_size,
+    PacketType, avc_nal_length_size, canonicalize_avc_webcodecs_config, determine_avc_packet_type,
+    determine_hevc_packet_type, hevc_nal_length_size,
 };
 use crate::error::MediaError;
 use crate::frame_index::{FrameEntry, FrameIndex};
@@ -1111,10 +1111,18 @@ fn build_video_track(
         return Ok(None);
     }
 
-    let codec_string = track.codec_string(mp4);
-    let description = track
+    let mut codec_string = track.codec_string(mp4);
+    let mut description = track
         .raw_codec_config(mp4)
         .ok_or(MediaError::UnsupportedCodec)?;
+
+    // Prefer SPS over lying avcC header for WebCodecs (Telegram etc.).
+    // mediabunny extractVideoCodecString = header only — no equivalent.
+    if let Some(fixed) =
+        canonicalize_avc_webcodecs_config(codec_string.as_deref(), &mut description)
+    {
+        codec_string = Some(fixed);
+    }
 
     let codec = classify_codec(codec_string.as_deref())?;
 

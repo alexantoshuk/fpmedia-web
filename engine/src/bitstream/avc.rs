@@ -19,6 +19,9 @@ const NAL_SEI: u8 = 6;
 /// ITU-T H.264 Annex D Table D-1 — `recovery_point` SEI payload type.
 const SEI_PAYLOAD_RECOVERY_POINT: u32 = 6;
 
+/// Sequence parameter set NAL unit type (ISO/IEC 14496-10).
+const NAL_SPS: u8 = 7;
+
 /// `lengthSizeMinusOne + 1` from an `avcC` box payload (ISO/IEC 14496-15).
 ///
 /// Byte 4: top 6 bits reserved (`111111`), bottom 2 bits = length size minus one.
@@ -26,6 +29,73 @@ pub fn avc_nal_length_size(avcc: &[u8]) -> Option<usize> {
     let b = *avcc.get(4)?;
     let size = usize::from(b & 0b11) + 1;
     (1..=4).contains(&size).then_some(size)
+}
+
+/// `AVCProfileIndication` / `profile_compatibility` / `AVCLevelIndication` from
+/// the `avcC` header (bytes 1..4). Muxers sometimes lie here (Telegram).
+pub fn avc_header_profile_tier(avcc: &[u8]) -> Option<[u8; 3]> {
+    (avcc.len() >= 4).then(|| [avcc[1], avcc[2], avcc[3]])
+}
+
+/// Same triple from the first SPS NAL in `avcC` (authoritative for the bitstream).
+///
+/// Reads raw NAL payload bytes 1..3 (`profile_idc`, constraint flags, `level_idc`)
+/// — enough for RFC 6381 codec strings without full SPS parse.
+pub fn avc_sps_profile_tier(avcc: &[u8]) -> Option<[u8; 3]> {
+    if avcc.len() < 7 {
+        return None;
+    }
+    let num_sps = usize::from(avcc[5] & 0x1f);
+    let mut off = 6;
+    for _ in 0..num_sps {
+        if off + 2 > avcc.len() {
+            return None;
+        }
+        let len = usize::from(u16::from_be_bytes([avcc[off], avcc[off + 1]]));
+        off += 2;
+        if len < 4 || off + len > avcc.len() {
+            return None;
+        }
+        let nal = &avcc[off..off + len];
+        if nal[0] & 0x1f == NAL_SPS {
+            return Some([nal[1], nal[2], nal[3]]);
+        }
+        off += len;
+    }
+    None
+}
+
+/// WebCodecs `codec` string + aligned `avcC` header for maximum browser accept.
+///
+/// Prefer first-SPS profile/compat/level over a lying `avcC` header (Chrome
+/// `isConfigSupported` rejects nonsense levels like `avc1.640003`). Patches
+/// `description[1..4]` when SPS differs so configure matches the string.
+///
+/// `mediabunny: src/codec.ts extractVideoCodecString` — header only; **no
+/// equivalent** SPS preference (Telegram / bad muxers).
+pub fn canonicalize_avc_webcodecs_config(
+    container_codec: Option<&str>,
+    description: &mut [u8],
+) -> Option<String> {
+    let prefix = match container_codec {
+        Some(s) if s.starts_with("avc3") => "avc3",
+        Some(s) if s.starts_with("avc1") => "avc1",
+        _ => return None,
+    };
+    let sps = avc_sps_profile_tier(description);
+    let tier = sps.or_else(|| avc_header_profile_tier(description))?;
+    if let Some(sps) = sps
+        && description.len() >= 4
+        && description[1..4] != sps
+    {
+        description[1] = sps[0];
+        description[2] = sps[1];
+        description[3] = sps[2];
+    }
+    Some(format!(
+        "{prefix}.{:02X}{:02X}{:02X}",
+        tier[0], tier[1], tier[2]
+    ))
 }
 
 /// Whether `verifyKeyPackets` may keep Recovery Point SEI AUs as sync.
@@ -365,6 +435,46 @@ mod tests {
         assert_eq!(avc_nal_length_size(&avcc), Some(4));
         avcc[4] = 0b1111_1100 | 0b01;
         assert_eq!(avc_nal_length_size(&avcc), Some(2));
+    }
+
+    /// Telegram-style lying `avcC`: header level `0x03`, SPS level `0x1e` (L3.0).
+    fn telegram_lying_avcc() -> Vec<u8> {
+        vec![
+            0x01, 0x64, 0x00, 0x03, 0xff, 0xe1, 0x00, 0x1a, 0x27, 0x64, 0x00, 0x1e, 0xac, 0x2c,
+            0xc5, 0x07, 0x81, 0x1f, 0xb9, 0xe1, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x03,
+            0x00, 0x3c, 0x0f, 0x16, 0x25, 0x96, 0x01, 0x00, 0x04, 0x28, 0xee, 0x3c, 0xb0,
+        ]
+    }
+
+    #[test]
+    fn sps_profile_tier_beats_lying_avcc_header() {
+        let avcc = telegram_lying_avcc();
+        assert_eq!(avc_header_profile_tier(&avcc), Some([0x64, 0x00, 0x03]));
+        assert_eq!(avc_sps_profile_tier(&avcc), Some([0x64, 0x00, 0x1e]));
+    }
+
+    #[test]
+    fn canonicalize_rewrites_telegram_avc1_640003() {
+        let mut avcc = telegram_lying_avcc();
+        let codec = canonicalize_avc_webcodecs_config(Some("avc1.640003"), &mut avcc).expect("avc");
+        assert_eq!(codec, "avc1.64001E");
+        assert_eq!(&avcc[1..4], &[0x64, 0x00, 0x1e]);
+    }
+
+    #[test]
+    fn canonicalize_keeps_matching_header() {
+        let mut avcc = telegram_lying_avcc();
+        avcc[3] = 0x1e; // honest header
+        let codec = canonicalize_avc_webcodecs_config(Some("avc1.64001e"), &mut avcc).expect("avc");
+        assert_eq!(codec, "avc1.64001E");
+        assert_eq!(&avcc[1..4], &[0x64, 0x00, 0x1e]);
+    }
+
+    #[test]
+    fn canonicalize_skips_non_avc_prefix() {
+        let mut avcc = telegram_lying_avcc();
+        assert!(canonicalize_avc_webcodecs_config(Some("hvc1.1.6.L93.B0"), &mut avcc).is_none());
+        assert_eq!(avcc[3], 0x03); // untouched
     }
 
     #[test]
