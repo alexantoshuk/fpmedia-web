@@ -632,6 +632,26 @@ impl WebCodecsDecoder {
                 return Ok(ready);
             }
             if signals.done.get() {
+                // Snapshot before finish_gop wipe — it clears fed/stamps and made
+                // TargetMissing look like "never fed" on mobile All-Intra.
+                let (held_n, q, fed, stamps, near, hw) = {
+                    let c = core.borrow();
+                    let mut nearest: Option<(i64, i64)> = None;
+                    for h in &c.held {
+                        let d = (h.pts_us - target_us).abs();
+                        if nearest.is_none_or(|(_, best)| d < best) {
+                            nearest = Some((h.pts_us, d));
+                        }
+                    }
+                    (
+                        c.held.len(),
+                        c.decode_queue_size(),
+                        c.fed_through_order,
+                        c.input_timestamps.len(),
+                        nearest.map(|(pts, _)| pts),
+                        c.hw_accel.label(),
+                    )
+                };
                 // No more packets are coming — drain, then flush once.
                 if let Some(ready) = finish_gop_for_target(&core, target_us, is_cancelled).await? {
                     return Ok(ready);
@@ -639,22 +659,7 @@ impl WebCodecsDecoder {
                 return Err(MediaError::DecodeStall {
                     kind: DecodeStall::TargetMissing,
                     detail: format!(
-                        "flush/idle without pts={target_us}µs (held={}, q={}, fed={:?}, stamps={}, near={:?})",
-                        core.borrow().held.len(),
-                        core.borrow().decode_queue_size(),
-                        core.borrow().fed_through_order,
-                        core.borrow().input_timestamps.len(),
-                        {
-                            let c = core.borrow();
-                            let mut nearest: Option<(i64, i64)> = None;
-                            for h in &c.held {
-                                let d = (h.pts_us - target_us).abs();
-                                if nearest.is_none_or(|(_, best)| d < best) {
-                                    nearest = Some((h.pts_us, d));
-                                }
-                            }
-                            nearest.map(|(pts, _)| pts)
-                        },
+                        "flush/idle without pts={target_us}µs (held={held_n}, q={q}, fed={fed:?}, stamps={stamps}, near={near:?}, hw={hw})"
                     ),
                 });
             }
@@ -810,12 +815,36 @@ impl WebCodecsDecoder {
                 return Err(MediaError::Cancelled);
             }
             feed_sample(&core, &key_sample, true, target_us, is_cancelled).await?;
-            if poll_for_target(&core, target_us, 48, is_cancelled).await? {
+            // Mobile Chrome: large All-Intra keys often need more macrotasks than
+            // desktop before the first output (else flush wipe + pump skip key).
+            if poll_for_target(&core, target_us, 96, is_cancelled).await? {
                 return Ok(());
+            }
+            // HW configure can succeed while never emitting (Android Chrome +
+            // big All-Intra keys). Sticky PreferSoftware once — same as configure
+            // fail fallback. mediabunny: media-sink prefer-software path.
+            let try_soft = core.borrow().hw_accel != HwAccel::PreferSoftware;
+            if try_soft {
+                if is_cancelled() {
+                    return Err(MediaError::Cancelled);
+                }
+                core.borrow_mut().force_prefer_software()?;
+                core.borrow_mut().key_order = Some(key_do);
+                let key_sample = track.encoded_sample(key_id).await?;
+                if is_cancelled() {
+                    return Err(MediaError::Cancelled);
+                }
+                feed_sample(&core, &key_sample, true, target_us, is_cancelled).await?;
+                if poll_for_target(&core, target_us, 96, is_cancelled).await? {
+                    return Ok(());
+                }
             }
         }
         if !holds_target(&core, target_us) {
             // Last resort — short flush (not 2s) then clear warm state.
+            // Chromium needs a key after flush; dual-async pump re-feeds key
+            // inclusive when `fed=None` (do not leave cursor past the aim).
+            // mediabunny: mediaSamplesInRange from the seek sample.
             if is_cancelled() {
                 return Err(MediaError::Cancelled);
             }
@@ -825,6 +854,8 @@ impl WebCodecsDecoder {
             c.fed_through_order = None;
             c.key_order = None;
             c.input_timestamps.clear();
+            c.packets_fed = 0;
+            c.rasl_skipped = false;
         }
         Ok(())
     }

@@ -464,6 +464,24 @@ impl DecoderCore {
         Ok(())
     }
 
+    /// Sticky PreferSoftware + recreate (All-Intra / mobile: HW configure OK but
+    /// never emits). Keeps the same config description.
+    /// mediabunny: `src/media-sink.ts` alpha `hardwareAcceleration: prefer-software`.
+    pub(super) fn force_prefer_software(&mut self) -> Result<(), MediaError> {
+        if self.hw_accel == HwAccel::PreferSoftware {
+            return Ok(());
+        }
+        web_sys::console::warn_1(
+            &format!(
+                "fpmedia-web: {} produced no frame; sticky prefer-software",
+                self.hw_accel.label()
+            )
+            .into(),
+        );
+        self.hw_accel = HwAccel::PreferSoftware;
+        self.recreate()
+    }
+
     /// Start a new key→… cascade.
     ///
     /// - `force_hard` / non-adjacent Long-GOP jump → full [`Self::recreate`].

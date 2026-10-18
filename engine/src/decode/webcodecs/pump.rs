@@ -115,7 +115,7 @@ impl FramePump {
                 saw_target = false;
                 saw_for_us = target_us;
             }
-            let (fed, ahead, has_target) = {
+            let (fed_opt, fed, ahead, has_target) = {
                 let mut c = self.core.borrow_mut();
                 // Consumer ranges (!warm_only): prune at spawn aim so a live
                 // cursor jump cannot wipe the waiting PTS (Chrome held=225
@@ -126,13 +126,16 @@ impl FramePump {
                     spawn_aim_us
                 };
                 let _ = c.collect_and_prune_held(prune_us);
-                let fed = c.fed_through_order.unwrap_or(self.key_do);
+                let fed_opt = c.fed_through_order;
+                // Park math only: when wiped (`None`), treat cursor as key — do
+                // **not** use this for `samples_after_decode` (that skips key).
+                let fed = fed_opt.unwrap_or(self.key_do);
                 let ahead = c.held.iter().filter(|h| h.pts_us > target_us).count();
                 let has_target = c
                     .held
                     .iter()
                     .any(|h| h.pts_us == target_us || (h.pts_us - target_us).abs() <= 1);
-                (fed, ahead, has_target)
+                (fed_opt, fed, ahead, has_target)
             };
             if has_target {
                 saw_target = true;
@@ -175,11 +178,27 @@ impl FramePump {
             if feeds >= max_feeds {
                 break;
             }
-            let next = match self.track.samples_after_decode(fed, 1).await {
-                Ok(next) => next,
-                Err(e) => {
-                    *self.signals.error.borrow_mut() = Some(e);
+            // After cascade flush wipe `fed=None`, `samples_after_decode(key_do)`
+            // skips the key (All-Intra pts=0 → flush/idle held=0). Re-feed key
+            // inclusive — mediabunny: `mediaSamplesInRange` from the seek sample.
+            let next = if fed_opt.is_none() {
+                let Some(key_frame) = self.track.index().frame_at_decode_order(self.key_do) else {
                     break;
+                };
+                match self.track.encoded_sample(key_frame).await {
+                    Ok(sample) => vec![sample],
+                    Err(e) => {
+                        *self.signals.error.borrow_mut() = Some(e);
+                        break;
+                    }
+                }
+            } else {
+                match self.track.samples_after_decode(fed, 1).await {
+                    Ok(next) => next,
+                    Err(e) => {
+                        *self.signals.error.borrow_mut() = Some(e);
+                        break;
+                    }
                 }
             };
             let Some(sample) = next.into_iter().next() else {

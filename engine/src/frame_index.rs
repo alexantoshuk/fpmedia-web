@@ -230,6 +230,11 @@ impl FrameIndex {
         Some(ids)
     }
 
+    /// Presentation [`FrameId`] at dense decode-order index, if in range.
+    pub fn frame_at_decode_order(&self, decode_order: usize) -> Option<FrameId> {
+        self.by_decode.get(decode_order).copied()
+    }
+
     /// Next `limit` presentation frames after `after_do` in track decode order.
     ///
     /// O(`limit`) via dense [`Self::by_decode`] — do **not** scan/sort all
