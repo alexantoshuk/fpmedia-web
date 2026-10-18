@@ -33,6 +33,8 @@ leptos-use = { version = "0.19", default-features = false, features = [
     "use_element_size",
     "use_timeout_fn",
     "use_throttle_fn",
+    "use_clipboard",
+    "use_document_visibility",
 ] }
 console_error_panic_hook = "0.1.7"
 console_log = "1.1.0"

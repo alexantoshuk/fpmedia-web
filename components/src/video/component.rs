@@ -8,11 +8,11 @@ use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use leptos_use::utils::Pausable;
 use leptos_use::{
-    ThrottleOptions, UseRafFnOptions, use_event_listener, use_raf_fn_with_options,
+    ThrottleOptions, UseRafFnOptions, use_document_visibility, use_raf_fn_with_options,
     use_resize_observer, use_throttle_fn_with_arg_and_options,
 };
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlCanvasElement;
+use web_sys::{HtmlCanvasElement, VisibilityState};
 
 use super::ctx::HostCtx;
 use super::host_ops::{SeekOrStep, run_open, run_play_prime, run_seek_or_step};
@@ -55,16 +55,15 @@ pub fn Video(
     // Tab / window hidden while playing: freeze clock + soft-hold audio so
     // restore does not skip-catch with silent AudioContext.
     // mediabunny media-player: no visibility handler — local adaptation.
+    let visibility = use_document_visibility();
     let visibility_held = Rc::new(Cell::new(false));
-    let _visibility = {
+    Effect::new({
         let ctx = ctx.clone();
         let visibility_held = Rc::clone(&visibility_held);
-        let document = web_sys::window()
-            .and_then(|w| w.document())
-            .expect("document");
-        use_event_listener(document.clone(), leptos::ev::visibilitychange, move |_| {
+        move |_| {
+            let hidden = visibility.get() == VisibilityState::Hidden;
             let player = &ctx.player;
-            if document.hidden() {
+            if hidden {
                 if !playing.get_untracked() {
                     return;
                 }
@@ -114,8 +113,8 @@ pub fn Video(
                     }
                 }
             });
-        })
-    };
+        }
+    });
 
     let Pausable {
         pause: _pause_raf,

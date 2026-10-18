@@ -44,5 +44,6 @@ web-sys = { workspace = true, features = [
     "Blob",
     "Response",
     "console",
+    "VisibilityState",
 ] }
 fpmedia-web = { path = "../engine", features = ["webcodecs"] }

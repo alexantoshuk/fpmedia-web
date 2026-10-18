@@ -106,7 +106,8 @@ body {
 .wm-player:fullscreen .wm-pipeline,
 .wm-player:fullscreen .wm-error,
 .wm-player:fullscreen .wm-volume,
-.wm-player:fullscreen .wm-rate {
+.wm-player:fullscreen .wm-rate,
+.wm-player:fullscreen .wm-stats-head .wm-btn {
   color: #d4d4d4;
 }
 
@@ -526,6 +527,24 @@ body {
 .wm-rate-input:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.wm-stats-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  margin-top: 0.75rem;
+}
+
+.wm-stats-head .wm-status {
+  flex: 1 1 auto;
+  margin-top: 0;
+  min-width: 0;
+}
+
+.wm-stats-head .wm-btn {
+  flex: 0 0 auto;
+  margin-top: -0.15rem;
 }
 
 .wm-status {

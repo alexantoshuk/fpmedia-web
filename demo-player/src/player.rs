@@ -11,7 +11,10 @@ use fpmedia_web_components::{
 use leptos::ev;
 use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
-use leptos_use::{UseTimeoutFnReturn, use_event_listener, use_resize_observer, use_timeout_fn};
+use leptos_use::{
+    UseClipboardReturn, UseTimeoutFnReturn, use_clipboard, use_event_listener, use_resize_observer,
+    use_timeout_fn,
+};
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
 
@@ -83,6 +86,136 @@ fn open_demo_url(video: &VideoRef, raw: String, clip_name: RwSignal<Option<Strin
     let resolved = resolve_demo_open_url(&raw);
     clip_name.set(clip_basename(&raw).or_else(|| clip_basename(&resolved)));
     video.open_url(resolved);
+}
+
+fn demo_meta_line(video: &VideoRef, clip_name: Option<String>) -> String {
+    let mut s = String::new();
+    if let Some(name) = clip_name {
+        s.push_str(&name);
+    }
+    if let Some(meta) = video.metadata.get() {
+        let m = format_metadata(&meta);
+        if !m.is_empty() {
+            if !s.is_empty() {
+                s.push_str(" · ");
+            }
+            s.push_str(&m);
+        }
+    }
+    if video.has_audio.get() {
+        if !s.is_empty() {
+            s.push_str(" · ");
+        }
+        s.push_str("audio");
+    }
+    s
+}
+
+fn demo_status_line(video: &VideoRef) -> String {
+    if video.busy.get() || !video.ready.get() {
+        return video.status.get();
+    }
+    let fps_part = match video.fps.get() {
+        Some(v) => format!(" · {v:.1} fps"),
+        None => String::new(),
+    };
+    let ph = video.playhead.get();
+    let eng = video.frame.get();
+    let frame_part = if ph == eng {
+        format!("frame {ph}")
+    } else {
+        format!("frame {ph} (eng {eng})")
+    };
+    let tc_part = video
+        .metadata
+        .get()
+        .and_then(|m| format_timecode_at(&m, ph))
+        .map(|tc| format!(" · {tc}"))
+        .unwrap_or_default();
+    format!(
+        "{frame_part} / {}{tc_part} · {} · {:.3}s{}{}{}",
+        video.frame_count.get().saturating_sub(1),
+        video
+            .metadata
+            .get()
+            .map(|m| {
+                format!(
+                    "{} · play:{}",
+                    m.gop_profile.label(),
+                    m.play_policy().label()
+                )
+            })
+            .unwrap_or_else(|| "—".into()),
+        video.timestamp.get(),
+        fps_part,
+        if video.playing.get() {
+            " · playing"
+        } else {
+            ""
+        },
+        if video.looping.get() { " · loop" } else { "" }
+    )
+}
+
+fn demo_pipeline_line(stats: Option<PipelineStats>) -> String {
+    let Some(s) = stats else {
+        return String::new();
+    };
+    let range = match (s.presentation_from, s.presentation_to) {
+        (Some(a), Some(b)) if a == b => format!(" [{a}]"),
+        (Some(a), Some(b)) => format!(" [{a}–{b}]"),
+        _ => String::new(),
+    };
+    let lag = match s.last_behind_ms {
+        Some(ms) => format!(" · lag {ms:.0}ms"),
+        None => String::new(),
+    };
+    let holds = if s.underrun_holds > 0 || s.underrun_hold_ms > 0.0 {
+        format!(" · holds {}/{:.0}ms", s.underrun_holds, s.underrun_hold_ms)
+    } else {
+        String::new()
+    };
+    let dense = if s.scrub_busy { " · dense" } else { "" };
+    format!(
+        "q {}/{} · held {} · decodeQ {} · skipped {}{}{}{}{}",
+        s.presentation_len,
+        s.presentation_cap,
+        if s.held_len == usize::MAX {
+            "busy".into()
+        } else {
+            s.held_len.to_string()
+        },
+        if s.decode_queue_size == u32::MAX {
+            "busy".into()
+        } else {
+            s.decode_queue_size.to_string()
+        },
+        s.frames_skipped,
+        range,
+        lag,
+        holds,
+        dense,
+    )
+}
+
+/// Snapshot for mobile paste into chat (meta / status / pipeline / error).
+fn demo_stats_clipboard(video: &VideoRef, clip_name: Option<String>) -> String {
+    let mut lines = Vec::new();
+    let meta = demo_meta_line(video, clip_name);
+    if !meta.is_empty() {
+        lines.push(meta);
+    }
+    lines.push(demo_status_line(video));
+    let pipe = demo_pipeline_line(video.pipeline.get());
+    if !pipe.is_empty() {
+        lines.push(pipe);
+    }
+    if let Some(err) = video.error.get()
+        && !err.is_empty()
+    {
+        lines.push(err);
+    }
+    lines.join("\n")
 }
 
 /// Compact JSON for e2e (`data-testid="pipeline-json"`). Manual — app has no serde.
@@ -185,6 +318,11 @@ pub fn DemoPlayer() -> impl IntoView {
     let thumbs_on = RwSignal::new(true);
     // Basename of last Browse/URL open (mobile-friendly clip id).
     let clip_name = RwSignal::new(None::<String>);
+    let UseClipboardReturn {
+        copied: stats_copied,
+        copy: copy_stats,
+        ..
+    } = use_clipboard();
     Effect::new(move |_| {
         let on = scrubber_on.get() && thumbs_on.get();
         video.set_thumb_policy(if on {
@@ -354,28 +492,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     <DemoScrubber video=video thumbs_on=thumbs_on/>
                 </Show>
                 <p class="wm-meta" data-testid="meta">
-                    {move || {
-                        let mut s = String::new();
-                        if let Some(name) = clip_name.get() {
-                            s.push_str(&name);
-                        }
-                        if let Some(meta) = video.metadata.get() {
-                            let m = format_metadata(&meta);
-                            if !m.is_empty() {
-                                if !s.is_empty() {
-                                    s.push_str(" · ");
-                                }
-                                s.push_str(&m);
-                            }
-                        }
-                        if video.has_audio.get() {
-                            if !s.is_empty() {
-                                s.push_str(" · ");
-                            }
-                            s.push_str("audio");
-                        }
-                        s
-                    }}
+                    {move || demo_meta_line(&video, clip_name.get())}
                 </p>
                 <div class="wm-controls" data-testid="controls">
                     <button
@@ -769,94 +886,54 @@ pub fn DemoPlayer() -> impl IntoView {
                         "Thumbs"
                     </label>
                 </div>
-                <p class="wm-status" data-testid="status">
-                    {move || {
-                        if video.busy.get() || !video.ready.get() {
-                            video.status.get()
-                        } else {
-                            let fps_part = match video.fps.get() {
-                                Some(v) => format!(" · {v:.1} fps"),
-                                None => String::new(),
-                            };
-                            let ph = video.playhead.get();
-                            let eng = video.frame.get();
-                            let frame_part = if ph == eng {
-                                format!("frame {ph}")
+                <div class="wm-stats-head">
+                    <p class="wm-status" data-testid="status">
+                        {move || demo_status_line(&video)}
+                    </p>
+                    <button
+                        type="button"
+                        class=move || {
+                            if stats_copied.get() {
+                                "wm-btn wm-btn-icon wm-btn-toggle is-on"
                             } else {
-                                format!("frame {ph} (eng {eng})")
-                            };
-                            let tc_part = video
-                                .metadata
-                                .get()
-                                .and_then(|m| format_timecode_at(&m, ph))
-                                .map(|tc| format!(" · {tc}"))
-                                .unwrap_or_default();
-                            format!(
-                                "{frame_part} / {}{tc_part} · {} · {:.3}s{}{}{}",
-                                video.frame_count.get().saturating_sub(1),
-                                video
-                                    .metadata
-                                    .get()
-                                    .map(|m| {
-                                        format!(
-                                            "{} · play:{}",
-                                            m.gop_profile.label(),
-                                            m.play_policy().label()
-                                        )
-                                    })
-                                    .unwrap_or_else(|| "—".into()),
-                                video.timestamp.get(),
-                                fps_part,
-                                if video.playing.get() { " · playing" } else { "" },
-                                if video.looping.get() { " · loop" } else { "" }
-                            )
+                                "wm-btn wm-btn-icon"
+                            }
                         }
-                    }}
-                </p>
+                        data-testid="btn-copy-stats"
+                        prop:aria-label=move || {
+                            if stats_copied.get() {
+                                "Stats copied"
+                            } else {
+                                "Copy stats"
+                            }
+                        }
+                        prop:title=move || {
+                            if stats_copied.get() {
+                                "Copied"
+                            } else {
+                                "Copy meta · status · pipeline"
+                            }
+                        }
+                        on:click={
+                            let copy_stats = copy_stats.clone();
+                            move |_| {
+                                let text = demo_stats_clipboard(&video, clip_name.get());
+                                copy_stats(&text);
+                            }
+                        }
+                    >
+                        <svg
+                            class="wm-icon wm-icon-copy"
+                            viewBox="0 0 24 24"
+                            aria-hidden="true"
+                            focusable="false"
+                        >
+                            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path>
+                        </svg>
+                    </button>
+                </div>
                 <p class="wm-pipeline" data-testid="pipeline">
-                    {move || {
-                        let Some(s) = video.pipeline.get() else {
-                            return String::new();
-                        };
-                        let range = match (s.presentation_from, s.presentation_to) {
-                            (Some(a), Some(b)) if a == b => format!(" [{a}]"),
-                            (Some(a), Some(b)) => format!(" [{a}–{b}]"),
-                            _ => String::new(),
-                        };
-                        let lag = match s.last_behind_ms {
-                            Some(ms) => format!(" · lag {ms:.0}ms"),
-                            None => String::new(),
-                        };
-                        let holds = if s.underrun_holds > 0 || s.underrun_hold_ms > 0.0 {
-                            format!(
-                                " · holds {}/{:.0}ms",
-                                s.underrun_holds, s.underrun_hold_ms
-                            )
-                        } else {
-                            String::new()
-                        };
-                        let dense = if s.scrub_busy { " · dense" } else { "" };
-                        format!(
-                            "q {}/{} · held {} · decodeQ {} · skipped {}{}{}{}{}",
-                            s.presentation_len,
-                            s.presentation_cap,
-                            if s.held_len == usize::MAX {
-                                "busy".into()
-                            } else {
-                                s.held_len.to_string()
-                            },
-                            if s.decode_queue_size == u32::MAX {
-                                "busy".into()
-                            } else {
-                                s.decode_queue_size.to_string()
-                            },
-                            s.frames_skipped,
-                            range,
-                            lag,
-                            holds,
-                            dense,
-                        )
-                    }}
+                    {move || demo_pipeline_line(video.pipeline.get())}
                 </p>
                 // Machine-readable PipelineStats for e2e zone targeting / latency samples.
                 // Hidden; not production player UI.
