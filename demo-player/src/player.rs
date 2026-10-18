@@ -58,8 +58,31 @@ fn resolve_demo_open_url(raw: &str) -> String {
     path
 }
 
-fn open_demo_url(video: &VideoRef, raw: String) {
-    video.open_url(resolve_demo_open_url(&raw));
+/// Basename only (no directories / query / hash) for demo clip label on mobile.
+fn clip_basename(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
+    let name = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .rsplit('\\')
+        .next()
+        .unwrap_or(path);
+    if name.is_empty() || name == "." || name == ".." {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn open_demo_url(video: &VideoRef, raw: String, clip_name: RwSignal<Option<String>>) {
+    let resolved = resolve_demo_open_url(&raw);
+    clip_name.set(clip_basename(&raw).or_else(|| clip_basename(&resolved)));
+    video.open_url(resolved);
 }
 
 /// Compact JSON for e2e (`data-testid="pipeline-json"`). Manual — app has no serde.
@@ -160,6 +183,8 @@ pub fn DemoPlayer() -> impl IntoView {
     // Demo A/B: hide timeline chrome / drop thumb sink (Seek·Prev·Next stay on buttons).
     let scrubber_on = RwSignal::new(true);
     let thumbs_on = RwSignal::new(true);
+    // Basename of last Browse/URL open (mobile-friendly clip id).
+    let clip_name = RwSignal::new(None::<String>);
     Effect::new(move |_| {
         let on = scrubber_on.get() && thumbs_on.get();
         video.set_thumb_policy(if on {
@@ -330,12 +355,19 @@ pub fn DemoPlayer() -> impl IntoView {
                 </Show>
                 <p class="wm-meta" data-testid="meta">
                     {move || {
-                        let mut s = video
-                            .metadata
-                            .get()
-                            .as_ref()
-                            .map(format_metadata)
-                            .unwrap_or_default();
+                        let mut s = String::new();
+                        if let Some(name) = clip_name.get() {
+                            s.push_str(&name);
+                        }
+                        if let Some(meta) = video.metadata.get() {
+                            let m = format_metadata(&meta);
+                            if !m.is_empty() {
+                                if !s.is_empty() {
+                                    s.push_str(" · ");
+                                }
+                                s.push_str(&m);
+                            }
+                        }
                         if video.has_audio.get() {
                             if !s.is_empty() {
                                 s.push_str(" · ");
@@ -690,6 +722,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 let Some(files) = input.files() else { return };
                                 let Some(file) = files.get(0) else { return };
                                 let name = file.name();
+                                clip_name.set(clip_basename(&name).or(Some(name.clone())));
                                 video.status.set(format!("Selected {name}…"));
                                 // File is a Blob — progressive open, no whole-file array_buffer.
                                 let blob: Blob = file.unchecked_into();
@@ -697,7 +730,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             }
                         />
                     </label>
-                    <DemoUrlOpen video=video/>
+                    <DemoUrlOpen video=video clip_name=clip_name/>
                 </div>
                 <div class="wm-controls wm-debug-toggles" data-testid="debug-toggles">
                     <label
@@ -1019,7 +1052,7 @@ fn DemoScrubber(video: VideoRef, thumbs_on: RwSignal<bool>) -> impl IntoView {
 /// URL open — always shown. Local progressive: `/media/<stem>.mp4` from `public/media/`
 /// (`npm run media:fetch`). Pages: CORS-ok URL or Browse (Blob); GitHub lacks CORS.
 #[component]
-fn DemoUrlOpen(video: VideoRef) -> impl IntoView {
+fn DemoUrlOpen(video: VideoRef, clip_name: RwSignal<Option<String>>) -> impl IntoView {
     let url_input = NodeRef::<Input>::new();
     view! {
         <div class="wm-url-row">
@@ -1036,7 +1069,7 @@ fn DemoUrlOpen(video: VideoRef) -> impl IntoView {
                     }
                     ev.prevent_default();
                     let Some(input) = url_input.get() else { return };
-                    open_demo_url(&video, input.value());
+                    open_demo_url(&video, input.value(), clip_name);
                 }
             />
             <button
@@ -1046,7 +1079,7 @@ fn DemoUrlOpen(video: VideoRef) -> impl IntoView {
                 prop:disabled=move || video.busy.get()
                 on:click=move |_| {
                     let Some(input) = url_input.get() else { return };
-                    open_demo_url(&video, input.value());
+                    open_demo_url(&video, input.value(), clip_name);
                 }
             >
                 "Open URL"
