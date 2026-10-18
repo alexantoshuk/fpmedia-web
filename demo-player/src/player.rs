@@ -5,8 +5,8 @@ use fpmedia_web_components::helpers::{
     playhead_tip_css, playhead_width_css, strip_canvas_buffer_width,
 };
 use fpmedia_web_components::{
-    HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, TimelineMeta,
-    TimelineMetaKind, Video, VideoRef,
+    HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, ThumbPolicy,
+    TimelineMeta, TimelineMetaKind, Video, VideoRef,
 };
 use leptos::ev;
 use leptos::html::{Canvas, Div, Input};
@@ -157,6 +157,17 @@ pub fn DemoPlayer() -> impl IntoView {
     // Fullscreen auto-hide of the control surface (not Google Chrome).
     let controls_visible = RwSignal::new(true);
     let over_controls = RwSignal::new(false);
+    // Demo A/B: hide timeline chrome / drop thumb sink (Seek·Prev·Next stay on buttons).
+    let scrubber_on = RwSignal::new(true);
+    let thumbs_on = RwSignal::new(true);
+    Effect::new(move |_| {
+        let on = scrubber_on.get() && thumbs_on.get();
+        video.set_thumb_policy(if on {
+            ThumbPolicy::On
+        } else {
+            ThumbPolicy::Off
+        });
+    });
 
     const CONTROLS_IDLE_MS: f64 = 2200.0;
     let UseTimeoutFnReturn {
@@ -314,7 +325,9 @@ pub fn DemoPlayer() -> impl IntoView {
                     }
                 }
             >
-                <DemoScrubber video=video/>
+                <Show when=move || scrubber_on.get()>
+                    <DemoScrubber video=video thumbs_on=thumbs_on/>
+                </Show>
                 <p class="wm-meta" data-testid="meta">
                     {move || {
                         let mut s = video
@@ -686,6 +699,43 @@ pub fn DemoPlayer() -> impl IntoView {
                     </label>
                     <DemoUrlOpen video=video/>
                 </div>
+                <div class="wm-controls wm-debug-toggles" data-testid="debug-toggles">
+                    <label
+                        class="wm-check"
+                        title="Timeline scrubber (UI). Densify still runs on Pause."
+                    >
+                        <input
+                            type="checkbox"
+                            data-testid="chk-scrubber"
+                            prop:checked=move || scrubber_on.get()
+                            on:change=move |ev| {
+                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                    return;
+                                };
+                                scrubber_on.set(input.checked());
+                            }
+                        />
+                        "Scrubber"
+                    </label>
+                    <label
+                        class="wm-check"
+                        title="Hover thumbs (ThumbPolicy). Needs Scrubber on."
+                    >
+                        <input
+                            type="checkbox"
+                            data-testid="chk-thumbs"
+                            prop:checked=move || thumbs_on.get()
+                            prop:disabled=move || !scrubber_on.get()
+                            on:change=move |ev| {
+                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                    return;
+                                };
+                                thumbs_on.set(input.checked());
+                            }
+                        />
+                        "Thumbs"
+                    </label>
+                </div>
                 <p class="wm-status" data-testid="status">
                     {move || {
                         if video.busy.get() || !video.ready.get() {
@@ -928,10 +978,12 @@ fn ScrubProgress() -> impl IntoView {
 
 /// Demo scrubber chrome over headless [`Scrubber`] / [`TimelineMeta`] / [`HoverThumb`].
 #[component]
-fn DemoScrubber(video: VideoRef) -> impl IntoView {
+fn DemoScrubber(video: VideoRef, thumbs_on: RwSignal<bool>) -> impl IntoView {
     view! {
         <Scrubber video=video class="wm-scrubber".to_string()>
-            <HoverThumb class="wm-thumb-preview".to_string() />
+            <Show when=move || thumbs_on.get()>
+                <HoverThumb class="wm-thumb-preview".to_string() />
+            </Show>
             <div class="wm-scrubber-track">
                 <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />
                 <TimelineMeta

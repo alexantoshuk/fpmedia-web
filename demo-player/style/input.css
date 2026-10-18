@@ -321,6 +321,30 @@ body {
   margin-top: 0.5rem;
 }
 
+.wm-controls.wm-debug-toggles {
+  margin-top: 0.35rem;
+}
+
+.wm-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font: inherit;
+  color: var(--wm-ink);
+  cursor: pointer;
+  user-select: none;
+}
+
+.wm-check:has(input:disabled) {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.wm-check input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--wm-accent);
+}
+
 .wm-btn,
 .wm-file {
   appearance: none;
