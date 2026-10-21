@@ -73,14 +73,14 @@ pub use model::engine_mode::{
     AudioResume, EngineCmd, EngineEvent, EngineMode, EngineModel, reduce as engine_mode_reduce,
 };
 #[doc(hidden)]
+pub use model::play_phase::{PlayPhase, PlayPhaseEvent, reduce as play_phase_reduce};
+#[doc(hidden)]
 pub use model::session::{SessionEvent, SessionModel, reduce as session_reduce};
 #[doc(hidden)]
 pub use model::transport::{
     TransportCmd, TransportEvent, TransportModel, TransportState, reduce as transport_reduce,
 };
-pub use policy::playback::{
-    EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
-};
+pub use policy::playback::{EofWall, eof_timeline_end, eof_wall_decision};
 pub use policy::workload::{
     FRAGMENT_BACKFILL_IDLE_AHEAD, PLAY_THUMB_AIM_DECODE_MIN_MS, WorkloadHints, WorkloadMode,
     allows_bg_sync_verify, allows_thumb_aim_decode, allows_thumb_key_fill, classify,
@@ -90,15 +90,13 @@ pub use policy::{
     DEFAULT_SCRUB_BLIT_MIB_LONG, DEFAULT_SCRUB_BLIT_MIB_SHORT, DEFAULT_SCRUB_CACHE_MIB,
     EDGE_MARGIN_LEFT_MAX, EDGE_MARGIN_LEFT_MIN, EDGE_MARGIN_RIGHT_MIN, GopProfile,
     MAX_SCRUB_BLIT_FRAMES, MAX_SCRUB_CACHE_FRAMES, MIN_SCRUB_BLIT_FRAMES, MIN_SCRUB_CACHE_FRAMES,
-    PLAY_EOF_BUDGET_SECS_HD, PLAY_EOF_BUDGET_SECS_UHD, PLAY_EOF_LEAD_SECS_HD,
-    PLAY_EOF_LEAD_SECS_UHD, PLAY_LOOP_PRIME_FRAMES_HD, PLAY_LOOP_PRIME_FRAMES_UHD,
     PLAY_PRESENTATION_CAP_HD, PLAY_PRESENTATION_CAP_UHD, PLAY_WARM_AHEAD_HD, PLAY_WARM_AHEAD_UHD,
     PlayPolicy, ResolutionClass, SCRUB_BLIT_LRU, SETTLE_DENSIFY_YIELD_MS,
     SETTLE_DENSIFY_YIELD_RETRY_MS, SETTLE_GOP_SAMPLE_LEAD_MAX, SETTLE_GOP_SAMPLE_LEAD_MIN,
-    SETTLE_PLAY_INDEX_AWAIT_BATCH, SETTLE_PLAY_INDEX_LEAD, SETTLE_PLAY_PRIME_FRAMES,
-    SETTLE_TAKE_DECODER_WAIT_MS, SHORT_GOP_MAX_LEN, ScrubCachePolicy, ScrubPolicy, SettlePolicy,
-    ThumbPolicy, UHD_MIN_HEIGHT, estimated_decoded_frame_bytes, exact_frames_to_free_for_play_vram,
-    hover_thumb_dims, nearer_gap_with_dir, next_missing_sync_key, scrub_blit_cap_during_play,
+    SETTLE_PLAY_INDEX_AWAIT_BATCH, SETTLE_PLAY_INDEX_LEAD, SETTLE_TAKE_DECODER_WAIT_MS,
+    SHORT_GOP_MAX_LEN, ScrubCachePolicy, ScrubPolicy, SettlePolicy, ThumbPolicy, UHD_MIN_HEIGHT,
+    estimated_decoded_frame_bytes, exact_frames_to_free_for_play_vram, hover_thumb_dims,
+    nearer_gap_with_dir, next_missing_sync_key, scrub_blit_cap_during_play,
     scrub_blit_frame_budget, scrub_cache_frame_budget, scrub_edge_margins, scrub_gap_fill_armed,
     scrub_preview_choice,
 };
@@ -123,6 +121,6 @@ pub use decode::{
 pub use decode::{ThumbPreview, ThumbSink};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use video_player::{
-    DuePresent, PipelineInterest, PipelineStats, PlayTick, PlayerState, ReadyFrameKind,
+    DuePresent, PipelineInterest, PipelineStats, PlayTick, PlayWaits, PlayerState, ReadyFrameKind,
     ReadyFrameMark, VideoPlayer,
 };

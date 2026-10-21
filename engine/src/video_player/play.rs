@@ -1,186 +1,107 @@
-//! Play / present / prefetch / loop orchestration for [`super::VideoPlayer`].
+//! Play iterator / render / loop orchestration for [`super::VideoPlayer`].
+//!
+//! `mediabunny: examples/media-player/media-player.ts` — `startVideoIterator`
+//! (first frame drawn, second kept as `nextFrame`), `updateNextFrame` (draw
+//! overdue samples, park the first future one), `render` (draw `nextFrame` once
+//! due). Packets: [`PlayIter`] (`src/media-sink.ts mediaSamplesInRange`).
+//! Pixels: [`super::play_pool::PlayCanvasPool`] (`CanvasSink` pool of 2).
 
-use std::collections::VecDeque;
 use std::rc::Rc;
 
+use crate::decode::canvas::draw_frame_with_context;
+use crate::decode::webcodecs::PlayIter;
 use crate::error::MediaError;
-use crate::policy::playback::{
-    EofWall, eof_timeline_end, eof_wall_decision, loop_drain_frames, near_eof_by_frames,
-};
+use crate::model::play_phase::{PlayPhase, PlayPhaseEvent, reduce as play_phase_reduce};
+use crate::policy::playback::{EofWall, eof_timeline_end, eof_wall_decision};
 use crate::policy::{
     exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play, scrub_blit_frame_budget,
 };
 use crate::types::FrameId;
 
-use super::{
-    BIG_LAG_SECONDS, DuePresent, LOOP_NEAR_END_PRESENTATION_CAP_MAX, PLAY_EXACT_VRAM_VF_SLACK,
-    PREFETCH_DEADLINE_SLACK_MS, PlayTick, QueuedFrame, SHUTTLE_PRESENTATION_QUEUE_CAP, VideoPlayer,
-    next_animation_frame, now_ms, sleep_ms,
-};
+use super::play_pool::PlayCanvasPool;
+use super::shared::PlayNext;
+use super::{DuePresent, PLAY_EXACT_VRAM_VF_SLACK, PlayTick, VideoPlayer, now_ms};
 
 impl VideoPlayer {
+    /// Paused Next ring cap (step only — Play uses [`PlayIter`]).
     pub(super) fn play_presentation_cap(&self) -> usize {
-        if self.is_shuttle() {
-            return SHUTTLE_PRESENTATION_QUEUE_CAP;
-        }
-        let policy = self.shared.track.metadata_ref().play_policy();
-        // Loop: keep a long drain buffer while `fill_loop_prime` owns the decoder.
-        if self.is_looping() && self.is_playing() && self.near_loop_prepare_zone() {
-            return self.loop_drain_frames_for_rate();
-        }
-        // Uhd (loop or not): once inside eof lead, allow the whole remaining
-        // tail into the presentation queue so last-GOP decode does not underrun.
-        // Hd `eof_lead_secs == 0` → never enters (FHD unchanged).
-        if policy.eof_lead_secs() > 0.0 && self.near_eof_lead(policy.eof_lead_secs()) {
-            let remaining = self.frames_left_on_timeline();
-            return remaining
-                .max(policy.presentation_cap)
-                .min(LOOP_NEAR_END_PRESENTATION_CAP_MAX);
-        }
-        policy.presentation_cap
-    }
-
-    /// Frames from current playhead through EOF (inclusive of current).
-    pub(super) fn frames_left_on_timeline(&self) -> usize {
-        let state = self.state();
-        state.frame_count.saturating_sub(state.frame).max(1) as usize
-    }
-
-    /// True when playhead is within `lead_secs` of EOF (rate-scaled).
-    pub(super) fn near_eof_lead(&self, lead_secs: f64) -> bool {
-        let count = self.state().frame_count;
-        if count == 0 {
-            return false;
-        }
-        let fps = self
-            .shared
+        self.shared
             .track
             .metadata_ref()
-            .fps
-            .filter(|f| f.is_finite() && *f > 0.0)
-            .unwrap_or(24.0);
-        near_eof_by_frames(
-            self.frames_left_on_timeline() as f64,
-            lead_secs,
-            fps,
-            self.playback_rate(),
-        )
+            .play_policy()
+            .presentation_cap
     }
 
-    /// Frames to keep queued near EOF so `fill_loop_prime` finishes before drain.
-    pub(super) fn loop_drain_frames_for_rate(&self) -> usize {
-        let policy = self.shared.track.metadata_ref().play_policy();
-        let fps = self
-            .shared
-            .track
-            .metadata_ref()
-            .fps
-            .filter(|f| f.is_finite() && *f > 0.0)
-            .unwrap_or(24.0);
-        let floor = policy.presentation_cap.max(policy.loop_prime_frames());
-        loop_drain_frames(
-            policy.loop_prime_budget_secs(),
-            fps,
-            self.playback_rate(),
-            floor,
-            LOOP_NEAR_END_PRESENTATION_CAP_MAX,
-        )
+    pub(super) fn apply_play_phase(&self, event: PlayPhaseEvent) {
+        let next = play_phase_reduce(self.shared.play_phase.get(), event);
+        self.shared.play_phase.set(next);
     }
 
-    /// Playhead is within the rate-scaled loop-prepare lead of EOF.
-    pub(super) fn near_loop_prepare_zone(&self) -> bool {
-        let count = self.state().frame_count;
-        if count == 0 {
-            return false;
-        }
-        let lead = self.loop_drain_frames_for_rate() as FrameId;
-        // Playhead only — must not borrow `presentation` (callers may hold it).
-        count.saturating_sub(self.state().frame) <= lead
-    }
-
-    /// True when the play prefetch loop should decode another ahead/behind frame.
-    pub fn wants_play_prefetch(&self) -> bool {
-        self.is_playing()
-            && self.shared.play_session_live.get()
-            && !self.shared.play_loop_seam.get()
-            && !self.shared.resuming_clock.get()
-            && !self.shared.session.get().blocks_prefetch()
-            && self.presentation_len() < self.play_presentation_cap()
-    }
-
-    /// PlayPrime finished (clock armed or deferred silent) — host may present.
+    /// PlayPrime finished (clock armed or deferred silent) — render may present.
     ///
-    /// Starts the prefetch / loop-prepare driver. `mediabunny: examples/media-player`
-    /// `play` after `startVideoIterator` while `render` already loops.
+    /// `mediabunny: examples/media-player` `play` after `startVideoIterator`.
     pub fn begin_play_session(self: &Rc<Self>, pending_silent_clock: bool) {
-        self.shared.play_session_live.set(true);
+        self.apply_play_phase(PlayPhaseEvent::Begin);
         self.shared.pending_silent_clock.set(pending_silent_clock);
         self.shared.resuming_clock.set(false);
-        self.shared.play_loop_seam.set(false);
         self.shared.held_media_origin.set(None);
         *self.shared.play_driver_error.borrow_mut() = None;
-        let driver = self.shared.play_prefetch_gen.get().wrapping_add(1);
-        self.shared.play_prefetch_gen.set(driver);
-        self.spawn_play_prefetch_loop(driver);
+        self.kick_update_next_frame();
     }
 
     /// True after [`Self::begin_play_session`] until pause / soft-hold / teardown.
     pub fn play_session_live(&self) -> bool {
-        self.shared.play_session_live.get()
+        self.shared.play_phase.get().is_live()
     }
 
     pub(super) fn clear_play_session(&self) {
-        self.shared.play_session_live.set(false);
+        self.apply_play_phase(PlayPhaseEvent::End);
         self.shared.pending_silent_clock.set(false);
         self.shared.resuming_clock.set(false);
-        self.shared.play_loop_seam.set(false);
         self.shared.held_media_origin.set(None);
         *self.shared.play_driver_error.borrow_mut() = None;
-        // Invalidate in-flight prefetch drivers.
-        let driver = self.shared.play_prefetch_gen.get().wrapping_add(1);
-        self.shared.play_prefetch_gen.set(driver);
+        self.end_play_iter();
     }
 
-    fn spawn_play_prefetch_loop(self: &Rc<Self>, driver: u64) {
-        let player = Rc::clone(self);
-        wasm_bindgen_futures::spawn_local(async move {
-            while player.shared.play_prefetch_gen.get() == driver
-                && player.is_playing()
-                && player.play_session_live()
-            {
-                if player.wants_play_prefetch() {
-                    match player.prefetch_one().await {
-                        Ok(true) => continue,
-                        Ok(false) => {}
-                        Err(e) if e.is_cancelled() => break,
-                        Err(e) => {
-                            if player.shared.play_prefetch_gen.get() == driver {
-                                *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
-                                player.pause();
-                            }
-                            break;
-                        }
-                    }
-                }
-                if player.is_looping() {
-                    match player.prepare_loop_if_needed().await {
-                        Ok(()) => {}
-                        Err(e) if e.is_cancelled() => break,
-                        Err(e) => {
-                            if player.shared.play_prefetch_gen.get() == driver {
-                                *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
-                                player.pause();
-                            }
-                            break;
-                        }
-                    }
-                }
-                next_animation_frame().await;
-            }
-        });
+    /// mediabunny `videoFrameIterator.return()` — decoder back to the slot.
+    pub(super) fn end_play_iter(&self) {
+        self.shared.play_next.borrow_mut().take();
+        let iter = self.shared.play_iter.borrow_mut().take();
+        if let Some(decoder) = iter.and_then(|it| it.finish()) {
+            self.put_decoder(decoder);
+        }
     }
 
-    /// One play rAF: silent-clock arm, present, underrun hold/resume, loop seam.
+    fn is_current_iter(&self, iter: &PlayIter) -> bool {
+        self.shared
+            .play_iter
+            .borrow()
+            .as_ref()
+            .is_some_and(|cur| cur.same(iter))
+    }
+
+    /// `nextFrame` waits, or the iterator can still yield samples.
+    fn play_pending(&self) -> bool {
+        if self.shared.play_next.borrow().is_some() {
+            return true;
+        }
+        self.shared
+            .play_iter
+            .borrow()
+            .as_ref()
+            .is_some_and(|it| !it.exhausted())
+    }
+
+    /// Iterator stats for the pipeline meter (`None` when no Play range).
+    pub(super) fn play_iter_stats(&self) -> Option<(usize, u32)> {
+        self.shared
+            .play_iter
+            .borrow()
+            .as_ref()
+            .map(|it| (it.held_len(), it.decode_queue_size()))
+    }
+
+    /// One play rAF: silent-clock arm, render, underrun hold/resume, loop seam.
     ///
     /// `mediabunny: examples/media-player/media-player.ts` `render` + deferred
     /// `audioContextStartTime` on no-AAC (`finish_silent_play_prime`).
@@ -191,85 +112,225 @@ impl VideoPlayer {
         if !self.play_session_live() || !self.is_playing() {
             return Ok(PlayTick::Skipped);
         }
-        if self.shared.play_loop_seam.get() || self.is_restarting() {
+        if !self.shared.play_phase.get().presents() || self.is_restarting() {
             return Ok(PlayTick::Skipped);
         }
 
         if self.shared.pending_silent_clock.get() {
             self.shared.pending_silent_clock.set(false);
-            let media_origin = self
-                .shared
-                .held_media_origin
-                .get()
-                .unwrap_or_else(|| self.state().timestamp.seconds);
-            match self.finish_silent_play_prime() {
-                Ok(_) => {}
-                Err(e) => {
-                    web_sys::console::warn_1(
-                        &format!("fpmedia-web: silent play prime present: {e}").into(),
-                    );
-                    self.arm_silent_play_clock(media_origin);
-                }
-            }
+            self.finish_silent_play_prime();
         }
 
         if self.is_hidden_hold() {
             return Ok(PlayTick::Skipped);
         }
 
+        if let Some(iter) = self.shared.play_iter.borrow().as_ref() {
+            iter.note_raf();
+        }
         let t = self.media_time();
-        match self.present_due(t)? {
-            DuePresent::Ended => Ok(PlayTick::Ended),
+        let tick = match self.present_due(t)? {
+            DuePresent::Ended => PlayTick::Ended,
             DuePresent::NeedsLoop => {
                 self.start_loop_seam();
-                Ok(PlayTick::Skipped)
+                PlayTick::Skipped
             }
             DuePresent::Playing { did_draw } => {
                 self.tick_underrun_hold_resume();
-                Ok(PlayTick::Presented { did_draw })
+                PlayTick::Presented { did_draw }
             }
-        }
+        };
+        self.kick_update_next_frame();
+        Ok(tick)
     }
 
-    fn start_loop_seam(self: &Rc<Self>) {
-        if self.shared.play_loop_seam.get() {
+    /// mediabunny `startVideoIterator`: return the prior range, start at
+    /// `start`, draw the first sample, keep the second as `nextFrame`.
+    pub(super) async fn start_play_iter(
+        &self,
+        start: FrameId,
+        epoch: u64,
+    ) -> Result<(), MediaError> {
+        self.end_play_iter();
+        // Displayed / step VFs are stale once Play owns the canvas — free the pool.
+        self.shared.displayed.borrow_mut().take();
+        self.clear_presentation();
+        let decoder = self.take_decoder(epoch).await?;
+        let lead = self
+            .shared
+            .track
+            .metadata_ref()
+            .settle_policy()
+            .play_index_lead;
+        let iter = PlayIter::start(decoder, self.shared.track.clone(), start, lead);
+        *self.shared.play_iter.borrow_mut() = Some(iter.clone());
+
+        let first = iter.next().await?;
+        if !self.is_current(epoch) || !self.is_current_iter(&iter) {
+            return Err(MediaError::Cancelled);
+        }
+        if let Some((id, video)) = first {
+            draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys())?;
+            drop(video);
+            self.shared.commit_frame(id)?;
+            self.touch_playhead(id);
+        }
+        let second = iter.next().await?;
+        if !self.is_current(epoch) || !self.is_current_iter(&iter) {
+            return Err(MediaError::Cancelled);
+        }
+        if let Some((id, video)) = second {
+            let ts = self.frame_timestamp_seconds(id)?;
+            let slot = self.copy_to_play_pool(id, video.as_web_sys())?;
+            drop(video);
+            *self.shared.play_next.borrow_mut() = Some(PlayNext {
+                frame: id,
+                ts,
+                slot,
+            });
+        }
+        Ok(())
+    }
+
+    fn copy_to_play_pool(
+        &self,
+        frame: FrameId,
+        video: &web_sys::VideoFrame,
+    ) -> Result<usize, MediaError> {
+        let w = self.shared.canvas.width().max(1);
+        let h = self.shared.canvas.height().max(1);
+        let mut slot = self.shared.play_pool.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(PlayCanvasPool::new()?);
+        }
+        slot.as_mut()
+            .expect("pool created")
+            .copy(frame, video, w, h)
+    }
+
+    /// Repaint the stage from the pool after a buffer resize (Play only).
+    pub(super) fn repaint_from_play_pool(&self, frame: FrameId) -> Result<bool, MediaError> {
+        let pool = self.shared.play_pool.borrow();
+        let Some(pool) = pool.as_ref() else {
+            return Ok(false);
+        };
+        let Some(slot) = pool.slot_for(frame) else {
+            return Ok(false);
+        };
+        pool.draw(slot, &self.shared.canvas, &self.shared.ctx)?;
+        Ok(true)
+    }
+
+    /// Spawn `updateNextFrame` unless one runs or `nextFrame` already waits.
+    fn kick_update_next_frame(self: &Rc<Self>) {
+        if self.shared.play_updating.get() || self.shared.play_next.borrow().is_some() {
             return;
         }
-        self.shared.play_loop_seam.set(true);
-        // Freeze the timeline while loop owns the decoder — leaving the clock
-        // running through `loop_to_start` skips/underruns on resume (~1 s hold
-        // on GOP12 loop probes). Soft-hold via HoldScrub (not HoldUnderrun).
+        let Some(iter) = self.shared.play_iter.borrow().clone() else {
+            return;
+        };
+        if iter.exhausted() {
+            return;
+        }
+        self.shared.play_updating.set(true);
+        let player = Rc::clone(self);
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = player.update_next_frame(&iter).await;
+            player.shared.play_updating.set(false);
+            if let Err(e) = result
+                && !e.is_cancelled()
+                && player.is_current_iter(&iter)
+            {
+                *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+            }
+        });
+    }
+
+    /// mediabunny `updateNextFrame`: draw overdue samples immediately; keep the
+    /// first future one as `nextFrame` (pool canvas; `VideoFrame` closed).
+    async fn update_next_frame(&self, iter: &PlayIter) -> Result<(), MediaError> {
+        let mut overdue = 0u64;
+        loop {
+            let item = iter.next().await?;
+            if !self.is_current_iter(iter) || !self.is_playing() {
+                return Ok(());
+            }
+            let Some((id, video)) = item else {
+                break;
+            };
+            let ts = self.frame_timestamp_seconds(id)?;
+            let t = self.media_time();
+            if ts <= t && self.shared.play_phase.get() == PlayPhase::Live {
+                overdue += 1;
+                self.shared
+                    .last_behind_ms
+                    .set(Some(((t - ts) * 1000.0).max(0.0)));
+                draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys())?;
+                drop(video);
+                self.shared.commit_frame(id)?;
+                self.touch_playhead(id);
+                continue;
+            }
+            let slot = self.copy_to_play_pool(id, video.as_web_sys())?;
+            drop(video);
+            *self.shared.play_next.borrow_mut() = Some(PlayNext {
+                frame: id,
+                ts,
+                slot,
+            });
+            break;
+        }
+        if overdue > 1 {
+            self.shared
+                .frames_skipped
+                .set(self.shared.frames_skipped.get().saturating_add(overdue - 1));
+            // Silent PlaybackClock only: realign to the painted playhead so the
+            // next rAF is not still overdue (ChG skip storm). AAC stays master.
+            if self
+                .shared
+                .playback_clock
+                .as_ref()
+                .is_some_and(|c| c.is_running())
+            {
+                self.snap_playing_clock_to_playhead();
+            }
+        }
+        Ok(())
+    }
+
+    /// EOF while looping: restart the iterator at 0 under a soft-held clock.
+    /// mediabunny: no loop in the example — `startVideoIterator(0)` + `play`.
+    fn start_loop_seam(self: &Rc<Self>) {
+        if self.shared.play_phase.get() != PlayPhase::Live {
+            return;
+        }
+        self.apply_play_phase(PlayPhaseEvent::LoopStart);
         // If already HoldUnderrun, HoldScrub would FinishUnderrunTimer and
-        // pollute holdsB — abandon first. mediabunny: no loop; local adaptation.
+        // pollute holds — abandon first.
         self.apply_clock_event(crate::ClockEvent::ResetForPlay);
         let t = self.hold_media_clock_for_scrub();
         self.shared.held_media_origin.set(Some(t));
         let player = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
-            match player.loop_to_start().await {
+            let epoch = player.shared.op_epoch.get();
+            let result = player.start_play_iter(0, epoch).await;
+            if player.shared.play_phase.get() != PlayPhase::LoopSeam {
+                return;
+            }
+            player.apply_play_phase(PlayPhaseEvent::LoopDone);
+            match result {
                 Ok(()) => {
-                    // Clock still soft-held — seed ahead frames before resume so
-                    // the first post-wrap present does not re-enter HoldUnderrun.
-                    player.shared.play_loop_seam.set(false);
-                    for _ in 0..8 {
-                        if !player.wants_play_prefetch() {
-                            break;
-                        }
-                        match player.prefetch_one().await {
-                            Ok(true) => {}
-                            _ => break,
-                        }
+                    let t0 = player.state().timestamp.seconds;
+                    if let Err(e) = player.resume_media_clock(t0).await
+                        && !e.is_cancelled()
+                    {
+                        *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
                     }
-                    let _ = player.resume_media_clock(0.0).await;
                     player.shared.held_media_origin.set(None);
                 }
-                Err(e) if e.is_cancelled() => {
-                    player.shared.play_loop_seam.set(false);
-                }
+                Err(e) if e.is_cancelled() => {}
                 Err(e) => {
                     *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
-                    player.shared.play_loop_seam.set(false);
-                    player.pause();
                 }
             }
         });
@@ -278,12 +339,7 @@ impl VideoPlayer {
     fn tick_underrun_hold_resume(self: &Rc<Self>) {
         if self.play_underrun_hold() {
             let cs = self.shared.clock_state.get();
-            if cs.hidden_holding()
-                || cs.underrun_holding()
-                || self.shared.resuming_clock.get()
-                || self.shared.play_loop_seam.get()
-                || self.is_restarting()
-            {
+            if cs.hidden_holding() || cs.underrun_holding() || self.shared.resuming_clock.get() {
                 return;
             }
             let t = self.hold_media_clock_for_underrun();
@@ -293,9 +349,7 @@ impl VideoPlayer {
 
         let should_resume = self.shared.clock_state.get().underrun_holding()
             && !self.shared.resuming_clock.get()
-            && !self.shared.play_loop_seam.get()
-            && !self.is_restarting()
-            && self.presentation_len() > 0;
+            && self.shared.play_next.borrow().is_some();
         if !should_resume {
             return;
         }
@@ -307,18 +361,13 @@ impl VideoPlayer {
                 .held_media_origin
                 .get()
                 .unwrap_or_else(|| player.state().timestamp.seconds);
-            match player.resume_media_clock(t).await {
-                Ok(()) => {
-                    player.shared.held_media_origin.set(None);
-                    player.shared.resuming_clock.set(false);
-                }
-                Err(e) if e.is_cancelled() => {
-                    player.shared.resuming_clock.set(false);
-                }
+            let result = player.resume_media_clock(t).await;
+            player.shared.resuming_clock.set(false);
+            match result {
+                Ok(()) => player.shared.held_media_origin.set(None),
+                Err(e) if e.is_cancelled() => {}
                 Err(e) => {
-                    player.shared.resuming_clock.set(false);
                     *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
-                    player.pause();
                 }
             }
         });
@@ -341,109 +390,13 @@ impl VideoPlayer {
         blit.set_max(scrub_blit_cap_during_play(full, reserve));
     }
 
-    pub(super) async fn step_playback(&self) -> Result<bool, MediaError> {
-        if !self.is_playing() {
-            return Ok(false);
-        }
-        let next = self.state().frame.saturating_add(1);
-        if next >= self.state().frame_count {
-            return self.end_or_loop().await;
-        }
-        self.present_frame(next).await?;
-        Ok(self.has_more_playback())
-    }
-
-    pub async fn skip_behind(&self, behind_seconds: f64) -> Result<bool, MediaError> {
-        if !self.is_playing() || behind_seconds <= 0.0 {
-            return Ok(self.has_more_playback());
-        }
-        let next = self.state().frame.saturating_add(1);
-        if next >= self.state().frame_count {
-            return self.end_or_loop().await;
-        }
-
-        let target = self.catch_up_frame(next, behind_seconds)?;
-        if target <= next {
-            return self.step_playback().await;
-        }
-
-        self.shared.frames_skipped.set(
-            self.shared
-                .frames_skipped
-                .get()
-                .saturating_add(target - next),
-        );
-        self.shared
-            .last_behind_ms
-            .set(Some(behind_seconds * 1000.0));
-
-        self.drain_presentation_before(target);
-        {
-            let mut presentation = self.shared.presentation.borrow_mut();
-            if presentation.front().is_some_and(|f| f.frame == target) {
-                let queued = presentation.pop_front().expect("front checked");
-                drop(presentation);
-                // Play path: present + Exact ingest (same as present_due).
-                self.present_play_frame(queued.frame, queued.video)?;
-                self.touch_playhead(queued.frame);
-                self.shared.commit_frame(queued.frame)?;
-                return Ok(self.has_more_playback());
-            }
-        }
-
-        self.clear_presentation();
-        // Soft catch-up (mediabunny `updateNextFrame` loop): keep warm decode +
-        // dense when the target stays in the same GOP. Hard invalidate only when
-        // catch-up crosses into a later GOP — a full key→N after wipe was Chrome
-        // long-GOP's stutter loop (play a few → clear strip → flush/idle mid-GOP).
-        // Do **not** `clear_scrub_store` here — scrub residency is unrelated to
-        // underrun and wiping it was the visible "cache vanishes" symptom.
-        // Behind ring is stale past the catch-up target — drop it.
-        self.clear_step_ring();
-        let hard_seek = !self.is_all_intra() && {
-            let index = self.shared.track.index();
-            match (index.nearest_keyframe(next), index.nearest_keyframe(target)) {
-                (Some(nk), Some(tk)) => tk != nk,
-                _ => true,
-            }
-        };
-        if hard_seek {
-            self.invalidate_decoder();
-        }
-        let epoch = self.shared.op_epoch.get();
-        self.goto_frame(target, epoch).await?;
-        Ok(self.has_more_playback())
-    }
-
-    pub(super) async fn end_or_loop(&self) -> Result<bool, MediaError> {
-        if !self.is_looping() {
-            self.shared.playing.set(false);
-            self.clear_presentation();
-            self.clear_step_ring();
-            return Ok(false);
-        }
-        self.clear_presentation();
-        self.clear_step_ring();
-        self.invalidate_decoder();
-        let epoch = self.shared.op_epoch.get();
-        self.goto_frame(0, epoch).await?;
-        Ok(true)
-    }
-
-    pub(super) fn has_more_playback(&self) -> bool {
-        if !self.is_playing() {
-            return false;
-        }
-        self.is_looping() || self.state().frame + 1 < self.state().frame_count
-    }
-
+    /// PlayPrime: abort densify, warm index + bytes, then `startVideoIterator`.
     pub async fn prime_playback(&self) -> Result<(), MediaError> {
         if !self.is_playing() {
             return Ok(());
         }
         // `play()` aborts densify without awaiting. Soft-cold settle leaves
-        // `scrub_busy` true → fill hangs on long-GOP URL (stress 2997/60
-        // gop33/gop48: Play disabled / ensurePlaying timeout).
+        // `scrub_busy` true → fill hangs on long-GOP URL.
         // mediabunny: examples/media-player seekToTime →
         // `await videoFrameIterator?.return()` before play / startVideoIterator.
         self.abort_scrub_fill(false);
@@ -452,28 +405,11 @@ impl VideoPlayer {
             return Ok(());
         }
         let epoch = self.shared.op_epoch.get();
-        // Exact settle seeds play_prime_frames (mediabunny `startVideoIterator`).
-        // Soft Pause leaves Warm audio. Either way: skip blocking byte-warm and
-        // do not re-decode into an already-primed presentation queue.
-        // mediabunny: examples/media-player seekToTime / pause → play.
         let settle = self.shared.track.metadata_ref().settle_policy();
-        let prime_target = settle.play_prime_frames.min(self.play_presentation_cap());
-        let presentation_primed = self.presentation_len() >= prime_target;
-        // Skip byte-warm only when Exact/settle already seeded the presentation
-        // queue. Soft Pause alone must not skip: soft-cold settle leaves Warm
-        // audio + empty queue mid-GOP → fill blocked on cold key Ranges.
-        // mediabunny: first samples for seek `t` (key→target), not pause latch.
-        let skip_byte_warm = presentation_primed;
         // fMP4: arm a long index lead in bg, but only *await* one urgent batch
-        // past the current index so Play click / PlayPrime cannot stall for
-        // many RTTs (`mediabunny: first samples before play` — not the whole
-        // warm→lead gap on the click turn).
+        // past the current index (`mediabunny: first samples before play`).
         let play_index_lead = settle.play_index_lead;
         let play_index_await_batch = settle.play_index_await_batch;
-        // Unprimed cold PlayPrime: await one GOP from the keyframe (not from
-        // head mid-GOP) so soft-cold→Play can cascade. Warm from `head` left
-        // key samples cold → decode hung (stress 60/2997 long-GOP).
-        // mediabunny: first samples for seek `t`, not a long timeline warm.
         let head = self.state().frame;
         {
             let track = self.shared.track.clone();
@@ -490,107 +426,83 @@ impl VideoPlayer {
                 }
             }
         }
-        if skip_byte_warm {
-            web_sys::console::log_1(
-                &format!(
-                    "fpmedia-web: play prime skip byte warm (warm_audio={} primed={presentation_primed})",
-                    self.audio_warm_resume()
-                )
-                .into(),
-            );
+        // Await key→head (+ a little ahead) bytes so the first samples are not
+        // stuck behind cold Ranges; the rest prefetches in the background.
+        let warm_t0 = now_ms().unwrap_or(0.0);
+        let (warm_secs, warm_key) = {
             let track = self.shared.track.clone();
+            let key = track.index().nearest_keyframe(head).unwrap_or(head);
+            let gop_lead = super::scrub_gap::gop_sample_lead(&track, key).min(play_index_lead);
+            let await_span = head
+                .saturating_sub(key)
+                .saturating_add(gop_lead.min(8))
+                .max(gop_lead)
+                .max(1);
+            track.warm_sample_bytes(key, await_span).await?;
             track.prefetch_samples_ahead(head, play_index_lead);
-        } else {
-            let warm_t0 = now_ms().unwrap_or(0.0);
-            let (warm_secs, warm_key) = {
-                let track = self.shared.track.clone();
-                let key = track.index().nearest_keyframe(head).unwrap_or(head);
-                let gop_lead = super::scrub_gap::gop_sample_lead(&track, key).min(play_index_lead);
-                // Cover key→head (cascade) + small play-ahead. Clamped gop_lead
-                // alone (≤24) misses late frames in GOP48 mid-GOP soft-cold.
-                let await_span = head
-                    .saturating_sub(key)
-                    .saturating_add(gop_lead.min(8))
-                    .max(gop_lead)
-                    .max(1);
-                track.warm_sample_bytes(key, await_span).await?;
-                track.prefetch_samples_ahead(head, play_index_lead);
-                let last = head
-                    .saturating_add(gop_lead.min(8))
-                    .min(track.indexed_frame_count().saturating_sub(1));
-                let secs = track
-                    .index()
-                    .get(last)
-                    .map(|e| e.composition_timestamp().seconds)
-                    .unwrap_or(0.0);
-                let warm_ms = now_ms().unwrap_or(warm_t0) - warm_t0;
-                web_sys::console::log_1(
-                    &format!(
-                        "fpmedia-web: play prime warm key={key} span={await_span} {warm_ms:.0}ms"
-                    )
+            let last = head
+                .saturating_add(gop_lead.min(8))
+                .min(track.indexed_frame_count().saturating_sub(1));
+            let secs = track
+                .index()
+                .get(last)
+                .map(|e| e.composition_timestamp().seconds)
+                .unwrap_or(0.0);
+            let warm_ms = now_ms().unwrap_or(warm_t0) - warm_t0;
+            web_sys::console::log_1(
+                &format!("fpmedia-web: play prime warm key={key} span={await_span} {warm_ms:.0}ms")
                     .into(),
-                );
-                (secs, key)
-            };
-            if !self.is_current(epoch) || !self.is_playing() {
-                return Err(MediaError::Cancelled);
-            }
-            // Audio bulk warm is 0..t (up to 8 MiB). Fine near start; mid-clip
-            // soft-cold→Play stalled for seconds on URL Ranges. Pump primes at
-            // origin instead (`start_spawned` / `restart_warm`).
-            // mediabunny: first samples around playhead, not full prefix.
-            if warm_secs > 0.0 && warm_key == 0 {
-                let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
-                if let Some(a) = audio {
-                    a.warm_bytes_through(warm_secs).await?;
-                    if !self.is_current(epoch) || !self.is_playing() {
-                        return Err(MediaError::Cancelled);
-                    }
+            );
+            (secs, key)
+        };
+        if !self.is_current(epoch) || !self.is_playing() {
+            return Err(MediaError::Cancelled);
+        }
+        // Audio bulk warm is 0..t — only near start (mid-clip pump primes at origin).
+        if warm_secs > 0.0 && warm_key == 0 {
+            let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+            if let Some(a) = audio {
+                a.warm_bytes_through(warm_secs).await?;
+                if !self.is_current(epoch) || !self.is_playing() {
+                    return Err(MediaError::Cancelled);
                 }
             }
         }
-        if presentation_primed {
-            web_sys::console::log_1(&"fpmedia-web: play prime skip fill (settle seeded)".into());
-            return Ok(());
-        }
-        // Scrub store is markers + blit — play re-decodes into the presentation
-        // queue. Do **not** trim scrub residency on Play — eviction is budget /
-        // farthest-from-aim only (Pause densify paid for that trail).
-        // Poison after Exact/densify race: soft-park retry alone cannot heal a
-        // closed main — recreate once then refill (parity Exact retry).
-        // mediabunny: seekToTime → startVideoIterator (return prior + new canvases).
-        match self.fill_presentation_queue(epoch).await {
+        match self.start_play_iter(head, epoch).await {
             Ok(()) => Ok(()),
             Err(e) if e.is_cancelled() => Err(e),
+            // Poison after Exact/densify race — one fresh range.
             Err(e) if e.is_decoder_poison() && self.is_current(epoch) && self.is_playing() => {
                 web_sys::console::warn_1(
-                    &format!("fpmedia-web: PlayPrime fill poison → recreate ({e})").into(),
+                    &format!("fpmedia-web: PlayPrime iterator poison → restart ({e})").into(),
                 );
-                self.clear_presentation();
-                self.invalidate_decoder();
-                self.fill_presentation_queue(epoch).await
+                self.start_play_iter(head, epoch).await
             }
             Err(e) => Err(e),
         }
     }
 
+    /// Paused Next ring length (0 while playing).
     pub fn presentation_len(&self) -> usize {
         self.shared.presentation.borrow().len()
     }
 
-    /// True underrun: presentation empty while the next frame is already due.
+    /// True underrun: no `nextFrame` while the next timeline frame is already due.
     ///
-    /// Used to freeze the media clock (not for `skip_behind`). Distinct from a
-    /// healthy empty queue while waiting for the next frame's deadline.
+    /// Used to freeze the media clock. Distinct from a healthy wait for the next
+    /// frame's deadline.
     pub fn play_underrun_hold(&self) -> bool {
-        if !self.is_playing() || self.shared.session.get().is_restarting() {
+        if !self.is_playing()
+            || self.shared.session.get().is_restarting()
+            || !self.shared.play_phase.get().presents()
+        {
             return false;
         }
-        // Shuttle: keep clock running (skip overdue when frames arrive).
+        // Shuttle: keep clock running (overdue frames are drawn as they arrive).
         if self.is_shuttle() {
             return false;
         }
-        if self.presentation_len() > 0 {
+        if self.shared.play_next.borrow().is_some() || !self.play_pending() {
             return false;
         }
         let state = self.state();
@@ -604,39 +516,10 @@ impl VideoPlayer {
         self.media_time() >= start
     }
 
-    /// Media-clock seconds ahead of the next needed frame while the presentation
-    /// queue is empty (play underrun). `None` if not underrunning or lag below
-    /// [`BIG_LAG_SECONDS`]. Prefer [`Self::play_underrun_hold`] + clock freeze for
-    /// Chrome; `skip_behind` remains for explicit catch-up.
-    pub fn play_underrun_behind(&self) -> Option<f64> {
-        if !self.play_underrun_hold() {
-            return None;
-        }
-        let state = self.state();
-        let next = state.frame.saturating_add(1);
-        let start = self.frame_timestamp_seconds(next).ok()?;
-        let behind = self.media_time() - start;
-        (behind >= BIG_LAG_SECONDS).then_some(behind)
-    }
-
-    /// True when the presentation queue already holds through the last frame.
-    pub(super) fn presentation_reaches_eof(&self) -> bool {
-        let count = self.state().frame_count;
-        if count == 0 {
-            return false;
-        }
-        self.shared
-            .presentation
-            .borrow()
-            .back()
-            .is_some_and(|q| q.frame + 1 >= count)
-    }
-
-    /// Snap live play clock back to the committed playhead (shuttle clock race).
+    /// Snap live play clock back to the committed playhead (overdue storm).
     ///
     /// AAC: soft-hold then `restart_warm`. Silent [`PlaybackClock`] / wall: reset
-    /// origins. Audio-driven shuttle: soft-hold then `restart_warm` so
-    /// `media_time()` follows again.
+    /// origins.
     pub(super) fn snap_playing_clock_to_playhead(&self) {
         let playhead = self.state().frame;
         let Ok(t) = self.frame_timestamp_seconds(playhead) else {
@@ -673,7 +556,7 @@ impl VideoPlayer {
         }
     }
 
-    /// Sync present — safe to call while [`Self::prefetch_one`] is awaiting.
+    /// mediabunny `render`: draw `nextFrame` once its timestamp is due.
     pub fn present_due(&self, media_time_secs: f64) -> Result<DuePresent, MediaError> {
         if !self.is_playing() {
             return Ok(DuePresent::Ended);
@@ -709,482 +592,44 @@ impl VideoPlayer {
         };
         if let Some(wall) = eof_wall_decision(
             media_time_secs >= last_end,
-            self.presentation_len(),
-            self.state().frame,
-            count.saturating_sub(1),
+            self.play_pending(),
             self.is_looping(),
         ) {
             match wall {
-                // Fall through to present remaining due frames at EOF.
                 EofWall::DrainRemaining => {}
-                // Shuttle / wall-clock: media_time raced past duration mid-timeline.
-                // mediabunny: no equivalent (no rate API).
-                EofWall::SnapClockContinue => {
-                    self.snap_playing_clock_to_playhead();
-                    return Ok(DuePresent::Playing { did_draw: false });
-                }
                 EofWall::NeedsLoop => return Ok(DuePresent::NeedsLoop),
                 EofWall::Ended => {
                     self.shared.playing.set(false);
-                    self.clear_presentation();
-                    self.clear_step_ring();
+                    self.end_play_iter();
                     return Ok(DuePresent::Ended);
                 }
             }
         }
 
-        let mut did_draw = false;
-        let mut skipped_any = false;
-        loop {
-            let front_frame = self.shared.presentation.borrow().front().map(|q| q.frame);
-            let Some(front_frame) = front_frame else {
-                break;
-            };
-            let start = self.frame_timestamp_seconds(front_frame)?;
-            if start > media_time_secs {
-                break;
-            }
-
-            let next_id = self.shared.presentation.borrow().get(1).map(|n| n.frame);
-            let next_also_due = match next_id {
-                Some(n) => self.frame_timestamp_seconds(n)? <= media_time_secs,
-                None => false,
-            };
-
-            let queued = self
-                .shared
-                .presentation
-                .borrow_mut()
-                .pop_front()
-                .expect("front checked");
-            // Drop overdue queued frames so Play stays on the clock (smoothness).
-            // Product: Exact = seek/Pause; Play ≠ paint every frame (`product.md`).
-            // mediabunny `updateNextFrame`: overdue samples are drawn in a tight
-            // loop (only the last is visible) — equivalent to skip-to-latest here.
-            // Do **not** soft-pace / catch-up burst (micro-stutter).
-            if next_also_due {
-                skipped_any = true;
-                let lag_ms = ((media_time_secs - start) * 1000.0).max(0.0);
-                self.shared.last_behind_ms.set(Some(lag_ms));
-                self.shared
-                    .frames_skipped
-                    .set(self.shared.frames_skipped.get().saturating_add(1));
-                drop(queued.video);
-                self.shared.commit_frame(queued.frame)?;
-                continue;
-            }
-
-            let lag_ms = ((media_time_secs - start) * 1000.0).max(0.0);
-            if lag_ms > 1.0 {
-                self.shared.last_behind_ms.set(Some(lag_ms));
-            }
-            // Play: Exact ingest of presented frame; densify stays off.
-            self.present_play_frame(queued.frame, queued.video)?;
-            self.touch_playhead(queued.frame);
-            self.shared.commit_frame(queued.frame)?;
-            did_draw = true;
-            break;
-        }
-
-        // Silent PlaybackClock only: after skip-to-latest, realign the driver to
-        // the painted playhead so the next rAF is not still overdue (ChG full
-        // multi-second skip storm while decode catches up). AAC keeps audio as
-        // master — do not snap. mediabunny: updateNextFrame draws overdue then
-        // waits for a future sample; no separate skip meter.
-        if skipped_any
-            && did_draw
-            && self
-                .shared
-                .playback_clock
-                .as_ref()
-                .is_some_and(|c| c.is_running())
-        {
-            self.snap_playing_clock_to_playhead();
-        }
-
-        Ok(DuePresent::Playing { did_draw })
-    }
-
-    /// Reverse present: key-hop only — show older sync, snap clock (`mediabunny: #350`).
-    ///
-    /// One sync per rAF. Do **not** End merely because `media_time <= 0` mid-timeline.
-    /// Apply a prepared loop buffer if ready; otherwise cold-restart at frame 0.
-    ///
-    /// Prefer [`Self::prepare_loop_if_needed`] while the end still plays (same
-    /// decoder, end frames already queued) so this is only a buffer swap.
-    pub async fn loop_to_start(&self) -> Result<(), MediaError> {
-        let mut waits = 0_u32;
-        while self.shared.session.get().is_preparing_loop() && waits < 500 {
-            sleep_ms(5).await;
-            waits += 1;
-        }
-
-        if self.apply_loop_prime()? {
-            return Ok(());
-        }
-
-        self.loop_to_start_cold().await
-    }
-
-    /// When the end of the clip is already in the presentation queue, reuse the
-    /// main decoder to decode the start into `loop_prime` while presents drain
-    /// the tail — no second `VideoDecoder`.
-    ///
-    /// Do **not** set `restarting` here — that freezes underrun hold and is for
-    /// seek/cold restart only. Prefetch is gated by `preparing_loop` via
-    /// [`Self::wants_play_prefetch`] / [`Self::prefetch_one`].
-    pub async fn prepare_loop_if_needed(&self) -> Result<(), MediaError> {
-        if !self.is_looping() || !self.is_playing() {
-            return Ok(());
-        }
-        if self.shared.loop_prime.borrow().is_some()
-            || self.shared.session.get().is_preparing_loop()
-        {
-            return Ok(());
-        }
-        if !self.presentation_reaches_eof() {
-            return Ok(());
-        }
-
-        self.apply_session_event(crate::SessionEvent::BeginPrepareLoop);
-        let epoch = self.shared.op_epoch.get();
-        let result = self.fill_loop_prime(epoch).await;
-        self.apply_session_event(crate::SessionEvent::EndPrepareLoop);
-        result
-    }
-
-    pub(super) fn apply_loop_prime(&self) -> Result<bool, MediaError> {
-        let Some(mut buf) = self.shared.loop_prime.borrow_mut().take() else {
-            return Ok(false);
-        };
-        let Some(first) = buf.pop_front() else {
-            return Ok(false);
-        };
-
-        self.clear_presentation();
-        self.clear_step_ring();
-        // Keep Covered + Exact across the loop seam — same clip, caches stay valid.
-        self.present_and_cache(first.frame, first.video)?;
-        self.touch_playhead(first.frame);
-        self.trim_exact_for_play();
-        self.shared.commit_frame(first.frame)?;
-        *self.shared.presentation.borrow_mut() = buf;
-        // Decoder is already warm past the primed start frames.
-        Ok(true)
-    }
-
-    pub(super) async fn fill_loop_prime(&self, epoch: u64) -> Result<(), MediaError> {
-        self.invalidate_decoder();
-        let track = self.shared.track.clone();
-        let count = self.state().frame_count;
-        let n = (self
+        let due = self
             .shared
-            .track
-            .metadata_ref()
-            .play_policy()
-            .loop_prime_frames() as FrameId)
-            .clamp(1, count.max(1));
-        let mut buf: VecDeque<QueuedFrame> = VecDeque::new();
-
-        for frame in 0..n {
-            if !self.is_playing() || !self.is_looping() || !self.is_current(epoch) {
-                for q in buf.drain(..) {
-                    drop(q.video);
-                }
-                return Ok(());
-            }
-            match self.decode_frame(&track, frame, epoch).await {
-                Ok(video) => buf.push_back(QueuedFrame { frame, video }),
-                Err(MediaError::Cancelled) => {
-                    for q in buf.drain(..) {
-                        drop(q.video);
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    for q in buf.drain(..) {
-                        drop(q.video);
-                    }
-                    return Err(e);
-                }
-            }
+            .play_next
+            .borrow()
+            .as_ref()
+            .is_some_and(|n| n.ts <= media_time_secs);
+        if !due {
+            return Ok(DuePresent::Playing { did_draw: false });
         }
-
-        if !self.is_current(epoch) {
-            for q in buf.drain(..) {
-                drop(q.video);
-            }
-            return Ok(());
-        }
-
-        *self.shared.loop_prime.borrow_mut() = Some(buf);
-        Ok(())
-    }
-
-    pub(super) async fn loop_to_start_cold(&self) -> Result<(), MediaError> {
-        let epoch = self.begin_op();
-        self.apply_session_event(crate::SessionEvent::BeginRestart);
-        let result = async {
-            self.clear_loop_prime();
-            self.clear_presentation();
-            self.clear_step_ring();
-            // Same clip — do not wipe Covered/Exact (was: strip vanished every loop).
-            self.invalidate_decoder();
-            self.goto_frame(0, epoch).await?;
-            self.touch_playhead(0);
-            if self.is_playing() && self.is_current(epoch) {
-                self.trim_exact_for_play();
-                let ahead = self
-                    .metadata()
-                    .play_policy()
-                    .loop_prime_frames()
-                    .saturating_sub(1);
-                self.prime_presentation(ahead, epoch).await?;
-            }
-            Ok(())
-        }
-        .await;
-        self.apply_session_event(crate::SessionEvent::EndRestart);
-        if !self.is_current(epoch) {
-            return Err(MediaError::Cancelled);
-        }
-        result
-    }
-
-    /// Decode one frame into the queue. May run concurrently with [`Self::present_due`].
-    ///
-    /// No-ops while restarting or preparing a loop prime — those paths own the
-    /// decoder (`prime_presentation` / `fill_loop_prime`).
-    pub async fn prefetch_one(&self) -> Result<bool, MediaError> {
-        if !self.is_playing()
-            || !self.shared.play_session_live.get()
-            || self.shared.play_loop_seam.get()
-            || self.shared.resuming_clock.get()
-            || self.shared.session.get().blocks_prefetch()
-        {
-            return Ok(false);
-        }
-        let epoch = self.shared.op_epoch.get();
-        self.enqueue_next_presentation_frame(epoch).await
-    }
-
-    /// Push the next presentation-order frame (ignores the restarting gate).
-    pub(super) async fn enqueue_next_presentation_frame(
-        &self,
-        epoch: u64,
-    ) -> Result<bool, MediaError> {
-        self.enqueue_presentation_frame(epoch, true).await
-    }
-
-    /// Decode the next presentation frame into the queue.
-    ///
-    /// `require_playing`: play/prefetch path drops work if paused mid-await.
-    /// Scrub-settle seed (mediabunny `startVideoIterator` first two frames)
-    /// passes `false` so frames land while still soft-paused for resume.
-    async fn enqueue_presentation_frame(
-        &self,
-        epoch: u64,
-        require_playing: bool,
-    ) -> Result<bool, MediaError> {
-        if self.presentation_len() >= self.play_presentation_cap() {
-            return Ok(false);
-        }
-        let (track, next) = {
-            let count = self.shared.track.frame_count();
-            let next = self
-                .shared
-                .presentation
-                .borrow()
-                .back()
-                .map(|q| q.frame.saturating_add(1))
-                .unwrap_or_else(|| self.shared.frame.get().saturating_add(1));
-            if next >= count {
-                return Ok(false);
-            }
-            let track = self.shared.track.clone();
-            // Stay ahead of mfra index so play never stalls at a chunk seam
-            // (warm+batch ≈ every ~24 frames with chunk=2; was ~120 with chunk=8).
-            // Stay ahead of mfra index so play never stalls at a chunk seam.
-            if !track.fragments_complete() {
-                let indexed = track.indexed_frame_count();
-                let lead = self
-                    .shared
-                    .track
-                    .metadata_ref()
-                    .settle_policy()
-                    .play_index_lead;
-                if next.saturating_add(lead) >= indexed {
-                    track.request_index_through(next.saturating_add(lead.saturating_mul(2)));
-                }
-                track.prefetch_samples_ahead(next, lead);
-            }
-            (track, next)
-        };
-        let video = match self.decode_frame(&track, next, epoch).await {
-            Ok(v) => v,
-            Err(MediaError::Cancelled) => return Ok(false),
-            Err(e) => return Err(e),
-        };
-        if !self.is_current(epoch) || (require_playing && !self.is_playing()) {
-            drop(video);
-            return Ok(false);
-        }
-        self.shared
-            .presentation
+        let next = self
+            .shared
+            .play_next
             .borrow_mut()
-            .push_back(QueuedFrame { frame: next, video });
-        Ok(true)
-    }
-
-    /// After Exact settle: fill the first presentation frames (mediabunny
-    /// `startVideoIterator` awaits first two canvases before `play`). PlayPrime
-    /// skips byte-warm + fill when this queue is already primed.
-    pub(super) async fn seed_play_presentation_after_seek(
-        &self,
-        epoch: u64,
-    ) -> Result<(), MediaError> {
-        let target = self
-            .shared
-            .track
-            .metadata_ref()
-            .settle_policy()
-            .play_prime_frames
-            .min(self.play_presentation_cap());
-        while self.presentation_len() < target {
-            if !self.is_current(epoch) {
-                return Err(MediaError::Cancelled);
-            }
-            match self.enqueue_presentation_frame(epoch, false).await {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
-                Err(e) => return Err(e),
-            }
+            .take()
+            .expect("due checked");
+        if let Some(pool) = self.shared.play_pool.borrow().as_ref() {
+            pool.draw(next.slot, &self.shared.canvas, &self.shared.ctx)?;
         }
-        Ok(())
-    }
-
-    /// Reverse: fill toward the past — sync key only (`mediabunny: #350`).
-    pub async fn prefetch_until(&self, deadline_ms: f64) -> Result<usize, MediaError> {
-        let mut decoded = 0usize;
-        while self.is_playing() && self.presentation_len() < self.play_presentation_cap() {
-            if let Some(now) = now_ms()
-                && now + PREFETCH_DEADLINE_SLACK_MS >= deadline_ms
-            {
-                break;
-            }
-            if !self.prefetch_one().await? {
-                break;
-            }
-            decoded += 1;
+        let lag_ms = ((media_time_secs - next.ts) * 1000.0).max(0.0);
+        if lag_ms > 1.0 {
+            self.shared.last_behind_ms.set(Some(lag_ms));
         }
-        Ok(decoded)
-    }
-
-    pub(super) fn catch_up_frame(
-        &self,
-        next: FrameId,
-        behind_seconds: f64,
-    ) -> Result<FrameId, MediaError> {
-        let index = self.shared.track.index();
-        let next_entry = index.get(next).ok_or(MediaError::FrameOutOfRange(
-            next,
-            self.shared.track.frame_count(),
-        ))?;
-        let timescale = next_entry.timescale.max(1) as f64;
-        let desired_ticks =
-            next_entry.composition_timestamp_ticks as f64 + behind_seconds * timescale;
-
-        let mut target = next;
-        for entry in index.frames().iter().skip(next as usize) {
-            if entry.composition_timestamp_ticks as f64 <= desired_ticks {
-                target = entry.frame;
-            } else {
-                break;
-            }
-        }
-
-        if behind_seconds >= BIG_LAG_SECONDS
-            && let Some(key) = index.nearest_keyframe(target)
-            && key >= next
-        {
-            return Ok(key);
-        }
-        Ok(target)
-    }
-
-    pub(super) async fn present_frame(&self, frame: FrameId) -> Result<(), MediaError> {
-        {
-            let mut presentation = self.shared.presentation.borrow_mut();
-            if let Some(front) = presentation.front() {
-                if front.frame == frame {
-                    let queued = presentation.pop_front().expect("front checked");
-                    drop(presentation);
-                    self.present_for_mode(queued.frame, queued.video)?;
-                    self.touch_playhead(queued.frame);
-                    self.shared.commit_frame(queued.frame)?;
-                    return Ok(());
-                }
-                if front.frame < frame {
-                    drop(presentation);
-                    self.drain_presentation_before(frame);
-                    let mut presentation = self.shared.presentation.borrow_mut();
-                    if presentation.front().is_some_and(|f| f.frame == frame) {
-                        let queued = presentation.pop_front().expect("front checked");
-                        drop(presentation);
-                        self.present_for_mode(queued.frame, queued.video)?;
-                        self.touch_playhead(queued.frame);
-                        self.shared.commit_frame(queued.frame)?;
-                        return Ok(());
-                    }
-                } else {
-                    drop(presentation);
-                    self.clear_presentation();
-                    self.clear_step_ring();
-                }
-            }
-        }
-        self.goto_frame(frame, self.shared.op_epoch.get()).await
-    }
-
-    pub(super) async fn fill_presentation_queue(&self, epoch: u64) -> Result<(), MediaError> {
-        // Start playback after a couple of frames; background prefetch fills to CAP.
-        let min_frames = self
-            .shared
-            .track
-            .metadata_ref()
-            .settle_policy()
-            .play_prime_frames;
-        self.prime_presentation(min_frames, epoch).await
-    }
-
-    /// Decode up to `min_frames` into the presentation queue (bypasses restarting gate).
-    pub(super) async fn prime_presentation(
-        &self,
-        min_frames: usize,
-        epoch: u64,
-    ) -> Result<(), MediaError> {
-        let target = min_frames.min(self.play_presentation_cap());
-        while self.presentation_len() < target {
-            if !self.is_current(epoch) {
-                return Err(MediaError::Cancelled);
-            }
-            match self.enqueue_next_presentation_frame(epoch).await {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn drain_presentation_before(&self, frame: FrameId) {
-        let mut presentation = self.shared.presentation.borrow_mut();
-        while presentation.front().is_some_and(|f| f.frame < frame) {
-            if let Some(q) = presentation.pop_front() {
-                drop(q.video);
-            }
-        }
+        self.shared.commit_frame(next.frame)?;
+        self.touch_playhead(next.frame);
+        Ok(DuePresent::Playing { did_draw: true })
     }
 }

@@ -109,26 +109,46 @@ impl CacheState {
         self.windows.iter().map(|w| w.bytes.len()).sum()
     }
 
-    /// Hit → `(bytes, window_start, window_end)`.
+    /// Hit → `(bytes, region_start, region_end)` (contiguous run, see [`Self::run_span`]).
     fn hit(&mut self, offset: u64, len: usize) -> Option<(Bytes, u64, u64)> {
         let idx = self.windows.iter().position(|w| w.contains(offset, len))?;
         let out = self.windows[idx].slice(offset, len);
-        let start = self.windows[idx].offset;
-        let end = self.windows[idx].end();
+        let (start, end) = self.run_span(self.windows[idx].offset, self.windows[idx].end());
         let win = self.windows.remove(idx);
         self.windows.push(win);
         Some((out, start, end))
+    }
+
+    /// Extend `[start, end)` across abutting / overlapping windows without
+    /// copying — the read region network grow + right margin see
+    /// (mediabunny: worker `startPos..targetPos` span).
+    fn run_span(&self, mut start: u64, mut end: u64) -> (u64, u64) {
+        loop {
+            let mut grew = false;
+            for w in &self.windows {
+                if w.offset < start && w.end() >= start {
+                    start = w.offset;
+                    grew = true;
+                }
+                if w.end() > end && w.offset <= end {
+                    end = w.end();
+                    grew = true;
+                }
+            }
+            if !grew {
+                return (start, end);
+            }
+        }
     }
 
     /// Find a sequential anchor for a miss at `offset` (most-recent first).
     fn sequential_anchor(&self, offset: u64) -> Option<(u64, u64)> {
         for w in self.windows.iter().rev() {
             let end = w.end();
-            if offset >= w.offset && offset < end {
-                return Some((w.offset, end));
-            }
-            if offset >= end && offset.saturating_sub(end) <= SEQ_SLACK {
-                return Some((w.offset, end));
+            let near = (offset >= w.offset && offset < end)
+                || (offset >= end && offset.saturating_sub(end) <= SEQ_SLACK);
+            if near {
+                return Some(self.run_span(w.offset, end));
             }
         }
         None
@@ -142,14 +162,22 @@ impl CacheState {
         if win.bytes.is_empty() {
             return;
         }
-        // Merge overlapping / abutting windows into one contiguous buffer so
-        // sequential growth sees the full region (mediabunny worker span).
+        // Join only on real overlap — abutting windows stay separate, or every
+        // sequential sample read re-copies one ever-growing buffer that the
+        // budget can never evict (Play FPS decays with position).
+        // mediabunny: src/source.ts ReadOrchestrator.insertIntoCache.
         let mut i = 0;
         while i < self.windows.len() {
             let w = &self.windows[i];
-            if w.end() < win.offset || win.end() < w.offset {
+            if w.end() <= win.offset || win.end() <= w.offset {
                 i += 1;
                 continue;
+            }
+            if w.offset <= win.offset && w.end() >= win.end() {
+                // Already resident — refresh LRU only.
+                let w = self.windows.remove(i);
+                self.windows.push(w);
+                return;
             }
             let start = w.offset.min(win.offset);
             let end = w.end().max(win.end());
@@ -856,6 +884,22 @@ mod tests {
         let _ = poll_ready(&cached, 16 * 1024 + 4, 4).unwrap();
         let _ = poll_ready(&cached, 32 * 1024 + 4, 4).unwrap();
         assert_eq!(counting.reads.load(Ordering::SeqCst), mid);
+    }
+
+    #[test]
+    fn sequential_abutting_reads_stay_within_budget() {
+        let data: Vec<u8> = (0u8..=255).cycle().take(64 * 1024).collect();
+        let counting = CountingSource::new(data);
+        let cached = CachedSource::with_budget(counting, 1024, 4 * 1024, None);
+        for i in 0..64u64 {
+            let off = i * 1000;
+            let got = poll_ready(&cached, off, 1000).unwrap();
+            assert_eq!(got[0], (off % 256) as u8);
+        }
+        let wins = cached.debug_windows();
+        let resident: u64 = wins.iter().map(|(s, e)| e - s).sum();
+        assert!(resident <= 4 * 1024, "resident={resident} wins={wins:?}");
+        assert!(wins.len() > 1, "abutting reads must not join: {wins:?}");
     }
 
     #[test]

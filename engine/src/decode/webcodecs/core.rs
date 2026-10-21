@@ -527,7 +527,7 @@ impl DecoderCore {
     }
 
     /// mediabunny `onQueueDequeue` after consumer take / early sample close.
-    fn wake_dequeue_waiters(&self) {
+    pub(super) fn wake_dequeue_waiters(&self) {
         let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
         wake_waiters_deferred(waiting);
     }

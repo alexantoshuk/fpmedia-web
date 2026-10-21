@@ -176,8 +176,15 @@ fn demo_pipeline_line(stats: Option<PipelineStats>) -> String {
         String::new()
     };
     let dense = if s.scrub_busy { " · dense" } else { "" };
+    let waits = match s.play_waits {
+        Some(w) => format!(
+            "\nwait/s rd {:.0} (max {:.0}) · out {:.0} · cap {:.0} · raf>50 {} (max {:.0})",
+            w.read_ms, w.read_max_ms, w.out_wait_ms, w.cap_wait_ms, w.raf_stalls, w.raf_max_ms
+        ),
+        None => String::new(),
+    };
     format!(
-        "q {}/{} · held {} · decodeQ {} · skipped {}{}{}{}{}",
+        "q {}/{} · held {} · decodeQ {} · skipped {}{}{}{}{}{}",
         s.presentation_len,
         s.presentation_cap,
         if s.held_len == usize::MAX {
@@ -195,6 +202,7 @@ fn demo_pipeline_line(stats: Option<PipelineStats>) -> String {
         lag,
         holds,
         dense,
+        waits,
     )
 }
 
@@ -939,7 +947,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         </svg>
                     </button>
                 </div>
-                <p class="wm-pipeline" data-testid="pipeline">
+                <p class="wm-pipeline" data-testid="pipeline" style="white-space: pre-line">
                     {move || demo_pipeline_line(video.pipeline.get())}
                 </p>
                 // Machine-readable PipelineStats for e2e zone targeting / latency samples.

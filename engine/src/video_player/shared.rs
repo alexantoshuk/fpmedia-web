@@ -16,29 +16,27 @@ use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::scrub_blit::BlitCanvasSlot;
 #[cfg(feature = "thumbs")]
 use crate::decode::thumb_preview::ThumbPreview;
-use crate::decode::webcodecs::WebCodecsDecoder;
+use crate::decode::webcodecs::{PlayIter, WebCodecsDecoder};
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::model::bg_task::SingleFlight;
 use crate::model::clock_state::ClockState;
 use crate::model::decoder_slot::DecoderSlotModel;
 use crate::model::engine_mode::EngineModel;
+use crate::model::play_phase::PlayPhase;
 use crate::model::session::SessionModel;
 use crate::policy::{ScrubCachePolicy, ThumbPolicy};
 use crate::residency::ScrubChunkStore;
 use crate::types::{FrameId, Timestamp};
 
 use super::api::PlayerState;
+use super::play_pool::PlayCanvasPool;
 use crate::policy::workload::WorkloadHints;
 
-/// Live VF ahead of the playhead (play prefetch + Next hits).
-/// Keep small on Hd — each slot pins a `VideoFrame`; 16 + in-flight decode starved
-/// Chromium's pool on long-GOP play (`flush/idle` mid-GOP with `decodeQ≈12`).
+/// Live VF ahead of the playhead for paused Next hits (not used by Play).
 /// Pair with [`STEP_BEHIND_CAP`] (ring ≈ 1 displayed + 8 behind + 4 ahead).
 /// Hd default = [`crate::PLAY_PRESENTATION_CAP_HD`]; Uhd uses [`PlayPolicy`].
 pub(crate) const PRESENTATION_QUEUE_CAP: usize = crate::PLAY_PRESENTATION_CAP_HD;
-/// Ahead depth while shuttling forward (`rate >= 2`) — keep decode light.
-pub(super) const SHUTTLE_PRESENTATION_QUEUE_CAP: usize = 2;
 /// Live VF older than the playhead for Prev without key→N (step/scrub ring).
 /// mediabunny reverse always restarts from key unless samples are retained —
 /// this is the SampleCursor-lite behind window (`media-sink.ts` flush on rewind).
@@ -51,16 +49,18 @@ pub(super) const STEP_BEHIND_CAP_PLAY: usize = 0;
 /// Extra in-flight / held VF beyond displayed + presentation queue when sizing
 /// Exact trim on Play (YUV↔RGBA heuristic headroom).
 pub(super) const PLAY_EXACT_VRAM_VF_SLACK: usize = 4;
-/// Ceiling on near-EOF presentation growth (live VF VRAM).
-pub(super) const LOOP_NEAR_END_PRESENTATION_CAP_MAX: usize = 64;
-/// Wall-clock lag above this → skip to nearest keyframe instead of exact frame.
-pub(super) const BIG_LAG_SECONDS: f64 = 0.5;
-/// Stop prefetching this many ms before the present deadline.
-pub(super) const PREFETCH_DEADLINE_SLACK_MS: f64 = 3.0;
 
 pub(super) struct QueuedFrame {
     pub(super) frame: FrameId,
     pub(super) video: OwnedVideoFrame,
+}
+
+/// Decoded Play frame waiting for its timestamp (mediabunny `nextFrame`).
+pub(super) struct PlayNext {
+    pub(super) frame: FrameId,
+    pub(super) ts: f64,
+    /// [`PlayCanvasPool`] slot holding the pixels.
+    pub(super) slot: usize,
 }
 
 /// Single playhead cache — fill policy lives in [`EngineModel`].
@@ -108,8 +108,6 @@ pub(super) struct Shared {
     pub(super) scrub_gesture: Cell<bool>,
     /// Play vs scrub densify / exact hold + soft-hold audio.
     pub(super) engine: Cell<EngineModel>,
-    /// Start frames decoded ahead of the loop seam (same decoder, while end plays).
-    pub(super) loop_prime: RefCell<Option<VecDeque<QueuedFrame>>>,
     pub(super) canvas: HtmlCanvasElement,
     pub(super) ctx: CanvasRenderingContext2d,
     pub(super) frames_skipped: Cell<u64>,
@@ -122,25 +120,26 @@ pub(super) struct Shared {
     pub(super) underrun_hold_since_ms: Cell<Option<f64>>,
     /// Timeline phase ([`ClockState`]) — run / stop / underrun / scrub hold.
     pub(super) clock_state: Cell<ClockState>,
-    /// Prefetch / seek-loop gates ([`SessionModel`]).
+    /// Seek / scrub restart latch ([`SessionModel`]).
     pub(super) session: Cell<SessionModel>,
-    /// PlayPrime succeeded and host may present — mirrors former host `PlaySession`.
-    /// Cleared on pause / soft-hold / teardown.
-    pub(super) play_session_live: Cell<bool>,
+    /// Play session lifetime + loop seam ([`PlayPhase`]).
+    pub(super) play_phase: Cell<PlayPhase>,
+    /// Continuous Play range — owns the main decoder while `Some`.
+    pub(super) play_iter: RefCell<Option<PlayIter>>,
+    /// mediabunny `nextFrame` (pixels in [`Self::play_pool`]).
+    pub(super) play_next: RefCell<Option<PlayNext>>,
+    /// Lazily created on first Play.
+    pub(super) play_pool: RefCell<Option<PlayCanvasPool>>,
+    /// `updateNextFrame` single-flight.
+    pub(super) play_updating: Cell<bool>,
     /// No-AAC: arm silent [`crate::audio::PlaybackClock`] on first present tick.
     /// `mediabunny: media-player play` / `audioContextStartTime`.
     pub(super) pending_silent_clock: Cell<bool>,
-    /// Warm clock resume in flight — do not stack; pause prefetch.
+    /// Warm clock resume in flight — do not stack.
     pub(super) resuming_clock: Cell<bool>,
-    /// Present/prefetch frozen across `loop_to_start` + clock resume (outer seam;
-    /// distinct from [`SessionModel::restarting`] cold-decode latch).
-    pub(super) play_loop_seam: Cell<bool>,
     /// Media time snapped at underrun / hidden hold for warm resume.
     pub(super) held_media_origin: Cell<Option<f64>>,
-    /// Bumped each [`super::VideoPlayer::begin_play_session`] so prior prefetch
-    /// drivers exit.
-    pub(super) play_prefetch_gen: Cell<u64>,
-    /// Prefetch / loop async failure for the next [`super::VideoPlayer::play_raf_tick`].
+    /// Iterator / loop async failure for the next [`super::VideoPlayer::play_raf_tick`].
     pub(super) play_driver_error: RefCell<Option<String>>,
     /// Bumped to cancel in-flight decode (mediabunny dispose / asyncId).
     pub(super) op_epoch: Cell<u64>,

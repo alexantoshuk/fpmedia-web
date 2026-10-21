@@ -233,6 +233,31 @@ export class DemoPlayer {
     return parseStatus(await this.status.innerText());
   }
 
+  /**
+   * Latch whether the status line ever shows `playing` (catches Play windows
+   * shorter than the `expect.poll` interval, e.g. Play from the last frame).
+   * Returns a reader for the latch.
+   */
+  async watchPlaying(): Promise<() => Promise<boolean>> {
+    await this.status.evaluate((el) => {
+      const w = window as unknown as { __fpmSawPlaying?: boolean };
+      const check = () => {
+        if (/\bplaying\b/.test(el.textContent ?? "")) w.__fpmSawPlaying = true;
+      };
+      w.__fpmSawPlaying = false;
+      check();
+      new MutationObserver(check).observe(el, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    });
+    return () =>
+      this.page.evaluate(
+        () => (window as unknown as { __fpmSawPlaying?: boolean }).__fpmSawPlaying === true,
+      );
+  }
+
   /** Parsed rate badge (`1.00x`, `-2.00x`). */
   async readPlaybackRate(): Promise<number> {
     const text = (await this.playbackRate.innerText()).trim();

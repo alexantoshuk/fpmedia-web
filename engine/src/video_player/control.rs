@@ -168,7 +168,6 @@ impl VideoPlayer {
         // while playing. Clock cmds still gated by `was_playing`.
         self.shared.playing.set(false);
         self.clear_play_session();
-        self.clear_loop_prime();
         self.apply_engine_event_gated(
             EngineEvent::EnterScrub {
                 soft_audio,
@@ -251,9 +250,6 @@ impl VideoPlayer {
 
     pub fn set_loop(&self, looping: bool) {
         self.shared.looping.set(looping);
-        if !looping {
-            self.clear_loop_prime();
-        }
     }
 
     pub fn is_looping(&self) -> bool {
@@ -286,7 +282,7 @@ impl Drop for VideoPlayer {
             c.close();
         }
         self.drop_thumb_sink();
-        self.clear_loop_prime();
+        self.clear_play_session();
         self.clear_presentation();
         self.clear_step_ring();
         // Bumps scrub_epoch + drops scrub decoder + clears Covered/Exact.

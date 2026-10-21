@@ -1,24 +1,19 @@
-//! Pure play / EOF / near-EOF policy helpers (no WebCodecs / canvas).
+//! Pure play / EOF policy helpers (no WebCodecs / canvas).
 //!
-//! Extracted from [`crate::video_player`] so underrun / EOF wall / loop-prepare
-//! math is unit-testable on native. Behaviour unchanged — callers wire results.
+//! Extracted from [`crate::video_player`] so the EOF wall is unit-testable on
+//! native. Callers wire results.
 //!
-//! EOF wall mid-timeline snap: `mediabunny: no equivalent` (no rate API).
-//! Present-queue drain before End mirrors sink consumer emptying before stop.
-
-use crate::types::FrameId;
+//! Drain before End mirrors mediabunny `render`: keep drawing `nextFrame` until
+//! the iterator returns nothing (`examples/media-player/media-player.ts`).
 
 /// What to do when media time is at/past the timeline end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EofWall {
-    /// Presentation still has frames — keep presenting due frames.
+    /// Iterator still has frames (or `nextFrame` waits) — keep presenting.
     DrainRemaining,
-    /// Clock raced past duration while playhead is not on the last frame
-    /// (shuttle / wall-clock rates). Snap clock; do not End.
-    SnapClockContinue,
-    /// At last frame, looping — host should restart.
+    /// Iterator exhausted, looping — host should restart at frame 0.
     NeedsLoop,
-    /// At last frame, not looping — pause and End.
+    /// Iterator exhausted, not looping — pause and End.
     Ended,
 }
 
@@ -39,56 +34,20 @@ pub fn eof_timeline_end(
 
 /// Decision at/past timeline end (before drawing due frames when draining).
 ///
-/// `past_end` = `media_time >= last_end`. Empty presentation + playhead before
-/// last → snap (shuttle race); at last → loop or end.
-pub fn eof_wall_decision(
-    past_end: bool,
-    presentation_len: usize,
-    playhead: FrameId,
-    last_id: FrameId,
-    looping: bool,
-) -> Option<EofWall> {
+/// `past_end` = `media_time >= last_end`; `pending` = Play iterator not yet
+/// exhausted or a decoded `nextFrame` still waits.
+pub fn eof_wall_decision(past_end: bool, pending: bool, looping: bool) -> Option<EofWall> {
     if !past_end {
         return None;
     }
-    if presentation_len > 0 {
+    if pending {
         return Some(EofWall::DrainRemaining);
-    }
-    if playhead < last_id {
-        return Some(EofWall::SnapClockContinue);
     }
     Some(if looping {
         EofWall::NeedsLoop
     } else {
         EofWall::Ended
     })
-}
-
-/// True when remaining frames are within rate-scaled `lead_secs` of EOF.
-pub fn near_eof_by_frames(frames_left: f64, lead_secs: f64, fps: f64, rate: f64) -> bool {
-    if lead_secs <= 0.0 {
-        return false;
-    }
-    let rate = rate.max(0.25);
-    let fps = if fps.is_finite() && fps > 0.0 {
-        fps
-    } else {
-        24.0
-    };
-    let lead_frames = (lead_secs * fps * rate).ceil().max(1.0);
-    frames_left <= lead_frames
-}
-
-/// Frames to keep queued near EOF for loop-prime / drain (clamped).
-pub fn loop_drain_frames(budget_secs: f64, fps: f64, rate: f64, floor: usize, cap: usize) -> usize {
-    let rate = rate.max(0.25);
-    let fps = if fps.is_finite() && fps > 0.0 {
-        fps
-    } else {
-        24.0
-    };
-    let needed = (budget_secs * fps * rate).ceil() as usize;
-    needed.clamp(floor, cap)
 }
 
 #[cfg(test)]
@@ -103,52 +62,23 @@ mod tests {
 
     #[test]
     fn eof_wall_not_past_end() {
-        assert_eq!(eof_wall_decision(false, 0, 0, 99, false), None);
+        assert_eq!(eof_wall_decision(false, false, false), None);
     }
 
     #[test]
-    fn eof_wall_drain_when_queue_nonempty() {
+    fn eof_wall_drain_while_pending() {
         assert_eq!(
-            eof_wall_decision(true, 3, 50, 99, false),
+            eof_wall_decision(true, true, false),
             Some(EofWall::DrainRemaining)
         );
     }
 
     #[test]
-    fn eof_wall_shuttle_snap_mid_timeline() {
+    fn eof_wall_exhausted_ended_or_loop() {
+        assert_eq!(eof_wall_decision(true, false, false), Some(EofWall::Ended));
         assert_eq!(
-            eof_wall_decision(true, 0, 50, 99, false),
-            Some(EofWall::SnapClockContinue)
-        );
-    }
-
-    #[test]
-    fn eof_wall_at_last_ended_or_loop() {
-        assert_eq!(
-            eof_wall_decision(true, 0, 99, 99, false),
-            Some(EofWall::Ended)
-        );
-        assert_eq!(
-            eof_wall_decision(true, 0, 99, 99, true),
+            eof_wall_decision(true, false, true),
             Some(EofWall::NeedsLoop)
         );
-    }
-
-    #[test]
-    fn near_eof_respects_lead_and_rate() {
-        assert!(!near_eof_by_frames(100.0, 0.0, 24.0, 1.0));
-        // lead 1s @ 24fps → 24 frames
-        assert!(near_eof_by_frames(24.0, 1.0, 24.0, 1.0));
-        assert!(!near_eof_by_frames(25.0, 1.0, 24.0, 1.0));
-        // rate 2 → 48 lead frames
-        assert!(near_eof_by_frames(48.0, 1.0, 24.0, 2.0));
-        assert!(!near_eof_by_frames(49.0, 1.0, 24.0, 2.0));
-    }
-
-    #[test]
-    fn loop_drain_clamps_to_floor_and_cap() {
-        assert_eq!(loop_drain_frames(0.4, 24.0, 1.0, 8, 64), 10); // 0.4*24=9.6→10
-        assert_eq!(loop_drain_frames(0.1, 24.0, 1.0, 8, 64), 8); // below floor
-        assert_eq!(loop_drain_frames(10.0, 24.0, 1.0, 8, 64), 64); // above cap
     }
 }

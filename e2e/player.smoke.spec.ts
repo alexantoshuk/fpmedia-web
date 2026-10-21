@@ -121,10 +121,11 @@ test.describe("demo player smoke", () => {
     expect(last).toBeGreaterThan(2);
     // Land on the last frame so Play hits EOF and leaves the media clock there.
     await player.seekToFrame(last!);
+    // Only one frame-duration of media remains, so `playing` may flip back
+    // before a poll lands — latch it in-page instead.
+    const sawPlaying = await player.watchPlaying();
     await player.play.click();
-    await expect
-      .poll(async () => (await player.readStatus()).playing)
-      .toBe(true);
+    await expect.poll(sawPlaying).toBe(true);
     await expect
       .poll(async () => (await player.readStatus()).playing, {
         timeout: 20_000,

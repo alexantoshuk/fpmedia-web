@@ -48,6 +48,10 @@ impl VideoPlayer {
                 );
             }
         }
+        // Play keeps pixels in the canvas pool, not a live VF.
+        if self.repaint_from_play_pool(frame)? {
+            return Ok(());
+        }
         // Blit-only Next/scrub may have cleared `displayed` — scale warm ImageBitmap.
         if self.try_present_warm_blit(frame)? {
             return Ok(());
@@ -85,16 +89,29 @@ impl VideoPlayer {
                     presentation.back().map(|q| q.frame),
                 )
             };
-            let (held_len, decode_queue_size) = match self.decoder.borrow().as_ref() {
-                Some(d) => (d.held_len(), d.browser_decode_queue_size()),
-                None => (usize::MAX, u32::MAX),
+            let (held_len, decode_queue_size) = match self.play_iter_stats() {
+                Some(stats) => stats,
+                None => match self.decoder.borrow().as_ref() {
+                    Some(d) => (d.held_len(), d.browser_decode_queue_size()),
+                    None => (usize::MAX, u32::MAX),
+                },
             };
-            out.presentation_len = presentation_len;
-            out.presentation_cap = self.play_presentation_cap();
-            out.presentation_from = presentation_from;
-            out.presentation_to = presentation_to;
+            if self.play_session_live() {
+                // Play: mediabunny `nextFrame` (one pool canvas waiting).
+                let next = self.shared.play_next.borrow().as_ref().map(|n| n.frame);
+                out.presentation_len = usize::from(next.is_some());
+                out.presentation_cap = 1;
+                out.presentation_from = next;
+                out.presentation_to = next;
+            } else {
+                out.presentation_len = presentation_len;
+                out.presentation_cap = self.play_presentation_cap();
+                out.presentation_from = presentation_from;
+                out.presentation_to = presentation_to;
+            }
             out.held_len = held_len;
             out.decode_queue_size = decode_queue_size;
+            out.play_waits = self.shared.play_iter.borrow().as_ref().map(|it| it.waits());
             out.frames_skipped = self.shared.frames_skipped.get();
             out.last_behind_ms = self.shared.last_behind_ms.get();
             out.underrun_holds = self.shared.underrun_holds.get();
@@ -335,16 +352,6 @@ impl VideoPlayer {
         Ok(())
     }
 
-    /// Play present: draw + keep VF in ring; Exact ingest when frames age out of behind.
-    pub(super) fn present_play_frame(
-        &self,
-        frame: FrameId,
-        video: OwnedVideoFrame,
-    ) -> Result<(), MediaError> {
-        self.install_displayed(frame, video)?;
-        Ok(())
-    }
-
     pub(super) fn key_for(&self, frame: FrameId) -> Option<FrameId> {
         self.shared.track.index().nearest_keyframe(frame)
     }
@@ -365,27 +372,6 @@ impl VideoPlayer {
         }
         if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
             blit.set_playhead(frame);
-        }
-    }
-
-    pub(super) fn clear_loop_prime(&self) {
-        let taken = self.shared.loop_prime.borrow_mut().take();
-        if let Some(buf) = taken {
-            for q in buf {
-                drop(q.video);
-            }
-        }
-    }
-
-    pub(super) fn present_for_mode(
-        &self,
-        frame: FrameId,
-        video: OwnedVideoFrame,
-    ) -> Result<(), MediaError> {
-        if self.is_playing() && self.shared.engine.get().is_play() {
-            self.present_play_frame(frame, video)
-        } else {
-            self.present_and_cache(frame, video)
         }
     }
 }

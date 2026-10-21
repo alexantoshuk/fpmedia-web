@@ -91,10 +91,11 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | Engine mode | `fpmedia_web::engine_mode` (`Play` / `Scrub` / `ExactHold` + `AudioResume`) |
 | Decoder slot | `fpmedia_web::decoder_slot` (`Idle` / `CheckedOut` + `reset_pending`) |
 | WorkloadMode | `fpmedia_web::workload` (Play > Seek > Open > Bg) |
-| Byte IO | `ReadOrchestrator` + `UrlSource` open-ended workers |
+| Byte IO | `ReadOrchestrator` + `UrlSource` / `BlobSource` stream workers |
 | Open / backfill | `fpmedia_web::open_phase` (`OpenPhase::label`) |
 | Media clock | `fpmedia_web::clock_state` |
-| rAF session | `fpmedia_web::session` |
+| Play session | `fpmedia_web::PlayPhase` (`Idle` / `Live` / `LoopSeam`) |
+| rAF restart | `fpmedia_web::session` (`restarting`) |
 
 **Success bar:** a new race is fixed by a transition or coalesce row, not another flag. Failure modes: skills.
 
@@ -102,7 +103,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 
 ## Progressive open (MediaSource)
 
-**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` (`ReadOrchestrator` + open-ended Range workers) / `MemorySource` + `CachedSource` (512 MiB LRU, 8 MiB quantum; orch cache mediabunny-default 64 MiB); gray strip via `FetchMap` (**accumulate** ever-fetched ranges — not a live LRU mirror). Top-level `ftyp`+`moov` (+ full `moof` for single-file fMP4) → `re_mp4`. Element `open_blob` / `open_url` (CORS-ok or same-origin URL — **no** auto `/proxy` in `fpmedia-web-components`). Async AVC sync verify after moov. One progressive entry `open_mp4(source, options, progress)` → `OpenedMp4` (always `CachedSource`; `mediabunny: src/input.ts Input`); sync `open_mp4_bytes` for fixtures/tests.
+**Shipped (wasm demo):** `MediaSource` + `BlobSource` / `UrlSource` on `ReadOrchestrator` (Url: open-ended Range workers, `Network` prefetch; Blob: 4 `blob.stream()` workers, `FileSystem` ±64 KiB prefetch, 8 MiB — `arrayBuffer()` per read only on WebKit; `mediabunny: src/source.ts`) / `MemorySource` + `CachedSource` (512 MiB LRU, 8 MiB quantum; orch cache mediabunny-default 64 MiB); gray strip via `FetchMap` (**accumulate** ever-fetched ranges — not a live LRU mirror). Top-level `ftyp`+`moov` (+ full `moof` for single-file fMP4) → `re_mp4`. Element `open_blob` / `open_url` (CORS-ok or same-origin URL — **no** auto `/proxy` in `fpmedia-web-components`). Async AVC sync verify after moov. One progressive entry `open_mp4(source, options, progress)` → `OpenedMp4` (always `CachedSource`; `mediabunny: src/input.ts Input`); sync `open_mp4_bytes` for fixtures/tests.
 
 **Demo URL open:** one UI everywhere. Progressive local URL = static `/media/*` under `demo-player/public/media/` (fetch script; gitignored). Demo may rewrite known testvideo Release download URLs to `/media/…`. No CORS/media proxy (Trunk→GitHub redirect broken). Pages: Browse (Blob) or CORS-ok URLs. Element crate never rewrites (`components/README.md`).
 
@@ -127,7 +128,8 @@ Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). U
 
 | Store | Role |
 | ----- | ---- |
-| Presentation queue | Play-ahead + Next hits (`PlayPolicy::presentation_cap`) |
+| `PlayIter` + 2-canvas pool | Play only: ≤ 4 decoded + in-flight samples, one `nextFrame` canvas |
+| Presentation queue | Paused Next hits (`PlayPolicy::presentation_cap`); empty while Playing |
 | Step behind ring | Prev hits; **Play cap 0**; Pause/scrub uses behind=8 |
 | `ScrubChunkStore` | Gap geometry — **markers only** |
 | `ScrubBlitLru` | Live densify bitmaps; cap from `scrub_blit_frame_budget` |
@@ -146,7 +148,7 @@ Shipped control flow (not backlog). Terms: `glossary.md`. Phase × mode table: [
 ```mermaid
 flowchart LR
   subgraph main["Main VideoDecoder<br/>prefer-hardware"]
-    PQ["Presentation queue<br/>+ step behind ring"]
+    PQ["Play: PlayIter + nextFrame pool<br/>Paused: step rings"]
   end
   subgraph scrub["Scrub VideoDecoder<br/>PreferSoftware"]
     DEN["Densify fill_one_gap"]
@@ -173,27 +175,29 @@ flowchart LR
   TC --> HOVER["HoverThumb canvas<br/>not stage / not strips"]
 ```
 
-Play paints from the presentation queue on the **main** decoder, paced by **`media_time()`** from the engine media clock (audio-driven when a track exists — including muted/silent graphs; see [Audio + media clock](#audio--media-clock)). Soft-drag paints neighbors from **Exact** blit only. Settle / seek Exact key→N yields densify (`ExactHold`) so the scrub session does not dual-HW race the main path. Pause idle runs densify on the scrub decoder into Exact + Covered. Hosts never open `AudioContext` as their own clock.
+Play paints `PlayIter` samples from the **main** decoder (checked out for the whole session), paced by **`media_time()`** from the engine media clock (audio-driven when a track exists — including muted/silent graphs; see [Audio + media clock](#audio--media-clock)). Soft-drag paints neighbors from **Exact** blit only. Settle / seek Exact key→N yields densify (`ExactHold`) so the scrub session does not dual-HW race the main path. Pause idle runs densify on the scrub decoder into Exact + Covered. Hosts never open `AudioContext` as their own clock.
 
 **Hover thumbs** (optional `thumbs`): a **third** PreferSoftware decoder + `ThumbCache` / `ThumbPreview`. Host `<HoverThumb>` paints its **own** canvas. UX: Play and Pause only — **not** while scrubbing; must not drive densify or Fetch/Covered/Exact strips (`product.md`). Never reuse the densify scrub decoder for thumbs. Play: no sparse key_fill; aim decode is throttled (engine ~800 ms + host UI defer) — traps: `skills/media.md`.
 
-**Play — present + warm pump**
+**Play — mediabunny iterator port** (`mediabunny: src/media-sink.ts mediaSamplesInRange`, `examples/media-player` `startVideoIterator` / `updateNextFrame` / `render`)
 
 ```mermaid
 flowchart TD
-  START(["begin_play_session"]) --> RAF["play_raf_tick / host rAF"]
-  RAF --> MT["media_time from MediaClock<br/>audio context or silent wall clock"]
-  MT --> DUE{"Frame due<br/>vs presentation queue?"}
-  DUE -->|yes| PRESENT["present_due → canvas"]
-  DUE -->|underrun| HOLD["HoldUnderrun<br/>soft audio hold — keep decoder"]
-  PRESENT --> WARM["Warm pump on main decoder<br/>feed-ahead / key cascade<br/>park PTS ≥ target"]
-  HOLD --> WARM
-  WARM --> CAP{"presentation_cap<br/>reached?"}
-  CAP -->|no| FEED["Feed next packets<br/>take_held when ready"]
-  CAP -->|yes| PARK["Park pump — wait consumer take"]
-  FEED --> RAF
-  PARK --> RAF
+  PRIME(["prime_playback<br/>index + byte warm"]) --> START["start_play_iter<br/>draw 1st sample, 2nd → nextFrame"]
+  START --> RAF["play_raf_tick"]
+  PUMP["PlayIter pump<br/>decode-order packets from key<br/>park while held + decodeQ ≥ 4"] -.->|samples| NEXT
+  RAF --> MT["media_time from MediaClock"]
+  MT --> DUE{"nextFrame due?"}
+  DUE -->|yes| DRAW["draw pool canvas → stage"]
+  DUE -->|"no nextFrame, frame due"| HOLD["HoldUnderrun"]
+  DRAW --> NEXT["update_next_frame<br/>draw overdue, park first future"]
+  HOLD --> NEXT
+  NEXT --> RAF
+  DUE -->|"EOF + loop"| LOOP["start_loop_seam<br/>hold clock, iterator at 0"]
+  LOOP --> RAF
 ```
+
+`PlayPhase` (`Idle` / `Live` / `LoopSeam`) is the session machine; seek / scrub / pause end it (`clear_play_session` → `PlayIter::finish` resets and returns the decoder). Seek / step / Exact stay on `decode_frame` + warm pump (`samplesAtTimestamps`-shaped); Play never reads the presentation queue.
 
 While Playing: densify is off (epoch cancel); Exact trail uses farthest-evict trim only — never a full Exact wipe. Continuous Play prioritizes cadence and A/V sync over painting every presentation frame (`product.md` Exact vs Play). Shuttle may drop overdue frames. Prefer mediabunny present + clock patterns; silent clock uses wall time when there is no audible audio graph.
 
@@ -231,7 +235,7 @@ Host gesture × engine (FSM homes: `fpmedia_web::transport`, `fpmedia_web::engin
 
 | Phase | Host `TransportState` | `EngineMode` | Densify | Picture | Entry |
 | ----- | --------------------- | ------------ | ------- | ------- | ----- |
-| Play | `Playing` | `Play` | off | presentation queue | play / rAF |
+| Play | `Playing` | `Play` | off | `PlayIter` `nextFrame` | play / rAF |
 | Soft-drag | `Scrubbing` | `Scrub` (+ soft audio hold) | off under finger | aim + Exact blit preview | `VideoRef::scrub_pointer_down/move` → `note_scrub_frame` |
 | Pause / idle scrub | `Ready` (paused) | `Scrub` | on if `ScrubPolicy::densify` | densify → blit + markers | `enter_scrub_cache_pipeline` |
 | Settle | `Settling` | `ExactHold` | deferred (yield) | Exact key→N | `scrub_pointer_up` → `ScrubRelease` — **do not** full-clear Exact blit here (see `skills/media.md` soft-drag frozen) |
@@ -255,18 +259,18 @@ Local invention (no mediabunny CanvasSink densify equivalent). Unit of work = on
 | `ShortFixed { len }` | max GOP ≤ 30 | on | soft |
 | `Long { median, max }` | max GOP > 30 | on | soft |
 
-**`PlayPolicy`** (from coded height):
+**`PlayPolicy`** (from coded height) — paused step ring cap + seek/step warm pump only. **Play reads none of it:** mediabunny `MAX_QUEUE_SIZE = 4` + 2-canvas pool for every resolution (add Play profiles only if a clip proves they are needed).
 
-| Class | Cap / warm | Notes |
-| ----- | ---------- | ----- |
-| `Hd` (&lt; 2160) | 4 / 4 | Do not retune when changing Uhd |
-| `Uhd` (≥ 2160) | 10 / 8 | EOF lead 1 s; larger loop prime |
+| Class | Cap / warm |
+| ----- | ---------- |
+| `Hd` (&lt; 2160) | 4 / 4 |
+| `Uhd` (≥ 2160) | 10 / 8 |
 
 **Main play** always probes `prefer-hardware` when supported (`WebCodecsDecoder::create` `allow_hw=true`) — Hd and Uhd. **Scrub/thumb** always `PlayPolicy::hd()` + explicit `prefer-software` (sole HW session on main; `no-preference` can still grab HW). `optimizeForLatency` = false for VOD.
 
 **`ScrubPolicy`** (from `GopProfile`): `densify` / `blit_mib` / `scrub_cache_mib` / edge margins. Soft-drag = blit preview only; exact on settle (all profiles — Long per-tick decode starved the pointer).
 
-**`SettlePolicy`** (clip-invariant defaults): densify yield `250+250 ms`, `gop_sample_lead` 8…24, `play_prime_frames=2`, index warm leads. Soft-cold / poison are named recovery helpers, not policy fields. Do not retune Settle when changing Play Uhd or Scrub MiB.
+**`SettlePolicy`** (clip-invariant defaults): densify yield `250+250 ms`, `gop_sample_lead` 8…24, index warm leads (`play_index_lead` also feeds the Play iterator). Soft-cold / poison are named recovery helpers, not policy fields. Do not retune Settle when changing Play Uhd or Scrub MiB.
 
 Traps (flush/idle, cold settle, dual-HW): `skills/media.md`.
 

@@ -73,7 +73,11 @@ Phase table: `architecture.md` § Scrub phases. Exactness policy: `product.md` �
 
 ### Play
 
-Continuous playback. Prioritizes cadence and A/V sync over painting every presentation frame. **Densify off** (epoch cancel). Presentation queue on the main decoder.
+Continuous playback. Prioritizes cadence and A/V sync over painting every presentation frame. **Densify off** (epoch cancel). Pictures come from the **PlayIter** on the main decoder, not the presentation queue.
+
+### PlayIter / nextFrame
+
+Play-only decode iterator on the main decoder (port of mediabunny `mediaSamplesInRange`): feeds decode-order packets from the key and parks while decoded + in-flight ≥ 4. The rAF consumer draws overdue samples and parks the first future one as **nextFrame** in a 2-canvas pool; it is painted when `media_time()` reaches it. Flow: `architecture.md` § Decode flows.
 
 ### Pause / idle scrub
 
@@ -101,7 +105,7 @@ Engine mode while settle/seek Exact owns decode — densify must not compete (yi
 
 ### PlayPrime / ScrubRelease
 
-Leaving scrub toward play (or staying paused): seed/prime presentation, clear scrub gesture, re-arm densify per mode. Host transport: `ScrubRelease { then_play }`, etc.
+Leaving scrub toward play (or staying paused): prime index + bytes and start the PlayIter (or seed the paused picture), clear scrub gesture, re-arm densify per mode. Host transport: `ScrubRelease { then_play }`, etc.
 
 ### Cold scrub
 
@@ -203,7 +207,7 @@ Accumulate map of fetched byte ranges → Fetch (gray) strip. Gap-fill is its ow
 
 ### ReadOrchestrator
 
-Coordinates ranged reads (especially URL / proxy) so open and play do not stampede the network.
+Coordinates ranged reads for `UrlSource` and `BlobSource` (port of mediabunny `ReadOrchestrator`): a few workers each keep one open stream (HTTP Range body / `blob.stream()`) and serve reads from it, with a small window cache. Keeps open and play from stampeding the network or reopening a file per sample.
 
 ---
 

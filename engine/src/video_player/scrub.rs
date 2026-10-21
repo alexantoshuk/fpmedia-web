@@ -10,8 +10,8 @@ use crate::error::MediaError;
 use crate::model::engine_mode::EngineEvent;
 use crate::policy::scrub_plan::{densify_should_ban_after_no_progress, densify_skip_bridge_ids};
 use crate::policy::{
-    GopProfile, ScrubCachePolicy, ScrubPolicy, exact_frames_to_free_for_play_vram,
-    scrub_blit_cap_during_play, scrub_blit_frame_budget,
+    ScrubCachePolicy, ScrubPolicy, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
+    scrub_blit_frame_budget,
 };
 use crate::residency::ScrubChunk;
 use crate::types::FrameId;
@@ -69,13 +69,6 @@ impl VideoPlayer {
 
     pub(super) fn scrub_policy(&self) -> ScrubPolicy {
         self.shared.track.metadata_ref().scrub_policy()
-    }
-
-    pub(super) fn is_all_intra(&self) -> bool {
-        matches!(
-            self.shared.track.metadata_ref().gop_profile,
-            GopProfile::AllIntra
-        )
     }
 
     /// Stop densify immediately so Exact / seek can own decode.
@@ -243,7 +236,7 @@ impl VideoPlayer {
         };
         let result = async {
             self.shared.playing.set(false);
-            self.clear_loop_prime();
+            self.clear_play_session();
 
             if settle {
                 // Exact needs the nearest key verified — not the whole table.
@@ -374,8 +367,8 @@ impl VideoPlayer {
         Ok(())
     }
 
-    /// Exact goto + play-seed with poison → soft-cold fallback. Shared by warm and
-    /// gop-warm cold settle paths.
+    /// Exact goto with poison → soft-cold fallback. Shared by warm and gop-warm
+    /// cold settle paths. Play after settle starts its own iterator (PlayPrime).
     async fn settle_exact_seed_logged(
         &self,
         frame: FrameId,
@@ -387,35 +380,16 @@ impl VideoPlayer {
         match self.exact_goto_with_decoder_retry(frame, epoch).await {
             Ok(()) => {
                 let exact_ms = now_ms().unwrap_or(exact_t0) - exact_t0;
-                let seed_t0 = now_ms().unwrap_or(0.0);
-                match self.seed_play_presentation_after_seek(epoch).await {
-                    Ok(()) => {
-                        let seed_ms = now_ms().unwrap_or(seed_t0) - seed_t0;
-                        let warm_part = gop_warm_ms
-                            .map(|w| format!(" gop_warm={w:.0}ms"))
-                            .unwrap_or_default();
-                        web_sys::console::log_1(
-                            &format!(
-                                "fpmedia-web: settle Exact densify_yield={densify_yield_ms:.0}ms{warm_part} exact={exact_ms:.0}ms seed={seed_ms:.0}ms"
-                            )
-                            .into(),
-                        );
-                        Ok(())
-                    }
-                    Err(e) if e.is_cancelled() => Err(e),
-                    Err(e) if e.is_decoder_poison() => {
-                        web_sys::console::warn_1(
-                            &format!(
-                                "fpmedia-web: Exact seed poison → soft cold ({e}); densify_yield={densify_yield_ms:.0}ms exact={exact_ms:.0}ms"
-                            )
-                            .into(),
-                        );
-                        soft_cold_scrub_settle(self, frame)?;
-                        self.shared.pending_cold_exact.set(Some(frame));
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
+                let warm_part = gop_warm_ms
+                    .map(|w| format!(" gop_warm={w:.0}ms"))
+                    .unwrap_or_default();
+                web_sys::console::log_1(
+                    &format!(
+                        "fpmedia-web: settle Exact densify_yield={densify_yield_ms:.0}ms{warm_part} exact={exact_ms:.0}ms"
+                    )
+                    .into(),
+                );
+                Ok(())
             }
             Err(e) if e.is_cancelled() => Err(e),
             Err(e) if e.is_decoder_poison() => {

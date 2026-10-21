@@ -2,6 +2,7 @@
 //!
 //! Split from `mod.rs` for navigation only — no behavior change (P6).
 
+pub use crate::decode::webcodecs::PlayWaits;
 use crate::policy::GopProfile;
 use crate::types::{FrameId, Timestamp};
 
@@ -116,6 +117,8 @@ pub struct PipelineStats {
     /// Bounded union of recent [`crate::CachedSource`] windows as file-size
     /// fractions (`0..1`) for the demo gray strip (not densify — green below).
     pub fetch_file_ranges: Vec<(f32, f32)>,
+    /// Play iterator wait meters (last ~1 s); `None` outside a play session.
+    pub play_waits: Option<PlayWaits>,
 }
 
 impl Default for PipelineStats {
@@ -141,6 +144,7 @@ impl Default for PipelineStats {
             ready_frames: Vec::new(),
             gop_profile: GopProfile::Long { median: 0, max: 0 },
             fetch_file_ranges: Vec::new(),
+            play_waits: None,
         }
     }
 }

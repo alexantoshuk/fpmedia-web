@@ -263,26 +263,17 @@ impl VideoPlayer {
         self.arm_silent_play_driver(media_time_secs);
     }
 
-    /// First present turn for no-AAC PlayPrime: paint presentation front, then
-    /// arm the silent clock at that frame's time.
-    ///
-    /// Presentation holds frames **after** the committed playhead (canvas already
-    /// shows it). Drawing the front here is mediabunny `startVideoIterator`'s
-    /// first canvas; clock arm matches `play` / `audioContextStartTime`.
-    /// Returns the media origin used for the driver.
-    pub fn finish_silent_play_prime(&self) -> Result<f64, MediaError> {
-        let origin = if let Some(queued) = self.shared.presentation.borrow_mut().pop_front() {
-            let frame = queued.frame;
-            self.present_play_frame(frame, queued.video)?;
-            self.touch_playhead(frame);
-            self.shared.commit_frame(frame)?;
-            self.frame_timestamp_seconds(frame)
-                .unwrap_or_else(|_| self.state().timestamp.seconds)
-        } else {
-            self.state().timestamp.seconds
-        };
+    /// First present turn for no-AAC PlayPrime: arm the silent clock at the
+    /// frame `startVideoIterator` already drew (mediabunny `play` /
+    /// `audioContextStartTime`). Returns the media origin used for the driver.
+    pub fn finish_silent_play_prime(&self) -> f64 {
+        let origin = self
+            .shared
+            .held_media_origin
+            .get()
+            .unwrap_or_else(|| self.state().timestamp.seconds);
         self.arm_silent_play_clock(origin);
-        Ok(origin)
+        origin
     }
 
     fn arm_silent_play_driver(&self, media_time_secs: f64) {
@@ -345,17 +336,12 @@ impl VideoPlayer {
         warm
     }
 
-    /// True while soft-held after scrub-while-play (settle may seed play frames).
-    pub(crate) fn audio_warm_resume(&self) -> bool {
-        self.shared.engine.get().warm_audio()
-    }
-
-    /// Freeze the media clock while the presentation queue is empty.
+    /// Freeze the media clock while no `nextFrame` is decoded and one is due.
     ///
-    /// Prefer this over `skip_behind` when Chromium decode briefly lags the
-    /// audio clock (long-GOP: skip spiral → `skipped≈242` then End before EOF).
-    /// Keeps `playing` true; [`Self::play_raf_tick`] resumes via
-    /// [`Self::resume_media_clock`] once prefetch has frames again.
+    /// Chromium decode briefly lagging the audio clock must not skip-spiral
+    /// (long-GOP: `skipped≈242` then End before EOF). Keeps `playing` true;
+    /// [`Self::play_raf_tick`] resumes via [`Self::resume_media_clock`] once the
+    /// iterator parks a `nextFrame` again.
     ///
     /// Soft-holds audio ([`AudioOutput::hold_underrun`]) — silence without
     /// `AudioDecoder` reset — so resume is not a cold reconfigure gap.

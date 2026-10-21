@@ -27,18 +27,20 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Scrub UI off but scrub decoder / densify still alive | `set_scrub_cache_policy` / `scrub_cache_off` | gate densify + gray + `ingest_scrub_bitmap_only`; checked-out decoder dropped in `return_scrub_decoder`, never closed mid-`decode()`. Host re-applies in `run_open` before `seek_frame(0)` |
 | Hover CPU / freeze / stuck far | ThumbPreview isolation | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
-| Play freeze / flush/idle / underrun | presentation cap / `clock_state` | caps: `architecture.md` PlayPolicy; HoldUnderrun; prune floor + cascade — see Gotchas |
+| Play stutter / freeze / underrun | `PlayIter` / `update_next_frame` | mediabunny iterator: `MAX_QUEUE_SIZE` 4 + 2-canvas pool for every resolution; HoldUnderrun only when no `nextFrame` and a frame is due. Demo `wait/s` line (`PlayWaits`): `rd` = byte reads, `out` = consumer wait, `cap` = pump parked full, `raf>50` = main-thread stalls |
 | `flush/idle` pts=0 (All-Intra, mobile) | `run_key_cascade` / `force_prefer_software` | key inclusive after wipe; HW silent miss → sticky PreferSoftware; snap fed **before** finish_gop wipe. `mediabunny: media-sink prefer-software` |
 | Cold scrub freezes tab / Play deaf | soft settle + transport | `pending_cold_exact`; Settling+Play Preempt — `e2e/player.scrub.cold-open.spec.ts` |
 | Gray/green strip holes / blur | FetchMap + float 1 px canvas | gray may soft-merge; greens honest `f/n` — host: `skills/leptos.md` |
 | Gray holes never fill (pause/URL) | `schedule_fetchmap_gap_fill` + FetchMap accumulate | own `SingleFlight` (`gray_fill`); never share densify flight; URL accumulate |
 | Gray fill floods drag / stays slow after | `scrub_gesture` + gray pace | drag: 1×quantum / 150 ms; idle: 2× / 16 ms; clear gesture on pipeline + `play` |
 | URL play ~0.6× / first-play lag | `CachedSource` sample miss | return `want` immediately; quantum fill bg |
+| Mobile local Play starves (`wait/s rd` high, `raf>50` ≈0) | `BlobSource` orch worker | one `blob.slice(pos).stream()` reader per worker, `FileSystem` prefetch; `arrayBuffer()` per read only on WebKit. `mediabunny: source.ts BlobSource._runWorker` |
+| Play fps decays with position (mobile / weak CPU) | `CacheState::insert` | join on real overlap only — abutting windows stay separate (else one growing buffer re-copied per sample, never evicted); grow/margin use `run_span`. `mediabunny: source.ts ReadOrchestrator.insertIntoCache` |
 | Dense wiped / Next-Prev lag / Pause densify dead | Play trim + densify exit | budgets→park→densify; fill order `architecture.md` § Predictive densify; unbanned walk = full indexed span; PTS multimap; drag kills densify |
 | Exact 1‑frame holes every GOP (Pause densify) | `fill_one_gap` | PreferSoftware `decode_gop` omit → Exact `decode_frame` salvage before Covered skip-bridge |
 | Covered+Exact pin-holes after Pause (slow PC / bad I/O) | densify soft-ban | Accepted strip cosmetics for now (`product.md`); not settle/seek break — do not Exact wipe. Revisit: `state.md` Later |
 | Exact 1 px orphan past hole after Pause densify | `evict_exact_orphans_beyond_aim` | farthest-evict every densify tick (not gated on Exact near-gap idle — under-cap soft-drag holes skipped eviction); not on drag `set_playhead` |
-| Loop seam wipe / ~1 s underrun hold | loop_prime / `play_loop_seam` | `ResetForPlay`→HoldScrub across `loop_to_start`; warm-prefetch before resume; keep Covered+Exact; BeginPrepareLoop only |
+| Loop seam wipe / underrun hold | `start_loop_seam` (`PlayPhase::LoopSeam`) | hold clock, `start_play_iter(0)`, resume; keep Covered+Exact |
 | Pause→Play / scrub→Play lag or no-op | seed + `ScrubRelease{then_play}` | host: `skills/leptos.md`; probes gray-first / cold-resume / stress |
 | Sticky error after Ok settle | `host_ops` clear error on Ok | `e2e/player.scrub.sticky-error.spec.ts` |
 | A/V desync / tab-hidden race | `media_time` / HoldHidden | never host wall clock; HoldHidden ∉ underrun_holding; play session: `play_raf_tick` |
@@ -53,7 +55,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 
 ```
 lib.rs, types.rs, clock.rs, frame_index.rs, error.rs, util.rs, timer.rs (wasm)
-model/         bg_task (SingleFlight) · clock_state · decoder_slot · engine_mode · session · transport
+model/         bg_task (SingleFlight) · clock_state · decoder_slot · engine_mode · play_phase · session · transport
 policy/        clip (crate::policy::*) · playback (EOF/loop) · workload · scrub_plan (native tests)
 host/          host_op_coalesce (OpQueue) · open_phase (open status)
 residency.rs   AimWindow (aim-distance eviction) · ScrubChunkStore · FrameRunIndex (native tests)
@@ -61,8 +63,8 @@ bitstream/     AVC + HEVC packet type / sanitize
 source/        MediaSource, CachedSource, FetchMap, ReadOrchestrator (+ wasm Blob/Url)
 audio/         demux, pcm (+ pcm_entry moov), stretch (WSOLA), output, PlaybackClock
 demux/         boxes, coalesce, mp4, tmcd
-video_player/  mod · api · shared · open · control · clock_ctrl · present · decode_ops · play (`begin_play_session` / `play_raf_tick`) · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
-decode/        webcodecs/{mod,core,pump}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
+video_player/  mod · api · shared · open · control · clock_ctrl · present · decode_ops · play (`begin_play_session` / `play_raf_tick`) · play_pool · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
+decode/        webcodecs/{mod,core,pump,play_iter}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
 ```
 
 Host-facing `VideoPlayer` = methods `fpmedia-web-components` calls (`pub`); sibling-only helpers = `pub(super)` (e.g. scrub pipeline / clock stop).
@@ -92,9 +94,9 @@ Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `a
 - **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout` — use `fpmedia_web::timer` (engine + host).
 - **Op cancel** → `op_epoch`; Cancelled = soft; invalidate uses reset when checked out.
 - **Clock / rate** → `ClockState` + `media_time()`; soft-hold scrub/Pause; resume AudioContext before long prime; silent `PlaybackClock` advances on wall time (Chrome `currentTime` lags without audible output under WebCodecs load — diverge from mediabunny `getPlaybackTime`); AAC still context clock. UX ladder: `product.md`.
-- **Underrun** → HoldUnderrun + soft audio hold (keep decoder); not skip spiral. EOF: don’t End while presentation holds frames / while playhead mid at shuttle.
-- **Warm pump** → after take, retarget cursor (clear `saw_target` on retarget); park on capacity — don’t exit/respawn thrash. Short B-frame hole: `pts_aim_hole` + prune floor.
-- **Play VF pool** → densify off; behind cap 0 while playing; Exact trim farthest (not full wipe). Prefetch EOF `false` must await rAF (no spin).
+- **Underrun** → HoldUnderrun + soft audio hold (keep decoder); not skip spiral. EOF: don’t End while `play_pending()` (iterator still has samples) / while playhead mid at shuttle.
+- **Warm pump (seek / step)** → after take, retarget cursor (clear `saw_target` on retarget); park on capacity — don’t exit/respawn thrash. Short B-frame hole: `pts_aim_hole` + prune floor.
+- **Play iterator** → Play never reads the presentation queue or `PlayPolicy`; don’t reintroduce Hd/Uhd Play caps / loop prime / EOF lead (mobile stutter came from bytes, not queue depth). Pause / seek / scrub → `clear_play_session` (`PlayIter::finish` returns the decoder). Densify off; behind cap 0; Exact trim farthest. `mediabunny: media-sink.ts mediaSamplesInRange`, `examples/media-player`.
 - **Canvas size** → lock buffer + CSS aspect on open/`relayout`; fullscreen wipe → repaint `displayed`/blit; keep scrub markers. Clip switch: `reset_canvas_layout` (shared DOM canvas) or open B inherits A’s intrinsic size.
 - **RAII frames** → move into caches; borrow to draw; `try_clone` → `Result`.
 - **No Blob/Url per-read `console.log`** → floods main thread on multi‑GB masters.

@@ -1,6 +1,6 @@
 //! WebCodecs `VideoDecoder` wrapper.
 //!
-//! Playback follows mediabunny's model (`mediabunny: src/media-sink.ts`
+//! Seek / step decode follows mediabunny's model (`mediabunny: src/media-sink.ts`
 //! `mediaSamplesInRange`): a **pump** task feeds packets in decode order while a
 //! **consumer** task pulls the target frame out of the presentation buffer. The
 //! two run concurrently, so `decodeQueueSize` backpressure unblocks the way
@@ -12,10 +12,14 @@
 //! `decoder.decode()`, or a `Closure` call (`.ai/skills/media.md`).
 //!
 //! Layout: [`core`] owns the synchronous decoder state, [`pump`] the async
-//! feed / drain helpers, and this module the public [`WebCodecsDecoder`] API.
+//! feed / drain helpers for seek / step, [`play_iter`] the continuous Play
+//! range, and this module the public [`WebCodecsDecoder`] API.
 
 mod core;
+mod play_iter;
 mod pump;
+
+pub use play_iter::{PlayIter, PlayWaits};
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

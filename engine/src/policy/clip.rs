@@ -375,31 +375,22 @@ pub const PLAY_PRESENTATION_CAP_UHD: usize = 10;
 pub const PLAY_WARM_AHEAD_HD: usize = 4;
 /// Decode warm-ahead — Uhd.
 pub const PLAY_WARM_AHEAD_UHD: usize = 8;
-/// Loop prime buffer — Hd (historical default 8).
-pub const PLAY_LOOP_PRIME_FRAMES_HD: usize = 8;
-/// Loop prime buffer — Uhd (≥ presentation_cap so restart is not starved).
-pub const PLAY_LOOP_PRIME_FRAMES_UHD: usize = 12;
-/// Near-EOF / loop-prepare wall budget — Hd.
-pub const PLAY_EOF_BUDGET_SECS_HD: f64 = 0.4;
-/// Near-EOF / loop-prepare wall budget — Uhd (4K last-GOP decode is slower).
-pub const PLAY_EOF_BUDGET_SECS_UHD: f64 = 1.0;
-/// Extra near-EOF lead for non-loop Uhd (0 = Hd: no special non-loop EOF zone).
-pub const PLAY_EOF_LEAD_SECS_HD: f64 = 0.0;
-pub const PLAY_EOF_LEAD_SECS_UHD: f64 = 1.0;
 
-/// Per-clip **play** knobs (primary). Derived from coded height, not GOP.
+/// Per-clip step / seek decode knobs. Derived from coded height, not GOP.
 ///
-/// Local invention for Uhd queue/warm/EOF (mediabunny has no resolution play
-/// profile). `prefer_hardware` on the policy documents Uhd intent; **main** play
-/// always probes HW when allowed (`WebCodecsDecoder::create`). Scrub/thumb keep
+/// Continuous Play does **not** read these — it uses the mediabunny iterator
+/// (`MAX_QUEUE_SIZE = 4`, 2-canvas pool; `decode::webcodecs::PlayIter`).
+/// Local invention for Uhd ring/warm (mediabunny has no resolution profile).
+/// `prefer_hardware` documents Uhd intent; **main** decoder always probes HW
+/// when allowed (`WebCodecsDecoder::create`). Scrub/thumb keep
 /// [`PlayPolicy::hd`] + PreferSoftware (mediabunny `decoderOptions.hardwareAcceleration`,
 /// PR #406 — dual HW stalls).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayPolicy {
     pub class: ResolutionClass,
-    /// Presentation-queue ahead while playing (non-shuttle).
+    /// Paused Next ring (decoded ahead of the playhead for step).
     pub presentation_cap: usize,
-    /// Packet-pump warm frames past the consumer target.
+    /// Seek/step packet-pump warm frames past the consumer target.
     pub decode_warm_ahead: usize,
     /// Uhd documents HW intent; scrub densify uses [`Self::hd`] + PreferSoftware.
     /// Main play probes HW via `create` regardless of Hd/Uhd.
@@ -436,33 +427,6 @@ impl PlayPolicy {
             ResolutionClass::Uhd => "uhd",
         }
     }
-
-    /// Frames to decode into `loop_prime` before the seam.
-    pub fn loop_prime_frames(self) -> usize {
-        match self.class {
-            ResolutionClass::Hd => PLAY_LOOP_PRIME_FRAMES_HD,
-            ResolutionClass::Uhd => PLAY_LOOP_PRIME_FRAMES_UHD,
-        }
-    }
-
-    /// Wall seconds of presentation to keep near EOF while loop-prime fills
-    /// (also sizes the loop near-EOF cap).
-    pub fn loop_prime_budget_secs(self) -> f64 {
-        match self.class {
-            ResolutionClass::Hd => PLAY_EOF_BUDGET_SECS_HD,
-            ResolutionClass::Uhd => PLAY_EOF_BUDGET_SECS_UHD,
-        }
-    }
-
-    /// Non-loop near-EOF lead: pull the remaining tail into the presentation
-    /// queue early so 4K last-GOP decode does not underrun before `Ended`.
-    /// Hd is `0` — FHD path unchanged.
-    pub fn eof_lead_secs(self) -> f64 {
-        match self.class {
-            ResolutionClass::Hd => PLAY_EOF_LEAD_SECS_HD,
-            ResolutionClass::Uhd => PLAY_EOF_LEAD_SECS_UHD,
-        }
-    }
 }
 
 /// Densify yield before Exact — first window (ms).
@@ -473,8 +437,6 @@ pub const SETTLE_DENSIFY_YIELD_RETRY_MS: f64 = 250.0;
 pub const SETTLE_GOP_SAMPLE_LEAD_MIN: u64 = 8;
 /// Ceiling for one-GOP sample warm (was fixed-24 stall on long/cold GOP).
 pub const SETTLE_GOP_SAMPLE_LEAD_MAX: u64 = 24;
-/// Presentation frames seeded before clock start / Exact→Play skip-fill.
-pub const SETTLE_PLAY_PRIME_FRAMES: usize = 2;
 /// Index / sample prefetch lead for PlayPrime + open warm (`mdat` frames).
 /// Shared with demux `warm_open_playback_bytes` — keep one number.
 pub const SETTLE_PLAY_INDEX_LEAD: u64 = 96;
@@ -498,7 +460,6 @@ pub struct SettlePolicy {
     pub densify_yield_retry_ms: f64,
     pub gop_sample_lead_min: u64,
     pub gop_sample_lead_max: u64,
-    pub play_prime_frames: usize,
     pub play_index_lead: u64,
     pub play_index_await_batch: u64,
     pub take_decoder_wait_ms: f64,
@@ -511,7 +472,6 @@ impl Default for SettlePolicy {
             densify_yield_retry_ms: SETTLE_DENSIFY_YIELD_RETRY_MS,
             gop_sample_lead_min: SETTLE_GOP_SAMPLE_LEAD_MIN,
             gop_sample_lead_max: SETTLE_GOP_SAMPLE_LEAD_MAX,
-            play_prime_frames: SETTLE_PLAY_PRIME_FRAMES,
             play_index_lead: SETTLE_PLAY_INDEX_LEAD,
             play_index_await_batch: SETTLE_PLAY_INDEX_AWAIT_BATCH,
             take_decoder_wait_ms: SETTLE_TAKE_DECODER_WAIT_MS,
@@ -663,14 +623,6 @@ mod tests {
         assert!(uhd.prefer_hardware);
         assert_eq!(uhd.label(), "uhd");
         assert!(uhd.presentation_cap > PLAY_PRESENTATION_CAP_HD);
-        assert_eq!(uhd.loop_prime_frames(), PLAY_LOOP_PRIME_FRAMES_UHD);
-        assert!(uhd.loop_prime_budget_secs() > PlayPolicy::hd().loop_prime_budget_secs());
-        assert!(uhd.eof_lead_secs() > 0.0);
-        assert_eq!(PlayPolicy::hd().eof_lead_secs(), 0.0);
-        assert_eq!(
-            PlayPolicy::hd().loop_prime_frames(),
-            PLAY_LOOP_PRIME_FRAMES_HD
-        );
     }
 
     #[test]
@@ -680,7 +632,6 @@ mod tests {
         assert_eq!(s.densify_yield_retry_ms, SETTLE_DENSIFY_YIELD_RETRY_MS);
         assert_eq!(s.gop_sample_lead_min, SETTLE_GOP_SAMPLE_LEAD_MIN);
         assert_eq!(s.gop_sample_lead_max, SETTLE_GOP_SAMPLE_LEAD_MAX);
-        assert_eq!(s.play_prime_frames, SETTLE_PLAY_PRIME_FRAMES);
         assert_eq!(s.play_index_lead, SETTLE_PLAY_INDEX_LEAD);
         assert_eq!(s.play_index_await_batch, SETTLE_PLAY_INDEX_AWAIT_BATCH);
         assert_eq!(s.take_decoder_wait_ms, SETTLE_TAKE_DECODER_WAIT_MS);

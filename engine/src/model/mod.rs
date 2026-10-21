@@ -6,5 +6,6 @@ pub mod bg_task;
 pub mod clock_state;
 pub mod decoder_slot;
 pub mod engine_mode;
+pub mod play_phase;
 pub mod session;
 pub mod transport;

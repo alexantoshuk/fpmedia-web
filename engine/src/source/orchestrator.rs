@@ -93,10 +93,20 @@ struct OrchState {
     disposed: bool,
 }
 
+/// mediabunny `PREFETCH_PROFILES`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefetchProfile {
+    /// Grow sequential worker regions up to +8 MiB/step (`UrlSource`).
+    Network,
+    /// Pad the read ±64 KiB on 64 KiB boundaries (`BlobSource`).
+    FileSystem,
+}
+
 /// Options for [`ReadOrchestrator::new`].
 pub struct ReadOrchestratorOptions {
     pub max_cache_size: usize,
     pub max_worker_count: usize,
+    pub prefetch_profile: PrefetchProfile,
     pub run_worker: RunWorkerFn,
     pub on_idle_worker_removed: Option<Arc<dyn Fn(WorkerId) + Send + Sync>>,
 }
@@ -488,7 +498,10 @@ impl ReadOrchestrator {
                 .iter()
                 .map(|w| (w.start_pos, w.target_pos))
                 .collect();
-            let prefetch = network_prefetch(inner_start, inner_end, &worker_spans);
+            let prefetch = match self.options.prefetch_profile {
+                PrefetchProfile::Network => network_prefetch(inner_start, inner_end, &worker_spans),
+                PrefetchProfile::FileSystem => file_system_prefetch(inner_start, inner_end),
+            };
             let mut outer_start = prefetch.start;
             let mut outer_end = prefetch.end;
             if let Some(size) = file_size {
@@ -994,6 +1007,15 @@ fn network_prefetch(start: u64, end: u64, workers: &[(u64, u64)]) -> Hole {
     Hole { start, end }
 }
 
+/// mediabunny `PREFETCH_PROFILES.fileSystem` (padding `2 ** 16`).
+fn file_system_prefetch(start: u64, end: u64) -> Hole {
+    let pad = SEQ_START_PAD;
+    Hole {
+        start: (start.saturating_sub(pad) / pad) * pad,
+        end: end.saturating_add(pad).div_ceil(pad) * pad,
+    }
+}
+
 fn closed_overlap(a0: u64, a1: u64, b0: u64, b1: u64) -> bool {
     a0 <= b1 && b0 <= a1
 }
@@ -1089,10 +1111,21 @@ pub fn memory_backed_orchestrator(
     max_workers: usize,
     max_cache: usize,
 ) -> Arc<ReadOrchestrator> {
+    memory_backed_orchestrator_with(data, max_workers, max_cache, PrefetchProfile::Network)
+}
+
+#[cfg(test)]
+pub fn memory_backed_orchestrator_with(
+    data: Arc<Vec<u8>>,
+    max_workers: usize,
+    max_cache: usize,
+    prefetch_profile: PrefetchProfile,
+) -> Arc<ReadOrchestrator> {
     let data_for_fn = Arc::clone(&data);
     ReadOrchestrator::new(ReadOrchestratorOptions {
         max_cache_size: max_cache,
         max_worker_count: max_workers,
+        prefetch_profile,
         on_idle_worker_removed: None,
         run_worker: Arc::new(move |orch, id| {
             let data = Arc::clone(&data_for_fn);
@@ -1168,5 +1201,35 @@ mod tests {
         let b = block_on(orch.read(500, 1500)).unwrap();
         assert_eq!(a, data[0..1000]);
         assert_eq!(b, data[500..1500]);
+    }
+
+    #[test]
+    fn file_system_prefetch_pads_64k_boundaries() {
+        let h = file_system_prefetch(200_000, 300_000);
+        assert_eq!(h.start, 131_072);
+        assert_eq!(h.end, 393_216);
+        let h0 = file_system_prefetch(10, 20);
+        assert_eq!((h0.start, h0.end), (0, 65_536 * 2));
+    }
+
+    #[test]
+    fn file_system_profile_reads_padded_window() {
+        let data = fill_data(1024 * 1024);
+        let orch = memory_backed_orchestrator_with(
+            Arc::clone(&data),
+            4,
+            8 * 1024 * 1024,
+            PrefetchProfile::FileSystem,
+        );
+        orch.supply_file_size(data.len() as u64);
+        let got = block_on(orch.read(200_000, 300_000)).unwrap();
+        assert_eq!(got, data[200_000..300_000]);
+        let resident: u64 = orch.cache_windows().iter().map(|(s, e)| e - s).sum();
+        assert!(
+            resident < 2 * 1024 * 1024,
+            "no network min-load: {resident}"
+        );
+        let hit = block_on(orch.read(310_000, 320_000)).unwrap();
+        assert_eq!(hit, data[310_000..320_000]);
     }
 }

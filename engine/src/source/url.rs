@@ -23,7 +23,7 @@ use bytes::Bytes;
 use crate::error::MediaError;
 
 use super::orchestrator::{
-    ReadOrchestrator, ReadOrchestratorOptions, URL_ORCH_CACHE_SIZE, WorkerId,
+    PrefetchProfile, ReadOrchestrator, ReadOrchestratorOptions, URL_ORCH_CACHE_SIZE, WorkerId,
 };
 use super::url_gate::DEFAULT_URL_PARALLELISM;
 use super::{MediaSource, ReadFuture};
@@ -167,6 +167,7 @@ fn build_orchestrator(url: String, parallelism: usize) -> Arc<ReadOrchestrator> 
     ReadOrchestrator::new(ReadOrchestratorOptions {
         max_cache_size: URL_ORCH_CACHE_SIZE,
         max_worker_count: parallelism,
+        prefetch_profile: PrefetchProfile::Network,
         on_idle_worker_removed: Some(Arc::new(move |id| {
             if let Ok(mut m) = aborts_for_idle.lock()
                 && let Some(ctrl) = m.remove(&id)
