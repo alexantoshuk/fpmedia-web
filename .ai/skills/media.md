@@ -16,6 +16,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Local master ~0.75× (no audio clock) | `PlaybackClock` wall time | No AAC/PCM track → silent clock; Chrome `currentTime` lags under decode load — wall time + muted graph. Probe `e2e/player.play.residual.spec.ts` |
 | QT PCM master silent / ignored | `build_audio_track` / `audio::pcm` | PCM via moov sound-desc + f32 schedule (no `AudioDecoder`). `mediabunny: media-sink.ts PcmAudioDecoderWrapper` |
 | QT PCM = noise / static | `pcm_entry` `enda` in `wave` | Nested `wave/enda` sets LE (`in24`→`pcm-s24`); top-level-only scan → false BE. `mediabunny: isobmff-demuxer wave` |
+| PCM rate ≠1× jerky / dropouts | `slice_planar_for_stretch` | Chunk ~1024 frames before WSOLA + yield; giant QT packets stall main thread. `mediabunny: no rate API` |
 | Play residual fps_min≈23 @1 s | e2e residual / host rAF | Demo `sync_ui` ~100 ms — prefer `fps5s` / status fps meter; not engine judder. Parked. |
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
 | Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact; fault typing: `MediaError::from_codec_message` / `DecodeStall` |
@@ -93,7 +94,7 @@ Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `a
 - **Backpressure** → wait on new output/take (not buffered frames as progress); dual-async pump parks at `q==0` for consumer; densify cancel → hard reset, fill task returns.
 - **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout` — use `fpmedia_web::timer` (engine + host).
 - **Op cancel** → `op_epoch`; Cancelled = soft; invalidate uses reset when checked out.
-- **Clock / rate** → `ClockState` + `media_time()`; soft-hold scrub/Pause; resume AudioContext before long prime; silent `PlaybackClock` advances on wall time (Chrome `currentTime` lags without audible output under WebCodecs load — diverge from mediabunny `getPlaybackTime`); AAC still context clock. UX ladder: `product.md`.
+- **Clock / rate** → `ClockState` + `media_time()`; soft-hold scrub/Pause; resume AudioContext before long prime; silent `PlaybackClock` advances on wall time (Chrome `currentTime` lags without audible output under WebCodecs load — diverge from mediabunny `getPlaybackTime`); AAC still context clock. PCM rate≠1: `slice_planar_for_stretch` (~1024) before WSOLA — do not feed whole QT packets. UX ladder: `product.md`.
 - **Underrun** → HoldUnderrun + soft audio hold (keep decoder); not skip spiral. EOF: don’t End while `play_pending()` (iterator still has samples) / while playhead mid at shuttle.
 - **Warm pump (seek / step)** → after take, retarget cursor (clear `saw_target` on retarget); park on capacity — don’t exit/respawn thrash. Short B-frame hole: `pts_aim_hole` + prune floor.
 - **Play iterator** → Play never reads the presentation queue or `PlayPolicy`; don’t reintroduce Hd/Uhd Play caps / loop prime / EOF lead (mobile stutter came from bytes, not queue depth). Pause / seek / scrub → `clear_play_session` (`PlayIter::finish` returns the decoder). Densify off; behind cap 0; Exact trim farthest. `mediabunny: media-sink.ts mediaSamplesInRange`, `examples/media-player`.

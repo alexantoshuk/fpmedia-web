@@ -175,6 +175,43 @@ fn read_i16(b: &[u8], le: bool) -> i16 {
     }
 }
 
+/// Slice planar PCM into ~`chunk_frames` for WSOLA (rate ≠ 1).
+///
+/// QT packets can be 0.5–1 s; feeding them whole into `TimeStretcher` stalls the
+/// main thread → audio underruns even at tiny rate deltas. AAC-sized chunks
+/// (~1024) keep stretch incremental. `mediabunny: no equivalent` (no rate API).
+/// Wired from wasm `audio::output` only — keep available for native unit tests.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", feature = "webcodecs")),
+    allow(dead_code)
+)]
+pub fn slice_planar_for_stretch(
+    planar: Vec<Vec<f32>>,
+    base_ts: f64,
+    sample_rate: f64,
+    chunk_frames: usize,
+) -> Vec<(f64, Vec<Vec<f32>>)> {
+    let chunk_frames = chunk_frames.max(1);
+    let sr = sample_rate.max(1.0);
+    if planar.is_empty() || planar[0].is_empty() {
+        return Vec::new();
+    }
+    let frames = planar[0].len();
+    if frames <= chunk_frames {
+        return vec![(base_ts, planar)];
+    }
+    let mut out = Vec::with_capacity(frames.div_ceil(chunk_frames));
+    let mut offset = 0usize;
+    while offset < frames {
+        let end = (offset + chunk_frames).min(frames);
+        let slice: Vec<Vec<f32>> = planar.iter().map(|ch| ch[offset..end].to_vec()).collect();
+        let ts = base_ts + offset as f64 / sr;
+        out.push((ts, slice));
+        offset = end;
+    }
+    out
+}
+
 fn read_u24(b: &[u8], le: bool) -> u32 {
     if le {
         u32::from(b[0]) | (u32::from(b[1]) << 8) | (u32::from(b[2]) << 16)
@@ -302,5 +339,26 @@ mod tests {
         let data = [0x7F, 0xFF, 0xFF];
         let planar = fmt.decode_interleaved_f32(&data, 1).unwrap();
         assert!((planar[0][0] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn slice_planar_for_stretch_splits_and_stamps() {
+        let planar = vec![vec![0.0f32; 2500], vec![1.0f32; 2500]];
+        let chunks = slice_planar_for_stretch(planar, 1.0, 1000.0, 1024);
+        assert_eq!(chunks.len(), 3);
+        assert!((chunks[0].0 - 1.0).abs() < 1e-12);
+        assert_eq!(chunks[0].1[0].len(), 1024);
+        assert!((chunks[1].0 - (1.0 + 1024.0 / 1000.0)).abs() < 1e-12);
+        assert_eq!(chunks[1].1[0].len(), 1024);
+        assert_eq!(chunks[2].1[0].len(), 2500 - 2048);
+        assert_eq!(chunks[2].1[1][0], 1.0);
+    }
+
+    #[test]
+    fn slice_planar_for_stretch_keeps_short() {
+        let planar = vec![vec![0.5f32; 100]];
+        let chunks = slice_planar_for_stretch(planar, 0.0, 48_000.0, 1024);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].1[0].len(), 100);
     }
 }

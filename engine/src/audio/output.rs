@@ -29,6 +29,7 @@ use web_sys::{
 use crate::audio::Mp4AudioTrack;
 use crate::audio::TimeStretcher;
 use crate::audio::owned_audio_data::OwnedAudioData;
+use crate::audio::pcm::slice_planar_for_stretch;
 use crate::error::MediaError;
 use crate::normalize_playback_rate;
 use crate::types::AudioMetadata;
@@ -38,6 +39,13 @@ const AHEAD_SECS: f64 = 1.0;
 /// Seconds of audio to schedule synchronously in [`AudioOutput::restart_warm`]
 /// before returning (loop seam / underrun resume — avoid silent video).
 const WARM_PRIME_SECS: f64 = 0.08;
+/// Max planar frames fed to WSOLA per pending item when rate ≠ 1.
+///
+/// QT PCM packets are often 0.5–1 s; one giant `TimeStretcher::append` blocks the
+/// main thread so `AudioContext` underruns → audible jerks even at 1.05×.
+/// Slice like AAC frame cadence (~1024 @ 48 kHz). No mediabunny rate API
+/// (`mediabunny: no equivalent` — Vanilagy WSOLA gist only).
+const PCM_STRETCH_CHUNK_FRAMES: usize = 1024;
 
 enum PendingPayload {
     /// AAC (WebCodecs `AudioData`).
@@ -546,7 +554,12 @@ impl AudioOutput {
                     return Ok(sample_idx);
                 }
                 let ts = pending.timestamp_secs;
+                let stretch = self.wants_stretch();
                 self.schedule_pending_sample(ts, pending.payload)?;
+                if stretch {
+                    // Let the audio thread breathe between WSOLA chunks.
+                    crate::timer::sleep_ms(0).await;
+                }
                 if ts >= prime_until {
                     return Ok(sample_idx);
                 }
@@ -573,7 +586,11 @@ impl AudioOutput {
             if self.epoch.get() != epoch {
                 break;
             }
+            let stretch = self.wants_stretch();
             self.schedule_pending_sample(pending.timestamp_secs, pending.payload)?;
+            if stretch {
+                crate::timer::sleep_ms(0).await;
+            }
         }
         Ok(sample_idx)
     }
@@ -639,10 +656,14 @@ impl AudioOutput {
                     return Ok(());
                 }
                 let ts = pending.timestamp_secs;
+                let stretch = self.wants_stretch();
                 self.schedule_pending_sample(ts, pending.payload)?;
+                if stretch {
+                    crate::timer::sleep_ms(0).await;
+                }
                 // Ahead throttle: media timeline at 1×; wall schedule when stretching.
                 loop {
-                    let ahead = if self.wants_stretch() {
+                    let ahead = if stretch {
                         let now = self.context.current_time();
                         (self.stretch_next_ctx.get() - now).max(0.0)
                     } else {
@@ -687,7 +708,11 @@ impl AudioOutput {
             if self.epoch.get() != epoch {
                 return Ok(());
             }
+            let stretch = self.wants_stretch();
             self.schedule_pending_sample(pending.timestamp_secs, pending.payload)?;
+            if stretch {
+                crate::timer::sleep_ms(0).await;
+            }
         }
         if self.epoch.get() != epoch {
             return Ok(());
@@ -840,10 +865,27 @@ impl AudioOutput {
             let meta = self.track.metadata();
             let format = meta.codec.pcm.ok_or(MediaError::UnsupportedCodec)?;
             let planar = format.decode_interleaved_f32(&sample.data, meta.number_of_channels)?;
-            self.pending.borrow_mut().push_back(PendingSample {
-                timestamp_secs: sample.composition_timestamp().seconds,
-                payload: PendingPayload::Planar(planar),
-            });
+            let base_ts = sample.composition_timestamp().seconds;
+            if self.wants_stretch() {
+                let chunks = slice_planar_for_stretch(
+                    planar,
+                    base_ts,
+                    meta.sample_rate.max(1) as f64,
+                    PCM_STRETCH_CHUNK_FRAMES,
+                );
+                let mut q = self.pending.borrow_mut();
+                for (ts, slice) in chunks {
+                    q.push_back(PendingSample {
+                        timestamp_secs: ts,
+                        payload: PendingPayload::Planar(slice),
+                    });
+                }
+            } else {
+                self.pending.borrow_mut().push_back(PendingSample {
+                    timestamp_secs: base_ts,
+                    payload: PendingPayload::Planar(planar),
+                });
+            }
             return Ok(());
         }
 
