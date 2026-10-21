@@ -5,8 +5,8 @@ use fpmedia_web_components::helpers::{
     playhead_tip_css, playhead_width_css, strip_canvas_buffer_width,
 };
 use fpmedia_web_components::{
-    HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, Scrubber, ScrubberCtx, ThumbPolicy,
-    TimelineMeta, TimelineMetaKind, Video, VideoRef,
+    HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, ScrubCachePolicy, Scrubber,
+    ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, Video, VideoRef,
 };
 use leptos::ev;
 use leptos::html::{Canvas, Div, Input};
@@ -323,6 +323,13 @@ pub fn DemoPlayer() -> impl IntoView {
         copy: copy_stats,
         ..
     } = use_clipboard();
+    Effect::new(move |_| {
+        video.set_scrub_cache_policy(if scrubber_on.get() {
+            ScrubCachePolicy::On
+        } else {
+            ScrubCachePolicy::Off
+        });
+    });
     Effect::new(move |_| {
         let on = scrubber_on.get() && thumbs_on.get();
         video.set_thumb_policy(if on {
@@ -852,7 +859,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 <div class="wm-controls wm-debug-toggles" data-testid="debug-toggles">
                     <label
                         class="wm-check"
-                        title="Timeline scrubber (UI). Densify still runs on Pause."
+                        title="Timeline scrubber. Off = no scrub decoder / densify / strip caches."
                     >
                         <input
                             type="checkbox"

@@ -559,6 +559,14 @@ pub fn Video(
         }) as Rc<dyn Fn(fpmedia_web::ThumbPolicy)>
     };
 
+    let set_scrub_cache_policy_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |policy: fpmedia_web::ScrubCachePolicy| {
+            ctx.scrub_cache_policy.set(policy);
+            ctx.with_player(|p| p.set_scrub_cache_policy(policy));
+        }) as Rc<dyn Fn(fpmedia_web::ScrubCachePolicy)>
+    };
+
     let close_fn = {
         let ctx = ctx.clone();
         Rc::new(move || {
@@ -588,6 +596,7 @@ pub fn Video(
         try_paint_hover_thumb: try_paint_hover_thumb_fn,
         cancel_hover_thumb: cancel_hover_thumb_fn,
         set_thumb_policy: set_thumb_policy_fn,
+        set_scrub_cache_policy: set_scrub_cache_policy_fn,
     }));
 
     on_cleanup({

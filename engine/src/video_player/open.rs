@@ -179,6 +179,7 @@ impl VideoPlayer {
             #[cfg(feature = "thumbs")]
             thumb_policy: Cell::new(ThumbPolicy::On),
             scrub_decoder: RefCell::new(None),
+            scrub_cache_policy: Cell::new(crate::policy::ScrubCachePolicy::On),
             scrub_densify_blocked: Cell::new(false),
             scrub_epoch: Cell::new(0),
             densify: crate::SingleFlight::new(),

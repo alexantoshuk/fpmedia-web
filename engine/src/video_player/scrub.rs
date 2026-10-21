@@ -10,8 +10,8 @@ use crate::error::MediaError;
 use crate::model::engine_mode::EngineEvent;
 use crate::policy::scrub_plan::{densify_should_ban_after_no_progress, densify_skip_bridge_ids};
 use crate::policy::{
-    GopProfile, ScrubPolicy, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
-    scrub_blit_frame_budget,
+    GopProfile, ScrubCachePolicy, ScrubPolicy, exact_frames_to_free_for_play_vram,
+    scrub_blit_cap_during_play, scrub_blit_frame_budget,
 };
 use crate::residency::ScrubChunk;
 use crate::types::FrameId;
@@ -467,6 +467,37 @@ impl VideoPlayer {
         crate::scrub_preview_choice(target, key, cached)
     }
 
+    /// Runtime scrub-cache gate. `Off` closes the scrub decoder and drops
+    /// Covered + Exact; `On` re-arms the Pause pipeline (decoder recreated lazily).
+    pub fn set_scrub_cache_policy(&self, policy: ScrubCachePolicy) {
+        if self.shared.scrub_cache_policy.replace(policy) == policy {
+            return;
+        }
+        match policy {
+            ScrubCachePolicy::Off => {
+                // Checked-out densify sees the epoch bump and drops the decoder
+                // on return (`return_scrub_decoder`) — never close mid-`decode()`.
+                self.abort_scrub_fill(false);
+                drop(self.shared.scrub_decoder.borrow_mut().take());
+                if let Ok(mut cache) = self.shared.scrub_chunks.try_borrow_mut() {
+                    cache.clear();
+                }
+                if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+                    blit.clear();
+                }
+            }
+            ScrubCachePolicy::On => {
+                if !self.is_playing() {
+                    self.enter_scrub_cache_pipeline(self.state().frame);
+                }
+            }
+        }
+    }
+
+    pub fn scrub_cache_policy(&self) -> ScrubCachePolicy {
+        self.shared.scrub_cache_policy.get()
+    }
+
     /// Drop Covered + Exact + thumbs (open / close teardown only — **not** loop).
     pub(super) fn clear_scrub_store(&self) {
         // Abort in-flight gap fill first so the fill task drops the decoder slot.
@@ -520,6 +551,7 @@ impl VideoPlayer {
         // Gate on play mode / densify-off policy (All-Intra).
         // Settle/seek: latch pending while ExactHold owns HW.
         if self.shared.is_disposed()
+            || self.shared.scrub_cache_off()
             || self.shared.engine.get().is_play()
             || self.is_playing()
             || !self.scrub_policy().densify
@@ -537,6 +569,7 @@ impl VideoPlayer {
 
     pub(super) fn kick_scrub_cache_fill(&self) {
         if self.shared.is_disposed()
+            || self.shared.scrub_cache_off()
             || self.shared.engine.get().is_play()
             || self.is_playing()
             || !self.scrub_policy().densify
@@ -544,7 +577,10 @@ impl VideoPlayer {
             || self.shared.scrub_gesture.get()
             || self.shared.engine.get().holds_exact()
         {
-            if !self.shared.is_disposed() && self.shared.engine.get().holds_exact() {
+            if !self.shared.is_disposed()
+                && !self.shared.scrub_cache_off()
+                && self.shared.engine.get().holds_exact()
+            {
                 self.shared.densify.latch_pending();
             }
             return;
@@ -571,7 +607,8 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             if shared.is_disposed() {
                 return Ok(());
             }
-            if shared.engine.get().is_play()
+            if shared.scrub_cache_off()
+                || shared.engine.get().is_play()
                 || shared.playing.get()
                 || !shared.track.metadata_ref().scrub_policy().densify
                 || shared.scrub_densify_blocked.get()
@@ -801,6 +838,9 @@ pub(super) fn ingest_scrub_bitmap_only(
     target_h: u32,
     replace: bool,
 ) -> bool {
+    if shared.scrub_cache_off() {
+        return false;
+    }
     let (bitmap, _width, _height) = match shared
         .encode_canvas
         .with_blit(|enc| enc.frame_to_bitmap(video, target_w.max(1), target_h.max(1)))
@@ -916,7 +956,7 @@ pub(super) async fn fill_one_gap(
 
     // Short borrow for take — never hold scrub_decoder RefMut across await/reset.
     // After clip dispose the slot is empty — do not recreate a scrub decoder.
-    if shared.is_disposed() {
+    if shared.is_disposed() || shared.scrub_cache_off() {
         return Err(MediaError::Cancelled);
     }
     let taken = shared.scrub_decoder.borrow_mut().take();
@@ -935,7 +975,7 @@ pub(super) async fn fill_one_gap(
         },
     };
     if cancelled() {
-        *shared.scrub_decoder.borrow_mut() = Some(decoder);
+        return_scrub_decoder(&shared, decoder, false);
         return Err(MediaError::Cancelled);
     }
 
@@ -993,7 +1033,7 @@ pub(super) async fn fill_one_gap(
         let _ = decoder.reset();
         drop(decoder);
         Ok(false)
-    } else if shared.is_disposed() {
+    } else if shared.is_disposed() || shared.scrub_cache_off() {
         drop(decoder);
         Ok(true)
     } else {
@@ -1006,7 +1046,7 @@ fn return_scrub_decoder(shared: &Shared, mut decoder: WebCodecsDecoder, reset: b
     if reset {
         let _ = decoder.reset();
     }
-    if !shared.is_disposed() {
+    if !shared.is_disposed() && !shared.scrub_cache_off() {
         *shared.scrub_decoder.borrow_mut() = Some(decoder);
     }
 }

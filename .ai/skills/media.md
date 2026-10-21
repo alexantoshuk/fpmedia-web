@@ -25,6 +25,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Soft-drag / cold scrub canvas frozen (no frame change) | `scrub_preview_frame` / Exact blit | preview = Exact only — **never** `blit.clear` / full Exact wipe on settle, seek prep, or pointer-up (`b8206d1` `clear_exact_for_aim` broke scrub). Aim/evict OK; full clear not |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
+| Scrub UI off but scrub decoder / densify still alive | `set_scrub_cache_policy` / `scrub_cache_off` | gate densify + gray + `ingest_scrub_bitmap_only`; checked-out decoder dropped in `return_scrub_decoder`, never closed mid-`decode()`. Host re-applies in `run_open` before `seek_frame(0)` |
 | Hover CPU / freeze / stuck far | ThumbPreview isolation | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
 | Play freeze / flush/idle / underrun | presentation cap / `clock_state` | caps: `architecture.md` PlayPolicy; HoldUnderrun; prune floor + cascade — see Gotchas |
 | `flush/idle` pts=0 (All-Intra, mobile) | `run_key_cascade` / `force_prefer_software` | key inclusive after wipe; HW silent miss → sticky PreferSoftware; snap fed **before** finish_gop wipe. `mediabunny: media-sink prefer-software` |

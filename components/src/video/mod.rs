@@ -14,7 +14,8 @@ mod transport_apply;
 
 pub use component::Video;
 pub use fpmedia_web::{
-    PipelineInterest, PipelineStats, ReadyFrameKind, ReadyFrameMark, ThumbPolicy, VideoMetadata,
+    PipelineInterest, PipelineStats, ReadyFrameKind, ReadyFrameMark, ScrubCachePolicy, ThumbPolicy,
+    VideoMetadata,
 };
 pub use pipeline_interest::{PipelineInterestLease, PipelinePlane};
 
@@ -86,6 +87,7 @@ pub(crate) struct VideoOps {
     pub try_paint_hover_thumb: Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32) -> bool>,
     pub cancel_hover_thumb: Rc<dyn Fn()>,
     pub set_thumb_policy: Rc<dyn Fn(ThumbPolicy)>,
+    pub set_scrub_cache_policy: Rc<dyn Fn(ScrubCachePolicy)>,
 }
 
 impl VideoRef {
@@ -352,6 +354,14 @@ impl VideoRef {
     /// Runtime thumb sink gate (`Off` drops [`fpmedia_web::ThumbPreview`]).
     pub fn set_thumb_policy(&self, policy: ThumbPolicy) {
         if let Some(set) = self.op(|o| &o.set_thumb_policy) {
+            set(policy);
+        }
+    }
+
+    /// Runtime scrub-cache gate — persists across opens. `Off` (no scrub UI)
+    /// closes the scrub decoder and drops Covered / Exact / gray fill.
+    pub fn set_scrub_cache_policy(&self, policy: ScrubCachePolicy) {
+        if let Some(set) = self.op(|o| &o.set_scrub_cache_policy) {
             set(policy);
         }
     }

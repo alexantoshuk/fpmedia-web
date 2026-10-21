@@ -24,7 +24,7 @@ use crate::model::clock_state::ClockState;
 use crate::model::decoder_slot::DecoderSlotModel;
 use crate::model::engine_mode::EngineModel;
 use crate::model::session::SessionModel;
-use crate::policy::ThumbPolicy;
+use crate::policy::{ScrubCachePolicy, ThumbPolicy};
 use crate::residency::ScrubChunkStore;
 use crate::types::{FrameId, Timestamp};
 
@@ -93,6 +93,8 @@ pub(super) struct Shared {
     pub(super) thumb_policy: Cell<ThumbPolicy>,
     /// Second decoder for background gap fill (does not steal main playback).
     pub(super) scrub_decoder: RefCell<Option<WebCodecsDecoder>>,
+    /// `Off` → no scrub decoder / Covered / Exact / gray fill (host without scrub UI).
+    pub(super) scrub_cache_policy: Cell<ScrubCachePolicy>,
     /// Densify create failed permanently this clip (e.g. HEVC HW-only — no SW
     /// second decoder). Stops retry storms that would call `prefer-hardware`.
     pub(super) scrub_densify_blocked: Cell<bool>,
@@ -183,6 +185,11 @@ impl Shared {
     #[inline]
     pub(super) fn is_disposed(&self) -> bool {
         self.disposed.get()
+    }
+
+    #[inline]
+    pub(super) fn scrub_cache_off(&self) -> bool {
+        self.scrub_cache_policy.get() == ScrubCachePolicy::Off
     }
 
     pub(super) fn state(&self) -> PlayerState {

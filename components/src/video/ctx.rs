@@ -1,9 +1,9 @@
 //! Shared host handles for one mounted [`super::Video`].
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use fpmedia_web::{TransportEvent, VideoPlayer};
+use fpmedia_web::{ScrubCachePolicy, TransportEvent, VideoPlayer};
 use leptos::prelude::*;
 
 use super::VideoRef;
@@ -22,6 +22,8 @@ pub(super) struct HostCtx {
     pub fps_meter: Rc<RefCell<FpsMeter>>,
     pub queue: OpQueue,
     pub transport: TransportHandle,
+    /// Host intent — re-applied to every newly opened player (`run_open`).
+    pub scrub_cache_policy: Rc<Cell<ScrubCachePolicy>>,
 }
 
 impl HostCtx {
@@ -32,6 +34,7 @@ impl HostCtx {
             fps_meter: Rc::new(RefCell::new(FpsMeter::new())),
             queue,
             transport,
+            scrub_cache_policy: Rc::new(Cell::new(ScrubCachePolicy::default())),
         }
     }
 

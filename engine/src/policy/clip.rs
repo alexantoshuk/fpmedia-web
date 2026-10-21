@@ -284,6 +284,19 @@ pub enum ThumbPolicy {
     On,
 }
 
+/// Runtime gate for the scrub cache plane (densify decoder + Covered/Exact + gray fill).
+///
+/// `Off` (host has no scrub UI): close the scrub decoder, clear Covered + Exact,
+/// refuse densify / gray fill / scrub ingest. Seek / step / Play stay on the main
+/// decoder. `mediabunny: src/media-sink.ts mediaSamplesInRange` — a decoder lives
+/// only while its sink has a consumer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ScrubCachePolicy {
+    Off,
+    #[default]
+    On,
+}
+
 /// Per-clip scrub knobs derived from [`GopProfile`] (not global constants).
 ///
 /// Local invention (mediabunny: no equivalent). Tune fields per profile; do not

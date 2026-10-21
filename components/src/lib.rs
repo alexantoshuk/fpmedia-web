@@ -34,5 +34,5 @@ pub use timeline_meta::{TimelineMeta, TimelineMetaKind};
 #[cfg(target_arch = "wasm32")]
 pub use video::{
     PipelineInterest, PipelineInterestLease, PipelinePlane, PipelineStats, ReadyFrameKind,
-    ReadyFrameMark, ThumbPolicy, Video, VideoMetadata, VideoRef,
+    ReadyFrameMark, ScrubCachePolicy, ThumbPolicy, Video, VideoMetadata, VideoRef,
 };

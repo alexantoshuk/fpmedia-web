@@ -74,6 +74,8 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
     match opened {
         Ok(p) => {
             let p = Rc::new(p);
+            // Before `seek_frame(0)` — its pipeline entry would arm densify.
+            p.set_scrub_cache_policy(ctx.scrub_cache_policy.get());
             metadata.set(Some(p.metadata()));
             has_audio.set(p.has_audio());
             p.set_playback_rate(playback_rate.get_untracked());
