@@ -168,11 +168,27 @@ export class DemoPlayer {
     await this.waitReady(timeout);
   }
 
-  /** Open via demo URL bar (local: `/media/…` from `public/media/`). */
+  /**
+   * Open via demo "Load Remote URL" (`window.prompt` → `open_demo_url`).
+   *
+   * Visible chrome path — the off-screen `url-input` / `btn-open-url` hooks are
+   * outside the viewport and Playwright will not click them even with `force`.
+   * Local: `/media/…` from `demo-player/public/media/` after `npm run media:fetch`.
+   */
   async openUrl(url: string, timeout = 120_000) {
-    await this.page.getByTestId("url-input").fill(url);
-    await this.page.getByTestId("btn-open-url").click();
+    this.page.once("dialog", async (dialog) => {
+      await dialog.accept(url);
+    });
+    await this.page.getByTestId("btn-load-url").click();
     await this.waitReady(timeout);
+  }
+
+  /** Seed `empty URL` via "Load Remote URL" without dropping the open clip. */
+  async openEmptyUrl() {
+    this.page.once("dialog", async (dialog) => {
+      await dialog.accept("");
+    });
+    await this.page.getByTestId("btn-load-url").click();
   }
 
   /**

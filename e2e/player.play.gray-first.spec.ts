@@ -4,7 +4,7 @@
  * Regression: unprimed Play awaited `warm_sample_bytes(24)` (1–3s+ lag).
  * Fix: await one GOP at head (`gop_sample_lead` 8…24).
  *
- * Path: soft-cold settle (no seed) → Play → expect `play prime warm lead=` + advance.
+ * Path: soft-cold settle (no seed) → Play → expect `play prime warm key=… span=` + advance.
  */
 import { expect, test } from "@playwright/test";
 import {
@@ -124,25 +124,24 @@ test.describe("first Play on gray/cold (no Exact seed)", () => {
 
     expect(await player.error.innerText()).toBe("");
 
-    const warmLead = engineLogs.find((l) =>
-      l.includes("play prime warm lead="),
-    );
+    // Engine log: `play prime warm key=N span=S` (GOP-capped await span).
+    const warm = engineLogs.find((l) => /play prime warm key=\d+ span=\d+/.test(l));
     const skipFill = engineLogs.some((l) =>
       l.includes("play prime skip fill"),
     );
-    // Unprimed path: GOP warm lead. If settle seeded Exact, skip-fill is OK.
+    // Unprimed path: GOP warm span. If settle seeded Exact, skip-fill is OK.
     if (!skipFill) {
       expect(
-        warmLead,
-        `expected play prime warm lead=…; got ${JSON.stringify(engineLogs.slice(-16))}`,
+        warm,
+        `expected play prime warm key=… span=…; got ${JSON.stringify(engineLogs.slice(-16))}`,
       ).toBeTruthy();
-      const m = warmLead!.match(/warm lead=(\d+)/);
-      const lead = m ? Number(m[1]) : -1;
+      const m = warm!.match(/span=(\d+)/);
+      const span = m ? Number(m[1]) : -1;
       expect(
-        lead,
-        `warm lead ${lead} should be GOP-capped (8…24)`,
-      ).toBeGreaterThanOrEqual(8);
-      expect(lead).toBeLessThanOrEqual(24);
+        span,
+        `warm span ${span} should be GOP-capped (≥1, typically 8…24)`,
+      ).toBeGreaterThanOrEqual(1);
+      expect(span).toBeLessThanOrEqual(24);
     }
   });
 });

@@ -115,10 +115,10 @@ test.describe("cold scrub → Play resume", () => {
 
     const sawGopWarmOrSkip =
       engineLogs.some((l) => l.includes("gop_warm=") || l.includes("skip fill")) ||
-      engineLogs.some((l) => l.includes("play prime warm lead="));
+      engineLogs.some((l) => /play prime warm key=\d+ span=\d+/.test(l));
     expect(
       sawGopWarmOrSkip,
-      `expected gop-warm settle or skip-fill / capped prime warm; got ${JSON.stringify(engineLogs.slice(-16))}`,
+      `expected gop-warm settle or skip-fill / prime warm key=… span=…; got ${JSON.stringify(engineLogs.slice(-16))}`,
     ).toBe(true);
   });
 });
