@@ -669,7 +669,7 @@ impl VideoPlayer {
     /// Pause/idle only ([`allows_thumb_key_fill`]). Play uses throttled single-aim
     /// decode instead — no fill chain.
     pub(super) fn schedule_thumb_key_fill(&self) {
-        if self.shared.is_disposed() {
+        if self.shared.is_disposed() || self.shared.scrub_bg_suspended() {
             return;
         }
         if !allows_thumb_key_fill(self.shared.workload_hints()) {
@@ -696,7 +696,7 @@ impl VideoPlayer {
     }
 
     pub(super) fn kick_thumb_key_fill(&self) {
-        if self.shared.is_disposed() {
+        if self.shared.is_disposed() || self.shared.scrub_bg_suspended() {
             return;
         }
         if !allows_thumb_key_fill(self.shared.workload_hints()) {
@@ -719,8 +719,11 @@ impl VideoPlayer {
             }
             let track = shared.track.clone();
             let meta = shared.track.metadata();
-            let yield_play =
-                || shared.is_disposed() || !allows_thumb_key_fill(shared.workload_hints());
+            let yield_play = || {
+                shared.is_disposed()
+                    || shared.scrub_bg_suspended()
+                    || !allows_thumb_key_fill(shared.workload_hints())
+            };
             let next_gap = || {
                 if yield_play() {
                     return None;

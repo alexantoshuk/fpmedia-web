@@ -120,7 +120,7 @@ impl PlaybackClock {
         self.media_at_start.set(media_time_secs.max(0.0));
     }
 
-    /// Soft hold (underrun / scrub / hidden) — same snap as [`Self::stop`].
+    /// Soft hold (underrun / scrub) — same snap as [`Self::stop`].
     pub fn hold(&self) -> f64 {
         self.stop()
     }

@@ -35,7 +35,12 @@ use crate::normalize_playback_rate;
 use crate::types::AudioMetadata;
 
 /// How far ahead of media time to keep scheduling before yielding (seconds).
+/// `mediabunny: examples/media-player runAudioIterator` — throttle at ≥ 1 s.
 const AHEAD_SECS: f64 = 1.0;
+/// Tab-hidden: main-thread timers throttle to ~1 Hz — keep a deep buffer so
+/// refill can wait a full second without underrun. MB has no hidden special
+/// (`mediabunny: no equivalent` — local).
+const AHEAD_SECS_HIDDEN: f64 = 12.0;
 /// Decoded-but-unscheduled + in-decoder packets before the pump parks on decoder
 /// progress. `mediabunny: media-sink.ts mediaSamplesInRange` `MAX_QUEUE_SIZE`.
 const AUDIO_MAX_QUEUE_SIZE: usize = 4;
@@ -90,6 +95,10 @@ pub struct AudioOutput {
     pending: Rc<RefCell<VecDeque<PendingSample>>>,
     /// Pump parked on decoder output / dequeue (`onQueueDequeue`).
     progress_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
+    /// `throttle_ahead` waiters — woken by node `onended` or [`Self::set_tab_hidden`].
+    ahead_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
+    /// Document hidden — deeper ahead + no schedule-slice yields (timer throttle).
+    tab_hidden: Cell<bool>,
     error: Rc<RefCell<Option<String>>>,
     decoder: RefCell<Option<AudioDecoder>>,
     /// Pitch-preserving stretch for review rates ≠ 1×.
@@ -99,7 +108,7 @@ pub struct AudioOutput {
     _on_output: Closure<dyn FnMut(JsValue)>,
     _on_error: Closure<dyn FnMut(JsValue)>,
     _on_dequeue: Closure<dyn FnMut(JsValue)>,
-    /// Shared `onended` — drops the node from `queued`.
+    /// Shared `onended` — drops the node from `queued` + wakes ahead waiters.
     on_ended: Closure<dyn FnMut(JsValue)>,
 }
 
@@ -129,6 +138,7 @@ impl AudioOutput {
         let progress_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
             Rc::new(RefCell::new(Vec::new()));
         let queued: Rc<RefCell<Vec<AudioBufferSourceNode>>> = Rc::new(RefCell::new(Vec::new()));
+        let ahead_waiters: Rc<RefCell<Vec<js_sys::Function>>> = Rc::new(RefCell::new(Vec::new()));
 
         let pending_out = Rc::clone(&pending);
         let waiters_out = Rc::clone(&progress_waiters);
@@ -151,6 +161,7 @@ impl AudioOutput {
         }) as Box<dyn FnMut(JsValue)>);
 
         let queued_end = Rc::clone(&queued);
+        let ahead_end = Rc::clone(&ahead_waiters);
         let on_ended = Closure::wrap(Box::new(move |event: JsValue| {
             let Ok(target) = js_sys::Reflect::get(&event, &"target".into()) else {
                 return;
@@ -158,6 +169,10 @@ impl AudioOutput {
             if let Ok(mut q) = queued_end.try_borrow_mut() {
                 q.retain(|node| JsValue::from(node.clone()) != target);
             }
+            // Audio-thread edge — still fires when the tab is hidden (unlike
+            // throttled `setTimeout`). Lets `throttle_ahead` refill without
+            // waiting for the ~1 Hz background timer budget.
+            wake_waiters_deferred(std::mem::take(&mut *ahead_end.borrow_mut()));
         }) as Box<dyn FnMut(JsValue)>);
 
         let error_out = Rc::clone(&error);
@@ -206,6 +221,8 @@ impl AudioOutput {
             queued,
             pending,
             progress_waiters,
+            ahead_waiters,
+            tab_hidden: Cell::new(false),
             error,
             decoder: RefCell::new(decoder),
             stretch: RefCell::new(None),
@@ -215,6 +232,30 @@ impl AudioOutput {
             _on_dequeue: on_dequeue,
             on_ended,
         })
+    }
+
+    /// Tab visibility — deeper schedule ahead + skip macrotask yields while hidden.
+    ///
+    /// Wakes a parked [`Self::throttle_ahead`] so the pump can top up immediately.
+    /// Host: `VideoPlayer::yield_scrub_work_for_hidden` / resume.
+    pub fn set_tab_hidden(&self, hidden: bool) {
+        if self.tab_hidden.replace(hidden) == hidden {
+            return;
+        }
+        wake_waiters_deferred(std::mem::take(&mut *self.ahead_waiters.borrow_mut()));
+        if hidden {
+            web_sys::console::log_1(
+                &format!("fpmedia-web: audio ahead → {AHEAD_SECS_HIDDEN}s (tab hidden)").into(),
+            );
+        }
+    }
+
+    fn ahead_target_secs(&self) -> f64 {
+        if self.tab_hidden.get() {
+            AHEAD_SECS_HIDDEN
+        } else {
+            AHEAD_SECS
+        }
     }
 
     fn is_pcm(&self) -> bool {
@@ -612,7 +653,7 @@ impl AudioOutput {
                 if prime_until.is_some_and(|until| ts >= until) {
                     return Ok(sample_idx);
                 }
-                slice.tick().await;
+                slice.tick(self.tab_hidden.get()).await;
                 if prime_until.is_none() && !self.throttle_ahead(epoch, ts).await {
                     return Ok(sample_idx);
                 }
@@ -643,23 +684,44 @@ impl AudioOutput {
         }
     }
 
-    /// Hold the feeder while ≥ [`AHEAD_SECS`] is scheduled (media timeline at 1×;
+    /// Hold the feeder while ≥ ahead target is scheduled (media timeline at 1×;
     /// wall schedule when stretching). False when cancelled.
+    ///
+    /// Visible: [`AHEAD_SECS`] (MB). Hidden: [`AHEAD_SECS_HIDDEN`]. Wake via
+    /// node `onended` (audio thread) or a short poll — not only `setTimeout`
+    /// (throttled to ~1 Hz in background tabs).
     async fn throttle_ahead(&self, epoch: u64, ts: f64) -> bool {
         loop {
+            let target = self.ahead_target_secs();
             let ahead = if self.wants_stretch() {
                 (self.stretch_next_ctx.get() - self.context.current_time()).max(0.0)
             } else {
                 (ts - self.media_time()).max(0.0)
             };
-            if ahead < AHEAD_SECS {
+            if ahead < target {
                 return true;
             }
             if self.epoch.get() != epoch {
                 return false;
             }
-            crate::timer::sleep_ms(50).await;
+            self.wait_ahead_slack().await;
         }
+    }
+
+    /// Park until a scheduled node ends, tab-hidden flips, or a short poll.
+    async fn wait_ahead_slack(&self) {
+        let waiters = Rc::clone(&self.ahead_waiters);
+        let progress = js_sys::Promise::new(&mut |resolve, _reject| {
+            waiters.borrow_mut().push(resolve);
+        });
+        // Visible: 50 ms like before. Hidden: poll is throttled anyway; onended
+        // is the real wake — keep a backup so we never hang if nodes are empty.
+        let poll_ms = if self.tab_hidden.get() { 500 } else { 50 };
+        let poll = crate::timer::timeout_promise(poll_ms, || JsValue::UNDEFINED);
+        let race = js_sys::Promise::race(&js_sys::Array::of2(&progress, &poll));
+        let _ = JsFuture::from(race).await;
+        // Timeout path: drop unused resolvers (progress Promise abandoned).
+        waiters.borrow_mut().clear();
     }
 
     fn decode_queue_size(&self) -> usize {
@@ -739,7 +801,7 @@ impl AudioOutput {
                 return Ok(());
             }
             self.schedule_pending_sample(pending.timestamp_secs, pending.payload)?;
-            slice.tick().await;
+            slice.tick(self.tab_hidden.get()).await;
         }
         if self.epoch.get() != epoch {
             return Ok(());
@@ -998,7 +1060,12 @@ impl ScheduleSlice {
         self.since_ms = crate::timer::now_ms().unwrap_or(0.0);
     }
 
-    async fn tick(&mut self) {
+    /// `skip_yield`: tab hidden — `setTimeout(0)` becomes ~1 s and starves the
+    /// deep ahead refill; block the main thread briefly instead (tab not interactive).
+    async fn tick(&mut self, skip_yield: bool) {
+        if skip_yield {
+            return;
+        }
         let now = crate::timer::now_ms().unwrap_or(0.0);
         if now - self.since_ms >= SCHEDULE_SLICE_MS {
             crate::timer::yield_macrotask().await;

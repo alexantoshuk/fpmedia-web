@@ -67,6 +67,57 @@ impl VideoPlayer {
         self.schedule_thumb_key_fill();
     }
 
+    /// Tab / window hidden: stop densify / gray / thumbs. Play clock stays live.
+    ///
+    /// `mediabunny: examples/media-player/media-player.ts` — no visibility hold;
+    /// audio+`AudioContext` clock continue. Local: scrub planes only (CPU/Ranges).
+    /// Also deepens audio ahead ([`crate::AudioOutput::set_tab_hidden`]) and
+    /// blocks video-underrun → [`AudioOutput::hold_underrun`] (that made
+    /// background audio choppy when rAF/`nextFrame` lagged).
+    pub fn yield_scrub_work_for_hidden(self: &Rc<Self>) {
+        if self.shared.is_disposed() {
+            return;
+        }
+        self.shared.scrub_bg_suspended.set(true);
+        self.abort_scrub_fill(false);
+        self.cancel_hover_thumb();
+        if let Ok(slot) = self.shared.audio.try_borrow()
+            && let Some(a) = slot.as_ref()
+        {
+            a.set_tab_hidden(true);
+        }
+        // Already silenced for video underrun — restart now; do not wait for
+        // `nextFrame` (may stay empty while rAF is throttled).
+        if self.shared.clock_state.get().underrun_holding()
+            && self.is_playing()
+            && !self.shared.resuming_clock.get()
+        {
+            self.spawn_resume_after_underrun_hold();
+        }
+    }
+
+    /// Tab visible again: clear suspend and re-arm Pause densify / gray / thumbs.
+    pub fn resume_scrub_work_after_visible(&self) {
+        if self.shared.is_disposed() {
+            return;
+        }
+        self.shared.scrub_bg_suspended.set(false);
+        if let Ok(slot) = self.shared.audio.try_borrow()
+            && let Some(a) = slot.as_ref()
+        {
+            a.set_tab_hidden(false);
+        }
+        // Playing: suppress underrun→audio hold while video skip-catches.
+        if self.is_playing() || self.play_session_live() {
+            self.arm_underrun_catchup_grace();
+            return;
+        }
+        if self.shared.scrub_gesture.get() || self.shared.engine.get().holds_exact() {
+            return;
+        }
+        self.enter_scrub_cache_pipeline(self.state().frame);
+    }
+
     pub(super) fn scrub_policy(&self) -> ScrubPolicy {
         self.shared.track.metadata_ref().scrub_policy()
     }
@@ -525,6 +576,7 @@ impl VideoPlayer {
         // Gate on play mode / densify-off policy (All-Intra).
         // Settle/seek: latch pending while ExactHold owns HW.
         if self.shared.is_disposed()
+            || self.shared.scrub_bg_suspended()
             || self.shared.scrub_cache_off()
             || self.shared.engine.get().is_play()
             || self.is_playing()
@@ -543,6 +595,7 @@ impl VideoPlayer {
 
     pub(super) fn kick_scrub_cache_fill(&self) {
         if self.shared.is_disposed()
+            || self.shared.scrub_bg_suspended()
             || self.shared.scrub_cache_off()
             || self.shared.engine.get().is_play()
             || self.is_playing()
@@ -552,6 +605,7 @@ impl VideoPlayer {
             || self.shared.engine.get().holds_exact()
         {
             if !self.shared.is_disposed()
+                && !self.shared.scrub_bg_suspended()
                 && !self.shared.scrub_cache_off()
                 && self.shared.engine.get().holds_exact()
             {
@@ -581,7 +635,8 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             if shared.is_disposed() {
                 return Ok(());
             }
-            if shared.scrub_cache_off()
+            if shared.scrub_bg_suspended()
+                || shared.scrub_cache_off()
                 || shared.engine.get().is_play()
                 || shared.playing.get()
                 || !shared.track.metadata_ref().scrub_policy().densify

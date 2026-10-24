@@ -46,6 +46,10 @@ impl VideoPlayer {
         self.shared.resuming_clock.set(false);
         self.shared.held_media_origin.set(None);
         *self.shared.play_driver_error.borrow_mut() = None;
+        // Scrub `then_play` prewarm (and any warm clock) can sit ahead of the
+        // fresh PlayIter — suppress underrun→audio hold while video skip-catches
+        // (same grace as tab-visible return).
+        self.arm_underrun_catchup_grace();
         self.kick_update_next_frame();
     }
 
@@ -121,13 +125,11 @@ impl VideoPlayer {
             self.finish_silent_play_prime();
         }
 
-        if self.is_hidden_hold() {
-            return Ok(PlayTick::Skipped);
-        }
-
         if let Some(iter) = self.shared.play_iter.borrow().as_ref() {
             iter.note_raf();
         }
+        // Do **not** clear catch-up grace when `play_next` is Some — present may
+        // take it this tick and leave `play_next` empty → underrun hold → audio gap.
         let t = self.media_time();
         let tick = match self.present_due(t)? {
             DuePresent::Ended => PlayTick::Ended,
@@ -336,10 +338,49 @@ impl VideoPlayer {
         });
     }
 
+    /// Tab hidden or post-visible grace — skip video-underrun → audio silence.
+    pub(super) fn suppress_underrun_for_video_catchup(&self) -> bool {
+        if self.shared.scrub_bg_suspended() {
+            return true;
+        }
+        let Some(until) = self.shared.underrun_catchup_until_ms.get() else {
+            return false;
+        };
+        let now = now_ms().unwrap_or(0.0);
+        if now >= until {
+            self.shared.underrun_catchup_until_ms.set(None);
+            return false;
+        }
+        true
+    }
+
+    /// After tab visible while Playing — allow video skip-catch without audio hold.
+    pub(super) fn arm_underrun_catchup_grace(&self) {
+        // Long enough for rAF/iterator to repark after a hidden-tab lag; time-only
+        // (not cleared on first `play_next` — that raced hold in the same tick).
+        const GRACE_MS: f64 = 1000.0;
+        if let Some(now) = now_ms() {
+            self.shared
+                .underrun_catchup_until_ms
+                .set(Some(now + GRACE_MS));
+        }
+    }
+
     fn tick_underrun_hold_resume(self: &Rc<Self>) {
+        // Tab hidden / catch-up grace: video `nextFrame` lags — never silence audio.
+        // Leave any in-flight HoldUnderrun even without `nextFrame`.
+        // `mediabunny: media-player` — no video-underrun → audio hold.
+        if self.suppress_underrun_for_video_catchup() {
+            if self.shared.clock_state.get().underrun_holding() && !self.shared.resuming_clock.get()
+            {
+                self.spawn_resume_after_underrun_hold();
+            }
+            return;
+        }
+
         if self.play_underrun_hold() {
             let cs = self.shared.clock_state.get();
-            if cs.hidden_holding() || cs.underrun_holding() || self.shared.resuming_clock.get() {
+            if cs.underrun_holding() || self.shared.resuming_clock.get() {
                 return;
             }
             let t = self.hold_media_clock_for_underrun();
@@ -353,6 +394,10 @@ impl VideoPlayer {
         if !should_resume {
             return;
         }
+        self.spawn_resume_after_underrun_hold();
+    }
+
+    pub(super) fn spawn_resume_after_underrun_hold(self: &Rc<Self>) {
         self.shared.resuming_clock.set(true);
         let player = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
@@ -490,11 +535,13 @@ impl VideoPlayer {
     /// True underrun: no `nextFrame` while the next timeline frame is already due.
     ///
     /// Used to freeze the media clock. Distinct from a healthy wait for the next
-    /// frame's deadline.
+    /// frame's deadline. Tab-hidden / post-visible catch-up: always false — video
+    /// lag must not [`crate::AudioOutput::hold_underrun`] (choppy / micro-pause audio).
     pub fn play_underrun_hold(&self) -> bool {
         if !self.is_playing()
             || self.shared.session.get().is_restarting()
             || !self.shared.play_phase.get().presents()
+            || self.suppress_underrun_for_video_catchup()
         {
             return false;
         }

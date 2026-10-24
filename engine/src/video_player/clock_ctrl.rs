@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use crate::error::MediaError;
 use crate::model::clock_state::{ClockCmd, ClockEvent, reduce as clock_reduce};
+use crate::types::FrameId;
 
 use super::VideoPlayer;
 use super::now_ms;
@@ -360,52 +361,7 @@ impl VideoPlayer {
         t
     }
 
-    /// Freeze while the tab / window is hidden (browser suspends `AudioContext`
-    /// and throttles rAF). Keeps UI `playing`; on `visibilitychange` → visible the
-    /// host calls [`Self::resume_audio_context`] then [`Self::resume_after_hold`].
-    ///
-    /// No-op when not playing, already hidden-held, or scrub soft-hold owns the
-    /// clock. `mediabunny: examples/media-player` — **no** visibility handler;
-    /// local adaptation (HTML media / AudioContext background policy).
-    pub fn hold_media_clock_for_hidden(&self) -> Option<f64> {
-        if !self.is_playing() {
-            return None;
-        }
-        let cs = self.shared.clock_state.get();
-        if cs.hidden_holding() {
-            return Some(
-                self.shared
-                    .held_media_origin
-                    .get()
-                    .unwrap_or_else(|| self.shared.clock.borrow().media_time(None)),
-            );
-        }
-        if matches!(
-            cs,
-            crate::ClockState::HoldScrub | crate::ClockState::Stopped
-        ) {
-            return None;
-        }
-        self.apply_clock_event(ClockEvent::HoldHidden);
-        if !self.shared.clock_state.get().hidden_holding() {
-            return None;
-        }
-        // Drop in-flight underrun resume — tab freeze owns the clock.
-        self.shared.resuming_clock.set(false);
-        let t = if let Some(a) = self.shared.audio.borrow().as_ref() {
-            a.hold_underrun()
-        } else if let Some(c) = self.shared.playback_clock.as_ref() {
-            c.hold()
-        } else {
-            self.media_time()
-        };
-        self.shared.wall_origin.set(None);
-        self.shared.clock.borrow_mut().snap(t);
-        self.shared.held_media_origin.set(Some(t));
-        Some(t)
-    }
-
-    /// Warm resume after underrun / hidden hold using the snapped hold origin.
+    /// Warm resume after underrun hold using the snapped hold origin.
     pub async fn resume_after_hold(&self) -> Result<(), MediaError> {
         let t = self
             .shared
@@ -417,22 +373,20 @@ impl VideoPlayer {
         Ok(())
     }
 
-    /// True while [`Self::hold_media_clock_for_hidden`] latched the clock.
-    pub fn is_hidden_hold(&self) -> bool {
-        self.shared.clock_state.get().hidden_holding()
-    }
-
     /// Warm resume after [`Self::hold_media_clock_for_underrun`], scrub soft-hold,
     /// or loop seam.
     ///
     /// Reuses the configured `AudioDecoder` + primes the first buffers
     /// ([`AudioOutput::restart_warm`]). Fresh Play after hard pause still uses
     /// [`Self::start_media_clock`] (cold `begin`).
+    ///
+    /// If audio was already [`AudioOutput::restart_warm`]'d (scrub `then_play`
+    /// prewarm) and is still playing, adopt live time — never a second silence.
     pub async fn resume_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.apply_clock_event(ClockEvent::Resume);
-        self.shared.clock.borrow_mut().start(media_time_secs);
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
         if crate::is_wall_clock_rate(self.playback_rate()) {
+            self.shared.clock.borrow_mut().start(media_time_secs);
             if let Some(a) = audio {
                 let _ = a.stop();
                 a.store_playback_rate(self.playback_rate());
@@ -451,16 +405,59 @@ impl VideoPlayer {
             if let Some(c) = self.shared.playback_clock.as_ref() {
                 let _ = c.stop();
             }
+            // Scrub `then_play` prewarm: audio already ran through Exact settle
+            // (often 0.3–0.5 s ahead of aim). A second `restart_warm` is the
+            // audible "play → pause → play" gap — adopt live clock; video skip-catches.
+            if a.is_playing() {
+                let live = a.media_time();
+                self.shared.clock.borrow_mut().start(live);
+                return Ok(());
+            }
+            self.shared.clock.borrow_mut().start(media_time_secs);
             a.restart_warm(media_time_secs).await?;
         } else if let Some(c) = self.shared.playback_clock.as_ref() {
+            self.shared.clock.borrow_mut().start(media_time_secs);
             self.shared.wall_origin.set(None);
             c.set_playback_rate(self.playback_rate());
             c.resume_context().await?;
             c.start(media_time_secs);
-        } else if let Some(now) = now_ms() {
-            self.shared.wall_origin.set(Some(now / 1000.0));
+        } else {
+            self.shared.clock.borrow_mut().start(media_time_secs);
+            if let Some(now) = now_ms() {
+                self.shared.wall_origin.set(Some(now / 1000.0));
+            }
         }
         Ok(())
+    }
+
+    /// Fire-and-forget warm audio at `media_time_secs` while Exact settle runs
+    /// (`ScrubRelease { then_play }`). PlayPrime then skips a second
+    /// [`AudioOutput::restart_warm`] when still near this time.
+    ///
+    /// Only when scrub soft-hold left [`crate::AudioResume::Warm`].
+    pub fn prewarm_audio_at_frame(self: &Rc<Self>, frame: FrameId) {
+        let Ok(t) = self.frame_timestamp_seconds(frame) else {
+            return;
+        };
+        if !self.shared.engine.get().warm_audio() {
+            return;
+        }
+        // Leave Warm latch for PlayPrime — only start the sink early.
+        let Some(a) = self.shared.audio.borrow().as_ref().map(Rc::clone) else {
+            return;
+        };
+        if a.is_playing() {
+            return;
+        }
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = a.restart_warm(t).await
+                && !e.is_cancelled()
+            {
+                web_sys::console::warn_1(
+                    &format!("fpmedia-web: scrub then_play audio prewarm: {e}").into(),
+                );
+            }
+        });
     }
 
     pub(super) fn apply_clock_event(&self, event: ClockEvent) {

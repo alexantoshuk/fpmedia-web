@@ -184,6 +184,8 @@ impl VideoPlayer {
             scrub_epoch: Cell::new(0),
             densify: crate::SingleFlight::new(),
             gray_fill: crate::SingleFlight::new(),
+            scrub_bg_suspended: Cell::new(false),
+            underrun_catchup_until_ms: Cell::new(None),
             scrub_gesture: Cell::new(false),
             engine: Cell::new(EngineModel::new()),
             canvas,
@@ -363,7 +365,7 @@ impl VideoPlayer {
                 }
                 // Yield while Play / Seek own the network, on underrun / scrub
                 // soft-hold, or while densify is busy (avoid GitHub/proxy 502 +
-                // sample-sized Range storms). HoldHidden does not block verify.
+                // sample-sized Range storms). Tab-hidden scrub yield does not block verify.
                 // mediabunny: verifyKeyPackets on retrieve — no bg full-file walk
                 // during playback (`WorkloadMode` / `allows_bg_sync_verify`).
                 if !allows_bg_sync_verify(shared.workload_hints()) {

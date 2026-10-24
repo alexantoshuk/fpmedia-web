@@ -12,7 +12,7 @@
 | Play / Next / Prev disabled or no-op | transport `ui_playing`; recover stale Playing + `!play_session_live`; Settling+Play Preempt |
 | New clip: Play disabled / silent after N URLs | `retire_clip`: Closed + cancel_all + drop player — engine dispose: `skills/media.md` |
 | Hover thumb stuck after new URL | hide on `!ready`; `cancel_hover_thumb` |
-| Tab hidden: audio dies / video races | `visibilitychange` → HoldHidden / resume — `skills/media.md` |
+| Tab hidden: play freezes or densify spins | visibility → `yield_scrub_work_for_hidden` + 500 ms play tick — `skills/media.md` |
 | Play after scrub no-op | `transport` + `ScrubRelease { then_play }`; soft-park on PlayPrime fail; no demo TLS play latch |
 | EOF not observed / decoder leak | `VideoRef::ended`; `close()` on unmount / handoff |
 | Progress bar stuck on old frame | `player.take()` before zeroing counts; paused rAF `sync_ui` |
@@ -47,7 +47,7 @@ Tailwind: only literal class strings in `.rs`/`.css`; computed geometry → `sty
 3. **`playing` follows transport** — `TransportState::ui_playing(session_live)` (`Playing`, or priming/resume-settle after `begin_play_session`). Never `playing.set(engine.playing)` in `sync_ui`. Seek/Step/Play/Pause/scrub → `dispatch_transport` / `note_transport`.
 4. **Transport** — pointers → `VideoRef::scrub_pointer_*`; Seek/Step → `SeekRequested` / `StepRequested`. FSM owns resume (`ScrubRelease { then_play }`). Soft-hold via `pause_for_scrub`. PlayPrime fail → soft-park (no bump) so retry works.
 5. **Playhead** — sync on pointerdown/move before `scrub_pointer_*`. `sync_ui` updates playhead only while playing or on new clip. Leaving play: snap playhead to engine. Hold ←/→: aim `engine±1`, not `playhead++`.
-6. **Clock / play session** — `VideoPlayer::media_time()` only; engine owns prefetch, underrun, loop seam, silent-clock arm (`play_raf_tick` / `begin_play_session`). Host: OpQueue prime + rAF tick + visibility → hold/resume APIs.
+6. **Clock / play session** — `VideoPlayer::media_time()` only; engine owns prefetch, underrun, loop seam, silent-clock arm (`play_raf_tick` / `begin_play_session`). Host: OpQueue prime + rAF tick; visibility → scrub yield + hidden play interval (not clock hold).
 7. **rAF** — `use_raf_fn` resume after prime; throttle `sync_ui`/fps ~10 Hz; call `play_raf_tick` (not host underrun/loop).
 8. **Open / clip switch** — file input uses wasm spawn; `retire_clip` before zeroing UI; remote URL → host CORS / same-origin then UrlSource/blob (demo `/media/` static files locally; not the element crate).
 9. **`ended` / `close`** — Ended only from engine EOF (loop off); clear on open/seek/play/scrub; `close` = cancel_all + drop player.

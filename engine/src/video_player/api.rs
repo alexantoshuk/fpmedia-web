@@ -164,7 +164,7 @@ pub enum DuePresent {
 /// `render` / `play` / `pause`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlayTick {
-    /// Restarting, hidden hold, or session not live — skip UI this frame.
+    /// Restarting or session not live — skip UI this frame.
     Skipped,
     /// EOF with loop off — host should stop transport.
     Ended,

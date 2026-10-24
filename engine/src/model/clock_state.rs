@@ -8,6 +8,7 @@
 //! `pause`, `seekToTime` (pause → snap → play). Path match: audio/`AudioContext`
 //! drives time while playing; pause snaps origin. **No equivalent** for underrun
 //! hold or scrub soft-hold — local adaptations; do not change those policies here.
+//! Tab-hidden: no clock hold (MB continues); host yields scrub planes only.
 
 use std::fmt;
 
@@ -23,10 +24,6 @@ pub enum ClockState {
     HoldUnderrun,
     /// Scrub-while-play soft silence — warm [`crate::VideoPlayer::resume_media_clock`].
     HoldScrub,
-    /// Tab / window hidden while playing — freeze until visible (no skip catch-up).
-    /// Local: mediabunny media-player has **no** visibility handler; browsers
-    /// suspend `AudioContext` + throttle rAF → silent audio + accelerated video.
-    HoldHidden,
 }
 
 impl fmt::Display for ClockState {
@@ -36,7 +33,6 @@ impl fmt::Display for ClockState {
             Self::Running => write!(f, "Running"),
             Self::HoldUnderrun => write!(f, "HoldUnderrun"),
             Self::HoldScrub => write!(f, "HoldScrub"),
-            Self::HoldHidden => write!(f, "HoldHidden"),
         }
     }
 }
@@ -47,10 +43,7 @@ impl ClockState {
     }
 
     pub fn is_holding(self) -> bool {
-        matches!(
-            self,
-            Self::HoldUnderrun | Self::HoldScrub | Self::HoldHidden
-        )
+        matches!(self, Self::HoldUnderrun | Self::HoldScrub)
     }
 
     /// Bg sync-verify / backfill must yield while underrun owns the network.
@@ -62,13 +55,8 @@ impl ClockState {
         matches!(self, Self::HoldScrub)
     }
 
-    pub fn hidden_holding(self) -> bool {
-        matches!(self, Self::HoldHidden)
-    }
-
     /// Pause deferred bitstream sync-verify while underrun or scrub soft-hold
-    /// own the network. [`Self::HoldHidden`] does **not** block — tab freeze is
-    /// not underrun (verify may run when engine is Bg / Open).
+    /// own the network.
     pub fn blocks_bg_sync_verify(self) -> bool {
         self.underrun_holding() || self.scrub_holding()
     }
@@ -87,8 +75,6 @@ pub enum ClockEvent {
     HoldUnderrun,
     /// Leave play for timeline scrub (soft audio).
     HoldScrub,
-    /// Document / tab became hidden while playing.
-    HoldHidden,
     /// New [`crate::VideoPlayer::play`] — drop in-progress underrun timer without
     /// accumulating (same as clearing `underrun_hold_since_ms`).
     ResetForPlay,
@@ -144,18 +130,6 @@ pub fn reduce(state: ClockState, event: ClockEvent) -> (ClockState, Vec<ClockCmd
             (S::HoldScrub, cmds)
         }
 
-        E::HoldHidden => match state {
-            S::Running | S::HoldUnderrun | S::HoldHidden => {
-                let mut cmds = Vec::new();
-                if state == S::HoldUnderrun {
-                    cmds.push(C::FinishUnderrunTimer);
-                }
-                (S::HoldHidden, cmds)
-            }
-            // Scrub / stopped own the timeline — do not latch hidden over them.
-            other => (other, vec![]),
-        },
-
         E::ResetForPlay => {
             let mut cmds = Vec::new();
             if state == S::HoldUnderrun {
@@ -209,33 +183,14 @@ mod tests {
     }
 
     #[test]
-    fn hidden_hold_from_running() {
-        let (next, cmds) = reduce(ClockState::Running, ClockEvent::HoldHidden);
-        assert_eq!(next, ClockState::HoldHidden);
-        assert!(next.hidden_holding());
-        assert!(cmds.is_empty());
-
-        let (next, cmds) = reduce(ClockState::HoldUnderrun, ClockEvent::HoldHidden);
-        assert_eq!(next, ClockState::HoldHidden);
-        assert_eq!(cmds, vec![ClockCmd::FinishUnderrunTimer]);
-
-        // Scrub owns soft-hold — visibility must not replace it.
-        let (next, cmds) = reduce(ClockState::HoldScrub, ClockEvent::HoldHidden);
-        assert_eq!(next, ClockState::HoldScrub);
-        assert!(cmds.is_empty());
-    }
-
-    #[test]
-    fn hidden_hold_does_not_block_bg_sync_verify() {
-        let (hidden, _) = reduce(ClockState::Running, ClockEvent::HoldHidden);
-        assert!(hidden.is_holding());
-        assert!(!hidden.blocks_bg_sync_verify());
-
+    fn underrun_and_scrub_block_bg_sync_verify() {
         let (underrun, _) = reduce(ClockState::Running, ClockEvent::HoldUnderrun);
         assert!(underrun.blocks_bg_sync_verify());
 
         let (scrub, _) = reduce(ClockState::Running, ClockEvent::HoldScrub);
         assert!(scrub.blocks_bg_sync_verify());
+
+        assert!(!ClockState::Running.blocks_bg_sync_verify());
     }
 
     #[test]

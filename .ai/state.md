@@ -51,4 +51,4 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 - `ThumbCache` on `residency::AimWindow` (aim-distance instead of GOP LRU) — behavior change; probe hover first.
 - Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
-- Tab-hidden `AudioContinue`; pure `<Audio>` / `AudioPlayer` (reuses engine `audio`); thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; production player UI.
+- Pure `<Audio>` / `AudioPlayer` (reuses engine `audio`); thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; production player UI.

@@ -165,6 +165,11 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
         SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
         SeekOrStep::ScrubDrag(target) => p.scrub_to(u64::from(target), false).await,
         SeekOrStep::ScrubRelease { target, then_play } => {
+            // Overlap Exact settle with audio warm so release→play is not silent
+            // for the whole densify-yield window.
+            if then_play {
+                Rc::clone(&p).prewarm_audio_at_frame(u64::from(target));
+            }
             let r = p.scrub_to(u64::from(target), true).await;
             // Settle no longer arms densify inside the engine — if Play is queued,
             // keep the warm main decoder for prime (play-after-scrub).

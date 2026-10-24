@@ -190,6 +190,7 @@ pub(super) fn kick_fetchmap_gap_fill(shared: &Shared) -> bool {
 /// mediabunny: no FetchMap meter — local plane only.
 pub(super) fn schedule_fetchmap_gap_fill(shared: &Rc<Shared>) {
     if shared.is_disposed()
+        || shared.scrub_bg_suspended()
         || shared.scrub_cache_off()
         || shared.engine.get().is_play()
         || shared.playing.get()
@@ -211,6 +212,7 @@ pub(super) fn schedule_fetchmap_gap_fill(shared: &Rc<Shared>) {
 
 async fn fetchmap_gap_fill_task(shared: Rc<Shared>) {
     while !shared.is_disposed()
+        && !shared.scrub_bg_suspended()
         && !shared.scrub_cache_off()
         && !shared.engine.get().is_play()
         && !shared.playing.get()

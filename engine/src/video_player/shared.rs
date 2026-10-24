@@ -104,6 +104,12 @@ pub(super) struct Shared {
     /// Independent FetchMap (gray strip) hole fill — must not share densify flight
     /// (Exact yield must stay free of gray meter work).
     pub(super) gray_fill: SingleFlight,
+    /// Document hidden — yield densify / gray / thumbs; Play clock keeps running.
+    /// `mediabunny: examples/media-player` — no visibility hold; local scrub-plane gate.
+    pub(super) scrub_bg_suspended: Cell<bool>,
+    /// After tab visible: `performance.now` until which video catch-up must not
+    /// [`super::VideoPlayer::hold_media_clock_for_underrun`] (micro audio pause).
+    pub(super) underrun_catchup_until_ms: Cell<Option<f64>>,
     /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).
     pub(super) scrub_gesture: Cell<bool>,
     /// Play vs scrub densify / exact hold + soft-hold audio.
@@ -137,7 +143,7 @@ pub(super) struct Shared {
     pub(super) pending_silent_clock: Cell<bool>,
     /// Warm clock resume in flight — do not stack.
     pub(super) resuming_clock: Cell<bool>,
-    /// Media time snapped at underrun / hidden hold for warm resume.
+    /// Media time snapped at underrun hold for warm resume.
     pub(super) held_media_origin: Cell<Option<f64>>,
     /// Iterator / loop async failure for the next [`super::VideoPlayer::play_raf_tick`].
     pub(super) play_driver_error: RefCell<Option<String>>,
@@ -175,7 +181,7 @@ impl Shared {
         WorkloadHints::new(
             self.engine.get().mode,
             self.session.get().is_restarting(),
-            // Underrun / scrub soft-hold only — not HoldHidden (tab freeze ≠ underrun).
+            // Underrun / scrub soft-hold only (tab-hidden yields scrub planes, not clock).
             self.clock_state.get().blocks_bg_sync_verify(),
             self.densify.is_busy(),
         )
@@ -189,6 +195,11 @@ impl Shared {
     #[inline]
     pub(super) fn scrub_cache_off(&self) -> bool {
         self.scrub_cache_policy.get() == ScrubCachePolicy::Off
+    }
+
+    #[inline]
+    pub(super) fn scrub_bg_suspended(&self) -> bool {
+        self.scrub_bg_suspended.get()
     }
 
     pub(super) fn state(&self) -> PlayerState {

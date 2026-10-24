@@ -8,8 +8,9 @@ use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use leptos_use::utils::Pausable;
 use leptos_use::{
-    ThrottleOptions, UseRafFnOptions, use_document_visibility, use_raf_fn_with_options,
-    use_resize_observer, use_throttle_fn_with_arg_and_options,
+    ThrottleOptions, UseIntervalFnOptions, UseRafFnOptions, use_document_visibility,
+    use_interval_fn_with_options, use_raf_fn_with_options, use_resize_observer,
+    use_throttle_fn_with_arg_and_options,
 };
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlCanvasElement, VisibilityState};
@@ -52,69 +53,12 @@ pub fn Video(
     // mediabunny CallSerializer + asyncId — one queue for open / seek / play-prime.
     let ctx = HostCtx::new(video, OpQueue::new(video.busy), new_transport());
 
-    // Tab / window hidden while playing: freeze clock + soft-hold audio so
-    // restore does not skip-catch with silent AudioContext.
-    // mediabunny media-player: no visibility handler — local adaptation.
+    // Tab hidden: yield scrub densify/gray/thumbs; Play keeps AudioContext clock.
+    // Video catch-up via ~500 ms interval (rAF throttled when hidden).
+    // mediabunny: examples/media-player/media-player.ts — no clock hold;
+    // `setInterval(() => render(false), 500)`.
     let visibility = use_document_visibility();
-    let visibility_held = Rc::new(Cell::new(false));
-    Effect::new({
-        let ctx = ctx.clone();
-        let visibility_held = Rc::clone(&visibility_held);
-        move |_| {
-            let hidden = visibility.get() == VisibilityState::Hidden;
-            let player = &ctx.player;
-            if hidden {
-                if !playing.get_untracked() {
-                    return;
-                }
-                let Ok(borrow) = player.try_borrow() else {
-                    return;
-                };
-                let Some(p) = borrow.as_ref() else {
-                    return;
-                };
-                if !p.play_session_live() {
-                    return;
-                }
-                if p.hold_media_clock_for_hidden().is_some() {
-                    visibility_held.set(true);
-                    web_sys::console::log_1(&"fpmedia-web: visibility hold".into());
-                }
-                return;
-            }
-            if !visibility_held.get() {
-                return;
-            }
-            visibility_held.set(false);
-            if !playing.get_untracked() {
-                return;
-            }
-            let player = Rc::clone(player);
-            spawn_local(async move {
-                let Some(p) = player.borrow().as_ref().cloned() else {
-                    return;
-                };
-                if !p.play_session_live() {
-                    return;
-                }
-                if let Err(e) = p.resume_audio_context().await {
-                    web_sys::console::warn_1(
-                        &format!("fpmedia-web: visibility audio resume: {e}").into(),
-                    );
-                }
-                match p.resume_after_hold().await {
-                    Ok(()) => {
-                        web_sys::console::log_1(&"fpmedia-web: visibility resume".into());
-                    }
-                    Err(e) => {
-                        web_sys::console::warn_1(
-                            &format!("fpmedia-web: visibility clock resume: {e}").into(),
-                        );
-                    }
-                }
-            });
-        }
-    });
+    let scrub_yielded = Rc::new(Cell::new(false));
 
     let Pausable {
         pause: _pause_raf,
@@ -213,6 +157,128 @@ pub fn Video(
             // (`scrub_busy` ticks in the callback above).
             let _ = playing.get();
             resume_raf();
+        }
+    });
+
+    // Hidden-tab present tick — mediabunny `setInterval(render, 500)`.
+    let Pausable {
+        pause: pause_hidden_play,
+        resume: resume_hidden_play,
+        ..
+    } = use_interval_fn_with_options(
+        {
+            let ctx = ctx.clone();
+            let last_play_ui_ms = Rc::clone(&last_play_ui_ms);
+            move || {
+                if !playing.get_untracked() {
+                    return;
+                }
+                {
+                    let want = looping.get_untracked();
+                    ctx.with_player(|p| p.set_loop(want));
+                }
+                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
+                    return;
+                };
+                if !p.play_session_live() {
+                    return;
+                }
+                match p.play_raf_tick() {
+                    Ok(PlayTick::Skipped) => {}
+                    Ok(PlayTick::Ended) => {
+                        ended.set(true);
+                        note_transport(&ctx, TransportEvent::Ended);
+                        ctx.stop_playback();
+                        status.set("Ended.".into());
+                    }
+                    Ok(PlayTick::Presented { did_draw }) => {
+                        let now = now_ms();
+                        if did_draw
+                            && let Some(measured) = ctx.fps_meter.borrow_mut().note_present()
+                            && now.is_some_and(|n| n - last_play_ui_ms.get() >= 100.0)
+                        {
+                            fps.set(Some(measured));
+                        }
+                        if let Some(n) = now
+                            && n - last_play_ui_ms.get() >= 100.0
+                        {
+                            last_play_ui_ms.set(n);
+                            ctx.sync_ui();
+                        }
+                    }
+                    Ok(PlayTick::Failed(msg)) => {
+                        error.set(Some(msg));
+                        ctx.stop_playback();
+                    }
+                    Err(e) => {
+                        error.set(Some(e.to_string()));
+                        ctx.stop_playback();
+                    }
+                }
+            }
+        },
+        500_u64,
+        UseIntervalFnOptions::default()
+            .immediate(false)
+            .immediate_callback(false),
+    );
+
+    Effect::new({
+        let ctx = ctx.clone();
+        let scrub_yielded = Rc::clone(&scrub_yielded);
+        let pause_hidden_play = pause_hidden_play.clone();
+        let resume_hidden_play = resume_hidden_play.clone();
+        move |_| {
+            let hidden = visibility.get() == VisibilityState::Hidden;
+            // Re-apply after open while already hidden (new Shared clears suspend).
+            let _ = ready.get();
+            let is_playing = playing.get();
+
+            if hidden {
+                let first = !scrub_yielded.get();
+                if let Ok(borrow) = ctx.player.try_borrow()
+                    && let Some(p) = borrow.as_ref()
+                {
+                    Rc::clone(p).yield_scrub_work_for_hidden();
+                }
+                scrub_yielded.set(true);
+                if first {
+                    web_sys::console::log_1(&"fpmedia-web: visibility scrub yield".into());
+                }
+                if is_playing {
+                    resume_hidden_play();
+                } else {
+                    pause_hidden_play();
+                }
+                return;
+            }
+
+            pause_hidden_play();
+            if !scrub_yielded.replace(false) {
+                return;
+            }
+            ctx.with_player(|p| {
+                p.resume_scrub_work_after_visible();
+                web_sys::console::log_1(&"fpmedia-web: visibility scrub resume".into());
+            });
+            if !is_playing {
+                return;
+            }
+            let player = Rc::clone(&ctx.player);
+            spawn_local(async move {
+                let Some(p) = player.borrow().as_ref().cloned() else {
+                    return;
+                };
+                if !p.play_session_live() {
+                    return;
+                }
+                // Browser may have suspended a muted/silent context while hidden.
+                if let Err(e) = p.resume_audio_context().await {
+                    web_sys::console::warn_1(
+                        &format!("fpmedia-web: visibility audio resume: {e}").into(),
+                    );
+                }
+            });
         }
     });
 

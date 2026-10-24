@@ -45,7 +45,9 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Loop seam wipe / underrun hold | `start_loop_seam` (`PlayPhase::LoopSeam`) | hold clock, `start_play_iter(0)`, resume; keep Covered+Exact |
 | Pause→Play / scrub→Play lag or no-op | seed + `ScrubRelease{then_play}` | host: `skills/leptos.md`; probes gray-first / cold-resume / stress |
 | Sticky error after Ok settle | `host_ops` clear error on Ok | `e2e/player.scrub.sticky-error.spec.ts` |
-| A/V desync / tab-hidden race | `media_time` / HoldHidden | never host wall clock; HoldHidden ∉ underrun_holding; play session: `play_raf_tick` |
+| Tab hidden: play dies / densify keeps burning | `yield_scrub_work_for_hidden` | Play+clock continue (MB); scrub densify/gray/thumbs yield; host ~500 ms present. `mediabunny: media-player setInterval(render,500)` |
+| Tab hidden: audio choppy / gaps | `play_underrun_hold` / `scrub_bg_suspended` | never `hold_underrun` while hidden (video lag ≠ silence audio); ahead 12 s still helps refill. `mediabunny: no underrun→audio hold` |
+| Tab return / scrub→play audio micro-gap | `underrun_catchup_until_ms` / `begin_play_session` | ~1 s grace on visible + every PlayPrime; then_play prewarm + no 2nd `restart_warm` if playing. play→pause→play after scrub = underrun hold, not 2nd warm |
 | Rate / shuttle / JKL wrong | `normalize_playback_rate` / eof_wall | ≤4× WSOLA; >4 wall+mute; K pauses before 1× |
 | `RefCell already borrowed` | [RefCell](#refcell--wasm-re-entry) | bind then work; no borrow across await |
 | fMP4 / URL open hang / Range stampede | mfra warm + orch | moof-only parallel; never bulk 0..mfra; settle ≠ await full sync verify |

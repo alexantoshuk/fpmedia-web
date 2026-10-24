@@ -29,6 +29,7 @@ leptos_meta = { version = "0.8" }
 leptos-use = { version = "0.19", default-features = false, features = [
     "use_resize_observer",
     "use_raf_fn",
+    "use_interval_fn",
     "use_event_listener",
     "use_element_size",
     "use_timeout_fn",
