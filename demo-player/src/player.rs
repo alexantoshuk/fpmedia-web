@@ -1253,7 +1253,7 @@ fn paint_frame_zebra(
     true
 }
 
-/// Opaque 1-frame tip — continuous `left`+`right` calc (same `f/n` as float zebra).
+/// Opaque tip — continuous `left` + `max(2px, 100%/n)` width (track clips EOF).
 #[component]
 fn ScrubPlayheadTip() -> impl IntoView {
     let ctx =
@@ -1266,7 +1266,7 @@ fn ScrubPlayheadTip() -> impl IntoView {
             data-testid="scrubber-playhead"
             aria-hidden="true"
             style:left=move || tip.get().0
-            style:right=move || tip.get().1
+            style:width=move || tip.get().1
         />
     }
 }

@@ -23,18 +23,17 @@ pub fn playhead_width_css(playhead: u32, frame_count: u32) -> String {
     format!("calc(100% * {f} / {frame_count})")
 }
 
-/// CSS `left` / `right` for tip — same continuous `f/n` ratio as float zebra
-/// (not absolute px from `round(css_w)`, which drifts vs CSS-stretched canvas).
-/// Host: omit `width` (auto fills left…right).
+/// CSS `left` / `width` for tip — continuous `f/n` left; width at least 2 px
+/// (`max(2px, 100%/n)`). Host track clips overflow at EOF (`overflow: hidden`).
 pub fn playhead_tip_css(playhead: u32, frame_count: u32) -> (String, String) {
     if frame_count == 0 {
-        return ("0".into(), "100%".into());
+        return ("0".into(), "0".into());
     }
     let n = frame_count;
     let f = playhead.min(n - 1);
     let left = format!("calc(100% * {f} / {n})");
-    let right = format!("calc(100% * {} / {n})", n - f - 1);
-    (left, right)
+    let width = format!("max(2px, calc(100% / {n}))");
+    (left, width)
 }
 
 /// Map a pointer X on a scrubber element to a presentation frame.
@@ -110,17 +109,20 @@ mod tests {
     fn playhead_tip_uses_continuous_calc_slots() {
         assert_eq!(
             playhead_tip_css(1, 3),
-            ("calc(100% * 1 / 3)".into(), "calc(100% * 1 / 3)".into())
+            (
+                "calc(100% * 1 / 3)".into(),
+                "max(2px, calc(100% / 3))".into()
+            )
         );
         assert_eq!(
             playhead_tip_css(299, 300),
             (
                 "calc(100% * 299 / 300)".into(),
-                "calc(100% * 0 / 300)".into()
+                "max(2px, calc(100% / 300))".into()
             )
         );
         assert_eq!(playhead_width_css(1, 3), "calc(100% * 1 / 3)");
-        assert_eq!(playhead_tip_css(0, 0), ("0".into(), "100%".into()));
+        assert_eq!(playhead_tip_css(0, 0), ("0".into(), "0".into()));
     }
 
     #[test]

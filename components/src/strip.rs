@@ -534,7 +534,7 @@ pub fn frame_zebra_slot_px(frame_count: u32, width_px: u32) -> u32 {
 }
 
 /// Demo zebra min slot (CSS px): show when continuous step `w/n` is at least this.
-pub const FRAME_ZEBRA_MIN_SLOT_PX: f64 = 1.5;
+pub const FRAME_ZEBRA_MIN_SLOT_PX: f64 = 2.0;
 
 /// True when continuous step `w/n ≥ [`FRAME_ZEBRA_MIN_SLOT_PX`]`.
 pub fn frame_slots_at_least_min(frame_count: u32, width_px: u16) -> bool {
@@ -797,8 +797,9 @@ mod tests {
         assert_eq!(frame_zebra_slot_px(50, 100), 2);
         assert!(frame_slots_at_least_min(50, 100)); // step = 2
         assert_eq!(frame_zebra_slot_px(100, 100), 1);
-        assert!(!frame_slots_at_least_min(100, 100)); // step = 1 < 1.5
-        assert!(frame_slots_at_least_min(2, 3)); // step = 1.5
+        assert!(!frame_slots_at_least_min(100, 100)); // step = 1 < 2
+        assert!(!frame_slots_at_least_min(2, 3)); // step = 1.5 < 2
+        assert!(frame_slots_at_least_min(2, 4)); // step = 2
         assert!(!frame_slots_at_least_min(2, 2)); // step = 1
         assert_eq!(frame_zebra_slot_px(8000, 800), 0);
         assert!(!frame_slots_at_least_min(8000, 800));

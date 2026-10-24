@@ -168,7 +168,7 @@ body {
   flex: 0 0 auto;
 }
 
-/* Odd-frame zebra (demo). Host div is measured; canvas unmounts when slot < 1.5px. */
+/* Odd-frame zebra (demo). Host div is measured; canvas unmounts when slot < 2px. */
 .wm-scrubber-zebra-host {
   position: absolute;
   inset: 0;
@@ -210,12 +210,11 @@ body {
   opacity: 0.55;
 }
 
-/* Opaque current-frame tip (left+right calc = f/n; width auto). */
+/* Opaque tip (left = f/n; width = max(2px, 100%/n); track clips EOF). */
 .wm-scrubber-playhead {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: auto;
   background: #e8e8e8;
   pointer-events: none;
   z-index: 2;
