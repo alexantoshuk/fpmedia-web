@@ -16,7 +16,8 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Local master ~0.75× (no audio clock) | `PlaybackClock` wall time | No AAC/PCM track → silent clock; Chrome `currentTime` lags under decode load — wall time + muted graph. Probe `e2e/player.play.residual.spec.ts` |
 | QT PCM master silent / ignored | `build_audio_track` / `audio::pcm` | PCM via moov sound-desc + f32 schedule (no `AudioDecoder`). `mediabunny: media-sink.ts PcmAudioDecoderWrapper` |
 | QT PCM = noise / static | `pcm_entry` `enda` in `wave` | Nested `wave/enda` sets LE (`in24`→`pcm-s24`); top-level-only scan → false BE. `mediabunny: isobmff-demuxer wave` |
-| PCM rate ≠1× jerky / dropouts | `slice_planar_for_stretch` | Chunk ~1024 frames before WSOLA + yield; giant QT packets stall main thread. `mediabunny: no rate API` |
+| PCM rate ≠1× jerky / dropouts | `slice_planar_for_stretch` | Chunk ~1024 frames before WSOLA + time-sliced yield; giant QT packets stall main thread. `mediabunny: no rate API` |
+| Rate >1 audio chops on heavy video (long-GOP 720p / 4K), light clip fine; worse after scrub tap / loop seam | `AudioOutput::feed_and_schedule` | park on decoder output/`dequeue` at queue 4 — **no** `setTimeout(0)` per packet/WSOLA chunk (timer cadence ≈ 2× realtime → every chunk late). Yield via `ScheduleSlice` only. `mediabunny: media-sink.ts mediaSamplesInRange` |
 | Play residual fps_min≈23 @1 s | e2e residual / host rAF | Demo `sync_ui` ~100 ms — prefer `fps5s` / status fps meter; not engine judder. Parked. |
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
 | Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact; fault typing: `MediaError::from_codec_message` / `DecodeStall` |

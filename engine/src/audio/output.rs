@@ -36,6 +36,17 @@ use crate::types::AudioMetadata;
 
 /// How far ahead of media time to keep scheduling before yielding (seconds).
 const AHEAD_SECS: f64 = 1.0;
+/// Decoded-but-unscheduled + in-decoder packets before the pump parks on decoder
+/// progress. `mediabunny: media-sink.ts mediaSamplesInRange` `MAX_QUEUE_SIZE`.
+const AUDIO_MAX_QUEUE_SIZE: usize = 4;
+/// Safety wake when a dequeue / output edge is missed (video `PlayIter` same).
+const LOST_WAKE_MS: i32 = 250;
+/// Contiguous main-thread schedule work (WSOLA / PCM convert) before one
+/// macrotask yield. A yield per chunk caps throughput at the timer cadence
+/// (~4 ms × 2 per AAC packet) — under heavy video that falls below 2× realtime
+/// and every stretched chunk lands late (audible chop). `mediabunny: no
+/// equivalent` (no rate API; its iterator never yields per buffer).
+const SCHEDULE_SLICE_MS: f64 = 8.0;
 /// Seconds of audio to schedule synchronously in [`AudioOutput::restart_warm`]
 /// before returning (loop seam / underrun resume — avoid silent video).
 const WARM_PRIME_SECS: f64 = 0.08;
@@ -74,8 +85,11 @@ pub struct AudioOutput {
     ctx_origin: Cell<Option<f64>>,
     media_at_start: Cell<f64>,
     playing: Cell<bool>,
-    queued: RefCell<Vec<AudioBufferSourceNode>>,
+    /// Scheduled nodes not yet ended (`mediabunny: media-player queuedAudioNodes`).
+    queued: Rc<RefCell<Vec<AudioBufferSourceNode>>>,
     pending: Rc<RefCell<VecDeque<PendingSample>>>,
+    /// Pump parked on decoder output / dequeue (`onQueueDequeue`).
+    progress_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
     error: Rc<RefCell<Option<String>>>,
     decoder: RefCell<Option<AudioDecoder>>,
     /// Pitch-preserving stretch for review rates ≠ 1×.
@@ -84,6 +98,9 @@ pub struct AudioOutput {
     stretch_next_ctx: Cell<f64>,
     _on_output: Closure<dyn FnMut(JsValue)>,
     _on_error: Closure<dyn FnMut(JsValue)>,
+    _on_dequeue: Closure<dyn FnMut(JsValue)>,
+    /// Shared `onended` — drops the node from `queued`.
+    on_ended: Closure<dyn FnMut(JsValue)>,
 }
 
 impl AudioOutput {
@@ -109,8 +126,12 @@ impl AudioOutput {
 
         let pending: Rc<RefCell<VecDeque<PendingSample>>> = Rc::new(RefCell::new(VecDeque::new()));
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let progress_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        let queued: Rc<RefCell<Vec<AudioBufferSourceNode>>> = Rc::new(RefCell::new(Vec::new()));
 
         let pending_out = Rc::clone(&pending);
+        let waiters_out = Rc::clone(&progress_waiters);
         let on_output = Closure::wrap(Box::new(move |value: JsValue| {
             let Ok(data) = value.dyn_into::<AudioData>() else {
                 return;
@@ -121,6 +142,22 @@ impl AudioOutput {
                 timestamp_secs,
                 payload: PendingPayload::Decoded(owned),
             });
+            wake_waiters_deferred(std::mem::take(&mut *waiters_out.borrow_mut()));
+        }) as Box<dyn FnMut(JsValue)>);
+
+        let waiters_dq = Rc::clone(&progress_waiters);
+        let on_dequeue = Closure::wrap(Box::new(move |_value: JsValue| {
+            wake_waiters_deferred(std::mem::take(&mut *waiters_dq.borrow_mut()));
+        }) as Box<dyn FnMut(JsValue)>);
+
+        let queued_end = Rc::clone(&queued);
+        let on_ended = Closure::wrap(Box::new(move |event: JsValue| {
+            let Ok(target) = js_sys::Reflect::get(&event, &"target".into()) else {
+                return;
+            };
+            if let Ok(mut q) = queued_end.try_borrow_mut() {
+                q.retain(|node| JsValue::from(node.clone()) != target);
+            }
         }) as Box<dyn FnMut(JsValue)>);
 
         let error_out = Rc::clone(&error);
@@ -149,6 +186,8 @@ impl AudioOutput {
                 on_output.as_ref().unchecked_ref(),
             );
             let decoder = AudioDecoder::new(&init)?;
+            // web-sys has no `AudioDecoder::set_ondequeue`.
+            js_sys::Reflect::set(&decoder, &"ondequeue".into(), on_dequeue.as_ref())?;
             configure_decoder(&decoder, &meta, codec).await?;
             Some(decoder)
         };
@@ -164,14 +203,17 @@ impl AudioOutput {
             ctx_origin: Cell::new(None),
             media_at_start: Cell::new(0.0),
             playing: Cell::new(false),
-            queued: RefCell::new(Vec::new()),
+            queued,
             pending,
+            progress_waiters,
             error,
             decoder: RefCell::new(decoder),
             stretch: RefCell::new(None),
             stretch_next_ctx: Cell::new(0.0),
             _on_output: on_output,
             _on_error: on_error,
+            _on_dequeue: on_dequeue,
+            on_ended,
         })
     }
 
@@ -415,6 +457,7 @@ impl AudioOutput {
         for node in queued.drain(..) {
             // Ignore errors — node may already have ended.
             let scheduled = node.unchecked_ref::<AudioScheduledSourceNode>();
+            scheduled.set_onended(None);
             let _ = scheduled.stop();
         }
     }
@@ -524,20 +567,28 @@ impl AudioOutput {
 
     /// Decode + schedule until ~[`WARM_PRIME_SECS`] of audio is queued (or EOF).
     /// Returns the next sample index for the background pump.
-    async fn prime_schedule(&self, epoch: u64, mut sample_idx: u64) -> Result<u64, MediaError> {
+    async fn prime_schedule(&self, epoch: u64, sample_idx: u64) -> Result<u64, MediaError> {
         let prime_until = self.media_at_start.get() + WARM_PRIME_SECS;
+        self.feed_and_schedule(epoch, sample_idx, Some(prime_until))
+            .await
+    }
+
+    /// Packet feeder + scheduler shared by prime and the background pump.
+    ///
+    /// `mediabunny: media-sink.ts mediaSamplesInRange` — feed while
+    /// `queued + decodeQueueSize < MAX_QUEUE_SIZE`, else park on dequeue / output
+    /// (never a timer per packet). `examples/media-player runAudioIterator` —
+    /// schedule every decoded buffer, throttle only ≥ [`AHEAD_SECS`] ahead.
+    /// `prime_until`: return once a buffer at/after that media time is scheduled.
+    /// Returns the next unfed sample (EOF, prime done, or cancelled).
+    async fn feed_and_schedule(
+        &self,
+        epoch: u64,
+        mut sample_idx: u64,
+        prime_until: Option<f64>,
+    ) -> Result<u64, MediaError> {
+        let mut slice = ScheduleSlice::start();
         loop {
-            let count = self.track.sample_count();
-            if sample_idx >= count {
-                if self.track.expect_more_samples() {
-                    crate::util::yield_now().await;
-                    if self.epoch.get() != epoch {
-                        return Ok(sample_idx);
-                    }
-                    continue;
-                }
-                break;
-            }
             if self.epoch.get() != epoch {
                 return Ok(sample_idx);
             }
@@ -545,6 +596,9 @@ impl AudioOutput {
                 return Err(MediaError::WebCodecs(err));
             }
 
+            // Drain decoded outputs. Pop under a short borrow — do **not** use
+            // `while let … borrow_mut()` (RefMut lives for the whole body and
+            // panics when scrub/`stop` clears `pending`).
             loop {
                 let next = self.pending.borrow_mut().pop_front();
                 let Some(pending) = next else {
@@ -554,15 +608,30 @@ impl AudioOutput {
                     return Ok(sample_idx);
                 }
                 let ts = pending.timestamp_secs;
-                let stretch = self.wants_stretch();
                 self.schedule_pending_sample(ts, pending.payload)?;
-                if stretch {
-                    // Let the audio thread breathe between WSOLA chunks.
-                    crate::timer::sleep_ms(0).await;
-                }
-                if ts >= prime_until {
+                if prime_until.is_some_and(|until| ts >= until) {
                     return Ok(sample_idx);
                 }
+                slice.tick().await;
+                if prime_until.is_none() && !self.throttle_ahead(epoch, ts).await {
+                    return Ok(sample_idx);
+                }
+            }
+
+            if sample_idx >= self.track.sample_count() {
+                if self.track.expect_more_samples() {
+                    // Warm fMP4: AAC table still short — wait for mfra backfill adopt.
+                    crate::util::yield_now().await;
+                    slice.reset();
+                    continue;
+                }
+                return Ok(sample_idx);
+            }
+
+            if self.pending.borrow().len() + self.decode_queue_size() >= AUDIO_MAX_QUEUE_SIZE {
+                self.wait_decoder_progress().await;
+                slice.reset();
+                continue;
             }
 
             let sample = self.track.encoded_sample(sample_idx).await?;
@@ -571,28 +640,51 @@ impl AudioOutput {
             }
             self.feed_chunk(&sample)?;
             sample_idx += 1;
-
-            if self.pending.borrow().is_empty() {
-                crate::timer::sleep_ms(0).await;
-            }
         }
+    }
 
-        // Drain decoder outputs at EOF of prime window.
+    /// Hold the feeder while ≥ [`AHEAD_SECS`] is scheduled (media timeline at 1×;
+    /// wall schedule when stretching). False when cancelled.
+    async fn throttle_ahead(&self, epoch: u64, ts: f64) -> bool {
         loop {
-            let next = self.pending.borrow_mut().pop_front();
-            let Some(pending) = next else {
-                break;
+            let ahead = if self.wants_stretch() {
+                (self.stretch_next_ctx.get() - self.context.current_time()).max(0.0)
+            } else {
+                (ts - self.media_time()).max(0.0)
             };
+            if ahead < AHEAD_SECS {
+                return true;
+            }
             if self.epoch.get() != epoch {
-                break;
+                return false;
             }
-            let stretch = self.wants_stretch();
-            self.schedule_pending_sample(pending.timestamp_secs, pending.payload)?;
-            if stretch {
-                crate::timer::sleep_ms(0).await;
-            }
+            crate::timer::sleep_ms(50).await;
         }
-        Ok(sample_idx)
+    }
+
+    fn decode_queue_size(&self) -> usize {
+        self.decoder
+            .try_borrow()
+            .ok()
+            .and_then(|d| d.as_ref().map(|d| d.decode_queue_size() as usize))
+            .unwrap_or(0)
+    }
+
+    /// Park until a decoded output or `dequeue` (`onQueueDequeue`), with a
+    /// lost-wake timer.
+    async fn wait_decoder_progress(&self) {
+        let pending = Rc::clone(&self.pending);
+        let waiters = Rc::clone(&self.progress_waiters);
+        let progress = js_sys::Promise::new(&mut |resolve, _reject| {
+            if !pending.borrow().is_empty() {
+                let _ = resolve.call0(&JsValue::NULL);
+                return;
+            }
+            waiters.borrow_mut().push(resolve);
+        });
+        let lost_wake = crate::timer::timeout_promise(LOST_WAKE_MS, || JsValue::UNDEFINED);
+        let race = js_sys::Promise::race(&js_sys::Array::of2(&progress, &lost_wake));
+        let _ = JsFuture::from(race).await;
     }
 
     /// Decode + schedule loop from `media_time_secs` (cancel via [`Self::stop`]).
@@ -623,73 +715,10 @@ impl AudioOutput {
         Ok(())
     }
 
-    async fn pump(&self, epoch: u64, mut sample_idx: u64) -> Result<(), MediaError> {
-        loop {
-            let count = self.track.sample_count();
-            if sample_idx >= count {
-                if self.track.expect_more_samples() {
-                    // Warm fMP4: AAC table still short — wait for mfra backfill adopt.
-                    crate::util::yield_now().await;
-                    if self.epoch.get() != epoch {
-                        return Ok(());
-                    }
-                    continue;
-                }
-                break;
-            }
-            if self.epoch.get() != epoch {
-                return Ok(());
-            }
-            if let Some(err) = self.error.borrow().clone() {
-                return Err(MediaError::WebCodecs(err));
-            }
-
-            // Drain decoded outputs. Pop under a short borrow — do **not** use
-            // `while let … borrow_mut()` (RefMut lives for the whole body and
-            // panics when scrub/`stop` clears `pending`).
-            loop {
-                let next = self.pending.borrow_mut().pop_front();
-                let Some(pending) = next else {
-                    break;
-                };
-                if self.epoch.get() != epoch {
-                    return Ok(());
-                }
-                let ts = pending.timestamp_secs;
-                let stretch = self.wants_stretch();
-                self.schedule_pending_sample(ts, pending.payload)?;
-                if stretch {
-                    crate::timer::sleep_ms(0).await;
-                }
-                // Ahead throttle: media timeline at 1×; wall schedule when stretching.
-                loop {
-                    let ahead = if stretch {
-                        let now = self.context.current_time();
-                        (self.stretch_next_ctx.get() - now).max(0.0)
-                    } else {
-                        (ts - self.media_time()).max(0.0)
-                    };
-                    if ahead < AHEAD_SECS {
-                        break;
-                    }
-                    if self.epoch.get() != epoch {
-                        return Ok(());
-                    }
-                    crate::timer::sleep_ms(50).await;
-                }
-            }
-
-            let sample = self.track.encoded_sample(sample_idx).await?;
-            if self.epoch.get() != epoch {
-                return Ok(());
-            }
-            self.feed_chunk(&sample)?;
-            sample_idx += 1;
-
-            // Wait briefly for decoder output if queue empty.
-            if self.pending.borrow().is_empty() {
-                crate::timer::sleep_ms(0).await;
-            }
+    async fn pump(&self, epoch: u64, sample_idx: u64) -> Result<(), MediaError> {
+        self.feed_and_schedule(epoch, sample_idx, None).await?;
+        if self.epoch.get() != epoch {
+            return Ok(());
         }
 
         // Flush remaining AAC decoder outputs (PCM has none).
@@ -700,6 +729,7 @@ impl AudioOutput {
                 *self.decoder.borrow_mut() = Some(dec);
             }
         }
+        let mut slice = ScheduleSlice::start();
         loop {
             let next = self.pending.borrow_mut().pop_front();
             let Some(pending) = next else {
@@ -708,11 +738,8 @@ impl AudioOutput {
             if self.epoch.get() != epoch {
                 return Ok(());
             }
-            let stretch = self.wants_stretch();
             self.schedule_pending_sample(pending.timestamp_secs, pending.payload)?;
-            if stretch {
-                crate::timer::sleep_ms(0).await;
-            }
+            slice.tick().await;
         }
         if self.epoch.get() != epoch {
             return Ok(());
@@ -856,6 +883,8 @@ impl AudioOutput {
             }
             node.start_with_when_and_grain_offset(now, offset)?;
         }
+        node.unchecked_ref::<AudioScheduledSourceNode>()
+            .set_onended(Some(self.on_ended.as_ref().unchecked_ref()));
         self.queued.borrow_mut().push(node);
         Ok(())
     }
@@ -936,9 +965,45 @@ impl Drop for AudioOutput {
         self.stop_queued_nodes();
         let taken = self.decoder.borrow_mut().take();
         if let Some(dec) = taken {
+            let _ = js_sys::Reflect::set(&dec, &"ondequeue".into(), &JsValue::NULL);
             let _ = dec.close();
         }
         let _ = self.context.close();
+    }
+}
+
+/// Leave the WebCodecs callback stack before waking the feeder (reentrancy —
+/// `skills/media.md` Closures).
+fn wake_waiters_deferred(waiting: Vec<js_sys::Function>) {
+    for resolve in waiting {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = resolve.call0(&JsValue::NULL);
+        });
+    }
+}
+
+/// One macrotask yield per [`SCHEDULE_SLICE_MS`] of contiguous schedule work.
+struct ScheduleSlice {
+    since_ms: f64,
+}
+
+impl ScheduleSlice {
+    fn start() -> Self {
+        Self {
+            since_ms: crate::timer::now_ms().unwrap_or(0.0),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.since_ms = crate::timer::now_ms().unwrap_or(0.0);
+    }
+
+    async fn tick(&mut self) {
+        let now = crate::timer::now_ms().unwrap_or(0.0);
+        if now - self.since_ms >= SCHEDULE_SLICE_MS {
+            crate::timer::yield_macrotask().await;
+            self.reset();
+        }
     }
 }
 
