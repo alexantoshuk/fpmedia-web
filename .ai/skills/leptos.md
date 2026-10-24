@@ -21,6 +21,7 @@
 | Gray vs green strips lie / blur | `<TimelineMeta>` + float `paint_strip_canvas` on `f/n·w` — UX: `product.md` |
 | Zebra / tip / strip drift | continuous `f/n` (float canvas + tip `calc`); no CSS gradient tiles / integer tip snap |
 | Zebra subpixel mush on narrow resize | Host-div `use_resize_observer` + `Show` unmount; gate `FRAME_ZEBRA_MIN_SLOT_PX` (2); never RO the canvas after `set_width` |
+| Volume V popover flash on window shrink | H→V class flip must not transition opacity from H’s `1`; V base `transition: none`, fade-in only when open |
 | Demo scrubber touches `pipeline` | compose `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` — `product.md` § Element-layer helpers |
 | Hover jank on Play / lag until paint | `<HoverThumb>` trailing 150 ms; sync transform on root first; engine: `skills/media.md` |
 | `RefCell already borrowed` (tachys / Loop) | no borrow across await; scrub → `scrub_pointer_*` sync (Move throttled in `<Video>`); no demo TLS |

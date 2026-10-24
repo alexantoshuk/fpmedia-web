@@ -460,8 +460,6 @@ body {
   border: none;
   background: transparent;
   box-shadow: none;
-  opacity: 1;
-  visibility: visible;
   pointer-events: none;
   transition: width 0.15s ease;
 }
@@ -482,7 +480,9 @@ body {
   flex-shrink: 0;
 }
 
-/* Vertical: absolute popover above the icon. */
+/* Vertical: absolute popover above the icon.
+   Base transition none — H→V class flip must not animate opacity 1→0
+   (that flashed the V panel on md breakpoint cross). Fade-in only when open. */
 .wm-volume-slider-v {
   display: flex;
   position: absolute;
@@ -500,9 +500,7 @@ body {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition:
-    opacity 0.12s ease,
-    visibility 0.12s ease;
+  transition: none;
 }
 
 .wm-volume-control:hover .wm-volume-slider-v,
@@ -512,6 +510,9 @@ body {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
+  transition:
+    opacity 0.12s ease,
+    visibility 0.12s ease;
 }
 
 .wm-volume-slider-v .wm-volume-input {
