@@ -484,13 +484,15 @@ body {
 }
 
 /* Vertical: absolute popover above the icon.
-   Base transition none — H→V class flip must not animate opacity 1→0
-   (that flashed the V panel on md breakpoint cross). Fade-in only when open. */
+   H/V are separate `Show` shells (remount) so fade in/out is safe — same-node
+   H→V class flip used to inherit opacity:1 and flash. `::before` bridges the
+   gap so pointer travel icon→pop keeps :hover. */
 .wm-volume-slider-v {
+  --wm-volume-v-gap: 0.4rem;
   display: flex;
   position: absolute;
   z-index: 20;
-  bottom: calc(100% + 0.4rem);
+  bottom: calc(100% + var(--wm-volume-v-gap));
   left: 50%;
   transform: translateX(-50%);
   align-items: center;
@@ -503,7 +505,18 @@ body {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: none;
+  transition:
+    opacity 0.12s ease,
+    visibility 0.12s ease;
+}
+
+.wm-volume-slider-v::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: var(--wm-volume-v-gap);
 }
 
 .wm-volume-control:hover .wm-volume-slider-v,
@@ -513,9 +526,6 @@ body {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
-  transition:
-    opacity 0.12s ease,
-    visibility 0.12s ease;
 }
 
 .wm-volume-slider-v .wm-volume-input {

@@ -21,7 +21,9 @@
 | Gray vs green strips lie / blur | `<TimelineMeta>` + float `paint_strip_canvas` on `f/n·w` — UX: `product.md` |
 | Zebra / tip / strip drift | continuous `f/n` (float canvas + tip `calc`); no CSS gradient tiles / integer tip snap |
 | Zebra subpixel mush on narrow resize | Host-div `use_resize_observer` + `Show` unmount; gate `FRAME_ZEBRA_MIN_SLOT_PX` (2); never RO the canvas after `set_width` |
-| Volume V popover flash on window shrink | H→V class flip must not transition opacity from H’s `1`; V base `transition: none`, fade-in only when open |
+| Volume V popover flash on window shrink | H/V = separate `Show` shells (remount); do not class-flip one node (inherits opacity 1) |
+| Volume V pop closes in gap above icon | `.wm-volume-slider-v::before` hit-bridge = `--wm-volume-v-gap` (keeps `:hover` while crossing) |
+| Volume V stuck open until click | drag → `is-sliding` only (not `volume_open`); blur on pointerup; mouseleave clears open on hover devices |
 | Rate pop clips past viewport on mobile | center on btn + signal `--wm-rate-shift` (pad 8); track `min(17.5rem, 100vw − 1rem)` — not `set_property` |
 | Demo scrubber touches `pipeline` | compose `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` — `product.md` § Element-layer helpers |
 | Hover jank on Play / lag until paint | `<HoverThumb>` trailing 150 ms; `style:transform` from signal (not `set_property`); engine: `skills/media.md` |

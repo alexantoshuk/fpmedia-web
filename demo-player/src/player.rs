@@ -958,6 +958,13 @@ pub fn DemoPlayer() -> impl IntoView {
                             }
                             node_ref=volume_root
                             data-testid="volume"
+                            on:mouseleave=move |_| {
+                                // Hover devices: drop tap-latch so V/H can fade with :hover.
+                                // Coarse: `is-open` stays until outside click / second tap.
+                                if !no_hover.get_untracked() {
+                                    volume_open.set(false);
+                                }
+                            }
                         >
                             <button
                                 type="button"
@@ -1005,64 +1012,38 @@ pub fn DemoPlayer() -> impl IntoView {
                                     }
                                 }}
                             </button>
-                            <div
-                                class=move || {
-                                    if volume_wide.get() {
-                                        "wm-volume-slider wm-volume-slider-h".to_string()
-                                    } else {
-                                        "wm-volume-slider wm-volume-slider-v".to_string()
+                            // Separate H/V shells (remount) — same-node class flip flashed V;
+                            // remount keeps fade in/out without inheriting H opacity.
+                            <Show
+                                when=move || volume_wide.get()
+                                fallback=move || {
+                                    view! {
+                                        <div
+                                            class="wm-volume-slider wm-volume-slider-v"
+                                            role="dialog"
+                                            aria-label="Volume"
+                                        >
+                                            <VolumeRangeInput
+                                                video=video
+                                                volume_sliding=volume_sliding
+                                                no_hover=no_hover
+                                            />
+                                        </div>
                                     }
                                 }
-                                role="dialog"
-                                aria-label="Volume"
                             >
-                                <input
-                                    type="range"
-                                    class="wm-volume-input"
-                                    data-testid="volume-input"
-                                    min="0"
-                                    max="1"
-                                    step="0.05"
-                                    prop:value=move || {
-                                        // Mute parks the thumb at 0 without clearing stored volume;
-                                        // unmute restores `video.volume`.
-                                        if video.muted.get() {
-                                            "0".to_string()
-                                        } else {
-                                            video.volume.get().to_string()
-                                        }
-                                    }
-                                    prop:disabled=move || !video.ready.get() || !video.has_audio.get()
-                                    on:pointerdown=move |ev| {
-                                        volume_sliding.set(true);
-                                        volume_open.set(true);
-                                        if let Some(t) = ev.target()
-                                            && let Ok(el) = t.dyn_into::<HtmlElement>()
-                                        {
-                                            let _ = el.set_pointer_capture(ev.pointer_id());
-                                        }
-                                    }
-                                    on:pointerup=move |_| {
-                                        volume_sliding.set(false);
-                                    }
-                                    on:pointercancel=move |_| {
-                                        volume_sliding.set(false);
-                                    }
-                                    on:input=move |ev| {
-                                        let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                                            return;
-                                        };
-                                        if let Ok(v) = input.value().parse::<f64>() {
-                                            // Snap to 0.05 so icon thresholds stay clean.
-                                            let snapped = (v / 0.05).round() * 0.05;
-                                            video.set_volume(snapped.clamp(0.0, 1.0));
-                                            if video.muted.get_untracked() {
-                                                video.set_muted(false);
-                                            }
-                                        }
-                                    }
-                                />
-                            </div>
+                                <div
+                                    class="wm-volume-slider wm-volume-slider-h"
+                                    role="dialog"
+                                    aria-label="Volume"
+                                >
+                                    <VolumeRangeInput
+                                        video=video
+                                        volume_sliding=volume_sliding
+                                        no_hover=no_hover
+                                    />
+                                </div>
+                            </Show>
                         </div>
                         </div>
                         <button
@@ -1399,4 +1380,75 @@ fn DemoScrubber(video: VideoRef, thumbs_on: RwSignal<bool>) -> impl IntoView {
 
 fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> Option<T> {
     ev.target()?.dyn_into::<T>().ok()
+}
+
+/// Range control shared by H/V volume shells (`Show` remounts orientation).
+#[component]
+fn VolumeRangeInput(
+    video: VideoRef,
+    volume_sliding: RwSignal<bool>,
+    no_hover: Signal<bool>,
+) -> impl IntoView {
+    view! {
+        <input
+            type="range"
+            class="wm-volume-input"
+            data-testid="volume-input"
+            min="0"
+            max="1"
+            step="0.05"
+            prop:value=move || {
+                // Mute parks the thumb at 0 without clearing stored volume;
+                // unmute restores `video.volume`.
+                if video.muted.get() {
+                    "0".to_string()
+                } else {
+                    video.volume.get().to_string()
+                }
+            }
+            prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+            on:pointerdown=move |ev| {
+                // Drag keep-open = `is-sliding` only. Do not latch `volume_open`
+                // (that stuck the V pop until click-outside).
+                volume_sliding.set(true);
+                if let Some(t) = ev.target()
+                    && let Ok(el) = t.dyn_into::<HtmlElement>()
+                {
+                    let _ = el.set_pointer_capture(ev.pointer_id());
+                }
+            }
+            on:pointerup=move |ev| {
+                volume_sliding.set(false);
+                // Hover path: drop focus so `:focus-within` does not pin the pop.
+                if !no_hover.get_untracked()
+                    && let Some(t) = ev.target()
+                    && let Ok(el) = t.dyn_into::<HtmlElement>()
+                {
+                    let _ = el.blur();
+                }
+            }
+            on:pointercancel=move |ev| {
+                volume_sliding.set(false);
+                if !no_hover.get_untracked()
+                    && let Some(t) = ev.target()
+                    && let Ok(el) = t.dyn_into::<HtmlElement>()
+                {
+                    let _ = el.blur();
+                }
+            }
+            on:input=move |ev| {
+                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                    return;
+                };
+                if let Ok(v) = input.value().parse::<f64>() {
+                    // Snap to 0.05 so icon thresholds stay clean.
+                    let snapped = (v / 0.05).round() * 0.05;
+                    video.set_volume(snapped.clamp(0.0, 1.0));
+                    if video.muted.get_untracked() {
+                        video.set_muted(false);
+                    }
+                }
+            }
+        />
+    }
 }
