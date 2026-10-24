@@ -518,17 +518,40 @@ pub fn DemoPlayer() -> impl IntoView {
                     class=move || {
                         if debug_on.get() {
                             // Full class set (not `{btn} + …`) — Tailwind ignores HTML
-                            // class order; zinc bg from `btn` would win over blue.
-                            "inline-flex items-center justify-center rounded-md border-0 bg-emerald-400/20 px-3 py-2 text-sm text-white hover:bg-emerald-400/30 disabled:cursor-default disabled:opacity-45".to_string()
+                            // class order; zinc bg from `btn` would win over emerald.
+                            "inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-emerald-400/20 text-white hover:bg-emerald-400/30 disabled:cursor-default disabled:opacity-45".to_string()
                         } else {
-                            btn.to_string()
+                            "inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:cursor-default disabled:opacity-45".to_string()
                         }
                     }
                     data-testid="btn-debug"
                     prop:aria-pressed=move || debug_on.get()
+                    prop:aria-label=move || {
+                        if debug_on.get() {
+                            "Disable debug info"
+                        } else {
+                            "Enable debug info"
+                        }
+                    }
+                    prop:title=move || {
+                        if debug_on.get() {
+                            "Disable debug info"
+                        } else {
+                            "Enable debug info"
+                        }
+                    }
                     on:click=move |_| debug_on.update(|v| *v = !*v)
                 >
-                    "Enable Debug Info"
+                    <svg
+                        class="h-4 w-4 shrink-0 fill-none stroke-current"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                    >
+                        <circle cx="12" cy="12" r="9" stroke-width="2"></circle>
+                        <path stroke-width="2" stroke-linecap="round" d="M12 11v6"></path>
+                        <circle cx="12" cy="8" r="1" fill="currentColor" stroke="none"></circle>
+                    </svg>
                 </button>
             </div>
 
@@ -594,9 +617,10 @@ pub fn DemoPlayer() -> impl IntoView {
                         <DemoScrubber video=video thumbs_on=thumbs_on/>
                     </Show>
                     <div
-                        class="flex flex-wrap items-center gap-2 px-3 py-3"
+                        class="flex w-full items-center gap-2 px-3 py-3"
                         data-testid="controls"
                     >
+                        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                         <button
                             type="button"
                             class=move || {
@@ -628,41 +652,6 @@ pub fn DemoPlayer() -> impl IntoView {
                             <svg class="wm-icon wm-icon-pause" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                                 <rect x="6" y="5" width="4" height="14" rx="1"></rect>
                                 <rect x="14" y="5" width="4" height="14" rx="1"></rect>
-                            </svg>
-                        </button>
-                        <button
-                            type="button"
-                            class=move || {
-                                if fullscreen.get() {
-                                    format!("{btn_icon_on} is-fullscreen")
-                                } else {
-                                    btn_icon.to_string()
-                                }
-                            }
-                            data-testid="btn-fullscreen"
-                            prop:aria-pressed=move || fullscreen.get()
-                            prop:aria-label=move || {
-                                if fullscreen.get() { "Exit fullscreen" } else { "Fullscreen" }
-                            }
-                            prop:title=move || {
-                                if fullscreen.get() { "Exit fullscreen" } else { "Fullscreen" }
-                            }
-                            on:click=move |_| {
-                                let Some(root) = player_root.get_untracked() else { return };
-                                let Ok(el) = root.dyn_into::<HtmlElement>() else { return };
-                                let Some(doc) = window().and_then(|w| w.document()) else { return };
-                                if fullscreen.get_untracked() {
-                                    doc.exit_fullscreen();
-                                } else {
-                                    let _ = el.request_fullscreen();
-                                }
-                            }
-                        >
-                            <svg class="wm-icon wm-icon-fullscreen" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"></path>
-                            </svg>
-                            <svg class="wm-icon wm-icon-fullscreen-exit" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"></path>
                             </svg>
                         </button>
                         <button
@@ -832,6 +821,43 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             />
                         </label>
+                        </div>
+                        <button
+                            type="button"
+                            class=move || {
+                                let base = if fullscreen.get() {
+                                    format!("{btn_icon_on} is-fullscreen")
+                                } else {
+                                    btn_icon.to_string()
+                                };
+                                format!("{base} shrink-0")
+                            }
+                            data-testid="btn-fullscreen"
+                            prop:aria-pressed=move || fullscreen.get()
+                            prop:aria-label=move || {
+                                if fullscreen.get() { "Exit fullscreen" } else { "Fullscreen" }
+                            }
+                            prop:title=move || {
+                                if fullscreen.get() { "Exit fullscreen" } else { "Fullscreen" }
+                            }
+                            on:click=move |_| {
+                                let Some(root) = player_root.get_untracked() else { return };
+                                let Ok(el) = root.dyn_into::<HtmlElement>() else { return };
+                                let Some(doc) = window().and_then(|w| w.document()) else { return };
+                                if fullscreen.get_untracked() {
+                                    doc.exit_fullscreen();
+                                } else {
+                                    let _ = el.request_fullscreen();
+                                }
+                            }
+                        >
+                            <svg class="wm-icon wm-icon-fullscreen" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"></path>
+                            </svg>
+                            <svg class="wm-icon wm-icon-fullscreen-exit" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"></path>
+                            </svg>
+                        </button>
                     </div>
                 </div>
             </div>
