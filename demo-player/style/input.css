@@ -1,12 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  --wm-bg: #e8e4dc;
-  --wm-ink: #1a1a1a;
-  --wm-muted: #5a5a5a;
-  --wm-accent: #0b6e4f;
-  --wm-panel: #f6f3ec;
-  --wm-border: #cfc8ba;
+  --wm-bg: #09090b;
+  --wm-ink: #f4f4f5;
+  --wm-muted: #a1a1aa;
+  /* Same mint as Exact strip (`EXACT_STRIP_COLOR` / Tailwind emerald-400). */
+  --wm-accent: #34d399;
+  --wm-panel: #18181b;
+  --wm-border: #3f3f46;
 }
 
 body {
@@ -14,39 +15,7 @@ body {
   min-height: 100vh;
   font: 15px/1.4 "Segoe UI", system-ui, sans-serif;
   color: var(--wm-ink);
-  background:
-    radial-gradient(ellipse at 20% 0%, #dfe9e2 0%, transparent 55%),
-    radial-gradient(ellipse at 90% 10%, #e7dfd0 0%, transparent 45%),
-    var(--wm-bg);
-}
-
-.wm-page {
-  width: min(1100px, 100%);
-  margin: 0 auto;
-  padding: 1.5rem;
-}
-
-.wm-header {
-  margin-bottom: 1rem;
-}
-
-.wm-brand {
-  margin: 0;
-  font-size: 1.75rem;
-  letter-spacing: -0.03em;
-  font-weight: 700;
-}
-
-.wm-sub {
-  margin: 0.25rem 0 0;
-  color: var(--wm-muted);
-  font-size: 0.95rem;
-}
-
-.wm-player {
-  background: var(--wm-panel);
-  border: 1px solid var(--wm-border);
-  padding: 1.25rem;
+  background: var(--wm-bg);
 }
 
 /* Demo fullscreen: video fills the screen; controls overlay and auto-hide. */
@@ -98,7 +67,9 @@ body {
     rgba(0, 0, 0, 0.55) 55%,
     transparent 100%
   );
-  transition: opacity 0.22s ease, visibility 0.22s ease;
+  transition:
+    opacity 0.22s ease,
+    visibility 0.22s ease;
 }
 
 .wm-player:fullscreen .wm-meta,
@@ -121,26 +92,11 @@ body {
   pointer-events: none;
 }
 
-.wm-player-ui {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.wm-media {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.wm-stage {
-  width: 100%;
-}
-
 /* Sized media stage (like <video width height>); canvas contains inside. */
 .wm-viewport {
   width: 100%;
-  height: 420px;
+  aspect-ratio: 16 / 9;
+  height: auto;
   background: #111;
   display: flex;
   align-items: center;
@@ -302,92 +258,7 @@ body {
   z-index: 2;
 }
 
-.wm-meta {
-  margin: 0.65rem 0 0;
-  font-variant-numeric: tabular-nums;
-  font-size: 0.9em;
-  color: var(--wm-muted);
-  min-height: 1.2em;
-}
-
-.wm-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-  margin-top: 0.85rem;
-}
-
-.wm-controls.wm-source {
-  margin-top: 0.5rem;
-}
-
-.wm-controls.wm-debug-toggles {
-  margin-top: 0.35rem;
-}
-
-.wm-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font: inherit;
-  color: var(--wm-ink);
-  cursor: pointer;
-  user-select: none;
-}
-
-.wm-check:has(input:disabled) {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.wm-check input[type="checkbox"] {
-  margin: 0;
-  accent-color: var(--wm-accent);
-}
-
-.wm-btn,
-.wm-file {
-  appearance: none;
-  border: 1px solid #b7b0a3;
-  background: #fff;
-  color: var(--wm-ink);
-  padding: 0.4rem 0.75rem;
-  font: inherit;
-  cursor: pointer;
-}
-
-.wm-file {
-  position: relative;
-  display: inline-block;
-  overflow: hidden;
-}
-
-.wm-btn:hover:not(:disabled),
-.wm-file:hover {
-  border-color: var(--wm-accent);
-}
-
-.wm-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.wm-btn-primary {
-  background: var(--wm-accent);
-  border-color: var(--wm-accent);
-  color: #fff;
-}
-
-.wm-btn-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.4rem;
-  min-width: 2.25rem;
-  min-height: 2.25rem;
-}
-
+/* Icon play/pause + fullscreen + mute swaps (state classes on the button). */
 .wm-btn-icon .wm-icon {
   width: 1.15rem;
   height: 1.15rem;
@@ -431,14 +302,14 @@ body {
   display: block;
 }
 
-.wm-btn-toggle.is-on {
-  background: var(--wm-ink);
-  border-color: var(--wm-ink);
-  color: #fff;
-}
-
 /* Must stay in layout (not display:none) — Android Chrome ignores
    label activation / .click() on display:none file inputs. */
+.wm-file {
+  position: relative;
+  display: inline-flex;
+  overflow: hidden;
+}
+
 .wm-file input[type="file"] {
   position: absolute;
   inset: 0;
@@ -451,120 +322,38 @@ body {
   font-size: 0;
 }
 
-.wm-url-row {
-  display: flex;
-  flex: 1 1 16rem;
-  gap: 0.4rem;
-  align-items: center;
-  min-width: 12rem;
-}
-
-.wm-url-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  border: 1px solid #b7b0a3;
-  background: #fff;
-  color: var(--wm-ink);
-  padding: 0.4rem 0.6rem;
-  font: inherit;
-}
-
-.wm-url-input:focus {
-  outline: 2px solid color-mix(in srgb, var(--wm-accent) 35%, transparent);
-  border-color: var(--wm-accent);
-}
-
-.wm-url-input:disabled {
-  opacity: 0.45;
-}
-
-.wm-frame-input {
-  width: 5.5rem;
-  padding: 0.35rem 0.5rem;
-  border: 1px solid #b7b0a3;
-  font: inherit;
-}
-
-.wm-volume {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--wm-muted);
-  font-size: 0.9em;
-}
-
-.wm-volume-input {
-  width: 6.5rem;
-  accent-color: var(--wm-accent);
-  cursor: pointer;
-}
-
-.wm-volume-input:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.wm-rate {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--wm-muted);
-  font-size: 0.9em;
-}
-
-.wm-rate-label {
-  user-select: none;
-  min-width: 3.2rem;
-  font-variant-numeric: tabular-nums;
-}
-
+.wm-volume-input,
 .wm-rate-input {
   width: 6.5rem;
   accent-color: var(--wm-accent);
   cursor: pointer;
 }
 
+.wm-volume-input:disabled,
 .wm-rate-input:disabled {
   opacity: 0.45;
   cursor: default;
 }
 
-.wm-stats-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.35rem;
-  margin-top: 0.75rem;
+.wm-frame-input {
+  width: 5.5rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--wm-border);
+  border-radius: 0.375rem;
+  background: #09090b;
+  color: var(--wm-ink);
+  font: inherit;
+  /* No spinner — seek on Enter / blur via `change`. */
+  appearance: textfield;
+  -moz-appearance: textfield;
 }
 
-.wm-stats-head .wm-status {
-  flex: 1 1 auto;
-  margin-top: 0;
-  min-width: 0;
+.wm-frame-input::-webkit-outer-spin-button,
+.wm-frame-input::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
 }
 
-.wm-stats-head .wm-btn {
-  flex: 0 0 auto;
-  margin-top: -0.15rem;
-}
-
-.wm-status {
-  margin-top: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--wm-muted);
-  min-height: 1.4em;
-}
-
-.wm-pipeline {
-  margin-top: 0.25rem;
-  font-variant-numeric: tabular-nums;
-  font-size: 0.9em;
-  color: var(--wm-muted);
-  min-height: 1.2em;
-}
-
-.wm-error {
-  color: #9b1c1c;
-  margin-top: 0.5rem;
-  white-space: pre-wrap;
-  min-height: 1.2em;
+.wm-frame-input:disabled {
+  opacity: 0.45;
 }

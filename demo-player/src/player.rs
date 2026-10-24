@@ -61,30 +61,15 @@ fn resolve_demo_open_url(raw: &str) -> String {
     path
 }
 
-/// Basename only (no directories / query / hash) for demo clip label on mobile.
-fn clip_basename(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let path = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
-    let name = path
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
-        .rsplit('\\')
-        .next()
-        .unwrap_or(path);
-    if name.is_empty() || name == "." || name == ".." {
+fn open_demo_url(video: &VideoRef, raw: String, clip_label: RwSignal<Option<String>>) {
+    let trimmed = raw.trim().to_string();
+    let resolved = resolve_demo_open_url(&trimmed);
+    // Mediabunny-style label: file name or the URL string the user opened.
+    clip_label.set(if trimmed.is_empty() {
         None
     } else {
-        Some(name.to_string())
-    }
-}
-
-fn open_demo_url(video: &VideoRef, raw: String, clip_name: RwSignal<Option<String>>) {
-    let resolved = resolve_demo_open_url(&raw);
-    clip_name.set(clip_basename(&raw).or_else(|| clip_basename(&resolved)));
+        Some(trimmed)
+    });
     video.open_url(resolved);
 }
 
@@ -321,11 +306,13 @@ pub fn DemoPlayer() -> impl IntoView {
     // Fullscreen auto-hide of the control surface (not Google Chrome).
     let controls_visible = RwSignal::new(true);
     let over_controls = RwSignal::new(false);
-    // Demo A/B: hide timeline chrome / drop thumb sink (Seek·Prev·Next stay on buttons).
+    // Demo A/B (debug panel): hide timeline chrome / drop thumb sink.
     let scrubber_on = RwSignal::new(true);
     let thumbs_on = RwSignal::new(true);
-    // Basename of last Browse/URL open (mobile-friendly clip id).
-    let clip_name = RwSignal::new(None::<String>);
+    let debug_on = RwSignal::new(false);
+    // File name or URL string from last open (clip line under the toolbar).
+    let clip_label = RwSignal::new(None::<String>);
+    let url_input = NodeRef::<Input>::new();
     let UseClipboardReturn {
         copied: stats_copied,
         copy: copy_stats,
@@ -473,404 +460,405 @@ pub fn DemoPlayer() -> impl IntoView {
         }
     });
 
+    // Text buttons: filled bg, no border. Icon buttons: icon-only (no chrome).
+    let btn = "inline-flex items-center justify-center rounded-md border-0 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 hover:bg-zinc-700 disabled:cursor-default disabled:opacity-45";
+    let btn_icon = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
+    let btn_icon_on = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-emerald-400 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
+    let btn_play = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
+
     view! {
-        <div
-            class=move || {
-                if fullscreen.get() && !controls_visible.get() {
-                    "wm-player is-controls-hidden"
-                } else {
-                    "wm-player"
-                }
-            }
-            data-testid="player"
-            node_ref=player_root
-        >
-            <div class="wm-media">
-                <Video video=video/>
-            </div>
-            <div
-                class="wm-player-ui"
-                data-testid="player-ui"
-                on:mouseenter=move |_| {
-                    over_controls.set(true);
-                    controls_visible.set(true);
-                    stop_controls_hide();
-                }
-                on:mouseleave=move |_| {
-                    over_controls.set(false);
-                    if fullscreen.get_untracked() {
-                        bump_controls();
-                    }
-                }
-            >
-                <Show when=move || scrubber_on.get()>
-                    <DemoScrubber video=video thumbs_on=thumbs_on/>
-                </Show>
-                <p class="wm-meta" data-testid="meta">
-                    {move || demo_meta_line(&video, clip_name.get())}
-                </p>
-                <div class="wm-controls" data-testid="controls">
-                    <button
-                        type="button"
-                        class=move || {
-                            if video.playing.get() {
-                                "wm-btn wm-btn-primary wm-btn-icon is-playing"
-                            } else {
-                                "wm-btn wm-btn-primary wm-btn-icon"
-                            }
-                        }
-                        data-testid="btn-play-pause"
-                        prop:disabled=move || video.busy.get() || !video.ready.get()
-                        prop:aria-label=move || {
-                            if video.playing.get() {
-                                "Pause"
-                            } else {
-                                "Play"
-                            }
-                        }
-                        prop:title=move || {
-                            if video.playing.get() {
-                                "Pause"
-                            } else {
-                                "Play"
-                            }
-                        }
-                        on:click=move |_| {
-                            if video.playing.get_untracked() {
-                                video.pause();
-                            } else {
-                                video.play();
-                            }
-                        }
-                    >
-                        <svg
-                            class="wm-icon wm-icon-play"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
-                            <path d="M8 5v14l11-7z"></path>
-                        </svg>
-                        <svg
-                            class="wm-icon wm-icon-pause"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
-                            <rect x="6" y="5" width="4" height="14" rx="1"></rect>
-                            <rect x="14" y="5" width="4" height="14" rx="1"></rect>
-                        </svg>
-                    </button>
-                    <button
-                        type="button"
-                        class=move || {
-                            if fullscreen.get() {
-                                "wm-btn wm-btn-icon wm-btn-toggle is-on is-fullscreen"
-                            } else {
-                                "wm-btn wm-btn-icon"
-                            }
-                        }
-                        data-testid="btn-fullscreen"
-                        prop:aria-pressed=move || fullscreen.get()
-                        prop:aria-label=move || {
-                            if fullscreen.get() {
-                                "Exit fullscreen"
-                            } else {
-                                "Fullscreen"
-                            }
-                        }
-                        prop:title=move || {
-                            if fullscreen.get() {
-                                "Exit fullscreen"
-                            } else {
-                                "Fullscreen"
-                            }
-                        }
-                        on:click=move |_| {
-                            let Some(root) = player_root.get_untracked() else {
-                                return;
-                            };
-                            let Ok(el) = root.dyn_into::<HtmlElement>() else {
-                                return;
-                            };
-                            let Some(doc) = window().and_then(|w| w.document()) else {
-                                return;
-                            };
-                            if fullscreen.get_untracked() {
-                                doc.exit_fullscreen();
-                            } else {
-                                let _ = el.request_fullscreen();
-                            }
-                        }
-                    >
-                        <svg
-                            class="wm-icon wm-icon-fullscreen"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
-                            <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"></path>
-                        </svg>
-                        <svg
-                            class="wm-icon wm-icon-fullscreen-exit"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
-                            <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"></path>
-                        </svg>
-                    </button>
-                    <button
-                        type="button"
-                        class=move || {
-                            if video.looping.get() {
-                                "wm-btn wm-btn-icon wm-btn-toggle is-on"
-                            } else {
-                                "wm-btn wm-btn-icon wm-btn-toggle"
-                            }
-                        }
-                        data-testid="btn-loop"
-                        prop:disabled=move || !video.ready.get()
-                        prop:aria-pressed=move || video.looping.get()
-                        prop:aria-label=move || {
-                            if video.looping.get() {
-                                "Loop on"
-                            } else {
-                                "Loop off"
-                            }
-                        }
-                        prop:title=move || {
-                            if video.looping.get() {
-                                "Loop on"
-                            } else {
-                                "Loop off"
-                            }
-                        }
-                        on:click=move |_| video.set_loop(!video.looping.get_untracked())
-                    >
-                        <svg
-                            class="wm-icon wm-icon-loop"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
-                            <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"></path>
-                        </svg>
-                    </button>
-                    <button
-                        type="button"
-                        class="wm-btn wm-btn-icon"
-                        data-testid="btn-prev"
-                        prop:disabled=move || video.busy.get() || !video.ready.get()
-                        prop:aria-label="Previous frame"
-                        prop:title="Previous frame"
-                        on:click=move |_| {
-                            if video.playing.get_untracked() {
-                                video.pause();
-                            } else {
-                                video.previous_frame();
-                            }
-                        }
-                    >
-                        <svg
-                            class="wm-icon wm-icon-prev"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
-                            <path d="M14 6v12l-8.5-6L14 6z"></path>
-                            <rect x="16" y="6" width="2.5" height="12" rx="0.5"></rect>
-                        </svg>
-                    </button>
-                    <button
-                        type="button"
-                        class="wm-btn wm-btn-icon"
-                        data-testid="btn-next"
-                        prop:disabled=move || video.busy.get() || !video.ready.get()
-                        prop:aria-label="Next frame"
-                        prop:title="Next frame"
-                        on:click=move |_| {
-                            if video.playing.get_untracked() {
-                                video.pause();
-                            } else {
-                                video.next_frame();
-                            }
-                        }
-                    >
-                        <svg
-                            class="wm-icon wm-icon-next"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
-                            <rect x="5.5" y="6" width="2.5" height="12" rx="0.5"></rect>
-                            <path d="M10 6v12l8.5-6L10 6z"></path>
-                        </svg>
-                    </button>
+        <div class="mx-auto w-full max-w-[1100px] px-6 py-6">
+            <h1 class="mb-4 text-2xl font-bold tracking-tight text-zinc-50">"fpmedia-web"</h1>
+
+            <div class="mb-3 flex flex-wrap items-center gap-2" data-testid="source">
+                <label class=format!("wm-file {btn}")>
+                    "Select local file"
                     <input
-                        type="number"
-                        class="wm-frame-input"
-                        data-testid="frame-input"
-                        min="0"
-                        prop:value=move || video.playhead.get().to_string()
-                        prop:disabled=move || {
-                            video.busy.get() || !video.ready.get() || video.playing.get()
-                        }
-                        on:change=move |ev| {
+                        type="file"
+                        accept="video/mp4,video/*"
+                        data-testid="file-input"
+                        on:change=move |ev: leptos::ev::Event| {
                             let Some(input) = event_target::<HtmlInputElement>(&ev) else {
                                 return;
                             };
-                            if let Ok(v) = input.value().parse::<u32>() {
-                                video.seek_frame(v);
-                            }
+                            let Some(files) = input.files() else { return };
+                            let Some(file) = files.get(0) else { return };
+                            let name = file.name();
+                            clip_label.set(Some(name.clone()));
+                            video.status.set(format!("Selected {name}…"));
+                            // File is a Blob — progressive open, no whole-file array_buffer.
+                            let blob: Blob = file.unchecked_into();
+                            video.open_blob(blob);
                         }
                     />
-                    <button
-                        type="button"
-                        class="wm-btn"
-                        data-testid="btn-seek"
-                        prop:disabled=move || {
-                            video.busy.get() || !video.ready.get() || video.playing.get()
+                </label>
+                <button
+                    type="button"
+                    class=btn
+                    data-testid="btn-load-url"
+                    prop:disabled=move || video.busy.get()
+                    on:click=move |_| {
+                        let Some(w) = window() else { return };
+                        let Ok(Some(raw)) = w.prompt_with_message_and_default(
+                            "Enter a media URL (https or same-origin /media/…). It must support CORS / Range.",
+                            "https://lorem.video/720p",
+                        ) else {
+                            return;
+                        };
+                        if let Some(input) = url_input.get_untracked() {
+                            input.set_value(&raw);
                         }
-                        on:click=move |_| video.seek_frame(video.playhead.get())
-                    >
-                        "Seek"
-                    </button>
-                    <button
-                        type="button"
-                        class=move || {
-                            if video.muted.get() {
-                                "wm-btn wm-btn-icon wm-btn-toggle is-on is-muted"
-                            } else {
-                                "wm-btn wm-btn-icon wm-btn-toggle"
-                            }
+                        open_demo_url(&video, raw, clip_label);
+                    }
+                >
+                    "Load Remote URL"
+                </button>
+                <button
+                    type="button"
+                    class=move || {
+                        if debug_on.get() {
+                            // Full class set (not `{btn} + …`) — Tailwind ignores HTML
+                            // class order; zinc bg from `btn` would win over blue.
+                            "inline-flex items-center justify-center rounded-md border-0 bg-emerald-400/20 px-3 py-2 text-sm text-white hover:bg-emerald-400/30 disabled:cursor-default disabled:opacity-45".to_string()
+                        } else {
+                            btn.to_string()
                         }
-                        data-testid="btn-mute"
-                        prop:disabled=move || !video.ready.get() || !video.has_audio.get()
-                        prop:aria-pressed=move || video.muted.get()
-                        prop:aria-label=move || {
-                            if video.muted.get() {
-                                "Unmute"
-                            } else {
-                                "Mute"
-                            }
+                    }
+                    data-testid="btn-debug"
+                    prop:aria-pressed=move || debug_on.get()
+                    on:click=move |_| debug_on.update(|v| *v = !*v)
+                >
+                    "Enable Debug Info"
+                </button>
+            </div>
+
+            <p
+                class="mb-4 min-h-[1.25rem] truncate font-mono text-sm text-zinc-400"
+                data-testid="clip-label"
+                title=move || clip_label.get().unwrap_or_default()
+            >
+                {move || clip_label.get().unwrap_or_default()}
+            </p>
+
+            // e2e hooks — off-screen (not display:none) so Playwright fill/click works.
+            <div class="fixed top-0 -left-[9999px]" aria-hidden="true">
+                <input
+                    type="url"
+                    node_ref=url_input
+                    data-testid="url-input"
+                    prop:disabled=move || video.busy.get()
+                />
+                <button
+                    type="button"
+                    data-testid="btn-open-url"
+                    prop:disabled=move || video.busy.get()
+                    on:click=move |_| {
+                        let Some(input) = url_input.get() else { return };
+                        open_demo_url(&video, input.value(), clip_label);
+                    }
+                >
+                    "Open URL"
+                </button>
+            </div>
+
+            <div
+                class=move || {
+                    if fullscreen.get() && !controls_visible.get() {
+                        "wm-player is-controls-hidden overflow-hidden bg-zinc-900"
+                    } else {
+                        "wm-player overflow-hidden bg-zinc-900"
+                    }
+                }
+                data-testid="player"
+                node_ref=player_root
+            >
+                <div class="wm-media flex flex-col">
+                    <Video video=video/>
+                </div>
+                <div
+                    class="wm-player-ui flex flex-col"
+                    data-testid="player-ui"
+                    on:mouseenter=move |_| {
+                        over_controls.set(true);
+                        controls_visible.set(true);
+                        stop_controls_hide();
+                    }
+                    on:mouseleave=move |_| {
+                        over_controls.set(false);
+                        if fullscreen.get_untracked() {
+                            bump_controls();
                         }
-                        prop:title=move || {
-                            if video.muted.get() {
-                                "Unmute"
-                            } else {
-                                "Mute"
-                            }
-                        }
-                        on:click=move |_| video.set_muted(!video.muted.get_untracked())
+                    }
+                >
+                    <Show when=move || scrubber_on.get()>
+                        <DemoScrubber video=video thumbs_on=thumbs_on/>
+                    </Show>
+                    <div
+                        class="flex flex-wrap items-center gap-2 px-3 py-3"
+                        data-testid="controls"
                     >
-                        <svg
-                            class="wm-icon wm-icon-volume"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
-                            <path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"></path>
-                        </svg>
-                        <svg
-                            class="wm-icon wm-icon-volume-mute"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
-                            <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v4h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z"></path>
-                        </svg>
-                    </button>
-                    <label
-                        class="wm-volume"
-                        data-testid="volume"
-                        title="Volume"
-                    >
-                        <input
-                            type="range"
-                            class="wm-volume-input"
-                            data-testid="volume-input"
-                            min="0"
-                            max="1"
-                            step="0.01"
-                            prop:value=move || video.volume.get().to_string()
-                            prop:disabled=move || !video.ready.get() || !video.has_audio.get()
-                            on:input=move |ev| {
-                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                                    return;
-                                };
-                                if let Ok(v) = input.value().parse::<f64>() {
-                                    video.set_volume(v);
-                                }
-                            }
-                        />
-                    </label>
-                    <label
-                        class="wm-rate"
-                        data-testid="playback-rate"
-                        title="Playback rate (0.25–1.75 review; JKL 1/2/4/8; API up to 8×)"
-                    >
-                        <span class="wm-rate-label">
-                            {move || format!("{:.2}x", video.playback_rate.get())}
-                        </span>
-                        <input
-                            type="range"
-                            class="wm-rate-input"
-                            data-testid="playback-rate-input"
-                            min="0.25"
-                            max="1.75"
-                            step="0.05"
-                            prop:value=move || {
-                                let r = video.playback_rate.get();
-                                if r < 0.0 {
-                                    "0.25".to_string()
+                        <button
+                            type="button"
+                            class=move || {
+                                if video.playing.get() {
+                                    format!("{btn_play} is-playing")
                                 } else {
-                                    r.min(1.75).to_string()
+                                    btn_play.to_string()
                                 }
                             }
+                            data-testid="btn-play-pause"
+                            prop:disabled=move || video.busy.get() || !video.ready.get()
+                            prop:aria-label=move || {
+                                if video.playing.get() { "Pause" } else { "Play" }
+                            }
+                            prop:title=move || {
+                                if video.playing.get() { "Pause" } else { "Play" }
+                            }
+                            on:click=move |_| {
+                                if video.playing.get_untracked() {
+                                    video.pause();
+                                } else {
+                                    video.play();
+                                }
+                            }
+                        >
+                            <svg class="wm-icon wm-icon-play" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M8 5v14l11-7z"></path>
+                            </svg>
+                            <svg class="wm-icon wm-icon-pause" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <rect x="6" y="5" width="4" height="14" rx="1"></rect>
+                                <rect x="14" y="5" width="4" height="14" rx="1"></rect>
+                            </svg>
+                        </button>
+                        <button
+                            type="button"
+                            class=move || {
+                                if fullscreen.get() {
+                                    format!("{btn_icon_on} is-fullscreen")
+                                } else {
+                                    btn_icon.to_string()
+                                }
+                            }
+                            data-testid="btn-fullscreen"
+                            prop:aria-pressed=move || fullscreen.get()
+                            prop:aria-label=move || {
+                                if fullscreen.get() { "Exit fullscreen" } else { "Fullscreen" }
+                            }
+                            prop:title=move || {
+                                if fullscreen.get() { "Exit fullscreen" } else { "Fullscreen" }
+                            }
+                            on:click=move |_| {
+                                let Some(root) = player_root.get_untracked() else { return };
+                                let Ok(el) = root.dyn_into::<HtmlElement>() else { return };
+                                let Some(doc) = window().and_then(|w| w.document()) else { return };
+                                if fullscreen.get_untracked() {
+                                    doc.exit_fullscreen();
+                                } else {
+                                    let _ = el.request_fullscreen();
+                                }
+                            }
+                        >
+                            <svg class="wm-icon wm-icon-fullscreen" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"></path>
+                            </svg>
+                            <svg class="wm-icon wm-icon-fullscreen-exit" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"></path>
+                            </svg>
+                        </button>
+                        <button
+                            type="button"
+                            class=move || {
+                                if video.looping.get() {
+                                    btn_icon_on.to_string()
+                                } else {
+                                    btn_icon.to_string()
+                                }
+                            }
+                            data-testid="btn-loop"
                             prop:disabled=move || !video.ready.get()
-                            on:input=move |ev| {
+                            prop:aria-pressed=move || video.looping.get()
+                            prop:aria-label=move || {
+                                if video.looping.get() { "Loop on" } else { "Loop off" }
+                            }
+                            prop:title=move || {
+                                if video.looping.get() { "Loop on" } else { "Loop off" }
+                            }
+                            on:click=move |_| video.set_loop(!video.looping.get_untracked())
+                        >
+                            <svg class="wm-icon wm-icon-loop" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"></path>
+                            </svg>
+                        </button>
+                        <button
+                            type="button"
+                            class=btn_icon
+                            data-testid="btn-prev"
+                            prop:disabled=move || video.busy.get() || !video.ready.get()
+                            prop:aria-label="Previous frame"
+                            prop:title="Previous frame"
+                            on:click=move |_| {
+                                if video.playing.get_untracked() {
+                                    video.pause();
+                                } else {
+                                    video.previous_frame();
+                                }
+                            }
+                        >
+                            <svg class="wm-icon wm-icon-prev" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M14 6v12l-8.5-6L14 6z"></path>
+                                <rect x="16" y="6" width="2.5" height="12" rx="0.5"></rect>
+                            </svg>
+                        </button>
+                        <button
+                            type="button"
+                            class=btn_icon
+                            data-testid="btn-next"
+                            prop:disabled=move || video.busy.get() || !video.ready.get()
+                            prop:aria-label="Next frame"
+                            prop:title="Next frame"
+                            on:click=move |_| {
+                                if video.playing.get_untracked() {
+                                    video.pause();
+                                } else {
+                                    video.next_frame();
+                                }
+                            }
+                        >
+                            <svg class="wm-icon wm-icon-next" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <rect x="5.5" y="6" width="2.5" height="12" rx="0.5"></rect>
+                                <path d="M10 6v12l8.5-6L10 6z"></path>
+                            </svg>
+                        </button>
+                        <input
+                            type="number"
+                            class="wm-frame-input"
+                            data-testid="frame-input"
+                            min="0"
+                            prop:value=move || video.playhead.get().to_string()
+                            prop:disabled=move || {
+                                video.busy.get() || !video.ready.get() || video.playing.get()
+                            }
+                            on:change=move |ev| {
                                 let Some(input) = event_target::<HtmlInputElement>(&ev) else {
                                     return;
                                 };
-                                if let Ok(v) = input.value().parse::<f64>() {
-                                    video.set_playback_rate(v);
+                                if let Ok(v) = input.value().parse::<u32>() {
+                                    video.seek_frame(v);
                                 }
                             }
                         />
-                    </label>
-                </div>
-                <div class="wm-controls wm-source" data-testid="source">
-                    <label class="wm-file">
-                        "Browse"
-                        <input
-                            type="file"
-                            accept="video/mp4,video/*"
-                            data-testid="file-input"
-                            on:change=move |ev: leptos::ev::Event| {
-                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                                    return;
-                                };
-                                let Some(files) = input.files() else { return };
-                                let Some(file) = files.get(0) else { return };
-                                let name = file.name();
-                                clip_name.set(clip_basename(&name).or(Some(name.clone())));
-                                video.status.set(format!("Selected {name}…"));
-                                // File is a Blob — progressive open, no whole-file array_buffer.
-                                let blob: Blob = file.unchecked_into();
-                                video.open_blob(blob);
+                        <button
+                            type="button"
+                            class=move || {
+                                if video.muted.get() {
+                                    format!("{btn_icon_on} is-muted")
+                                } else {
+                                    btn_icon.to_string()
+                                }
                             }
-                        />
-                    </label>
-                    <DemoUrlOpen video=video clip_name=clip_name/>
+                            data-testid="btn-mute"
+                            prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+                            prop:aria-pressed=move || video.muted.get()
+                            prop:aria-label=move || {
+                                if video.muted.get() { "Unmute" } else { "Mute" }
+                            }
+                            prop:title=move || {
+                                if video.muted.get() { "Unmute" } else { "Mute" }
+                            }
+                            on:click=move |_| video.set_muted(!video.muted.get_untracked())
+                        >
+                            <svg class="wm-icon wm-icon-volume" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"></path>
+                            </svg>
+                            <svg class="wm-icon wm-icon-volume-mute" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v4h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z"></path>
+                            </svg>
+                        </button>
+                        <label
+                            class="wm-volume inline-flex items-center text-sm text-zinc-400"
+                            data-testid="volume"
+                            title="Volume"
+                        >
+                            <input
+                                type="range"
+                                class="wm-volume-input"
+                                data-testid="volume-input"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                prop:value=move || video.volume.get().to_string()
+                                prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+                                on:input=move |ev| {
+                                    let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                        return;
+                                    };
+                                    if let Ok(v) = input.value().parse::<f64>() {
+                                        video.set_volume(v);
+                                    }
+                                }
+                            />
+                        </label>
+                        <label
+                            class="wm-rate inline-flex items-center gap-1.5 text-sm text-zinc-400"
+                            data-testid="playback-rate"
+                            title="Playback rate (0.25–1.75 review; JKL 1/2/4/8; API up to 8×)"
+                        >
+                            <span class="min-w-[3.2rem] select-none tabular-nums">
+                                {move || format!("{:.2}x", video.playback_rate.get())}
+                            </span>
+                            <input
+                                type="range"
+                                class="wm-rate-input"
+                                data-testid="playback-rate-input"
+                                min="0.25"
+                                max="1.75"
+                                step="0.05"
+                                prop:value=move || {
+                                    let r = video.playback_rate.get();
+                                    if r < 0.0 {
+                                        "0.25".to_string()
+                                    } else {
+                                        r.min(1.75).to_string()
+                                    }
+                                }
+                                prop:disabled=move || !video.ready.get()
+                                on:input=move |ev| {
+                                    let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                        return;
+                                    };
+                                    if let Ok(v) = input.value().parse::<f64>() {
+                                        video.set_playback_rate(v);
+                                    }
+                                }
+                            />
+                        </label>
+                    </div>
                 </div>
-                <div class="wm-controls wm-debug-toggles" data-testid="debug-toggles">
+            </div>
+
+            // Debug panel — when off: collapse without display:none so e2e
+            // `innerText` on status/meta/pipeline still works.
+            <div
+                class=move || {
+                    if debug_on.get() {
+                        "mt-4 flex flex-col gap-2"
+                    } else {
+                        "pointer-events-none m-0 h-0 overflow-hidden p-0 opacity-0"
+                    }
+                }
+                data-testid="debug-panel"
+            >
+                <div
+                    class="flex flex-wrap items-center gap-4"
+                    data-testid="debug-toggles"
+                >
                     <label
-                        class="wm-check"
+                        class="inline-flex cursor-pointer items-center gap-1.5 text-sm text-zinc-300 select-none"
                         title="Timeline scrubber. Off = no scrub decoder / densify / strip caches."
                     >
                         <input
                             type="checkbox"
+                            class="accent-emerald-400"
                             data-testid="chk-scrubber"
                             prop:checked=move || scrubber_on.get()
                             on:change=move |ev| {
@@ -880,14 +868,15 @@ pub fn DemoPlayer() -> impl IntoView {
                                 scrubber_on.set(input.checked());
                             }
                         />
-                        "Scrubber"
+                        "Scrub"
                     </label>
                     <label
-                        class="wm-check"
-                        title="Hover thumbs (ThumbPolicy). Needs Scrubber on."
+                        class="inline-flex cursor-pointer items-center gap-1.5 text-sm text-zinc-300 select-none"
+                        title="Hover thumbs (ThumbPolicy). Needs Scrub on."
                     >
                         <input
                             type="checkbox"
+                            class="accent-emerald-400"
                             data-testid="chk-thumbs"
                             prop:checked=move || thumbs_on.get()
                             prop:disabled=move || !scrubber_on.get()
@@ -898,29 +887,36 @@ pub fn DemoPlayer() -> impl IntoView {
                                 thumbs_on.set(input.checked());
                             }
                         />
-                        "Thumbs"
+                        "Thumbnails"
                     </label>
                 </div>
-                <div class="wm-stats-head">
-                    <p class="wm-status" data-testid="status">
-                        {move || demo_status_line(&video)}
-                    </p>
+                <div class="wm-stats-head flex items-start gap-2">
+                    <div class="flex min-w-0 flex-1 flex-col gap-0 text-sm leading-5 tabular-nums text-zinc-400">
+                        <p class="wm-meta m-0 min-h-[1.25rem]" data-testid="meta">
+                            {move || demo_meta_line(&video, clip_label.get())}
+                        </p>
+                        <p class="wm-status m-0 min-h-[1.25rem]" data-testid="status">
+                            {move || demo_status_line(&video)}
+                        </p>
+                        <p
+                            class="wm-pipeline m-0 min-h-[1.25rem] whitespace-pre-line"
+                            data-testid="pipeline"
+                        >
+                            {move || demo_pipeline_line(video.pipeline.get())}
+                        </p>
+                    </div>
                     <button
                         type="button"
                         class=move || {
                             if stats_copied.get() {
-                                "wm-btn wm-btn-icon wm-btn-toggle is-on"
+                                btn_icon_on.to_string()
                             } else {
-                                "wm-btn wm-btn-icon"
+                                btn_icon.to_string()
                             }
                         }
                         data-testid="btn-copy-stats"
                         prop:aria-label=move || {
-                            if stats_copied.get() {
-                                "Stats copied"
-                            } else {
-                                "Copy stats"
-                            }
+                            if stats_copied.get() { "Stats copied" } else { "Copy stats" }
                         }
                         prop:title=move || {
                             if stats_copied.get() {
@@ -932,36 +928,33 @@ pub fn DemoPlayer() -> impl IntoView {
                         on:click={
                             let copy_stats = copy_stats.clone();
                             move |_| {
-                                let text = demo_stats_clipboard(&video, clip_name.get());
+                                let text = demo_stats_clipboard(&video, clip_label.get());
                                 copy_stats(&text);
                             }
                         }
                     >
-                        <svg
-                            class="wm-icon wm-icon-copy"
-                            viewBox="0 0 24 24"
-                            aria-hidden="true"
-                            focusable="false"
-                        >
+                        <svg class="wm-icon wm-icon-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                             <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path>
                         </svg>
                     </button>
                 </div>
-                <p class="wm-pipeline" data-testid="pipeline" style="white-space: pre-line">
-                    {move || demo_pipeline_line(video.pipeline.get())}
-                </p>
-                // Machine-readable PipelineStats for e2e zone targeting / latency samples.
-                // Hidden; not production player UI.
-                <pre
-                    class="wm-pipeline-json"
-                    data-testid="pipeline-json"
-                    hidden
-                    aria-hidden="true"
-                >
-                    {move || pipeline_stats_json(video.pipeline.get())}
-                </pre>
-                <p class="wm-error" data-testid="error">{move || video.error.get().unwrap_or_default()}</p>
             </div>
+
+            // Machine-readable PipelineStats for e2e — always mounted, never shown.
+            <pre
+                class="wm-pipeline-json"
+                data-testid="pipeline-json"
+                hidden
+                aria-hidden="true"
+            >
+                {move || pipeline_stats_json(video.pipeline.get())}
+            </pre>
+            <p
+                class="wm-error mt-3 min-h-[1.2em] whitespace-pre-wrap text-red-400"
+                data-testid="error"
+            >
+                {move || video.error.get().unwrap_or_default()}
+            </p>
         </div>
     }
 }
@@ -1138,45 +1131,6 @@ fn DemoScrubber(video: VideoRef, thumbs_on: RwSignal<bool>) -> impl IntoView {
                 />
             </div>
         </Scrubber>
-    }
-}
-
-/// URL open — always shown. Local progressive: `/media/<stem>.mp4` from `public/media/`
-/// (`npm run media:fetch`). Pages: CORS-ok URL or Browse (Blob); GitHub lacks CORS.
-#[component]
-fn DemoUrlOpen(video: VideoRef, clip_name: RwSignal<Option<String>>) -> impl IntoView {
-    let url_input = NodeRef::<Input>::new();
-    view! {
-        <div class="wm-url-row">
-            <input
-                type="url"
-                class="wm-url-input"
-                node_ref=url_input
-                placeholder="/media/….mp4 or https://… (CORS-ok)"
-                data-testid="url-input"
-                prop:disabled=move || video.busy.get()
-                on:keydown=move |ev: leptos::ev::KeyboardEvent| {
-                    if ev.key() != "Enter" {
-                        return;
-                    }
-                    ev.prevent_default();
-                    let Some(input) = url_input.get() else { return };
-                    open_demo_url(&video, input.value(), clip_name);
-                }
-            />
-            <button
-                type="button"
-                class="wm-btn"
-                data-testid="btn-open-url"
-                prop:disabled=move || video.busy.get()
-                on:click=move |_| {
-                    let Some(input) = url_input.get() else { return };
-                    open_demo_url(&video, input.value(), clip_name);
-                }
-            >
-                "Open URL"
-            </button>
-        </div>
     }
 }
 

@@ -136,7 +136,6 @@ export class DemoPlayer {
   readonly loop: Locator;
   readonly prev: Locator;
   readonly next: Locator;
-  readonly seek: Locator;
   readonly playbackRate: Locator;
   readonly pipelineJson: Locator;
 
@@ -156,7 +155,6 @@ export class DemoPlayer {
     this.loop = page.getByTestId("btn-loop");
     this.prev = page.getByTestId("btn-prev");
     this.next = page.getByTestId("btn-next");
-    this.seek = page.getByTestId("btn-seek");
     this.playbackRate = page.getByTestId("playback-rate");
   }
 

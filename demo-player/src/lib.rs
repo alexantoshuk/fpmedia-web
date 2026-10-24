@@ -19,11 +19,7 @@ fn App() -> impl IntoView {
 
     view! {
         <Title text="fpmedia-web"/>
-        <main class="wm-page">
-            <header class="wm-header">
-                <h1 class="wm-brand">"fpmedia-web"</h1>
-                <p class="wm-sub">"Frame-accurate WebCodecs player — alpha"</p>
-            </header>
+        <main class="min-h-screen bg-zinc-950 text-zinc-100">
             <player::DemoPlayer/>
         </main>
     }
