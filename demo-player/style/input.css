@@ -308,14 +308,17 @@ body {
   font-size: 0;
 }
 
-/* Rate: ghost button + popover (slider + 0.25 ticks). */
+/* Rate: ghost button + popover (slider + 0.25 ticks).
+   Centered on the control; `--wm-rate-shift` (demo JS) slides it to stay
+   inside the viewport. Track shrinks on narrow viewports. */
 .wm-rate-pop {
   display: none;
   position: absolute;
   bottom: calc(100% + 0.4rem);
   left: 50%;
   z-index: 20;
-  transform: translateX(-50%);
+  --wm-rate-shift: 0px;
+  transform: translateX(calc(-50% + var(--wm-rate-shift)));
   padding: 0.65rem 0.85rem 0.45rem;
   border: 1px solid var(--wm-border);
   border-radius: 0.5rem;
@@ -330,7 +333,7 @@ body {
 .wm-rate-track {
   /* Thumb size — ticks pad by half so marks sit under the thumb center. */
   --wm-rate-thumb: 14px;
-  width: 17.5rem;
+  width: min(17.5rem, calc(100vw - 1rem));
   display: flex;
   flex-direction: column;
   gap: 0.1rem;

@@ -11,8 +11,7 @@ use std::rc::Rc;
 
 use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::{HtmlCanvasElement, HtmlElement};
+use web_sys::HtmlCanvasElement;
 
 use crate::VideoRef;
 use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
@@ -59,6 +58,8 @@ pub fn HoverThumb(
 
     let root_ref = NodeRef::<Div>::new();
     let canvas_ref = NodeRef::<Canvas>::new();
+    // Declarative `style:transform` — not `el.style().set_property` (skills/leptos.md).
+    let transform = RwSignal::new(String::new());
     let epoch = StoredValue::new_local(0u64);
     let root_class = class.unwrap_or_default();
 
@@ -102,12 +103,7 @@ pub fn HoverThumb(
                     return;
                 }
                 let left = hover_thumb_left(x, track_width, width as f64);
-                if let Some(root) = root_ref.get_untracked() {
-                    let html: &HtmlElement = root.unchecked_ref();
-                    let _ = html
-                        .style()
-                        .set_property("transform", &hover_thumb_transform_css(left));
-                }
+                transform.set(hover_thumb_transform_css(left));
                 frame.set(Some(aim));
                 if !visible.get_untracked() {
                     visible.set(true);
@@ -165,6 +161,7 @@ pub fn HoverThumb(
                     root_class.clone()
                 }
             }
+            style:transform=move || transform.get()
             data-testid="scrubber-thumb"
             aria-hidden="true"
         >

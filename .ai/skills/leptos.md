@@ -22,8 +22,9 @@
 | Zebra / tip / strip drift | continuous `f/n` (float canvas + tip `calc`); no CSS gradient tiles / integer tip snap |
 | Zebra subpixel mush on narrow resize | Host-div `use_resize_observer` + `Show` unmount; gate `FRAME_ZEBRA_MIN_SLOT_PX` (2); never RO the canvas after `set_width` |
 | Volume V popover flash on window shrink | H→V class flip must not transition opacity from H’s `1`; V base `transition: none`, fade-in only when open |
+| Rate pop clips past viewport on mobile | center on btn + signal `--wm-rate-shift` (pad 8); track `min(17.5rem, 100vw − 1rem)` — not `set_property` |
 | Demo scrubber touches `pipeline` | compose `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` — `product.md` § Element-layer helpers |
-| Hover jank on Play / lag until paint | `<HoverThumb>` trailing 150 ms; sync transform on root first; engine: `skills/media.md` |
+| Hover jank on Play / lag until paint | `<HoverThumb>` trailing 150 ms; `style:transform` from signal (not `set_property`); engine: `skills/media.md` |
 | `RefCell already borrowed` (tachys / Loop) | no borrow across await; scrub → `scrub_pointer_*` sync (Move throttled in `<Video>`); no demo TLS |
 | Start stutter / Play lag after scrub | clock origins after prime; no `seek_frame` from `VideoRef::play` |
 | Scrub bar lags / pointer jank / hold jumps | sync playhead on move; `<Video>` Move throttle 50 ms; paused rAF `sync_ui` ≤10 Hz (150 ms while `Scrubbing`) |
@@ -38,8 +39,9 @@
 | Browser async | `LocalResource` / `wasm_bindgen_futures::spawn_local` |
 | DOM / rAF / resize / events | **`leptos-use`** — not raw `Closure` |
 | Canvas / Performance / File | raw `web-sys` OK |
+| CSS vars / inline geometry | declarative `style=` / `class=` from signals — **not** `el.style().set_property` |
 
-Tailwind: only literal class strings in `.rs`/`.css`; computed geometry → `style=`.
+Tailwind: only literal class strings in `.rs`/`.css`; computed geometry → `style=` from a signal (measure in Effect/rAF → write signal → view binds).
 
 ## Host gotchas
 

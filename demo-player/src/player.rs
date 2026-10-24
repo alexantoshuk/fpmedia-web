@@ -61,6 +61,40 @@ fn format_rate_tick(r: f64) -> String {
 }
 
 /// Thumb-center % along the track (matches styled `--wm-rate-thumb` inset).
+/// Horizontal shift (px) so a centered `.wm-rate-pop` stays in the viewport.
+/// `applied_shift` is the CSS `--wm-rate-shift` already on the element (undo
+/// before measuring). Host binds the return value declaratively — no
+/// `set_property`.
+fn rate_pop_viewport_shift(pop: &HtmlElement, applied_shift: f64) -> f64 {
+    let Some(win) = window() else {
+        return 0.0;
+    };
+    let Ok(vw_js) = win.inner_width() else {
+        return 0.0;
+    };
+    let Some(vw) = vw_js.as_f64() else {
+        return 0.0;
+    };
+    if vw <= 0.0 {
+        return 0.0;
+    }
+    const PAD: f64 = 8.0;
+    let rect = pop.get_bounding_client_rect();
+    let left = rect.left() - applied_shift;
+    let right = rect.right() - applied_shift;
+    let mut shift = 0.0;
+    if right > vw - PAD {
+        shift -= right - (vw - PAD);
+    }
+    if left + shift < PAD {
+        shift += PAD - (left + shift);
+    }
+    if right + shift > vw - PAD {
+        shift -= (right + shift) - (vw - PAD);
+    }
+    shift
+}
+
 fn rate_tick_left_pct(r: f64) -> String {
     let span = RATE_SLIDER_MAX - RATE_SLIDER_MIN;
     let p = ((r - RATE_SLIDER_MIN) / span * 100.0).clamp(0.0, 100.0);
@@ -339,6 +373,9 @@ pub fn DemoPlayer() -> impl IntoView {
     // Keep H volume expanded while dragging past the panel.
     let volume_sliding = RwSignal::new(false);
     let rate_root = NodeRef::<Div>::new();
+    let rate_pop = NodeRef::<Div>::new();
+    // Declarative `--wm-rate-shift` for viewport collide (not `set_property`).
+    let rate_pop_shift = RwSignal::new(0.0_f64);
     let volume_root = NodeRef::<Div>::new();
     // File name or URL string from last open (clip line under the toolbar).
     let clip_label = RwSignal::new(None::<String>);
@@ -499,6 +536,35 @@ pub fn DemoPlayer() -> impl IntoView {
     });
     let _volume_outside = on_click_outside(volume_root, move |_| {
         volume_open.set(false);
+    });
+
+    // Rate pop: measure after open / resize → `rate_pop_shift` (view binds CSS var).
+    Effect::new(move |_| {
+        if !rate_open.get() {
+            rate_pop_shift.set(0.0);
+            return;
+        }
+        let pop = rate_pop;
+        let shift_sig = rate_pop_shift;
+        request_animation_frame(move || {
+            request_animation_frame(move || {
+                if let Some(el) = pop.get_untracked() {
+                    let el: HtmlElement = el.unchecked_into();
+                    let applied = shift_sig.get_untracked();
+                    shift_sig.set(rate_pop_viewport_shift(&el, applied));
+                }
+            });
+        });
+    });
+    let _rate_pop_resize = use_event_listener(window(), ev::resize, move |_| {
+        if !rate_open.get_untracked() {
+            return;
+        }
+        if let Some(el) = rate_pop.get_untracked() {
+            let el: HtmlElement = el.unchecked_into();
+            let applied = rate_pop_shift.get_untracked();
+            rate_pop_shift.set(rate_pop_viewport_shift(&el, applied));
+        }
     });
 
     // Tailwind viewport breakpoints (leptos-use) — volume slider H vs V.
@@ -796,8 +862,12 @@ pub fn DemoPlayer() -> impl IntoView {
                             </button>
                             <div
                                 class="wm-rate-pop"
+                                node_ref=rate_pop
                                 role="dialog"
                                 aria-label="Playback rate"
+                                style=move || {
+                                    format!("--wm-rate-shift: {}px", rate_pop_shift.get())
+                                }
                             >
                                 <div class="wm-rate-track">
                                     <input
