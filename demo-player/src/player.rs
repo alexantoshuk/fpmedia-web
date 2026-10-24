@@ -514,8 +514,8 @@ pub fn DemoPlayer() -> impl IntoView {
     let btn_rate = "wm-rate-btn inline-flex h-9 min-w-[2.75rem] items-center justify-center rounded-md border-0 bg-transparent px-1.5 text-sm tabular-nums text-zinc-300 hover:text-zinc-100 disabled:cursor-default disabled:opacity-45";
 
     view! {
-        <div class="mx-auto w-full max-w-[1100px] px-6 py-6">
-            <h1 class="mb-4 text-2xl font-bold tracking-tight text-zinc-50">"fpmedia-web"</h1>
+        <div class="mx-auto w-full max-w-[1100px] px-0 py-6">
+            <h1 class="mb-4 text-2xl font-semibold tracking-tight text-zinc-50">"Frame-accurate media player"</h1>
 
             <div class="mb-3 flex flex-wrap items-center gap-2" data-testid="source">
                 <label class=format!("wm-file {btn}")>
