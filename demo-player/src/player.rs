@@ -515,9 +515,9 @@ pub fn DemoPlayer() -> impl IntoView {
 
     view! {
         <div class="mx-auto w-full max-w-[1100px] px-0 py-6">
-            <h1 class="mb-4 text-2xl font-semibold tracking-tight text-zinc-50">"Frame-accurate media player"</h1>
+            <h1 class="mb-4 text-center text-2xl font-semibold tracking-tight text-zinc-50">"Frame-accurate media player"</h1>
 
-            <div class="mb-3 flex flex-wrap items-center gap-2" data-testid="source">
+            <div class="mb-3 flex flex-wrap items-center justify-center gap-2" data-testid="source">
                 <label class=format!("wm-file {btn}")>
                     "Select local file"
                     <input
@@ -594,7 +594,7 @@ pub fn DemoPlayer() -> impl IntoView {
             </div>
 
             <p
-                class="mb-4 min-h-[1.25rem] truncate font-mono text-sm text-zinc-400"
+                class="mb-4 min-h-[1.25rem] truncate text-center font-mono text-sm text-zinc-400"
                 data-testid="clip-label"
                 title=move || clip_label.get().unwrap_or_default()
             >
@@ -1036,7 +1036,7 @@ pub fn DemoPlayer() -> impl IntoView {
             <div
                 class=move || {
                     if debug_on.get() {
-                        "mt-4 flex flex-col gap-2"
+                        "px-2 mt-4 flex flex-col gap-2"
                     } else {
                         "pointer-events-none m-0 h-0 overflow-hidden p-0 opacity-0"
                     }
