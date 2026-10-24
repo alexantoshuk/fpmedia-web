@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_meta::{Title, provide_meta_context};
 use wasm_bindgen::prelude::wasm_bindgen;
 
+mod icon;
 mod player;
 
 #[wasm_bindgen(start)]

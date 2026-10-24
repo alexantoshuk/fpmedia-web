@@ -87,9 +87,9 @@ test.describe("demo player smoke", () => {
     await expect(player.meta).toContainText("audio");
 
     const mute = page.getByTestId("btn-mute");
+    const volumeCluster = page.getByTestId("volume");
     const volume = page.getByTestId("volume-input");
     await expect(mute).toBeEnabled();
-    await expect(volume).toBeEnabled();
 
     await mute.click();
     await expect(mute).toHaveClass(/is-on/);
@@ -98,6 +98,9 @@ test.describe("demo player smoke", () => {
     await expect(mute).toHaveAccessibleName("Unmute");
     await expect(mute).toHaveAttribute("title", "Unmute");
 
+    // Slider is hover/focus chrome — open before fill.
+    await volumeCluster.hover();
+    await expect(volume).toBeEnabled();
     await volume.fill("0.25");
     await expect(volume).toHaveValue("0.25");
 

@@ -76,8 +76,7 @@ body {
 .wm-player:fullscreen .wm-status,
 .wm-player:fullscreen .wm-pipeline,
 .wm-player:fullscreen .wm-error,
-.wm-player:fullscreen .wm-volume,
-.wm-player:fullscreen .wm-rate,
+.wm-player:fullscreen .wm-rate-btn,
 .wm-player:fullscreen .wm-stats-head .wm-btn {
   color: #d4d4d4;
 }
@@ -130,7 +129,7 @@ body {
   opacity: 0.55;
 }
 
-/* Frame.io-style hover thumb — Play+Pause; hide while scrubbing.
+/* Hover thumb — Play+Pause; hide while scrubbing.
    Root gets `transform` from <HoverThumb>; canvas is inside (host chrome = children). */
 .wm-thumb-preview {
   position: absolute;
@@ -290,18 +289,6 @@ body {
   display: block;
 }
 
-.wm-btn-icon .wm-icon-volume-mute {
-  display: none;
-}
-
-.wm-btn-icon.is-muted .wm-icon-volume {
-  display: none;
-}
-
-.wm-btn-icon.is-muted .wm-icon-volume-mute {
-  display: block;
-}
-
 /* Must stay in layout (not display:none) — Android Chrome ignores
    label activation / .click() on display:none file inputs. */
 .wm-file {
@@ -322,9 +309,220 @@ body {
   font-size: 0;
 }
 
-.wm-volume-input,
+/* Rate: ghost button + popover (slider + 0.25 ticks). */
+.wm-rate-pop {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 0.4rem);
+  left: 50%;
+  z-index: 20;
+  transform: translateX(-50%);
+  padding: 0.65rem 0.85rem 0.45rem;
+  border: 1px solid var(--wm-border);
+  border-radius: 0.5rem;
+  background: var(--wm-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.wm-rate.is-open .wm-rate-pop {
+  display: block;
+}
+
+.wm-rate-track {
+  /* Thumb size — ticks pad by half so marks sit under the thumb center. */
+  --wm-rate-thumb: 14px;
+  width: 17.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
 .wm-rate-input {
-  width: 6.5rem;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: var(--wm-rate-thumb);
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.wm-rate-input::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: #3f3f46;
+}
+
+.wm-rate-input::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: #3f3f46;
+}
+
+.wm-rate-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--wm-rate-thumb);
+  height: var(--wm-rate-thumb);
+  margin-top: calc((3px - var(--wm-rate-thumb)) / 2);
+  border: 0;
+  border-radius: 50%;
+  background: var(--wm-accent);
+  cursor: pointer;
+}
+
+.wm-rate-input::-moz-range-thumb {
+  width: var(--wm-rate-thumb);
+  height: var(--wm-rate-thumb);
+  border: 0;
+  border-radius: 50%;
+  background: var(--wm-accent);
+  cursor: pointer;
+}
+
+.wm-rate-ticks {
+  width: 100%;
+  height: 1.55rem;
+  /* Inset equals half thumb — rail width matches thumb travel span. */
+  padding: 0 calc(var(--wm-rate-thumb) / 2);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.wm-rate-ticks-rail {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.wm-rate-tick {
+  pointer-events: auto;
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--wm-muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.wm-rate-tick:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.wm-rate-tick-mark {
+  width: 1px;
+  height: 0.45rem;
+  background: #71717a;
+}
+
+.wm-rate-tick-label {
+  font-size: 0.65rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.wm-rate-tick.is-active {
+  color: var(--wm-accent);
+}
+
+.wm-rate-tick.is-active .wm-rate-tick-mark {
+  background: var(--wm-accent);
+}
+
+.wm-rate-tick:hover:not(:disabled) {
+  color: var(--wm-ink);
+}
+
+.wm-rate-tick:hover:not(:disabled) .wm-rate-tick-mark {
+  background: var(--wm-ink);
+}
+
+/* Volume: H expand (width 0→N in flow); V popover when narrow.
+   Orientation from leptos-use Tailwind breakpoints (`md` → H, else V). */
+
+/* Horizontal: collapsed width, expands on panel hover / open / sliding. */
+.wm-volume-slider-h {
+  display: flex;
+  align-items: center;
+  width: 0;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: none;
+  transition: width 0.15s ease;
+}
+
+.wm-volume-control:hover .wm-volume-slider-h,
+.wm-volume-control:focus-within .wm-volume-slider-h,
+.wm-volume-control.is-open .wm-volume-slider-h,
+.wm-volume-control.is-sliding .wm-volume-slider-h {
+  width: 5.85rem;
+  padding-left: 0.35rem;
+  pointer-events: auto;
+}
+
+.wm-volume-slider-h .wm-volume-input {
+  width: 5.5rem;
+  min-width: 5.5rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+}
+
+/* Vertical: absolute popover above the icon. */
+.wm-volume-slider-v {
+  display: flex;
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 0.4rem);
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+  justify-content: center;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--wm-border);
+  border-radius: 0.5rem;
+  background: var(--wm-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.12s ease,
+    visibility 0.12s ease;
+}
+
+.wm-volume-control:hover .wm-volume-slider-v,
+.wm-volume-control:focus-within .wm-volume-slider-v,
+.wm-volume-control.is-open .wm-volume-slider-v,
+.wm-volume-control.is-sliding .wm-volume-slider-v {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.wm-volume-slider-v .wm-volume-input {
+  width: 1.25rem;
+  height: 5.5rem;
+  writing-mode: vertical-lr;
+  direction: rtl;
+}
+
+.wm-volume-input {
   accent-color: var(--wm-accent);
   cursor: pointer;
 }
@@ -336,8 +534,8 @@ body {
 }
 
 .wm-frame-input {
-  width: 5.5rem;
-  padding: 0.35rem 0.5rem;
+  width: 3.75rem;
+  padding: 0.35rem 0.4rem;
   border: 1px solid var(--wm-border);
   border-radius: 0.375rem;
   background: #09090b;
@@ -346,6 +544,13 @@ body {
   /* No spinner — seek on Enter / blur via `change`. */
   appearance: textfield;
   -moz-appearance: textfield;
+}
+
+@media (min-width: 640px) {
+  .wm-frame-input {
+    width: 4.5rem;
+    padding: 0.35rem 0.5rem;
+  }
 }
 
 .wm-frame-input::-webkit-outer-spin-button,

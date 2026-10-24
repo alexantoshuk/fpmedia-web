@@ -1,5 +1,6 @@
 //! Demo controls over [`fpmedia_web_components::Video`] — not production player UI.
 
+use crate::icon;
 use fpmedia_web_components::helpers::{
     FRAME_ZEBRA_MIN_SLOT_PX, format_metadata, format_timecode_at, frame_zebra_step, odd_frame_runs,
     playhead_tip_css, playhead_width_css, strip_canvas_buffer_width,
@@ -8,12 +9,14 @@ use fpmedia_web_components::{
     HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, ScrubCachePolicy, Scrubber,
     ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, Video, VideoRef,
 };
+use leptos::either::EitherOf3;
 use leptos::ev;
 use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
 use leptos_use::{
-    UseClipboardReturn, UseTimeoutFnReturn, use_clipboard, use_event_listener, use_resize_observer,
-    use_timeout_fn,
+    BreakpointsTailwind, UseClipboardReturn, UseTimeoutFnReturn, breakpoints_tailwind,
+    on_click_outside, use_breakpoints, use_clipboard, use_event_listener, use_media_query,
+    use_resize_observer, use_timeout_fn,
 };
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
@@ -43,6 +46,26 @@ fn zebra_pair_hex(contrast: u8) -> (String, String) {
 
 /// Forward shuttle ladder for demo J/L keys (K → 1× + play/pause).
 const JKL_STEPS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
+
+/// Review-rate tick marks in the rate popover (0.25…1.75).
+const RATE_TICKS: [f64; 7] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75];
+const RATE_SLIDER_MIN: f64 = 0.25;
+const RATE_SLIDER_MAX: f64 = 1.75;
+
+fn format_rate_tick(r: f64) -> String {
+    if (r - r.round()).abs() < 1e-9 {
+        format!("{}", r.round() as i32)
+    } else {
+        format!("{r}")
+    }
+}
+
+/// Thumb-center % along the track (matches styled `--wm-rate-thumb` inset).
+fn rate_tick_left_pct(r: f64) -> String {
+    let span = RATE_SLIDER_MAX - RATE_SLIDER_MIN;
+    let p = ((r - RATE_SLIDER_MIN) / span * 100.0).clamp(0.0, 100.0);
+    format!("{p}%")
+}
 
 /// Map known testvideo Release URLs / root-relative `/media/…` to absolute http(s) URLs.
 /// `VideoRef::open_url` requires `http:`, `https:`, or `blob:` (not bare paths).
@@ -310,6 +333,13 @@ pub fn DemoPlayer() -> impl IntoView {
     let scrubber_on = RwSignal::new(true);
     let thumbs_on = RwSignal::new(true);
     let debug_on = RwSignal::new(false);
+    // Rate / volume popovers.
+    let rate_open = RwSignal::new(false);
+    let volume_open = RwSignal::new(false);
+    // Keep H volume expanded while dragging past the panel.
+    let volume_sliding = RwSignal::new(false);
+    let rate_root = NodeRef::<Div>::new();
+    let volume_root = NodeRef::<Div>::new();
     // File name or URL string from last open (clip line under the toolbar).
     let clip_label = RwSignal::new(None::<String>);
     let url_input = NodeRef::<Input>::new();
@@ -456,15 +486,32 @@ pub fn DemoPlayer() -> impl IntoView {
                     video.play();
                 }
             }
+            "Escape" => {
+                rate_open.set(false);
+                volume_open.set(false);
+            }
             _ => {}
         }
     });
+
+    let _rate_outside = on_click_outside(rate_root, move |_| {
+        rate_open.set(false);
+    });
+    let _volume_outside = on_click_outside(volume_root, move |_| {
+        volume_open.set(false);
+    });
+
+    // Tailwind viewport breakpoints (leptos-use) — volume slider H vs V.
+    let bp = use_breakpoints(breakpoints_tailwind());
+    let volume_wide = bp.ge(BreakpointsTailwind::Md);
+    let no_hover = use_media_query("(hover: none)");
 
     // Text buttons: filled bg, no border. Icon buttons: icon-only (no chrome).
     let btn = "inline-flex items-center justify-center rounded-md border-0 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 hover:bg-zinc-700 disabled:cursor-default disabled:opacity-45";
     let btn_icon = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     let btn_icon_on = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-emerald-400 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     let btn_play = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
+    let btn_rate = "wm-rate-btn inline-flex h-9 min-w-[2.75rem] items-center justify-center rounded-md border-0 bg-transparent px-1.5 text-sm tabular-nums text-zinc-300 hover:text-zinc-100 disabled:cursor-default disabled:opacity-45";
 
     view! {
         <div class="mx-auto w-full max-w-[1100px] px-6 py-6">
@@ -542,16 +589,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     }
                     on:click=move |_| debug_on.update(|v| *v = !*v)
                 >
-                    <svg
-                        class="h-4 w-4 shrink-0 fill-none stroke-current"
-                        viewBox="0 0 24 24"
-                        aria-hidden="true"
-                        focusable="false"
-                    >
-                        <circle cx="12" cy="12" r="9" stroke-width="2"></circle>
-                        <path stroke-width="2" stroke-linecap="round" d="M12 11v6"></path>
-                        <circle cx="12" cy="8" r="1" fill="currentColor" stroke="none"></circle>
-                    </svg>
+                    <icon::DebugInfo class="h-4 w-4 shrink-0"/>
                 </button>
             </div>
 
@@ -617,10 +655,10 @@ pub fn DemoPlayer() -> impl IntoView {
                         <DemoScrubber video=video thumbs_on=thumbs_on/>
                     </Show>
                     <div
-                        class="flex w-full items-center gap-2 px-3 py-3"
+                        class="wm-controls flex w-full flex-nowrap items-center gap-1.5 px-3 py-3 sm:gap-2"
                         data-testid="controls"
                     >
-                        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                        <div class="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 sm:gap-2">
                         <button
                             type="button"
                             class=move || {
@@ -646,13 +684,8 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             }
                         >
-                            <svg class="wm-icon wm-icon-play" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M8 5v14l11-7z"></path>
-                            </svg>
-                            <svg class="wm-icon wm-icon-pause" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <rect x="6" y="5" width="4" height="14" rx="1"></rect>
-                                <rect x="14" y="5" width="4" height="14" rx="1"></rect>
-                            </svg>
+                            <icon::Play class="wm-icon wm-icon-play"/>
+                            <icon::Pause class="wm-icon wm-icon-pause"/>
                         </button>
                         <button
                             type="button"
@@ -674,9 +707,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             }
                             on:click=move |_| video.set_loop(!video.looping.get_untracked())
                         >
-                            <svg class="wm-icon wm-icon-loop" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"></path>
-                            </svg>
+                            <icon::Loop class="wm-icon wm-icon-loop"/>
                         </button>
                         <button
                             type="button"
@@ -693,10 +724,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             }
                         >
-                            <svg class="wm-icon wm-icon-prev" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M14 6v12l-8.5-6L14 6z"></path>
-                                <rect x="16" y="6" width="2.5" height="12" rx="0.5"></rect>
-                            </svg>
+                            <icon::NextFrame class="wm-icon wm-icon-prev -scale-x-100"/>
                         </button>
                         <button
                             type="button"
@@ -713,10 +741,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             }
                         >
-                            <svg class="wm-icon wm-icon-next" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <rect x="5.5" y="6" width="2.5" height="12" rx="0.5"></rect>
-                                <path d="M10 6v12l8.5-6L10 6z"></path>
-                            </svg>
+                            <icon::NextFrame class="wm-icon wm-icon-next"/>
                         </button>
                         <input
                             type="number"
@@ -736,91 +761,239 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             }
                         />
-                        <button
-                            type="button"
+                        <div
                             class=move || {
-                                if video.muted.get() {
-                                    format!("{btn_icon_on} is-muted")
+                                if rate_open.get() {
+                                    "wm-rate relative shrink-0 is-open".to_string()
                                 } else {
-                                    btn_icon.to_string()
+                                    "wm-rate relative shrink-0".to_string()
                                 }
                             }
-                            data-testid="btn-mute"
-                            prop:disabled=move || !video.ready.get() || !video.has_audio.get()
-                            prop:aria-pressed=move || video.muted.get()
-                            prop:aria-label=move || {
-                                if video.muted.get() { "Unmute" } else { "Mute" }
-                            }
-                            prop:title=move || {
-                                if video.muted.get() { "Unmute" } else { "Mute" }
-                            }
-                            on:click=move |_| video.set_muted(!video.muted.get_untracked())
-                        >
-                            <svg class="wm-icon wm-icon-volume" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"></path>
-                            </svg>
-                            <svg class="wm-icon wm-icon-volume-mute" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v4h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z"></path>
-                            </svg>
-                        </button>
-                        <label
-                            class="wm-volume inline-flex items-center text-sm text-zinc-400"
-                            data-testid="volume"
-                            title="Volume"
-                        >
-                            <input
-                                type="range"
-                                class="wm-volume-input"
-                                data-testid="volume-input"
-                                min="0"
-                                max="1"
-                                step="0.01"
-                                prop:value=move || video.volume.get().to_string()
-                                prop:disabled=move || !video.ready.get() || !video.has_audio.get()
-                                on:input=move |ev| {
-                                    let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                                        return;
-                                    };
-                                    if let Ok(v) = input.value().parse::<f64>() {
-                                        video.set_volume(v);
-                                    }
-                                }
-                            />
-                        </label>
-                        <label
-                            class="wm-rate inline-flex items-center gap-1.5 text-sm text-zinc-400"
+                            node_ref=rate_root
                             data-testid="playback-rate"
-                            title="Playback rate (0.25–1.75 review; JKL 1/2/4/8; API up to 8×)"
                         >
-                            <span class="min-w-[3.2rem] select-none tabular-nums">
-                                {move || format!("{:.2}x", video.playback_rate.get())}
-                            </span>
-                            <input
-                                type="range"
-                                class="wm-rate-input"
-                                data-testid="playback-rate-input"
-                                min="0.25"
-                                max="1.75"
-                                step="0.05"
-                                prop:value=move || {
-                                    let r = video.playback_rate.get();
-                                    if r < 0.0 {
-                                        "0.25".to_string()
-                                    } else {
-                                        r.min(1.75).to_string()
-                                    }
-                                }
+                            <button
+                                type="button"
+                                class=btn_rate
                                 prop:disabled=move || !video.ready.get()
-                                on:input=move |ev| {
-                                    let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                                        return;
-                                    };
-                                    if let Ok(v) = input.value().parse::<f64>() {
-                                        video.set_playback_rate(v);
+                                prop:aria-expanded=move || rate_open.get()
+                                prop:aria-label="Playback rate"
+                                prop:title="Playback rate (0.25–1.75; double-click → 1×; JKL 1/2/4/8)"
+                                on:click=move |_| {
+                                    let next = !rate_open.get_untracked();
+                                    rate_open.set(next);
+                                    if next {
+                                        volume_open.set(false);
                                     }
                                 }
-                            />
-                        </label>
+                                on:dblclick=move |ev| {
+                                    ev.prevent_default();
+                                    video.set_playback_rate(1.0);
+                                    rate_open.set(false);
+                                }
+                            >
+                                {move || format!("{:.2}x", video.playback_rate.get())}
+                            </button>
+                            <div
+                                class="wm-rate-pop"
+                                role="dialog"
+                                aria-label="Playback rate"
+                            >
+                                <div class="wm-rate-track">
+                                    <input
+                                        type="range"
+                                        class="wm-rate-input"
+                                        data-testid="playback-rate-input"
+                                        min="0.25"
+                                        max="1.75"
+                                        step="0.05"
+                                        prop:value=move || {
+                                            let r = video.playback_rate.get();
+                                            if r < 0.0 {
+                                                "0.25".to_string()
+                                            } else {
+                                                r.min(1.75).to_string()
+                                            }
+                                        }
+                                        prop:disabled=move || !video.ready.get()
+                                        on:input=move |ev| {
+                                            let Some(input) = event_target::<HtmlInputElement>(&ev)
+                                            else {
+                                                return;
+                                            };
+                                            if let Ok(v) = input.value().parse::<f64>() {
+                                                video.set_playback_rate(v);
+                                            }
+                                        }
+                                    />
+                                    <div class="wm-rate-ticks" aria-hidden="true">
+                                        <div class="wm-rate-ticks-rail">
+                                            {RATE_TICKS
+                                                .into_iter()
+                                                .map(|t| {
+                                                    let left = rate_tick_left_pct(t);
+                                                    view! {
+                                                        <button
+                                                            type="button"
+                                                            class=move || {
+                                                                let r = video
+                                                                    .playback_rate
+                                                                    .get()
+                                                                    .clamp(
+                                                                        RATE_SLIDER_MIN,
+                                                                        RATE_SLIDER_MAX,
+                                                                    );
+                                                                if (r - t).abs() < 0.026 {
+                                                                    "wm-rate-tick is-active"
+                                                                } else {
+                                                                    "wm-rate-tick"
+                                                                }
+                                                            }
+                                                            style:left=left
+                                                            prop:disabled=move || !video.ready.get()
+                                                            prop:title=format!(
+                                                                "{}×",
+                                                                format_rate_tick(t)
+                                                            )
+                                                            on:click=move |ev| {
+                                                                ev.stop_propagation();
+                                                                video.set_playback_rate(t);
+                                                            }
+                                                        >
+                                                            <span class="wm-rate-tick-mark"></span>
+                                                            <span class="wm-rate-tick-label">
+                                                                {format_rate_tick(t)}
+                                                            </span>
+                                                        </button>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div
+                            class=move || {
+                                let mut c = String::from(
+                                    "wm-volume-control group relative flex shrink-0 items-center",
+                                );
+                                if volume_open.get() {
+                                    c.push_str(" is-open");
+                                }
+                                if volume_sliding.get() {
+                                    c.push_str(" is-sliding");
+                                }
+                                c
+                            }
+                            node_ref=volume_root
+                            data-testid="volume"
+                        >
+                            <button
+                                type="button"
+                                class=move || {
+                                    if video.muted.get() {
+                                        format!("{btn_icon_on} is-on")
+                                    } else {
+                                        btn_icon.to_string()
+                                    }
+                                }
+                                data-testid="btn-mute"
+                                prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+                                prop:aria-pressed=move || video.muted.get()
+                                prop:aria-label=move || {
+                                    if video.muted.get() { "Unmute" } else { "Mute" }
+                                }
+                                prop:title=move || {
+                                    if video.muted.get() { "Unmute" } else { "Mute" }
+                                }
+                                on:click=move |_| {
+                                    // Coarse / no-hover: first tap opens slider; later taps mute.
+                                    if no_hover.get_untracked() && !volume_open.get_untracked() {
+                                        volume_open.set(true);
+                                        rate_open.set(false);
+                                        return;
+                                    }
+                                    // Volume already 0: mute toggle is a no-op visually — unmute + max.
+                                    if video.volume.get_untracked() <= 0.0 {
+                                        video.set_volume(1.0);
+                                        video.set_muted(false);
+                                        return;
+                                    }
+                                    video.set_muted(!video.muted.get_untracked());
+                                }
+                            >
+                                {move || {
+                                    let muted = video.muted.get();
+                                    let vol = video.volume.get();
+                                    if muted || vol <= 0.0 {
+                                        EitherOf3::A(view! { <icon::Volume0 class="wm-icon"/> })
+                                    } else if vol < 0.5 {
+                                        EitherOf3::B(view! { <icon::Volume1 class="wm-icon"/> })
+                                    } else {
+                                        EitherOf3::C(view! { <icon::Volume2 class="wm-icon"/> })
+                                    }
+                                }}
+                            </button>
+                            <div
+                                class=move || {
+                                    if volume_wide.get() {
+                                        "wm-volume-slider wm-volume-slider-h".to_string()
+                                    } else {
+                                        "wm-volume-slider wm-volume-slider-v".to_string()
+                                    }
+                                }
+                                role="dialog"
+                                aria-label="Volume"
+                            >
+                                <input
+                                    type="range"
+                                    class="wm-volume-input"
+                                    data-testid="volume-input"
+                                    min="0"
+                                    max="1"
+                                    step="0.05"
+                                    prop:value=move || {
+                                        // Mute parks the thumb at 0 without clearing stored volume;
+                                        // unmute restores `video.volume`.
+                                        if video.muted.get() {
+                                            "0".to_string()
+                                        } else {
+                                            video.volume.get().to_string()
+                                        }
+                                    }
+                                    prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+                                    on:pointerdown=move |ev| {
+                                        volume_sliding.set(true);
+                                        volume_open.set(true);
+                                        if let Some(t) = ev.target()
+                                            && let Ok(el) = t.dyn_into::<HtmlElement>()
+                                        {
+                                            let _ = el.set_pointer_capture(ev.pointer_id());
+                                        }
+                                    }
+                                    on:pointerup=move |_| {
+                                        volume_sliding.set(false);
+                                    }
+                                    on:pointercancel=move |_| {
+                                        volume_sliding.set(false);
+                                    }
+                                    on:input=move |ev| {
+                                        let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                            return;
+                                        };
+                                        if let Ok(v) = input.value().parse::<f64>() {
+                                            // Snap to 0.05 so icon thresholds stay clean.
+                                            let snapped = (v / 0.05).round() * 0.05;
+                                            video.set_volume(snapped.clamp(0.0, 1.0));
+                                            if video.muted.get_untracked() {
+                                                video.set_muted(false);
+                                            }
+                                        }
+                                    }
+                                />
+                            </div>
+                        </div>
                         </div>
                         <button
                             type="button"
@@ -851,12 +1024,8 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             }
                         >
-                            <svg class="wm-icon wm-icon-fullscreen" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"></path>
-                            </svg>
-                            <svg class="wm-icon wm-icon-fullscreen-exit" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"></path>
-                            </svg>
+                            <icon::FullScreenEnter class="wm-icon wm-icon-fullscreen"/>
+                            <icon::FullScreenExit class="wm-icon wm-icon-fullscreen-exit"/>
                         </button>
                     </div>
                 </div>
@@ -959,9 +1128,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             }
                         }
                     >
-                        <svg class="wm-icon wm-icon-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path>
-                        </svg>
+                        <icon::Copy class="wm-icon wm-icon-copy"/>
                     </button>
                 </div>
             </div>
