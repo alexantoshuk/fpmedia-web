@@ -258,8 +258,8 @@ body {
 
 /* Icon play/pause + fullscreen + mute swaps (state classes on the button). */
 .wm-btn-icon .wm-icon {
-  width: 1.15rem;
-  height: 1.15rem;
+  width: 1.5rem;
+  height: 1.5rem;
   fill: currentColor;
   display: block;
 }

@@ -655,10 +655,10 @@ pub fn DemoPlayer() -> impl IntoView {
                         <DemoScrubber video=video thumbs_on=thumbs_on/>
                     </Show>
                     <div
-                        class="wm-controls flex w-full flex-nowrap items-center gap-1.5 px-3 py-3 sm:gap-2"
+                        class="wm-controls flex w-full flex-nowrap items-center gap-1 px-3 py-3"
                         data-testid="controls"
                     >
-                        <div class="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 sm:gap-2">
+                        <div class="flex min-w-0 flex-1 flex-nowrap items-center gap-1">
                         <button
                             type="button"
                             class=move || {
