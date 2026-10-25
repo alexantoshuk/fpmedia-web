@@ -164,16 +164,20 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
         SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
         SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
         SeekOrStep::ScrubDrag(target) => p.scrub_to(u64::from(target), false).await,
-        SeekOrStep::ScrubRelease { target, then_play } => {
-            // Overlap Exact settle with audio warm so release→play is not silent
-            // for the whole densify-yield window.
-            if then_play {
-                Rc::clone(&p).prewarm_audio_at_frame(u64::from(target));
-            }
+        // Resume Play: no Exact settle — PlayPrime's iterator draws the aim and
+        // arms the clock on it (`mediabunny: media-player seekToTime`).
+        SeekOrStep::ScrubRelease {
+            target,
+            then_play: true,
+        } => p.prepare_play_from_scrub(u64::from(target)).map(|_| ()),
+        SeekOrStep::ScrubRelease {
+            target,
+            then_play: false,
+        } => {
             let r = p.scrub_to(u64::from(target), true).await;
             // Settle no longer arms densify inside the engine — if Play is queued,
             // keep the warm main decoder for prime (play-after-scrub).
-            if r.is_ok() && queue.is_current(id) && !then_play && !queue.has_pending_play() {
+            if r.is_ok() && queue.is_current(id) && !queue.has_pending_play() {
                 p.arm_scrub_densify_after_exact(u64::from(target));
             }
             r

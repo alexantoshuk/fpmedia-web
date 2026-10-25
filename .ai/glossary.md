@@ -105,7 +105,7 @@ Engine mode while settle/seek Exact owns decode — densify must not compete (yi
 
 ### PlayPrime / ScrubRelease
 
-Leaving scrub toward play (or staying paused): prime index + bytes and start the PlayIter (or seed the paused picture), clear scrub gesture, re-arm densify per mode. Host transport: `ScrubRelease { then_play }`, etc.
+Host transport for leaving scrub. **`then_play`:** commit aim (`prepare_play_from_scrub`) then PlayPrime — PlayIter draws the first frame; no Exact settle / no audio prewarm (`mediabunny: seekToTime` → `startVideoIterator` → `play`). **Paused release:** Exact settle, then densify re-arm. Clear scrub gesture either way.
 
 ### Cold scrub
 

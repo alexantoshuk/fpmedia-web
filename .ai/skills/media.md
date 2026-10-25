@@ -45,11 +45,12 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Exact 1 px orphan past hole after Pause densify | `evict_exact_orphans_beyond_aim` | farthest-evict every densify tick (not gated on Exact near-gap idle — under-cap soft-drag holes skipped eviction); not on drag `set_playhead` |
 | Loop seam wipe / underrun hold | `start_loop_seam` (`PlayPhase::LoopSeam`) | hold clock, `start_play_iter(0)`, resume; keep Covered+Exact |
 | Loop seam cold at origin (`rd` spike on 2nd lap) | `warm_play_sample_lead` / `maybe_kick_loop_origin_prewarm` | near-EOF ~1 s warm origin bytes, seam awaits it, LoopDone arms catch-up grace. MB example has no loop — Remotion `prewarmIteratorForLooping` shape |
-| Pause→Play / scrub→Play lag or no-op | seed + `ScrubRelease{then_play}` | host: `skills/leptos.md`; probes gray-first / cold-resume / stress |
+| Pause→Play / scrub→Play no-op | `ScrubRelease{then_play}` / soft-park | host: `skills/leptos.md`; probes gray-first / cold-resume / stress. Resume lag/skip → row below |
 | Sticky error after Ok settle | `host_ops` clear error on Ok | `e2e/player.scrub.sticky-error.spec.ts` |
 | Tab hidden: play dies / densify keeps burning | `yield_scrub_work_for_hidden` | Play+clock continue (MB); scrub densify/gray/thumbs yield; host ~500 ms present. `mediabunny: media-player setInterval(render,500)` |
 | Tab hidden: audio choppy / gaps | `play_underrun_hold` / `scrub_bg_suspended` | never `hold_underrun` while hidden (video lag ≠ silence audio); ahead 12 s still helps refill. `mediabunny: no underrun→audio hold` |
-| Tab return / scrub→play audio micro-gap | `underrun_catchup_until_ms` / `begin_play_session` | ~1 s grace on visible + every PlayPrime; then_play prewarm + no 2nd `restart_warm` if playing. play→pause→play after scrub = underrun hold, not 2nd warm |
+| Tab return / play-after-pause audio micro-gap | `underrun_catchup_until_ms` / `begin_play_session` | ~1 s grace on visible + every PlayPrime. play→pause→play after scrub = underrun hold, not 2nd warm |
+| Scrub-while-play release: lag / skip burst on resume | `prepare_play_from_scrub` / `resume_media_clock` | `then_play` = no Exact settle, no audio prewarm; PlayIter draws aim, clock starts on it (never adopt a running audio clock). `mediabunny: media-player seekToTime` → `startVideoIterator` → `play` |
 | Rate / shuttle / JKL wrong | `normalize_playback_rate` / eof_wall | ≤4× WSOLA; >4 wall+mute; K pauses before 1× |
 | `RefCell already borrowed` | [RefCell](#refcell--wasm-re-entry) | bind then work; no borrow across await |
 | fMP4 / URL open hang / Range stampede | mfra warm + orch | moof-only parallel; never bulk 0..mfra; settle ≠ await full sync verify |

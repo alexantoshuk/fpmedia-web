@@ -221,13 +221,15 @@ flowchart TD
   PROG -->|no| BAN["Soft-ban GOP key<br/>Exact-gated idle / refuse"]
   YIELD --> GAP
   BAN --> GAP
-  KIND -->|"pointer up settle"| ST["ExactHold — densify yield"]
+  KIND -->|"pointer up + stay paused"| ST["ExactHold — densify yield"]
   ST --> EXN["Exact key→N to aim<br/>do not blit.clear Exact"]
   EXN --> CANVAS2["Canvas Exact frame"]
-  EXN --> REARM["ScrubRelease → Pause densify<br/>or PlayPrime"]
+  EXN --> REARM["ScrubRelease → Pause densify"]
+  KIND -->|"pointer up + then_play"| PP["prepare_play_from_scrub<br/>commit aim, no Exact"]
+  PP --> PRIME["PlayPrime → start_play_iter"]
 ```
 
-Soft-drag must not run PreferSoftware densify under the finger. Settle must not wipe Exact blit (soft-drag trail). Densify soft-ban stops infinite re-decode; residual pin-holes on constrained machines are accepted strip cosmetics (`product.md`).
+Soft-drag must not run PreferSoftware densify under the finger. Settle must not wipe Exact blit (soft-drag trail). Densify soft-ban stops infinite re-decode; residual pin-holes on constrained machines are accepted strip cosmetics (`product.md`). Scrub-while-play release skips Exact — traps: `skills/media.md`.
 
 ### Scrub phases
 
@@ -238,8 +240,8 @@ Host gesture × engine (FSM homes: `fpmedia_web::transport`, `fpmedia_web::engin
 | Play | `Playing` | `Play` | off | `PlayIter` `nextFrame` | play / rAF |
 | Soft-drag | `Scrubbing` | `Scrub` (+ soft audio hold) | off under finger | aim + Exact blit preview | `VideoRef::scrub_pointer_down/move` → `note_scrub_frame` |
 | Pause / idle scrub | `Ready` (paused) | `Scrub` | on if `ScrubPolicy::densify` | densify → blit + markers | `enter_scrub_cache_pipeline` |
-| Settle | `Settling` | `ExactHold` | deferred (yield) | Exact key→N | `scrub_pointer_up` → `ScrubRelease` — **do not** full-clear Exact blit here (see `skills/media.md` soft-drag frozen) |
-| Resume | `PlayPriming` → `Playing`, or stay paused | → `Play` / `Scrub` | per mode | prime / hold frame | `ScrubRelease { then_play }` |
+| Settle | `Settling` | `ExactHold` | deferred (yield) | Exact key→N | paused `ScrubRelease` only — **do not** full-clear Exact blit (see `skills/media.md` soft-drag frozen) |
+| Resume | `PlayPriming` → `Playing` | → `Play` | off | PlayIter draws aim (no Exact / no audio prewarm) | `ScrubRelease { then_play }` → `prepare_play_from_scrub` → PlayPrime |
 
 Traps: `skills/media.md`. Host playhead / `scrub_pointer_*`: `skills/leptos.md`.
 

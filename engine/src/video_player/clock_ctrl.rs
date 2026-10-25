@@ -7,7 +7,6 @@ use std::rc::Rc;
 
 use crate::error::MediaError;
 use crate::model::clock_state::{ClockCmd, ClockEvent, reduce as clock_reduce};
-use crate::types::FrameId;
 
 use super::VideoPlayer;
 use super::now_ms;
@@ -380,8 +379,9 @@ impl VideoPlayer {
     /// ([`AudioOutput::restart_warm`]). Fresh Play after hard pause still uses
     /// [`Self::start_media_clock`] (cold `begin`).
     ///
-    /// If audio was already [`AudioOutput::restart_warm`]'d (scrub `then_play`
-    /// prewarm) and is still playing, adopt live time — never a second silence.
+    /// Always restarts at `media_time_secs` (the frame Play already drew) —
+    /// `mediabunny: examples/media-player play` sets `audioContextStartTime` after
+    /// `startVideoIterator`, never adopting an audio clock that ran ahead.
     pub async fn resume_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.apply_clock_event(ClockEvent::Resume);
         let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
@@ -405,14 +405,6 @@ impl VideoPlayer {
             if let Some(c) = self.shared.playback_clock.as_ref() {
                 let _ = c.stop();
             }
-            // Scrub `then_play` prewarm: audio already ran through Exact settle
-            // (often 0.3–0.5 s ahead of aim). A second `restart_warm` is the
-            // audible "play → pause → play" gap — adopt live clock; video skip-catches.
-            if a.is_playing() {
-                let live = a.media_time();
-                self.shared.clock.borrow_mut().start(live);
-                return Ok(());
-            }
             self.shared.clock.borrow_mut().start(media_time_secs);
             a.restart_warm(media_time_secs).await?;
         } else if let Some(c) = self.shared.playback_clock.as_ref() {
@@ -428,36 +420,6 @@ impl VideoPlayer {
             }
         }
         Ok(())
-    }
-
-    /// Fire-and-forget warm audio at `media_time_secs` while Exact settle runs
-    /// (`ScrubRelease { then_play }`). PlayPrime then skips a second
-    /// [`AudioOutput::restart_warm`] when still near this time.
-    ///
-    /// Only when scrub soft-hold left [`crate::AudioResume::Warm`].
-    pub fn prewarm_audio_at_frame(self: &Rc<Self>, frame: FrameId) {
-        let Ok(t) = self.frame_timestamp_seconds(frame) else {
-            return;
-        };
-        if !self.shared.engine.get().warm_audio() {
-            return;
-        }
-        // Leave Warm latch for PlayPrime — only start the sink early.
-        let Some(a) = self.shared.audio.borrow().as_ref().map(Rc::clone) else {
-            return;
-        };
-        if a.is_playing() {
-            return;
-        }
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = a.restart_warm(t).await
-                && !e.is_cancelled()
-            {
-                web_sys::console::warn_1(
-                    &format!("fpmedia-web: scrub then_play audio prewarm: {e}").into(),
-                );
-            }
-        });
     }
 
     pub(super) fn apply_clock_event(&self, event: ClockEvent) {

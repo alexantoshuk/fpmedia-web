@@ -418,6 +418,29 @@ impl VideoPlayer {
         Ok(())
     }
 
+    /// Pointer-up while resuming Play (`ScrubRelease { then_play }`): commit the
+    /// aim **without** an Exact decode — PlayPrime's iterator draws it.
+    ///
+    /// `mediabunny: examples/media-player seekToTime` while playing: `pause`,
+    /// `playbackTimeAtStart = seconds`, `startVideoIterator`, then `play` arms the
+    /// clock. An Exact key→N here decoded the GOP twice and let a prewarmed audio
+    /// clock run ahead of the first Play frame (skip burst on resume).
+    pub fn prepare_play_from_scrub(&self, frame: FrameId) -> Result<FrameId, MediaError> {
+        let _ = self.begin_op();
+        let frame = frame.min(self.indexed_frame_count().saturating_sub(1));
+        self.shared.playing.set(false);
+        self.clear_play_session();
+        self.clear_scrub_direction();
+        self.clear_step_ring();
+        self.clear_presentation();
+        self.shared.pending_cold_exact.set(None);
+        self.aim_scrub_cache(frame);
+        self.shared.commit_frame(frame)?;
+        self.apply_engine_event(EngineEvent::EndExact { densify: false });
+        self.snap_media_clock_to_playhead();
+        Ok(frame)
+    }
+
     /// Exact goto with poison → soft-cold fallback. Shared by warm and gop-warm
     /// cold settle paths. Play after settle starts its own iterator (PlayPrime).
     async fn settle_exact_seed_logged(

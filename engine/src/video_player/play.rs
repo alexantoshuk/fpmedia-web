@@ -49,9 +49,8 @@ impl VideoPlayer {
         self.shared.resuming_clock.set(false);
         self.shared.held_media_origin.set(None);
         *self.shared.play_driver_error.borrow_mut() = None;
-        // Scrub `then_play` prewarm (and any warm clock) can sit ahead of the
-        // fresh PlayIter — suppress underrun→audio hold while video skip-catches
-        // (same grace as tab-visible return).
+        // A warm clock can sit slightly ahead of the fresh PlayIter — suppress
+        // underrun→audio hold while video catches up (same grace as tab return).
         self.arm_underrun_catchup_grace();
         self.kick_update_next_frame();
     }
@@ -541,11 +540,10 @@ impl VideoPlayer {
                 .map(|e| e.composition_timestamp().seconds)
                 .unwrap_or(0.0);
             let warm_ms = now_ms().unwrap_or(warm_t0) - warm_t0;
+            // e2e probes parse `play prime warm key=… span=…`.
             web_sys::console::log_1(
-                &format!(
-                    "fpmedia-web: play warm head={head} key={key} span={await_span} {warm_ms:.0}ms"
-                )
-                .into(),
+                &format!("fpmedia-web: play prime warm key={key} span={await_span} {warm_ms:.0}ms")
+                    .into(),
             );
             (secs, key)
         };
