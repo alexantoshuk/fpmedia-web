@@ -5,7 +5,7 @@
 [![docs fpmedia-web-components](https://img.shields.io/badge/docs-fpmedia--web--components-blue)](https://docs.rs/fpmedia-web-components)
 [![docs fpmedia-timecode](https://img.shields.io/badge/docs-fpmedia--timecode-blue)](https://docs.rs/fpmedia-timecode)
 
-Frame-accurate custom web media player (Rust + Leptos + WebCodecs).
+Frame-precise custom web media player (Rust + Leptos + WebCodecs).
 
 Crate guides (until crates.io / docs.rs publish): [`engine/`](engine/README.md) · [`components/`](components/README.md) · [`timecode/`](timecode/README.md).
 

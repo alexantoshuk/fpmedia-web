@@ -1,4 +1,4 @@
-//! Leptos `<Video>` element — frame-accurate media stage over [`fpmedia_web::VideoPlayer`].
+//! Leptos `<Video>` element — frame-precise media stage over [`fpmedia_web::VideoPlayer`].
 //!
 //! Analogous to HTML `<video>`: owns canvas, open/decode, play clock, seek/step.
 //! Host UI (controls, file picker) lives in the demo `app` crate.

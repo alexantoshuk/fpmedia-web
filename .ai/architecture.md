@@ -63,7 +63,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | CSR SPA | Simple mental model; static shell + WASM mount |
 | Isolated `fpmedia-web` crate | Engine reusable without UI; no Leptos in demux/decode |
 | Isolated `fpmedia-web-components` crate | HTML `<video>` analog + headless track helpers; **no** player chrome (`product.md` Elements first) |
-| WebCodecs + canvas | Frame-accurate decode; stage mirrors sized `<video>` (contain + metadata) |
+| WebCodecs + canvas | Frame-precise decode; stage mirrors sized `<video>` (contain + metadata) |
 | `leptos-use` for browser helpers | Observers/events/rAF in UI crates; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`). MB = sinks + examples; our `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` are Leptos adapters over `VideoPlayer`, not MB UI ports |
 | Progressive open via `MediaSource` | Ranged reads; parse `moov` (+ `moof` for single-file fMP4); keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |

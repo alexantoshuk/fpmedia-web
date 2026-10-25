@@ -9,7 +9,7 @@
 
 ## What
 
-**fpmedia-web** — frame-accurate media engine + HTML-media-like elements for precise frame-by-frame review in the browser.
+**fpmedia-web** — frame-precise media engine + HTML-media-like elements for precise frame-by-frame review in the browser.
 
 **Primary deliverable:** low-level components (`<Video>`, later `<Audio>`) and engine API — not a shipped player chrome. Alpha: open an MP4, seek/step/scrub by presentation frame, play/pause via WebCodecs → canvas. Not a generic `<video>` wrapper — a Rust/Leptos analog with frame-primary control.
 
@@ -45,7 +45,7 @@ Headless / paint-inside components in `fpmedia-web-components` (compose in demo;
 ## Invariants
 
 - **Primary position** = presentation `FrameId` (0-based), not `time * fps`.
-- **Exact vs Play (agreed):** “Frame-accurate” means **seek / step / scrub settle / Pause** — Exact decode to the aimed frame; paused canvas is that frame. **Continuous Play prioritizes smoothness** (cadence, A/V sync, no micro-stutter) over painting every presentation frame. Do **not** invent Play-only “show every frame” / soft-pace pipelines that fight realtime. Shuttle (≥2×) may drop overdue frames. Prefer mediabunny media-player present+clock patterns.
+- **Exact vs Play (agreed):** “Frame-precise” means **seek / step / scrub settle / Pause** — Exact decode to the aimed frame; paused canvas is that frame. **Continuous Play prioritizes smoothness** (cadence, A/V sync, no micro-stutter) over painting every presentation frame. Do **not** invent Play-only “show every frame” / soft-pace pipelines that fight realtime. Shuttle (≥2×) may drop overdue frames. Prefer mediabunny media-player present+clock patterns.
 - Exact frame N uses keyframe cascade (nearest sync → decode → target), including B-frame / decode-order windows — for **seek / settle / step / Pause**, not as a Play smoothness tax.
 - Layout/state must allow **1–2 media sources** later (compare) — never hard-assume a single source forever.
 - `<Video>` stage lays out like a sized `<video>`: fixed viewport, **contain**-fit picture, metadata via the element API.

@@ -1,6 +1,6 @@
 //! Leptos media elements over [`fpmedia_web`] — HTML `<video>` / `<audio>` analogs.
 //!
-//! - [`video`] — frame-accurate `<Video>` + [`VideoRef`]
+//! - [`video`] — frame-precise `<Video>` + [`VideoRef`]
 //! - [`scrubber`] — headless `<Scrubber>` (gesture + context)
 //! - [`timeline_meta`] — `<TimelineMeta>` (one fetch/residency strip)
 //! - [`hover_thumb`] — `<HoverThumb>` (paint inside; host chrome via children)

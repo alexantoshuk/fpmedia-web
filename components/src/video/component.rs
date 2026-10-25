@@ -23,7 +23,7 @@ use super::transport_apply::{dispatch_transport, new_transport, note_transport};
 use super::{VideoOps, VideoRef};
 use fpmedia_web::timer::{next_animation_frame, now_ms};
 
-/// Frame-accurate media element (HTML `<video>` analog).
+/// Frame-precise media element (HTML `<video>` analog).
 ///
 /// Renders only the media stage. Drive it through [`VideoRef`].
 #[component]

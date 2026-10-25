@@ -39,7 +39,7 @@ use crate::timer::{next_animation_frame, now_ms, sleep_ms, yield_microtask};
 use api::ready_kind_paint_order;
 use shared::{PLAY_EXACT_VRAM_VF_SLACK, Shared};
 
-/// Frame-accurate video player (WebCodecs → canvas); optional audio via [`crate::AudioOutput`].
+/// Frame-precise video player (WebCodecs → canvas); optional audio via [`crate::AudioOutput`].
 /// Pure-audio hosts will use a separate `AudioPlayer` over the same audio modules.
 pub struct VideoPlayer {
     shared: Rc<Shared>,

@@ -1,4 +1,4 @@
-//! Frame-accurate media engine for fpmedia-web.
+//! Frame-precise media engine for fpmedia-web.
 //!
 //! Isolated from the Leptos/`app` stack.
 //!

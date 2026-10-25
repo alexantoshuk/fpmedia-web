@@ -1,4 +1,4 @@
-//! SMPTE timecode math for frame-accurate review.
+//! SMPTE timecode math for frame-precise review.
 //!
 //! Bidirectional conversion between absolute frame counts and `HH:MM:SS:FF`
 //! (non-drop) / `HH:MM:SS;FF` (drop-frame). Drop-frame follows the Heidelberger

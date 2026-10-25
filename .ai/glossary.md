@@ -245,7 +245,7 @@ Fixed-pitch rate change through **4×** (`audio::TimeStretcher`). Above that (de
 
 | Term | Meaning |
 | ---- | ------- |
-| **Exact vs Play** | Frame-accurate = settle / seek / step / Pause canvas; Play prefers smoothness (`product.md`). |
+| **Exact vs Play** | Frame-precise = settle / seek / step / Pause canvas; Play prefers smoothness (`product.md`). |
 | **Step-ready** | Exact blit (or ring) has the neighbor — Next/Prev should feel instant. |
 | **Shuttle** | High playback rate (≥2×); may drop overdue frames; audio muted above fixed-pitch limit. |
 | **Mediabunny-first** | Port patterns from Vanilagy/mediabunny before inventing Rust-only decode/sink behaviour (`AGENTS.md`). |

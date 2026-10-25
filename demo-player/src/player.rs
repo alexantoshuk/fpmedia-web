@@ -581,7 +581,7 @@ pub fn DemoPlayer() -> impl IntoView {
 
     view! {
         <div class="mx-auto w-full max-w-[1100px] px-0 py-6">
-            <h1 class="mb-4 text-center text-2xl font-semibold tracking-tight text-zinc-50">"Frame-accurate media player"</h1>
+            <h1 class="mb-4 text-center text-2xl font-semibold tracking-tight text-zinc-50">"Frame-precise media player"</h1>
 
             <div class="mb-3 flex flex-wrap items-center justify-center gap-2" data-testid="source">
                 <label class=format!("wm-file {btn}")>
