@@ -109,12 +109,14 @@ impl CacheState {
         self.windows.iter().map(|w| w.bytes.len()).sum()
     }
 
-    /// Hit → `(bytes, region_start, region_end)` (contiguous run, see [`Self::run_span`]).
+    /// Hit → `(bytes, window_start, window_end)`. No region walk here — only the
+    /// URL margin path needs [`Self::run_span`] (local hit stays one lookup;
+    /// `mediabunny: src/source.ts ReadOrchestrator.read` cache lookup only).
     fn hit(&mut self, offset: u64, len: usize) -> Option<(Bytes, u64, u64)> {
         let idx = self.windows.iter().position(|w| w.contains(offset, len))?;
-        let out = self.windows[idx].slice(offset, len);
-        let (start, end) = self.run_span(self.windows[idx].offset, self.windows[idx].end());
         let win = self.windows.remove(idx);
+        let out = win.slice(offset, len);
+        let (start, end) = (win.offset, win.end());
         self.windows.push(win);
         Some((out, start, end))
     }
@@ -122,23 +124,42 @@ impl CacheState {
     /// Extend `[start, end)` across abutting / overlapping windows without
     /// copying — the read region network grow + right margin see
     /// (mediabunny: worker `startPos..targetPos` span).
-    fn run_span(&self, mut start: u64, mut end: u64) -> (u64, u64) {
-        loop {
-            let mut grew = false;
-            for w in &self.windows {
-                if w.offset < start && w.end() >= start {
-                    start = w.offset;
-                    grew = true;
+    ///
+    /// One pass over offset-sorted spans: a fixed-point loop over LRU order grew
+    /// one window per pass (O(n²) per call on per-sample windows).
+    fn run_span(&self, start: u64, end: u64) -> (u64, u64) {
+        let mut spans: Vec<(u64, u64)> = self
+            .windows
+            .iter()
+            .filter(|w| !w.bytes.is_empty())
+            .map(|w| (w.offset, w.end()))
+            .collect();
+        spans.sort_unstable();
+        let mut out_start = start;
+        let mut out_end = end;
+        // Merge sorted spans into contiguous runs; keep the run touching [start, end].
+        let mut run: Option<(u64, u64)> = None;
+        for (s, e) in spans {
+            run = match run {
+                Some((rs, re)) if s <= re => Some((rs, re.max(e))),
+                Some((rs, re)) => {
+                    if rs <= out_end && re >= out_start {
+                        out_start = out_start.min(rs);
+                        out_end = out_end.max(re);
+                    }
+                    Some((s, e))
                 }
-                if w.end() > end && w.offset <= end {
-                    end = w.end();
-                    grew = true;
-                }
-            }
-            if !grew {
-                return (start, end);
-            }
+                None => Some((s, e)),
+            };
         }
+        if let Some((rs, re)) = run
+            && rs <= out_end
+            && re >= out_start
+        {
+            out_start = out_start.min(rs);
+            out_end = out_end.max(re);
+        }
+        (out_start, out_end)
     }
 
     /// Find a sequential anchor for a miss at `offset` (most-recent first).
@@ -555,20 +576,21 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
                     // Margin ahead-fill is a UrlSource concern (RTT). Local Blob
                     // already lives in JS — do not mirror multi-MiB into WASM.
                     // mediabunny: BlobSource orch keeps Uint8Array in JS.
-                    if network
-                        && let Some((p_off, p_len)) = margin_prefetch_job(
+                    if network && !state.prefetch_inflight {
+                        let (run_start, run_end) = state.run_span(win_start, win_end);
+                        if let Some((p_off, p_len)) = margin_prefetch_job(
                             &state,
-                            win_start,
-                            win_end,
+                            run_start,
+                            run_end,
                             offset,
                             want,
                             size,
                             self.shared.quantum,
-                        )
-                    {
-                        state.prefetch_inflight = true;
-                        drop(state);
-                        self.kick_prefetch(p_off, p_len);
+                        ) {
+                            state.prefetch_inflight = true;
+                            drop(state);
+                            self.kick_prefetch(p_off, p_len);
+                        }
                     }
                     return Ok(hit);
                 }
@@ -900,6 +922,33 @@ mod tests {
         let resident: u64 = wins.iter().map(|(s, e)| e - s).sum();
         assert!(resident <= 4 * 1024, "resident={resident} wins={wins:?}");
         assert!(wins.len() > 1, "abutting reads must not join: {wins:?}");
+    }
+
+    #[test]
+    fn run_span_merges_shuffled_abutting_windows() {
+        // Per-sample windows (local Play) re-ordered by LRU hits on a 2nd lap.
+        let mut state = CacheState::default();
+        let n = 2_000u64;
+        for i in (n / 2..n).chain(0..n / 2) {
+            state.windows.push(Window {
+                offset: i * 10,
+                bytes: Bytes::from(vec![i as u8; 10]),
+            });
+        }
+        // Hole splits the second run.
+        state.windows.push(Window {
+            offset: n * 10 + 5,
+            bytes: Bytes::from(vec![0u8; 10]),
+        });
+        assert_eq!(state.run_span(500, 510), (0, n * 10));
+        assert_eq!(
+            state.run_span(n * 10 + 5, n * 10 + 15),
+            (n * 10 + 5, n * 10 + 15)
+        );
+
+        let (bytes, ws, we) = state.hit(12_340, 4).expect("resident");
+        assert_eq!((ws, we), (12_340, 12_350));
+        assert_eq!(bytes[0], 1234u64 as u8);
     }
 
     #[test]

@@ -110,6 +110,9 @@ pub(super) struct Shared {
     /// After tab visible: `performance.now` until which video catch-up must not
     /// [`super::VideoPlayer::hold_media_clock_for_underrun`] (micro audio pause).
     pub(super) underrun_catchup_until_ms: Cell<Option<f64>>,
+    /// Near-EOF / seam already kicked loop-origin byte warm this lap (clear on
+    /// [`PlayPhase::LoopDone`] / session end).
+    pub(super) loop_origin_warm_started: Cell<bool>,
     /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).
     pub(super) scrub_gesture: Cell<bool>,
     /// Play vs scrub densify / exact hold + soft-hold audio.

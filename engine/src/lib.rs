@@ -80,7 +80,10 @@ pub use model::session::{SessionEvent, SessionModel, reduce as session_reduce};
 pub use model::transport::{
     TransportCmd, TransportEvent, TransportModel, TransportState, reduce as transport_reduce,
 };
-pub use policy::playback::{EofWall, eof_timeline_end, eof_wall_decision};
+pub use policy::playback::{
+    EofWall, LOOP_ORIGIN_PREWARM_SECS, eof_timeline_end, eof_wall_decision,
+    should_prewarm_loop_origin,
+};
 pub use policy::workload::{
     FRAGMENT_BACKFILL_IDLE_AHEAD, PLAY_THUMB_AIM_DECODE_MIN_MS, WorkloadHints, WorkloadMode,
     allows_bg_sync_verify, allows_thumb_aim_decode, allows_thumb_key_fill, classify,

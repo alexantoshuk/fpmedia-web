@@ -12,7 +12,10 @@ use crate::decode::canvas::draw_frame_with_context;
 use crate::decode::webcodecs::PlayIter;
 use crate::error::MediaError;
 use crate::model::play_phase::{PlayPhase, PlayPhaseEvent, reduce as play_phase_reduce};
-use crate::policy::playback::{EofWall, eof_timeline_end, eof_wall_decision};
+use crate::policy::playback::{
+    EofWall, LOOP_ORIGIN_PREWARM_SECS, eof_timeline_end, eof_wall_decision,
+    should_prewarm_loop_origin,
+};
 use crate::policy::{
     exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play, scrub_blit_frame_budget,
 };
@@ -63,6 +66,7 @@ impl VideoPlayer {
         self.shared.pending_silent_clock.set(false);
         self.shared.resuming_clock.set(false);
         self.shared.held_media_origin.set(None);
+        self.shared.loop_origin_warm_started.set(false);
         *self.shared.play_driver_error.borrow_mut() = None;
         self.end_play_iter();
     }
@@ -131,6 +135,7 @@ impl VideoPlayer {
         // Do **not** clear catch-up grace when `play_next` is Some — present may
         // take it this tick and leave `play_next` empty → underrun hold → audio gap.
         let t = self.media_time();
+        self.maybe_kick_loop_origin_prewarm(t);
         let tick = match self.present_due(t)? {
             DuePresent::Ended => PlayTick::Ended,
             DuePresent::NeedsLoop => {
@@ -301,7 +306,10 @@ impl VideoPlayer {
     }
 
     /// EOF while looping: restart the iterator at 0 under a soft-held clock.
-    /// mediabunny: no loop in the example — `startVideoIterator(0)` + `play`.
+    ///
+    /// mediabunny: no loop in `examples/media-player` — `startVideoIterator(0)` +
+    /// play. Near-EOF byte prewarm mirrors Remotion `prewarmIteratorForLooping`
+    /// (CanvasSink) so the 2nd lap is not a cold Blob/WASM cache miss.
     fn start_loop_seam(self: &Rc<Self>) {
         if self.shared.play_phase.get() != PlayPhase::Live {
             return;
@@ -315,11 +323,20 @@ impl VideoPlayer {
         let player = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
             let epoch = player.shared.op_epoch.get();
+            // Finish (or start) origin warm under the held clock — hit path is cheap.
+            let _ = player.warm_play_sample_lead(0).await;
+            if player.shared.play_phase.get() != PlayPhase::LoopSeam {
+                return;
+            }
             let result = player.start_play_iter(0, epoch).await;
             if player.shared.play_phase.get() != PlayPhase::LoopSeam {
                 return;
             }
             player.apply_play_phase(PlayPhaseEvent::LoopDone);
+            player.shared.loop_origin_warm_started.set(false);
+            // Fresh PlayIter at 0 may skip-catch while audio resumes — same grace
+            // as PlayPrime / tab return (avoid underrun→audio silence at seam).
+            player.arm_underrun_catchup_grace();
             match result {
                 Ok(()) => {
                     let t0 = player.state().timestamp.seconds;
@@ -336,6 +353,47 @@ impl VideoPlayer {
                 }
             }
         });
+    }
+
+    /// Kick loop-origin byte warm once when media time enters the near-EOF window.
+    fn maybe_kick_loop_origin_prewarm(self: &Rc<Self>, media_time_secs: f64) {
+        if !self.is_looping()
+            || self.shared.loop_origin_warm_started.get()
+            || self.shared.play_phase.get() != PlayPhase::Live
+        {
+            return;
+        }
+        let Some(last_end) = self.timeline_last_end() else {
+            return;
+        };
+        if !should_prewarm_loop_origin(media_time_secs, last_end, LOOP_ORIGIN_PREWARM_SECS) {
+            return;
+        }
+        self.shared.loop_origin_warm_started.set(true);
+        let player = Rc::clone(self);
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = player.warm_play_sample_lead(0).await;
+        });
+    }
+
+    /// Sample-end seconds for the current indexed timeline (EOF wall).
+    fn timeline_last_end(&self) -> Option<f64> {
+        let track = &self.shared.track;
+        let index = track.index();
+        let indexed = index.len() as u64;
+        if indexed == 0 {
+            return None;
+        }
+        let count = self.state().frame_count;
+        let last = index.get(indexed - 1)?;
+        let sample_end = last.composition_timestamp().seconds
+            + (last.duration_ticks as f64 / last.timescale.max(1) as f64);
+        Some(eof_timeline_end(
+            sample_end,
+            track.metadata_ref().duration().seconds,
+            indexed,
+            count,
+        ))
     }
 
     /// Tab hidden or post-visible grace — skip video-underrun → audio silence.
@@ -435,27 +493,16 @@ impl VideoPlayer {
         blit.set_max(scrub_blit_cap_during_play(full, reserve));
     }
 
-    /// PlayPrime: abort densify, warm index + bytes, then `startVideoIterator`.
-    pub async fn prime_playback(&self) -> Result<(), MediaError> {
-        if !self.is_playing() {
-            return Ok(());
-        }
-        // `play()` aborts densify without awaiting. Soft-cold settle leaves
-        // `scrub_busy` true → fill hangs on long-GOP URL.
-        // mediabunny: examples/media-player seekToTime →
-        // `await videoFrameIterator?.return()` before play / startVideoIterator.
-        self.abort_scrub_fill(false);
-        self.await_scrub_densify_yield(false).await;
-        if !self.is_playing() {
-            return Ok(());
-        }
+    /// Index + sample (+ origin audio) warm for PlayPrime / loop seam.
+    ///
+    /// `mediabunny: URLSource` min-load / worker fill before the sink runs dry.
+    async fn warm_play_sample_lead(&self, head: FrameId) -> Result<(), MediaError> {
         let epoch = self.shared.op_epoch.get();
         let settle = self.shared.track.metadata_ref().settle_policy();
         // fMP4: arm a long index lead in bg, but only *await* one urgent batch
         // past the current index (`mediabunny: first samples before play`).
         let play_index_lead = settle.play_index_lead;
         let play_index_await_batch = settle.play_index_await_batch;
-        let head = self.state().frame;
         {
             let track = self.shared.track.clone();
             if !track.fragments_complete() {
@@ -495,8 +542,10 @@ impl VideoPlayer {
                 .unwrap_or(0.0);
             let warm_ms = now_ms().unwrap_or(warm_t0) - warm_t0;
             web_sys::console::log_1(
-                &format!("fpmedia-web: play prime warm key={key} span={await_span} {warm_ms:.0}ms")
-                    .into(),
+                &format!(
+                    "fpmedia-web: play warm head={head} key={key} span={await_span} {warm_ms:.0}ms"
+                )
+                .into(),
             );
             (secs, key)
         };
@@ -512,6 +561,29 @@ impl VideoPlayer {
                     return Err(MediaError::Cancelled);
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// PlayPrime: abort densify, warm index + bytes, then `startVideoIterator`.
+    pub async fn prime_playback(&self) -> Result<(), MediaError> {
+        if !self.is_playing() {
+            return Ok(());
+        }
+        // `play()` aborts densify without awaiting. Soft-cold settle leaves
+        // `scrub_busy` true → fill hangs on long-GOP URL.
+        // mediabunny: examples/media-player seekToTime →
+        // `await videoFrameIterator?.return()` before play / startVideoIterator.
+        self.abort_scrub_fill(false);
+        self.await_scrub_densify_yield(false).await;
+        if !self.is_playing() {
+            return Ok(());
+        }
+        let epoch = self.shared.op_epoch.get();
+        let head = self.state().frame;
+        self.warm_play_sample_lead(head).await?;
+        if !self.is_current(epoch) || !self.is_playing() {
+            return Err(MediaError::Cancelled);
         }
         match self.start_play_iter(head, epoch).await {
             Ok(()) => Ok(()),
@@ -532,10 +604,17 @@ impl VideoPlayer {
         self.shared.presentation.borrow().len()
     }
 
-    /// True underrun: no `nextFrame` while the next timeline frame is already due.
+    /// True underrun: no `nextFrame`, **no decoded sample waiting in the
+    /// iterator**, and the next timeline frame is already due.
     ///
     /// Used to freeze the media clock. Distinct from a healthy wait for the next
-    /// frame's deadline. Tab-hidden / post-visible catch-up: always false — video
+    /// frame's deadline, and from the one-tick gap between `present_due` taking
+    /// `nextFrame` and `updateNextFrame` parking the next one — the iterator
+    /// still holds samples there, so holding would be a false underrun
+    /// (`restart_warm` audio gap every late frame on mobile).
+    /// `mediabunny: media-sink.ts mediaSamplesInRange` — consumer parks only on
+    /// `queueNotEmpty`; `examples/media-player` never holds the clock.
+    /// Tab-hidden / post-visible catch-up: always false — video
     /// lag must not [`crate::AudioOutput::hold_underrun`] (choppy / micro-pause audio).
     pub fn play_underrun_hold(&self) -> bool {
         if !self.is_playing()
@@ -550,6 +629,15 @@ impl VideoPlayer {
             return false;
         }
         if self.shared.play_next.borrow().is_some() || !self.play_pending() {
+            return false;
+        }
+        if self
+            .shared
+            .play_iter
+            .borrow()
+            .as_ref()
+            .is_some_and(|it| it.has_ready_sample())
+        {
             return false;
         }
         let state = self.state();
@@ -615,27 +703,10 @@ impl VideoPlayer {
             return Ok(DuePresent::Ended);
         }
 
-        let last_end = {
-            let track = &self.shared.track;
-            let index = track.index();
-            let indexed = index.len() as u64;
-            if indexed == 0 {
-                return Ok(DuePresent::Ended);
-            }
-            // fMP4 warm-open: `frame_count` is provisional (tfra) while the index is
-            // still short — never `get(count-1)` until backfill finishes.
-            let last = index.get(indexed - 1).ok_or(MediaError::FrameOutOfRange(
-                indexed.saturating_sub(1),
-                count,
-            ))?;
-            let sample_end = last.composition_timestamp().seconds
-                + (last.duration_ticks as f64 / last.timescale.max(1) as f64);
-            eof_timeline_end(
-                sample_end,
-                track.metadata_ref().duration().seconds,
-                indexed,
-                count,
-            )
+        // fMP4 warm-open: `frame_count` is provisional (tfra) while the index is
+        // still short — never `get(count-1)` until backfill finishes.
+        let Some(last_end) = self.timeline_last_end() else {
+            return Ok(DuePresent::Ended);
         };
         if let Some(wall) = eof_wall_decision(
             media_time_secs >= last_end,

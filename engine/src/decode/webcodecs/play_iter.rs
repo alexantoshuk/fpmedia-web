@@ -155,6 +155,19 @@ impl PlayIter {
         self.0.core.try_borrow().map(|c| c.held.len()).unwrap_or(0)
     }
 
+    /// A decoded sample is ready for [`Self::next`] without parking — mediabunny
+    /// `queueNotEmpty` already resolved. False = the consumer would really wait.
+    pub fn has_ready_sample(&self) -> bool {
+        let inner = &self.0;
+        if inner.terminated.get() {
+            return false;
+        }
+        inner
+            .core
+            .try_borrow()
+            .is_ok_and(|c| !c.held.is_empty() || c.raw_outputs_pending())
+    }
+
     pub fn decode_queue_size(&self) -> u32 {
         self.0
             .core
