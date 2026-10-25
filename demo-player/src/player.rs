@@ -581,7 +581,7 @@ pub fn DemoPlayer() -> impl IntoView {
 
     view! {
         <div class="mx-auto w-full max-w-[1100px] px-0 py-6">
-            <h1 class="mb-4 text-center text-2xl font-semibold tracking-tight text-zinc-50">"Frame-precise media player"</h1>
+            <h1 class="mb-4 text-center text-2xl font-semibold tracking-tight text-emerald-400">"Frame-precise media player"</h1>
 
             <div class="mb-3 flex flex-wrap items-center justify-center gap-2" data-testid="source">
                 <label class=format!("wm-file {btn}")>
@@ -1145,7 +1145,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             {move || demo_status_line(&video)}
                         </p>
                         <p
-                            class="wm-pipeline m-0 min-h-[1.25rem] whitespace-pre-line"
+                            class="wm-pipeline m-0 min-h-[2.5rem] whitespace-pre-line"
                             data-testid="pipeline"
                         >
                             {move || demo_pipeline_line(video.pipeline.get())}
