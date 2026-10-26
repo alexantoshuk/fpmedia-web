@@ -259,9 +259,9 @@ Local invention (no mediabunny CanvasSink densify equivalent). Unit of work = on
 
 | Profile | When | Densify | Drag |
 | ------- | ---- | ------- | ---- |
-| `AllIntra` | every sample sync | off | soft |
-| `ShortFixed { len }` | max GOP ≤ 30 | on | soft |
-| `Long { median, max }` | max GOP > 30 | on | soft |
+| `AllIntra` | every sample sync | off | soft + Exact under finger (1 packet) |
+| `ShortFixed { len }` | max GOP ≤ 30 | on | soft (blit only) |
+| `Long { median, max }` | max GOP > 30 | on | soft (blit only) |
 
 **`PlayPolicy`** (from coded height) — paused step ring cap + seek/step warm pump only. **Play reads none of it:** mediabunny `MAX_QUEUE_SIZE = 4` + 2-canvas pool for every resolution (add Play profiles only if a clip proves they are needed).
 
@@ -272,7 +272,7 @@ Local invention (no mediabunny CanvasSink densify equivalent). Unit of work = on
 
 **Main play** always probes `prefer-hardware` when supported (`WebCodecsDecoder::create` `allow_hw=true`) — Hd and Uhd. **Scrub/thumb** always `PlayPolicy::hd()` + explicit `prefer-software` (sole HW session on main; `no-preference` can still grab HW). `optimizeForLatency` = false for VOD.
 
-**`ScrubPolicy`** (from `GopProfile`): `densify` / `blit_mib` / `scrub_cache_mib` / edge margins. Soft-drag = blit preview only; exact on settle (all profiles — Long per-tick decode starved the pointer).
+**`ScrubPolicy`** (from `GopProfile`): `densify` / `blit_mib` / `scrub_cache_mib` / edge margins. Soft-drag: Short/Long = blit only + Exact on settle (Long per-tick decode starved the pointer); All-Intra = Exact under finger (`densify` off — 1-frame GOP densify wastes CPU).
 
 **`SettlePolicy`** (clip-invariant defaults): densify yield `250+250 ms`, `gop_sample_lead` 8…24, index warm leads (`play_index_lead` also feeds the Play iterator). Soft-cold / poison are named recovery helpers, not policy fields. Do not retune Settle when changing Play Uhd or Scrub MiB.
 

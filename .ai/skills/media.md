@@ -24,7 +24,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
 | Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only; `EnterScrub{soft, densify:false}`; `apply_engine_event` runs cmds |
 | Pause strips don't grow / no hole-fill | `pause_warm_idle` | Pause button: `SoftPause{densify:true}` — not `pause_for_scrub` (drag-only) |
-| Soft-drag / cold scrub canvas frozen (no frame change) | `scrub_preview_frame` / Exact blit | preview = Exact only — **never** `blit.clear` / full Exact wipe on settle, seek prep, or pointer-up (`b8206d1` `clear_exact_for_aim` broke scrub). Aim/evict OK; full clear not |
+| Soft-drag / cold scrub canvas frozen (no frame change) | `scrub_preview_frame` / `scrub_to` | preview = Exact blit — **never** full Exact wipe (`b8206d1`). All-Intra (`densify` off): drag `goto_frame` when `exact_scrub_ready` (1 packet; not densify). Short/Long: blit-only under finger. **no equivalent** (scrub local) |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Scrub UI off but scrub decoder / densify still alive | `set_scrub_cache_policy` / `scrub_cache_off` | gate densify + gray + `ingest_scrub_bitmap_only`; checked-out decoder dropped in `return_scrub_decoder`, never closed mid-`decode()`. Host re-applies in `run_open` before `seek_frame(0)` |

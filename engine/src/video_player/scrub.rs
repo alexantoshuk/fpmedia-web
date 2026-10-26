@@ -256,8 +256,13 @@ impl VideoPlayer {
 
     /// Async timeline scrub (local scrub policy; settle always exact VF).
     ///
-    /// - **Drag** (`settle=false`): aim + warm blit only — no densify kick and
-    ///   never `decode_frame` on the OpQueue (all GOP profiles).
+    /// - **Drag** (`settle=false`): aim + warm Exact blit. When
+    ///   [`ScrubPolicy::densify`] is on (Short/Long): never `decode_frame` —
+    ///   key→N per pointer sample froze the bar. When densify is off (All-Intra):
+    ///   Exact is one sync packet — `goto_frame` under the finger so soft-drag
+    ///   paints without a densify trail. OpQueue coalesces `ScrubDrag`.
+    ///   **no equivalent** (scrub local); Exact shape ≈ `mediabunny:
+    ///   samplesAtTimestamps` / settle path.
     /// - **Settle** (`settle=true`, pointer up): abort densify, then one key→exact
     ///   cascade (`goto_frame_with_interim`) so canvas gets decode `VideoFrame`
     ///   (not a soft still). Host arms densify after Exact.
@@ -379,15 +384,34 @@ impl VideoPlayer {
                     return Ok(());
                 }
 
-                // Warm blit only (aim or nearer preview). Never `decode_frame` here —
-                // key→N per pointer sample blocked the OpQueue (URL HEVC) and froze
-                // the pointer on Long GOPs. Settle does exact VF. mediabunny:
-                // CanvasSink pool present; cascade on settle / samplesAtTimestamps,
-                // not every drag tick.
+                // Interim: nearer Exact blit if any (densify trail or prior drag Exact).
                 if let Some(preview) = self.scrub_preview_frame(frame) {
                     let _ = self.try_present_warm_blit(preview)?;
                 }
-                Ok(())
+
+                // Short/Long: blit-only under the finger — key→N per drag tick froze
+                // the pointer (URL HEVC). Settle does Exact. mediabunny: CanvasSink
+                // pool present; cascade on settle / samplesAtTimestamps.
+                if self.scrub_policy().densify {
+                    return Ok(());
+                }
+
+                // All-Intra (`densify: false`): one sync packet — Exact under finger
+                // so soft-drag updates without Pause densify. Cold GOP bytes → keep
+                // interim blit only (same freeze guard as settle soft-cold).
+                if !exact_scrub_ready(&self.shared, frame) {
+                    return Ok(());
+                }
+                match self.goto_frame(frame, epoch).await {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.is_cancelled() => Err(e),
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("fpmedia-web: All-Intra drag Exact skipped ({e})").into(),
+                        );
+                        Ok(())
+                    }
+                }
             }
         }
         .await;

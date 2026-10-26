@@ -302,11 +302,12 @@ pub enum ScrubCachePolicy {
 /// Local invention (mediabunny: no equivalent). Tune fields per profile; do not
 /// raise globals like [`SCRUB_BLIT_LRU`] from a single ShotGrid probe.
 ///
-/// Drag is always blit/aim only for every profile; Exact decode runs on settle
-/// (Long key→N per drag tick froze the pointer).
+/// Drag: Short/Long = blit/aim only (Exact on settle — Long key→N per tick froze
+/// the pointer). All-Intra (`densify: false`) = Exact under finger (1 sync packet).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScrubPolicy {
-    /// Gap-fill densify (VF → ImageBitmap). Off for All-Intra.
+    /// Gap-fill densify (VF → ImageBitmap). Off for All-Intra — soft-drag Exact
+    /// instead (`VideoPlayer::scrub_to`); densify of 1-frame GOPs only wastes CPU.
     pub densify: bool,
     /// GPU MiB budget for live densify `ImageBitmap`s (→ [`scrub_blit_frame_budget`]).
     pub blit_mib: usize,
