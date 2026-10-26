@@ -203,6 +203,8 @@ While Playing: densify is off (epoch cancel); Exact trail uses farthest-evict tr
 
 **Scrub — soft-drag / Pause densify / settle**
 
+Scrub gesture / densify / Exact blit are **local** — mediabunny has no scrub pipeline (`AGENTS.md` § Scrub is local). Cite MB only for demux/decode/sink primitives inside a scrub change.
+
 ```mermaid
 flowchart TD
   IN["Scrub input"] --> KIND{Phase}

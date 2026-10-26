@@ -35,15 +35,23 @@ For **any** media feature, bug fix, or behaviour change in demux / decode / seek
 
 Rust/WASM specifics (Closures, `spawn_local`, no Promise ergonomics) are **adapters**, not a reason to skip the port. Most playback hangs here have been divergences from mediabunny wait/wake rules, not inherent Rust limits.
 
+### Scrub is local (not a mediabunny port)
+
+Mediabunny ships **sinks + examples** — no scrub gesture, soft-drag, densify, Exact/Covered blit, strip residency, or `<Scrubber>` phases. Those are **ours** (`architecture.md` § Play / scrub residency).
+
+- **Do not** invent a `mediabunny: … scrub` cite for soft-drag / densify / settle policy / Exact blit / GopProfile drag rules.
+- Pre-edit for that surface: **`no equivalent` (scrub local)** + why; cite mediabunny **only** when the change ports an underlying demux/decode/sink primitive (e.g. sparse Exact key→N ≈ `samplesAtTimestamps` / `CanvasSink.getCanvas`, Play iterator ≈ `mediaSamplesInRange`).
+- Design tables stay in `architecture.md`; traps in `skills/media.md` — not fake MB scrub recipes.
+
 ### Pre-edit gate (media) — hard stop
 
 Before asking for approve-to-edit on media work, the plan **must** include:
 
-1. **Cite** — `mediabunny: <path> <symbol>` for the behaviour being changed (or explicit **no equivalent** + why).
-2. **Path match** — which mediabunny flow maps here (e.g. `samplesAtTimestamps` vs `samples()` / playback iterator vs single-timestamp seek).
+1. **Cite** — `mediabunny: <path> <symbol>` for the behaviour being changed, **or** explicit **no equivalent** + why (required for scrub UX / densify / soft-drag — see [Scrub is local](#scrub-is-local-not-a-mediabunny-port)).
+2. **Path match** — which mediabunny flow maps here (e.g. `samplesAtTimestamps` vs `samples()` / playback iterator vs single-timestamp seek), **or** “scrub local — no MB path”.
 3. **Defaults** — do not flip global decoder/sink knobs (`optimizeForLatency`, prune/close policy, max queue depth, PTS assign FIFO vs chunk timestamp) unless the cite shows mediabunny’s default or the same branch.
 
-**Refuse to edit** (even after a vague `ok` on a knob-only plan) until that cite is in the plan. Probe-driven local hypotheses are fine for *diagnosis*; they do not authorize *implementation* without the port step.
+**Refuse to edit** (even after a vague `ok` on a knob-only plan) until that cite is in the plan. Probe-driven local hypotheses are fine for *diagnosis*; they do not authorize *implementation* without the port step (or an explicit scrub-local no-equivalent).
 
 Anti-pattern we already paid for: invent `drop PTS > target` / global `optimizeForLatency: false` to clear long-GOP `flush/idle`, then break play warm-ahead — mediabunny keeps consumer queue samples and leaves latency optional.
 
@@ -118,6 +126,7 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 | Topic | Canonical home | Elsewhere |
 | ----- | -------------- | --------- |
 | Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
+| Scrub UX / densify / soft-drag / Exact blit (no MB scrub) | `AGENTS.md` § Scrub is local | One-line pointer only — do not invent `mediabunny: … scrub` cites |
 | Approve-before-edit / ask-before-commit | `AGENTS.md` | Do not restate |
 | Fix commit hygiene (integrate, strip debris) | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |
 | Doc write gate / skill budgets | `AGENTS.md` | Do not restate |
