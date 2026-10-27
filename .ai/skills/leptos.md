@@ -29,7 +29,7 @@
 | Hover jank on Play / lag until paint | `<HoverThumb>` trailing 150 ms; `style:transform` from signal (not `set_property`); engine: `skills/media.md` |
 | `RefCell already borrowed` (tachys / Loop) | no borrow across await; scrub → `scrub_pointer_*` sync (Move throttled in `<Video>`); no demo TLS |
 | Start stutter / Play lag after scrub | `prepare_play_from_scrub` + clock after prime; no `seek_frame` from `VideoRef::play`; engine: `skills/media.md` scrub→play |
-| Scrub bar lags / pointer jank / hold jumps | sync playhead on move; `<Video>` Move throttle 50 ms; paused rAF `sync_ui` ≤10 Hz (150 ms while `Scrubbing`) |
+| Scrub bar lags / pointer jank / hold jumps | sync playhead on move; Exact hit paints now; miss → dwell Exact ~200 ms; ScrubDrag throttle 50 ms; paused rAF `sync_ui` ≤10 Hz (150 ms while `Scrubbing`) |
 | EOF: tip/stats on end−1/−2, canvas last frame | `stop_playback` snap when `leaving_play \|\| ended` — `Ended` clears `playing` before snap |
 | Ops dropped while busy | OpQueue coalesce — not `if busy { return }` (`host_op_coalesce`) |
 

@@ -8,9 +8,9 @@ use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use leptos_use::utils::Pausable;
 use leptos_use::{
-    ThrottleOptions, UseIntervalFnOptions, UseRafFnOptions, use_document_visibility,
-    use_interval_fn_with_options, use_raf_fn_with_options, use_resize_observer,
-    use_throttle_fn_with_arg_and_options,
+    ThrottleOptions, UseIntervalFnOptions, UseRafFnOptions, UseTimeoutFnReturn,
+    use_document_visibility, use_interval_fn_with_options, use_raf_fn_with_options,
+    use_resize_observer, use_throttle_fn_with_arg_and_options, use_timeout_fn,
 };
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlCanvasElement, VisibilityState};
@@ -19,7 +19,9 @@ use super::ctx::HostCtx;
 use super::host_ops::{SeekOrStep, run_open, run_play_prime, run_seek_or_step};
 use super::op_queue::{HostOp, OpQueue, OpenArgs};
 use super::open_url::resolve_url_source;
-use super::transport_apply::{dispatch_transport, new_transport, note_transport};
+use super::transport_apply::{
+    dispatch_transport, enqueue_scrub_dwell_exact, new_transport, note_transport,
+};
 use super::{VideoOps, VideoRef};
 use fpmedia_web::timer::{next_animation_frame, now_ms};
 
@@ -330,6 +332,12 @@ pub fn Video(
                             let _ = run_seek_or_step(&ctx, id, SeekOrStep::ScrubDrag(target)).await;
                             queue.set_scrub_inflight(false);
                         }
+                        HostOp::ScrubDwellExact(target) => {
+                            queue.set_scrub_inflight(true);
+                            let _ = run_seek_or_step(&ctx, id, SeekOrStep::ScrubDwellExact(target))
+                                .await;
+                            queue.set_scrub_inflight(false);
+                        }
                         HostOp::ScrubRelease {
                             frame: target,
                             then_play,
@@ -503,15 +511,58 @@ pub fn Video(
         Rc::new(move || dispatch(TransportEvent::PausePressed)) as Rc<dyn Fn()>
     };
 
+    // Soft-drag stillness → Exact aim (same settle path as release; gesture stays).
+    // **no equivalent** (scrub local). Reset on every move; cancel on pointer-up.
+    const SCRUB_DWELL_EXACT_MS: f64 = 200.0;
+    let UseTimeoutFnReturn {
+        start: start_scrub_dwell,
+        stop: stop_scrub_dwell,
+        ..
+    } = use_timeout_fn(
+        {
+            let ctx = ctx.clone();
+            let kick_drain = Rc::clone(&kick_drain);
+            move |_| {
+                let frame = ctx.video.playhead.get_untracked();
+                enqueue_scrub_dwell_exact(&ctx, &kick_drain, frame);
+            }
+        },
+        SCRUB_DWELL_EXACT_MS,
+    );
+
+    // Exact already under finger → paint now; miss → arm dwell settle.
+    let arm_scrub_dwell = {
+        let ctx = ctx.clone();
+        let start_scrub_dwell = start_scrub_dwell.clone();
+        let stop_scrub_dwell = stop_scrub_dwell.clone();
+        Rc::new(move |frame: u32| {
+            stop_scrub_dwell();
+            let hit = ctx
+                .with_player(|p| p.try_present_scrub_exact(u64::from(frame)))
+                .unwrap_or(false);
+            if hit {
+                return;
+            }
+            start_scrub_dwell(());
+        }) as Rc<dyn Fn(u32)>
+    };
+
     let scrub_pointer_down_fn = {
         let dispatch = Rc::clone(&dispatch);
-        Rc::new(move |frame: u32| dispatch(TransportEvent::PointerDown { frame }))
-            as Rc<dyn Fn(u32)>
+        let arm_scrub_dwell = Rc::clone(&arm_scrub_dwell);
+        Rc::new(move |frame: u32| {
+            dispatch(TransportEvent::PointerDown { frame });
+            arm_scrub_dwell(frame);
+        }) as Rc<dyn Fn(u32)>
     };
 
     let scrub_pointer_up_fn = {
         let dispatch = Rc::clone(&dispatch);
-        Rc::new(move |frame: u32| dispatch(TransportEvent::PointerUp { frame })) as Rc<dyn Fn(u32)>
+        let stop_scrub_dwell = stop_scrub_dwell.clone();
+        Rc::new(move |frame: u32| {
+            stop_scrub_dwell();
+            dispatch(TransportEvent::PointerUp { frame });
+        }) as Rc<dyn Fn(u32)>
     };
 
     // Rate-limit scrub drag only — pointermove is denser than key-repeat.
@@ -529,9 +580,13 @@ pub fn Video(
         )
     };
 
-    let scrub_pointer_move_fn = Rc::new(move |target: u32| {
-        scrub_pointer_move_throttled(target);
-    }) as Rc<dyn Fn(u32)>;
+    let scrub_pointer_move_fn = {
+        let arm_scrub_dwell = Rc::clone(&arm_scrub_dwell);
+        Rc::new(move |target: u32| {
+            arm_scrub_dwell(target);
+            scrub_pointer_move_throttled(target);
+        }) as Rc<dyn Fn(u32)>
+    };
 
     let seek_frame_fn = {
         let dispatch = Rc::clone(&dispatch);

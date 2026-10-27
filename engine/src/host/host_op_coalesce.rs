@@ -22,6 +22,10 @@ pub enum HostOp<O> {
     /// Timeline drag — cancelable; latest target wins. Pointer-up uses
     /// [`HostOp::ScrubRelease`].
     ScrubDrag(u32),
+    /// Soft-drag stillness (~200 ms): Exact aim while finger still down.
+    /// Does **not** end the scrub gesture (no transport Settling). Move /
+    /// [`HostOp::ScrubRelease`] supersede. **no equivalent** (scrub local).
+    ScrubDwellExact(u32),
     /// Atomic pointer-up: exact settle, then optional play-prime in the same op.
     ScrubRelease {
         frame: u32,
@@ -67,7 +71,7 @@ impl<O> AsRef<HostOp<O>> for HostOp<O> {
 /// | Incoming | Keep | Drop / merge |
 /// | -------- | ---- | ------------ |
 /// | Open | — | everything; append Open |
-/// | ScrubDrag / ScrubRelease / Seek / SeekKeyframe / Step | Open | everything else; append |
+/// | ScrubDrag / ScrubDwellExact / ScrubRelease / Seek / SeekKeyframe / Step | Open | everything else; append |
 /// | PlayPrime | Open + transport ops; skip if `ScrubRelease{then_play}` | other PlayPrimes; append PlayPrime |
 pub fn apply_enqueue<O, E: AsRef<HostOp<O>>>(pending: &mut VecDeque<E>, incoming: E) {
     match incoming.as_ref() {
@@ -81,6 +85,7 @@ pub fn apply_enqueue<O, E: AsRef<HostOp<O>>>(pending: &mut VecDeque<E>, incoming
         HostOp::Seek(_)
         | HostOp::SeekKeyframe(_)
         | HostOp::ScrubDrag(_)
+        | HostOp::ScrubDwellExact(_)
         | HostOp::ScrubRelease { .. }
         | HostOp::Step(_) => pending.retain(|e| e.as_ref().is_open()),
     }
@@ -126,6 +131,22 @@ mod tests {
                 HostOp::ScrubDrag(10)
             ),
             vec![HostOp::Open(()), HostOp::ScrubDrag(10)]
+        );
+    }
+
+    #[test]
+    fn scrub_dwell_and_drag_supersede_each_other() {
+        assert_eq!(
+            run(&[HostOp::ScrubDrag(10)], HostOp::ScrubDwellExact(10)),
+            vec![HostOp::ScrubDwellExact(10)]
+        );
+        assert_eq!(
+            run(&[HostOp::ScrubDwellExact(10)], HostOp::ScrubDrag(11)),
+            vec![HostOp::ScrubDrag(11)]
+        );
+        assert_eq!(
+            run(&[HostOp::ScrubDwellExact(10)], release(12, false, 1)),
+            vec![release(12, false, 1)]
         );
     }
 

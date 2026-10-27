@@ -254,6 +254,16 @@ impl VideoPlayer {
         }
     }
 
+    /// Present Exact blit for `frame` when already cached (dwell / settle hit).
+    ///
+    /// Returns `true` when the stage was painted. **no equivalent** (scrub local).
+    pub fn try_present_scrub_exact(&self, frame: FrameId) -> bool {
+        match self.try_present_warm_blit(frame) {
+            Ok(true) => self.shared.commit_frame(frame).is_ok(),
+            Ok(false) | Err(_) => false,
+        }
+    }
+
     /// Async timeline scrub (local scrub policy; settle always exact VF).
     ///
     /// - **Drag** (`settle=false`): aim + warm Exact blit. When

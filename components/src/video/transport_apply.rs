@@ -245,6 +245,29 @@ fn enqueue_scrub_release(
     }
 }
 
+/// Soft-drag stillness → Exact aim while finger still down (no transport Settling).
+///
+/// Cache-hit paints sync; miss runs the same settle path as pointer-up.
+/// **no equivalent** (scrub local).
+pub(super) fn enqueue_scrub_dwell_exact(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, frame: u32) {
+    if !ctx.transport.is_scrubbing() {
+        return;
+    }
+    let Some(p) = leave_play_for_scrub(ctx) else {
+        return;
+    };
+    if p.try_present_scrub_exact(u64::from(frame)) {
+        // Already Exact under finger — skip settle churn; allow densify while still.
+        p.arm_scrub_densify_after_exact(u64::from(frame));
+        ctx.sync_ui();
+        return;
+    }
+    p.prepare_scrub_settle(u64::from(frame));
+    if ctx.queue.enqueue(HostOp::ScrubDwellExact(frame)) {
+        kick_drain();
+    }
+}
+
 /// Notify FSM after an async op completes (should not emit engine cmds).
 pub(super) fn note_transport(ctx: &HostCtx, event: TransportEvent) {
     {

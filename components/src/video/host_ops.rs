@@ -33,7 +33,12 @@ pub(super) enum SeekOrStep {
     Seek(u32),
     SeekKeyframe(u32),
     ScrubDrag(u32),
-    ScrubRelease { target: u32, then_play: bool },
+    /// Soft-drag stillness Exact — finger still down (no transport Settling).
+    ScrubDwellExact(u32),
+    ScrubRelease {
+        target: u32,
+        then_play: bool,
+    },
     Step(bool),
 }
 
@@ -130,10 +135,14 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
     let Some(p) = player.borrow().as_ref().cloned() else {
         return false;
     };
-    // Scrub settle: host already soft-paused on pointerdown and `prepare_scrub_settle`
-    // latched densify hold. Calling hard `pause()` cleared that hold and re-kicked
-    // densify under exact goto → `decoder busy` / resume Play no-op (URL fMP4).
-    let scrub_settle = matches!(&op, SeekOrStep::ScrubRelease { .. });
+    // Scrub settle / dwell: host already soft-paused on pointerdown and
+    // `prepare_scrub_settle` latched densify hold. Calling hard `pause()` cleared
+    // that hold and re-kicked densify under exact goto → `decoder busy` /
+    // resume Play no-op (URL fMP4).
+    let scrub_settle = matches!(
+        &op,
+        SeekOrStep::ScrubRelease { .. } | SeekOrStep::ScrubDwellExact(_)
+    );
     if scrub_settle {
         if p.is_playing() {
             p.pause_for_scrub();
@@ -145,6 +154,7 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
         SeekOrStep::Seek(t) => format!("seek {t}"),
         SeekOrStep::SeekKeyframe(t) => format!("seek-key {t}"),
         SeekOrStep::ScrubDrag(t) => format!("scrub {t}"),
+        SeekOrStep::ScrubDwellExact(t) => format!("scrub dwell Exact {t}"),
         SeekOrStep::ScrubRelease {
             target: t,
             then_play,
@@ -160,10 +170,20 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
     };
     web_sys::console::log_1(&format!("fpmedia-web: {label} start").into());
     let is_step = matches!(op, SeekOrStep::Step(_));
+    let is_dwell = matches!(op, SeekOrStep::ScrubDwellExact(_));
     let result = match op {
         SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
         SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
         SeekOrStep::ScrubDrag(target) => p.scrub_to(u64::from(target), false).await,
+        // Stillness Exact while finger down — same `scrub_to(settle)` as release,
+        // transport stays Scrubbing. **no equivalent** (scrub local).
+        SeekOrStep::ScrubDwellExact(target) => {
+            let r = p.scrub_to(u64::from(target), true).await;
+            if r.is_ok() && queue.is_current(id) && !queue.has_pending_play() {
+                p.arm_scrub_densify_after_exact(u64::from(target));
+            }
+            r
+        }
         // Resume Play: no Exact settle — PlayPrime's iterator draws the aim and
         // arms the clock on it (`mediabunny: media-player seekToTime`).
         SeekOrStep::ScrubRelease {
@@ -208,7 +228,8 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
     // Soft-cold can commit a safe indexed frame while the pointer aim stays ahead —
     // leaving eng≠ph makes waitExactSettle spin and PlayPrime `seek_frame` the
     // cold aim (long hang). Step already snapped for hold-repeat.
-    if (scrub_settle || is_step)
+    // Dwell keeps the finger aim on the tip — do not snap playhead under the pointer.
+    if (is_step || (!is_dwell && scrub_settle))
         && let Ok(borrow) = player.try_borrow()
         && let Some(p) = borrow.as_ref()
     {

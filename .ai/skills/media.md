@@ -25,6 +25,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim+blit only; `EnterScrub{soft, densify:false}`; `apply_engine_event` runs cmds |
 | Pause strips don't grow / no hole-fill | `pause_warm_idle` | Pause button: `SoftPause{densify:true}` — not `pause_for_scrub` (drag-only) |
 | Soft-drag / cold scrub canvas frozen (no frame change) | `scrub_preview_frame` / `scrub_to` | preview = Exact blit — **never** full Exact wipe (`b8206d1`). All-Intra (`densify` off): drag `goto_frame` when `exact_scrub_ready` (1 packet; not densify). Short/Long: blit-only under finger. **no equivalent** (scrub local) |
+| Hold scrub then release jumps | `ScrubDwellExact` / `arm_scrub_dwell` | Exact hit under finger → present now; miss → ~200 ms stillness settle while finger down. Move resets dwell; release often cache-hit. **no equivalent** (scrub local) |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Scrub UI off but scrub decoder / densify still alive | `set_scrub_cache_policy` / `scrub_cache_off` | gate densify + gray + `ingest_scrub_bitmap_only`; checked-out decoder dropped in `return_scrub_decoder`, never closed mid-`decode()`. Host re-applies in `run_open` before `seek_frame(0)` |

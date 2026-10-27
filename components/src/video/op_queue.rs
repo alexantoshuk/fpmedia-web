@@ -121,7 +121,10 @@ impl OpQueue {
         self.inner.borrow_mut().pending.retain(|p| {
             !matches!(
                 p.op,
-                HostOp::ScrubDrag(_) | HostOp::ScrubRelease { .. } | HostOp::PlayPrime
+                HostOp::ScrubDrag(_)
+                    | HostOp::ScrubDwellExact(_)
+                    | HostOp::ScrubRelease { .. }
+                    | HostOp::PlayPrime
             )
         });
         self.sync_busy();
