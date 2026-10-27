@@ -554,9 +554,12 @@ mod tests {
 
     #[test]
     fn hover_thumb_dims_contain_into_box() {
-        assert_eq!(hover_thumb_dims(1920, 1080, 160, 90), (160, 90));
+        // Max-edge 160 (square box): larger side 160, smaller from aspect.
+        assert_eq!(hover_thumb_dims(1920, 1080, 160, 160), (160, 90));
+        assert_eq!(hover_thumb_dims(1080, 1920, 160, 160), (90, 160));
+        assert_eq!(hover_thumb_dims(100, 100, 160, 160), (160, 160));
+        // Legacy landscape-only box still contain-fits.
         assert_eq!(hover_thumb_dims(1080, 1920, 160, 90), (51, 90));
-        assert_eq!(hover_thumb_dims(100, 100, 160, 90), (90, 90));
     }
 
     #[test]

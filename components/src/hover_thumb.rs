@@ -17,9 +17,9 @@ use crate::VideoRef;
 use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
 use crate::scrubber::{HoverThumbApi, ScrubberCtx};
 
-/// Default canvas box (demo CSS historically used 160×90).
+/// Default max-edge box (larger side ≤ 160; smaller from aspect via `hover_thumb_dims`).
 pub const DEFAULT_HOVER_THUMB_MAX_W: u32 = 160;
-pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = 90;
+pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = 160;
 
 /// Coalesce window before deferred `paint_hover_thumb` (ms). Engine aim-decode
 /// floor is separate (`PLAY_THUMB_AIM_DECODE_MIN_MS` = 800).
