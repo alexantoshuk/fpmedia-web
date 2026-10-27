@@ -22,7 +22,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
-use crate::policy::{nearer_gap_with_dir, scrub_gap_fill_armed};
+use crate::policy::{nearer_gap_with_dir, scrub_gap_fill_armed, scrub_preview_neighbor};
 use crate::types::FrameId;
 
 /// Resident densify marker in [`ScrubChunkStore`].
@@ -125,19 +125,14 @@ impl<V> AimWindow<V> {
 
     /// Closest resident to `target` (floor / ceil by `|id − target|`, tie → floor).
     pub fn nearest(&self, target: FrameId) -> Option<FrameId> {
+        self.nearest_with_dir(target, 0)
+    }
+
+    /// Soft-drag neighbor biased by scrub direction ([`scrub_preview_neighbor`]).
+    pub fn nearest_with_dir(&self, target: FrameId, dir: i8) -> Option<FrameId> {
         let floor = self.items.range(..=target).next_back().map(|(id, _)| *id);
         let ceil = self.items.range(target..).next().map(|(id, _)| *id);
-        match (floor, ceil) {
-            (Some(a), Some(b)) if a != b => {
-                if a.abs_diff(target) <= b.abs_diff(target) {
-                    Some(a)
-                } else {
-                    Some(b)
-                }
-            }
-            (Some(a), _) | (_, Some(a)) => Some(a),
-            (None, None) => None,
-        }
+        scrub_preview_neighbor(target, floor, ceil, dir)
     }
 
     /// At cap, inserting `gap` would only evict a resident at least as close to `from`.
@@ -538,7 +533,7 @@ impl ScrubChunkStore {
     }
 
     /// Nearest Covered marker (strip / gap geometry). Soft-drag preview must use
-    /// Exact [`crate::decode::frame_cache::ScrubBlitLru::nearest_frame`] instead.
+    /// Exact [`crate::decode::frame_cache::ScrubBlitLru::nearest_frame_with_dir`] instead.
     #[allow(dead_code)] // kept for diagnostics / future marker-aim helpers
     pub fn nearest_frame(&self, target: FrameId) -> Option<FrameId> {
         self.window.nearest(target)
@@ -687,6 +682,18 @@ mod tests {
         assert_eq!(w.nearest(16), Some(20));
         assert_eq!(w.nearest(5), Some(10));
         assert_eq!(w.nearest(25), Some(20));
+    }
+
+    #[test]
+    fn nearest_with_dir_floors_forward_ceils_backward() {
+        let w = window_with(8, 0, &[10, 20]);
+        // Abs-nearest would pick 20 at aim 16 — forward must floor.
+        assert_eq!(w.nearest_with_dir(16, 1), Some(10));
+        assert_eq!(w.nearest_with_dir(16, -1), Some(20));
+        assert_eq!(w.nearest_with_dir(16, 0), Some(20));
+        // Hit under aim.
+        assert_eq!(w.nearest_with_dir(10, 1), Some(10));
+        assert_eq!(w.nearest_with_dir(10, -1), Some(10));
     }
 
     #[test]

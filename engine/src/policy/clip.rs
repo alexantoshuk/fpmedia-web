@@ -88,15 +88,64 @@ pub fn scrub_gap_fill_armed(
     near_left || near_right
 }
 
+/// Soft-drag Exact neighbor among floor (`≤ target`) / ceil (`≥ target`).
+///
+/// Forward (`dir > 0`) → floor (fallback ceil); backward (`dir < 0`) → ceil
+/// (fallback floor); neutral → abs-nearest (tie → floor). Preferring the side
+/// the gesture came from so settle Exact never paints a reverse jump vs the
+/// interim canvas. **no equivalent** (scrub local).
+pub fn scrub_preview_neighbor(
+    target: FrameId,
+    floor: Option<FrameId>,
+    ceil: Option<FrameId>,
+    dir: i8,
+) -> Option<FrameId> {
+    if dir > 0 {
+        floor.or(ceil)
+    } else if dir < 0 {
+        ceil.or(floor)
+    } else {
+        match (floor, ceil) {
+            (Some(a), Some(b)) if a != b => {
+                if a.abs_diff(target) <= b.abs_diff(target) {
+                    Some(a)
+                } else {
+                    Some(b)
+                }
+            }
+            (Some(a), _) | (_, Some(a)) => Some(a),
+            (None, None) => None,
+        }
+    }
+}
+
 /// Interim scrub canvas frame while `target` is not yet exact-cached.
 ///
 /// Prefer `cached` when it is at least as close as `key` (tie → cache, already
 /// decoded). Key only when strictly closer — avoids key-flicker across holes.
+///
+/// When `dir != 0`, drop `key` if it sits on the wrong side of `target` for the
+/// gesture (backward must not re-pick a behind key over a directional ceil).
 pub fn scrub_preview_choice(
     target: FrameId,
     key: Option<FrameId>,
     cached: Option<FrameId>,
 ) -> Option<FrameId> {
+    scrub_preview_choice_with_dir(target, key, cached, 0)
+}
+
+/// [`scrub_preview_choice`] with scrub-direction bias (see [`scrub_preview_neighbor`]).
+pub fn scrub_preview_choice_with_dir(
+    target: FrameId,
+    key: Option<FrameId>,
+    cached: Option<FrameId>,
+    dir: i8,
+) -> Option<FrameId> {
+    let key = match dir {
+        d if d > 0 => key.filter(|&k| k <= target),
+        d if d < 0 => key.filter(|&k| k >= target),
+        _ => key,
+    };
     match (key, cached) {
         (Some(k), Some(c)) => {
             if c.abs_diff(target) <= k.abs_diff(target) {
@@ -555,6 +604,39 @@ mod tests {
         assert_eq!(scrub_preview_choice(50, Some(40), Some(60)), Some(60));
         assert_eq!(scrub_preview_choice(50, Some(0), None), Some(0));
         assert_eq!(scrub_preview_choice(50, None, Some(44)), Some(44));
+    }
+
+    #[test]
+    fn scrub_preview_neighbor_dir_avoids_reverse_jump() {
+        // Forward: ahead closer (16→20) must still floor — settle to 16 won't jump back.
+        assert_eq!(scrub_preview_neighbor(16, Some(10), Some(20), 1), Some(10));
+        // Backward: behind closer must still ceil.
+        assert_eq!(scrub_preview_neighbor(16, Some(10), Some(20), -1), Some(20));
+        // Neutral keeps abs-nearest (tie → floor).
+        assert_eq!(scrub_preview_neighbor(15, Some(10), Some(20), 0), Some(10));
+        assert_eq!(scrub_preview_neighbor(16, Some(10), Some(20), 0), Some(20));
+        // Preferred side empty → other side.
+        assert_eq!(scrub_preview_neighbor(16, None, Some(20), 1), Some(20));
+        assert_eq!(scrub_preview_neighbor(16, Some(10), None, -1), Some(10));
+    }
+
+    #[test]
+    fn scrub_preview_choice_dir_drops_wrong_side_key() {
+        // Backward: behind key closer than ceil cache must not win.
+        assert_eq!(
+            scrub_preview_choice_with_dir(16, Some(10), Some(100), -1),
+            Some(100)
+        );
+        // Forward: ahead-only cache still ok when no floor key.
+        assert_eq!(
+            scrub_preview_choice_with_dir(16, None, Some(20), 1),
+            Some(20)
+        );
+        // Exact key under aim always allowed.
+        assert_eq!(
+            scrub_preview_choice_with_dir(16, Some(16), Some(20), -1),
+            Some(16)
+        );
     }
 
     #[test]

@@ -540,13 +540,15 @@ impl VideoPlayer {
     /// Warm blit needs a live `ImageBitmap` — pick among Exact residents only.
     /// Covered markers are gap geometry / strip; using them here chose ids with
     /// no bitmap → silent no-op during soft-drag (worse after dense Covered +
-    /// Exact orphan prune). Prefer nearer Exact; else nearest sync **if** it
-    /// still has an Exact bitmap.
+    /// Exact orphan prune). Directional floor/ceil via `scrub_dir` so settle
+    /// Exact does not jump opposite the drag; else nearest sync **if** it still
+    /// has an Exact bitmap.
     pub(super) fn scrub_preview_frame(&self, target: FrameId) -> Option<FrameId> {
+        let dir = self.shared.scrub_dir.get();
         let blit = self.shared.scrub_blit.borrow();
-        let cached = blit.nearest_frame(target);
+        let cached = blit.nearest_frame_with_dir(target, dir);
         let key = self.key_for(target).filter(|&k| blit.contains(k));
-        crate::scrub_preview_choice(target, key, cached)
+        crate::scrub_preview_choice_with_dir(target, key, cached, dir)
     }
 
     /// Runtime scrub-cache gate. `Off` closes the scrub decoder and drops

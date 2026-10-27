@@ -12,7 +12,7 @@ use crate::error::MediaError;
 use crate::policy::workload::{
     PLAY_THUMB_AIM_DECODE_MIN_MS, allows_thumb_aim_decode, allows_thumb_key_fill,
 };
-use crate::policy::{ThumbPolicy, hover_thumb_dims, scrub_preview_choice};
+use crate::policy::{ThumbPolicy, hover_thumb_dims, scrub_preview_choice_with_dir};
 use crate::types::FrameId;
 
 use super::{Shared, VideoPlayer, now_ms, sleep_ms};
@@ -80,12 +80,11 @@ impl VideoPlayer {
 
     /// Sync hover paint from [`ThumbPreview`] / nearest available preview.
     ///
-    /// Picks the closer of ThumbCache-nearest and Exact-nearest via
-    /// [`scrub_preview_choice`] (same soft-drag rule as the scrubber). When
-    /// Exact wins, downscales into ThumbCache **synchronously** (cheap
-    /// `bitmap_to_sized`) so pointermove never leaves a farther thumb on the
-    /// canvas. `mediabunny:` present cached canvas immediately; decode only on
-    /// true miss. Allowed while playing.
+    /// Picks ThumbCache vs Exact via [`scrub_preview_choice_with_dir`] (same
+    /// floor/ceil-by-motion rule as soft-drag). When Exact wins, downscales into
+    /// ThumbCache **synchronously** (cheap `bitmap_to_sized`) so pointermove
+    /// never leaves a farther thumb on the canvas. `mediabunny:` present cached
+    /// canvas immediately; decode only on true miss. Allowed while playing.
     pub fn try_paint_hover_thumb_cached(
         &self,
         frame: FrameId,
@@ -101,12 +100,17 @@ impl VideoPlayer {
             return Err(MediaError::FrameOutOfRange(frame, count));
         }
         let frame = frame.min(count.saturating_sub(1));
-        if let Ok(slot) = self.shared.thumb.try_borrow()
-            && let Some(thumbs) = slot.as_ref()
-        {
+        let dir = {
+            let Ok(slot) = self.shared.thumb.try_borrow() else {
+                return Ok(None);
+            };
+            let Some(thumbs) = slot.as_ref() else {
+                return Ok(None);
+            };
             thumbs.note_size(max_w, max_h);
             thumbs.set_hover_aim(frame);
-        }
+            thumbs.hover_dir()
+        };
         let meta = self.shared.track.metadata();
         let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);
 
@@ -115,7 +119,7 @@ impl VideoPlayer {
             .scrub_blit
             .try_borrow()
             .ok()
-            .and_then(|b| b.nearest_frame(frame));
+            .and_then(|b| b.nearest_frame_with_dir(frame, dir));
         let cached_thumb = {
             let Ok(slot) = self.shared.thumb.try_borrow() else {
                 return Ok(None);
@@ -123,9 +127,10 @@ impl VideoPlayer {
             let Some(thumbs) = slot.as_ref() else {
                 return Ok(None);
             };
-            thumbs.nearest_frame(frame, tw, th)
+            thumbs.nearest_frame_with_dir(frame, tw, th, dir)
         };
-        let Some(preview) = scrub_preview_choice(frame, cached_thumb, cached_exact) else {
+        let Some(preview) = scrub_preview_choice_with_dir(frame, cached_thumb, cached_exact, dir)
+        else {
             return Ok(None);
         };
 
@@ -156,7 +161,7 @@ impl VideoPlayer {
                         let Some(thumbs) = slot.as_ref() else {
                             return Ok(None);
                         };
-                        match thumbs.with_nearest_bitmap(frame, tw, th, |bmp| {
+                        match thumbs.with_nearest_bitmap_dir(frame, tw, th, dir, |bmp| {
                             paint_thumb_canvas(dest, bmp, tw, th)
                         }) {
                             Some((id, Ok(()))) => Ok(Some(id)),
@@ -174,9 +179,9 @@ impl VideoPlayer {
                 let Some(thumbs) = slot.as_ref() else {
                     return Ok(None);
                 };
-                match thumbs
-                    .with_nearest_bitmap(frame, tw, th, |bmp| paint_thumb_canvas(dest, bmp, tw, th))
-                {
+                match thumbs.with_nearest_bitmap_dir(frame, tw, th, dir, |bmp| {
+                    paint_thumb_canvas(dest, bmp, tw, th)
+                }) {
                     Some((id, Ok(()))) => Ok(Some(id)),
                     Some((_, Err(e))) => Err(e),
                     None => Ok(None),
@@ -269,8 +274,9 @@ impl VideoPlayer {
 
     /// Exact blit → sized thumb into [`ThumbPreview`] (read-only densify plane).
     ///
-    /// Only runs when Exact is the [`scrub_preview_choice`] winner vs ThumbCache
-    /// (caller already tried cache). Still localizes to Exact-nearest of aim.
+    /// Only runs when Exact is the [`scrub_preview_choice_with_dir`] winner vs
+    /// ThumbCache (caller already tried cache). Localizes to directional Exact
+    /// neighbor of aim.
     pub(super) fn try_hover_thumb_from_exact(
         &self,
         frame: FrameId,
@@ -278,13 +284,20 @@ impl VideoPlayer {
         max_w: u32,
         max_h: u32,
     ) -> Result<Option<FrameId>, MediaError> {
+        let dir = self
+            .shared
+            .thumb
+            .try_borrow()
+            .ok()
+            .and_then(|s| s.as_ref().map(|t| t.hover_dir()))
+            .unwrap_or(0);
         let cached_exact = self
             .shared
             .scrub_blit
             .try_borrow()
             .ok()
-            .and_then(|b| b.nearest_frame(frame));
-        let Some(preview) = scrub_preview_choice(frame, None, cached_exact) else {
+            .and_then(|b| b.nearest_frame_with_dir(frame, dir));
+        let Some(preview) = scrub_preview_choice_with_dir(frame, None, cached_exact, dir) else {
             return Ok(None);
         };
         let store_key = self.key_for(preview).unwrap_or(preview);

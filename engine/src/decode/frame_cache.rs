@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 
+use crate::policy::scrub_preview_neighbor;
 use crate::residency::AimWindow;
 use crate::types::FrameId;
 use lru::LruCache;
@@ -85,9 +86,10 @@ impl ScrubBlitLru {
         self.window.would_evict_closer_than(frame, from)
     }
 
-    /// Closest live Exact blit to `target` (floor/ceil by `|id − target|`).
-    pub fn nearest_frame(&self, target: FrameId) -> Option<FrameId> {
-        self.window.nearest(target)
+    /// Exact neighbor biased by scrub/hover `dir` (floor forward / ceil back;
+    /// `dir == 0` → abs-nearest).
+    pub fn nearest_frame_with_dir(&self, target: FrameId, dir: i8) -> Option<FrameId> {
+        self.window.nearest_with_dir(target, dir)
     }
 
     /// Next frame missing a live bitmap near `playhead` (biased by `dir`).
@@ -247,17 +249,17 @@ impl ThumbCache {
             .is_some_and(|t| t.matches_size(width, height))
     }
 
-    /// Closest ready thumb to `target` at `width`×`height` (any GOP).
-    ///
-    /// Same soft-drag idea as Exact [`ScrubBlitLru::nearest_frame`] — hover should
-    /// show the nearest available preview, not only an exact aim hit.
-    pub fn nearest_frame(
+    /// Closest ready thumb to `target` at size, biased by cursor `dir`
+    /// ([`scrub_preview_neighbor`]; `dir == 0` → abs-nearest).
+    pub fn nearest_frame_with_dir(
         &self,
         target: FrameId,
         width: u32,
         height: u32,
+        dir: i8,
     ) -> Option<(FrameId, FrameId)> {
-        let mut best: Option<(FrameId, FrameId, u64)> = None;
+        let mut floor: Option<(FrameId, FrameId, u64)> = None;
+        let mut ceil: Option<(FrameId, FrameId, u64)> = None;
         for (&key, gop) in self.gops.iter() {
             for (&ts, thumb) in &gop.by_time {
                 if !thumb.matches_size(width, height) {
@@ -265,20 +267,35 @@ impl ThumbCache {
                 }
                 let frame = ts as FrameId;
                 let dist = frame.abs_diff(target);
-                let replace = match best {
+                let better = |best: &Option<(FrameId, FrameId, u64)>| match best {
                     None => true,
-                    Some((_, _, d)) if dist < d => true,
-                    Some((bk, bf, d)) if dist == d && (frame < bf || (frame == bf && key < bk)) => {
+                    Some((_, _, d)) if dist < *d => true,
+                    Some((bk, bf, d))
+                        if dist == *d && (frame < *bf || (frame == *bf && key < *bk)) =>
+                    {
                         true
                     }
                     _ => false,
                 };
-                if replace {
-                    best = Some((key, frame, dist));
+                if frame <= target && better(&floor) {
+                    floor = Some((key, frame, dist));
+                }
+                if frame >= target && better(&ceil) {
+                    ceil = Some((key, frame, dist));
                 }
             }
         }
-        best.map(|(k, f, _)| (k, f))
+        let pick = scrub_preview_neighbor(
+            target,
+            floor.map(|(_, f, _)| f),
+            ceil.map(|(_, f, _)| f),
+            dir,
+        )?;
+        if floor.is_some_and(|(_, f, _)| f == pick) {
+            floor.map(|(k, f, _)| (k, f))
+        } else {
+            ceil.map(|(k, f, _)| (k, f))
+        }
     }
 
     /// Insert or replace a ready thumb. Closes any previous plane for the same frame.

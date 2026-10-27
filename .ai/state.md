@@ -10,7 +10,7 @@
 
 - **HEAD:** scrub-while-play → `prepare_play_from_scrub` (no Exact / no audio prewarm); `4dfba8d` mobile 2nd-loop cache + false underrun.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
-- **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited. Optional: soft-drag preview nearest Exact vs aim (1–2 frame “jump back” on release) — probe if still reported.
+- **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
 ---
 

@@ -46,6 +46,9 @@ pub struct ThumbPreview {
     pending_aim: Cell<Option<FrameId>>,
     /// Latest cursor aim — paint nearest-to-this after decode (not a stale decode id).
     hover_aim: Cell<FrameId>,
+    /// Hover motion for preview floor/ceil (`+1` ahead, `-1` behind, `0` neutral).
+    hover_dir: Cell<i8>,
+    prev_hover_aim: Cell<Option<FrameId>>,
     /// Last requested thumb box (bg key fill uses the same size).
     last_max_w: Cell<u32>,
     last_max_h: Cell<u32>,
@@ -64,6 +67,8 @@ impl ThumbPreview {
             flight: SingleFlight::new(),
             pending_aim: Cell::new(None),
             hover_aim: Cell::new(0),
+            hover_dir: Cell::new(0),
+            prev_hover_aim: Cell::new(None),
             last_max_w: Cell::new(DEFAULT_THUMB_MAX_W),
             last_max_h: Cell::new(DEFAULT_THUMB_MAX_H),
             last_aim_decode_ms: Cell::new(0.0),
@@ -73,6 +78,7 @@ impl ThumbPreview {
     pub fn cancel(&self) {
         self.epoch.set(self.epoch.get().wrapping_add(1));
         self.pending_aim.set(None);
+        self.clear_hover_direction();
     }
 
     pub fn generation(&self) -> u64 {
@@ -172,26 +178,35 @@ impl ThumbPreview {
         cache.get(key, frame, width, height).map(f)
     }
 
-    /// Nearest cached thumb id at size (scrubber-style soft preview).
-    pub fn nearest_frame(&self, target: FrameId, width: u32, height: u32) -> Option<FrameId> {
-        let Ok(cache) = self.cache.try_borrow() else {
-            return None;
-        };
-        cache.nearest_frame(target, width, height).map(|(_, f)| f)
-    }
-
-    /// Paint nearest thumb to `target` at size; returns the painted frame id.
-    pub fn with_nearest_bitmap<R>(
+    /// Cached thumb neighbor biased by hover `dir`.
+    pub fn nearest_frame_with_dir(
         &self,
         target: FrameId,
         width: u32,
         height: u32,
+        dir: i8,
+    ) -> Option<FrameId> {
+        let Ok(cache) = self.cache.try_borrow() else {
+            return None;
+        };
+        cache
+            .nearest_frame_with_dir(target, width, height, dir)
+            .map(|(_, f)| f)
+    }
+
+    /// Paint directional nearest thumb; returns the painted frame id.
+    pub fn with_nearest_bitmap_dir<R>(
+        &self,
+        target: FrameId,
+        width: u32,
+        height: u32,
+        dir: i8,
         f: impl FnOnce(&ImageBitmap) -> R,
     ) -> Option<(FrameId, R)> {
         let Ok(mut cache) = self.cache.try_borrow_mut() else {
             return None;
         };
-        let (key, frame) = cache.nearest_frame(target, width, height)?;
+        let (key, frame) = cache.nearest_frame_with_dir(target, width, height, dir)?;
         let out = cache.get(key, frame, width, height).map(f)?;
         Some((frame, out))
     }
@@ -212,11 +227,28 @@ impl ThumbPreview {
     }
 
     pub fn set_hover_aim(&self, aim: FrameId) {
+        if let Some(prev) = self.prev_hover_aim.get() {
+            if aim > prev {
+                self.hover_dir.set(1);
+            } else if aim < prev {
+                self.hover_dir.set(-1);
+            }
+        }
+        self.prev_hover_aim.set(Some(aim));
         self.hover_aim.set(aim);
     }
 
     pub fn hover_aim(&self) -> FrameId {
         self.hover_aim.get()
+    }
+
+    pub fn hover_dir(&self) -> i8 {
+        self.hover_dir.get()
+    }
+
+    pub fn clear_hover_direction(&self) {
+        self.hover_dir.set(0);
+        self.prev_hover_aim.set(None);
     }
 
     pub fn take_decoder(&self) -> Option<WebCodecsDecoder> {

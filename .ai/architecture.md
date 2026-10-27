@@ -209,7 +209,7 @@ Scrub gesture / densify / Exact blit are **local** — mediabunny has no scrub p
 flowchart TD
   IN["Scrub input"] --> KIND{Phase}
   KIND -->|"pointer move<br/>soft-drag"| SD["EnterScrub soft densify:false<br/>aim + note_scrub_frame"]
-  SD --> PREV["scrub_preview_frame<br/>Exact blit nearest only"]
+  SD --> PREV["scrub_preview_frame<br/>Exact blit floor/ceil by scrub_dir"]
   PREV --> CANVAS1["Canvas preview"]
   KIND -->|"Pause / idle<br/>densify:true"| DZ["enter_scrub_cache_pipeline<br/>scrub_cache_fill_task"]
   DZ --> GAP["next_gap distance-first to aim"]
@@ -231,7 +231,7 @@ flowchart TD
   PP --> PRIME["PlayPrime → start_play_iter"]
 ```
 
-Soft-drag must not run PreferSoftware densify under the finger. Settle must not wipe Exact blit (soft-drag trail). Densify soft-ban stops infinite re-decode; residual pin-holes on constrained machines are accepted strip cosmetics (`product.md`). Scrub-while-play release skips Exact — traps: `skills/media.md`.
+Soft-drag must not run PreferSoftware densify under the finger. Soft-drag **and** hover-thumb interim paint pick neighbors with **floor when moving forward / ceil when backward** (`scrub_preview_neighbor` + `scrub_dir` / `hover_dir`) so Exact/aim refine does not jump opposite the gesture. Settle must not wipe Exact blit (soft-drag trail). Densify soft-ban stops infinite re-decode; residual pin-holes on constrained machines are accepted strip cosmetics (`product.md`). Scrub-while-play release skips Exact — traps: `skills/media.md`.
 
 ### Scrub phases
 
@@ -240,7 +240,7 @@ Host gesture × engine (FSM homes: `fpmedia_web::transport`, `fpmedia_web::engin
 | Phase | Host `TransportState` | `EngineMode` | Densify | Picture | Entry |
 | ----- | --------------------- | ------------ | ------- | ------- | ----- |
 | Play | `Playing` | `Play` | off | `PlayIter` `nextFrame` | play / rAF |
-| Soft-drag | `Scrubbing` | `Scrub` (+ soft audio hold) | off under finger | aim + Exact blit preview | `VideoRef::scrub_pointer_down/move` → `note_scrub_frame` |
+| Soft-drag | `Scrubbing` | `Scrub` (+ soft audio hold) | off under finger | aim + Exact blit preview (dir floor/ceil) | `VideoRef::scrub_pointer_down/move` → `note_scrub_frame` |
 | Pause / idle scrub | `Ready` (paused) | `Scrub` | on if `ScrubPolicy::densify` | densify → blit + markers | `enter_scrub_cache_pipeline` |
 | Settle | `Settling` | `ExactHold` | deferred (yield) | Exact key→N | paused `ScrubRelease` only — **do not** full-clear Exact blit (see `skills/media.md` soft-drag frozen) |
 | Resume | `PlayPriming` → `Playing` | → `Play` | off | PlayIter draws aim (no Exact / no audio prewarm) | `ScrubRelease { then_play }` → `prepare_play_from_scrub` → PlayPrime |
