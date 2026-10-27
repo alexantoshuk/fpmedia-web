@@ -13,7 +13,7 @@
     allow(dead_code)
 )]
 
-use crate::policy::SettlePolicy;
+use crate::policy::{COVERED_EDGE_MARGIN_FRAMES, SettlePolicy};
 use crate::types::FrameId;
 
 /// Result of [`decide_next_gap`].
@@ -24,15 +24,42 @@ pub struct NextGapDecision {
     pub clear_fill_stalled_aim: bool,
 }
 
+/// Covered-only densify edge margins: **each** side = [`COVERED_EDGE_MARGIN_FRAMES`].
+///
+/// Used for edge-arming **and** as a hard aim±band (uncapped Covered + `!no_gaps`
+/// otherwise walks the whole file). Not Exact blit cap / not GOP soft-drag.
+/// **no equivalent** (scrub local).
+pub fn covered_edge_margins() -> (u64, u64) {
+    let m = COVERED_EDGE_MARGIN_FRAMES.max(1);
+    (m, m)
+}
+
+/// Hard densify band for Covered-only / unban walk: aim ± [`COVERED_EDGE_MARGIN_FRAMES`].
+///
+/// Do **not** expand from Covered extent — that grows with the island forever.
+pub fn covered_aim_band(aim: FrameId, last: FrameId) -> (FrameId, FrameId) {
+    let m = COVERED_EDGE_MARGIN_FRAMES.max(1);
+    let lo = aim.saturating_sub(m);
+    let hi = aim.saturating_add(m).min(last);
+    (lo, hi)
+}
+
+/// Whether a Covered-only densify target sits in the fixed aim band.
+pub fn covered_gap_in_band(gap: FrameId, aim: FrameId, last: FrameId) -> bool {
+    let (lo, hi) = covered_aim_band(aim, last);
+    gap >= lo && gap <= hi
+}
+
 /// Pick the next densify gap after blit/marker queries.
 ///
 /// - Clamp to `indexed_last` (fMP4 provisional length may exceed indexed samples).
 /// - Stalled at current playhead → skip Exact blit retries (they made no
-///   residency progress); still take `marker_gap` so Covered can grow past
-///   the Exact MiB cap. Clear stall when leaving via markers / other aim.
+///   residency progress); may still take a Covered gap when armed + in-band.
 /// - Blit holes win over marker `no_gaps` (Play trims Exact, keeps markers).
-/// - When Exact blit has no gap (at cap / mid-island), still take `marker_gap`
-///   so Pause densify can grow dim green past the blit window (else busy-stall).
+/// - When Exact blit has no gap (at cap / mid-island), take `marker_gap` only if
+///   armed **and** inside aim±[`COVERED_EDGE_MARGIN_FRAMES`]. Covered store stays
+///   uncapped; densify work must not walk the whole file (pinholes must not
+///   keep expansion forever via `!no_gaps` arming).
 #[allow(clippy::too_many_arguments)] // pure gap pick: playhead + blit/marker inputs
 pub fn decide_next_gap(
     playhead: FrameId,
@@ -63,12 +90,11 @@ pub fn decide_next_gap(
             clear_fill_stalled_aim: had_stall,
         };
     }
-    // Exact blit idle (or stalled-skip): accept an outside marker gap even when
-    // mid-island `!armed` (armed gate is for joint blit+marker edge thrash).
-    if marker_armed || marker_gap.is_some() {
+    // Exact idle: Covered-only when edge-armed and inside fixed aim±margin band.
+    let marker_gap = marker_gap.filter(|&g| marker_armed && covered_gap_in_band(g, playhead, last));
+    if let Some(gap) = marker_gap {
         return NextGapDecision {
-            target: marker_gap,
-            // Expanding Covered past Exact cap — clear blit stall latch.
+            target: Some(gap),
             clear_fill_stalled_aim: had_stall,
         };
     }
@@ -149,7 +175,7 @@ mod tests {
 
     #[test]
     fn stalled_at_playhead_skips_blit_takes_marker() {
-        // Exact-cap idle stall must not freeze Covered — skip blit, grow markers.
+        // Exact-cap idle stall — Covered when edge-armed.
         let d = decide_next_gap(10, 100, 100, Some(10), Some(12), false, true, Some(14));
         assert_eq!(
             d,
@@ -194,10 +220,21 @@ mod tests {
     }
 
     #[test]
-    fn marker_gap_when_blit_idle_even_if_disarmed() {
-        // Pause densify: Exact at cap → blit_gap None; still grow Covered.
-        let d = decide_next_gap(10, 100, 100, None, None, false, false, Some(14));
+    fn marker_gap_when_armed_blit_idle() {
+        // Exact idle → Covered only if edge-armed + in aim±margin band.
+        let d = decide_next_gap(10, 100, 100, None, None, false, true, Some(14));
         assert_eq!(d.target, Some(14));
+        // Disarmed mid-island — stop (idle must not grind).
+        let d = decide_next_gap(10, 100, 100, None, None, false, false, Some(14));
+        assert_eq!(d.target, None);
+    }
+
+    #[test]
+    fn marker_gap_outside_aim_band_stops_even_when_armed() {
+        // Pinholes keep `!no_gaps` arming true — hard band must still refuse EOF walk.
+        let far = COVERED_EDGE_MARGIN_FRAMES + 50;
+        let d = decide_next_gap(10, 10_000, 10_000, None, None, false, true, Some(far));
+        assert_eq!(d.target, None);
     }
 
     #[test]
@@ -207,9 +244,21 @@ mod tests {
     }
 
     #[test]
-    fn marker_gap_when_armed() {
-        let d = decide_next_gap(10, 100, 100, None, None, false, true, Some(14));
-        assert_eq!(d.target, Some(14));
+    fn covered_edge_margins_use_fixed_constant() {
+        assert_eq!(
+            covered_edge_margins(),
+            (COVERED_EDGE_MARGIN_FRAMES, COVERED_EDGE_MARGIN_FRAMES)
+        );
+    }
+
+    #[test]
+    fn covered_aim_band_is_aim_plus_minus_margin() {
+        let m = COVERED_EDGE_MARGIN_FRAMES;
+        let aim = m + 50;
+        assert_eq!(covered_aim_band(aim, 10_000), (aim - m, aim + m));
+        assert_eq!(covered_aim_band(5, 10_000), (0, 5 + m));
+        assert!(covered_gap_in_band(aim + m, aim, 10_000));
+        assert!(!covered_gap_in_band(aim + m + 1, aim, 10_000));
     }
 
     #[test]

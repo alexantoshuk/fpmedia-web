@@ -119,7 +119,6 @@ impl VideoPlayer {
         configure_canvas_for_video(&canvas, meta.width, meta.height)?;
         let decoder = WebCodecsDecoder::create(&meta).await?;
         let ctx = canvas_2d(&canvas)?;
-        let max_frames = meta.scrub_cache_frame_budget();
         let audio = match audio_track {
             Some(t) => match AudioOutput::create(t).await {
                 Ok(a) => {
@@ -171,7 +170,7 @@ impl VideoPlayer {
             presentation: RefCell::new(VecDeque::new()),
             displayed: RefCell::new(None),
             step_behind: RefCell::new(VecDeque::new()),
-            scrub_chunks: RefCell::new(ScrubChunkStore::new(max_frames)),
+            scrub_chunks: RefCell::new(ScrubChunkStore::new()),
             scrub_blit: RefCell::new(ScrubBlitLru::new(1)),
             encode_canvas: BlitCanvasSlot::default(),
             #[cfg(feature = "thumbs")]

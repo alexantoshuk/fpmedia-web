@@ -39,6 +39,9 @@ pub const EDGE_MARGIN_LEFT_MIN: u64 = 8;
 pub const EDGE_MARGIN_LEFT_MAX: u64 = 24;
 /// Floor for [`ScrubPolicy::margin_right`] (timeline later / higher FrameId).
 pub const EDGE_MARGIN_RIGHT_MIN: u64 = 4;
+/// Covered-only densify edge margin (each side, frames) once Exact is idle.
+/// Independent of Exact blit cap / GOP soft-drag margins. **no equivalent** (scrub local).
+pub const COVERED_EDGE_MARGIN_FRAMES: u64 = 300;
 
 /// Asymmetric edge margins from a GOP length hint (Short `len` / Long `median`).
 ///
@@ -311,7 +314,9 @@ pub struct ScrubPolicy {
     pub densify: bool,
     /// GPU MiB budget for live densify `ImageBitmap`s (→ [`scrub_blit_frame_budget`]).
     pub blit_mib: usize,
-    /// Dense marker store MiB budget (decoded-frame estimate).
+    /// Legacy MiB → frame estimate ([`scrub_cache_frame_budget`]). Covered markers
+    /// are uncapped for the open clip; densify stay aim-margin bounded. Kept for
+    /// metadata/meters — not a live Covered store ceiling.
     pub scrub_cache_mib: usize,
     /// Re-arm densify within this many frames of extent **start** (earlier / left).
     pub margin_left: u64,

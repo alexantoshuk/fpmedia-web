@@ -2,8 +2,10 @@
 //!
 //! - [`AimWindow`] — capped `FrameId` map; eviction drops the resident farthest
 //!   from the aim (not classic LRU) so densify ahead cannot wipe just-presented
-//!   frames.
-//! - [`ScrubChunkStore`] — densify resident markers (gap geometry / Exact strip).
+//!   frames. Used by Exact blit; Covered markers do **not** share this cap.
+//! - [`ScrubChunkStore`] — Covered densify markers (gap geometry / dim strip).
+//!   Uncapped for the open clip — presence-only, cheap; Covered-only densify
+//!   hard-bounded to aim±fixed margin (idle must not walk the whole file).
 //! - [`FrameRunIndex`] — contiguous-run geometry + nearest-gap search.
 //!
 //! The live blit plane (`decode::frame_cache::ScrubBlitLru`) wraps an
@@ -296,6 +298,10 @@ impl FrameRunIndex {
     }
 
     /// After removing `frame` from the key set.
+    ///
+    /// Covered is uncapped (no per-frame evict); kept for Exact/AimWindow helpers
+    /// and tests that still shrink capped windows.
+    #[allow(dead_code)]
     pub fn note_remove(&self, aim: FrameId, frame: FrameId) {
         let Some((lo, hi)) = self.playhead_run.get() else {
             return;
@@ -431,8 +437,13 @@ fn next_gap_outside_extent(
     nearer_gap_with_dir(playhead, behind, ahead, dir)
 }
 
-/// Exact scrub residency: densify markers in RAM + paired blit LRU (not live VFs).
+/// Covered scrub markers for the open clip (presence-only, uncapped).
+///
+/// Exact bitmaps stay on a separate capped [`AimWindow`]. Covered-only densify
+/// is aim±margin bounded — uncapped store must not mean “fill the whole file
+/// on idle”. **no equivalent** (scrub local).
 pub struct ScrubChunkStore {
+    /// Map + aim helpers only — cap is [`usize::MAX`] (never refuse / evict).
     window: AimWindow<ScrubChunk>,
     runs: FrameRunIndex,
     no_gaps: bool,
@@ -445,25 +456,17 @@ impl Drop for ScrubChunkStore {
 }
 
 impl ScrubChunkStore {
-    pub fn new(max_frames: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            window: AimWindow::new(max_frames),
+            window: AimWindow::new(usize::MAX),
             runs: FrameRunIndex::new(),
             no_gaps: false,
         }
     }
 
-    pub fn set_max_frames(&mut self, max_frames: usize) {
-        let max_frames = max_frames.max(1);
-        if max_frames == self.window.max() {
-            return;
-        }
-        self.window.set_max(max_frames);
-        self.enforce_frame_budget(None);
-    }
-
+    /// Covered is uncapped — kept for pipeline meters (`0` = no ceiling).
     pub fn max_frames(&self) -> usize {
-        self.window.max()
+        0
     }
 
     pub fn clear(&mut self) {
@@ -486,9 +489,7 @@ impl ScrubChunkStore {
         if !self.no_gaps() {
             return true;
         }
-        if self.frame_count() < self.max_frames() {
-            return true;
-        }
+        // Contiguous island: only expand near aim edges (idle must not walk EOF).
         scrub_gap_fill_armed(
             true,
             playhead,
@@ -530,7 +531,6 @@ impl ScrubChunkStore {
             self.runs.on_aim_change(frame);
         }
         self.window.set_aim(frame);
-        self.enforce_frame_budget(Some(frame));
     }
 
     pub fn playhead(&self) -> FrameId {
@@ -553,19 +553,6 @@ impl ScrubChunkStore {
         if self.window.contains(frame) {
             return false;
         }
-        if self.frame_count() >= self.max_frames()
-            && self.window.would_evict_closer_than(frame, self.playhead())
-        {
-            return false;
-        }
-        while self.frame_count() >= self.max_frames() {
-            if !self.evict_one(Some(frame)) {
-                break;
-            }
-        }
-        if self.frame_count() >= self.max_frames() {
-            return false;
-        }
         self.window.insert(frame, chunk);
         self.runs
             .note_insert(self.window.items(), self.playhead(), frame);
@@ -575,32 +562,13 @@ impl ScrubChunkStore {
 
     /// Replace-or-insert (presented frame must match canvas).
     pub fn put_chunk(&mut self, frame: FrameId, chunk: ScrubChunk) {
-        if self.window.contains(frame) {
-            self.window.insert(frame, chunk);
-            return;
-        }
-        while self.frame_count() >= self.max_frames() {
-            if self.evict_one(Some(frame)) {
-                continue;
-            }
-            let playhead = self.playhead();
-            if playhead != frame && self.remove_frame(playhead) {
-                continue;
-            }
-            let other = self.window.keys().find(|&f| f != frame);
-            if let Some(victim) = other {
-                self.remove_frame(victim);
-                continue;
-            }
-            break;
-        }
-        if self.frame_count() >= self.max_frames() {
-            return;
-        }
+        let fresh = !self.window.contains(frame);
         self.window.insert(frame, chunk);
-        self.runs
-            .note_insert(self.window.items(), self.playhead(), frame);
-        self.refresh_no_gaps();
+        if fresh {
+            self.runs
+                .note_insert(self.window.items(), self.playhead(), frame);
+            self.refresh_no_gaps();
+        }
     }
 
     pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId, dir: i8) -> Option<FrameId> {
@@ -615,11 +583,9 @@ impl ScrubChunkStore {
         )
     }
 
+    /// No marker ceiling — saturated only when there is no gap left to aim.
     pub fn gaps_saturated(&self, playhead: FrameId, last: FrameId, dir: i8) -> bool {
-        let gap = self.next_gap_frame(playhead, last, dir);
-        gap.is_none()
-            || self.frame_count() >= self.max_frames()
-                && gap.is_some_and(|g| self.window.would_evict_closer_than(g, playhead))
+        self.next_gap_frame(playhead, last, dir).is_none()
     }
 
     pub fn gop_complete(&self, gop_ids: &[FrameId]) -> bool {
@@ -627,30 +593,6 @@ impl ScrubChunkStore {
             return false;
         }
         gop_ids.iter().all(|id| self.has_frame(*id))
-    }
-
-    fn enforce_frame_budget(&mut self, protect: Option<FrameId>) {
-        while self.frame_count() > self.max_frames() {
-            if !self.evict_one(protect) {
-                break;
-            }
-        }
-    }
-
-    fn evict_one(&mut self, protect: Option<FrameId>) -> bool {
-        let Some(victim) = self.window.farthest_evictable(protect) else {
-            return false;
-        };
-        self.remove_frame(victim)
-    }
-
-    fn remove_frame(&mut self, frame: FrameId) -> bool {
-        if self.window.remove(frame).is_none() {
-            return false;
-        }
-        self.runs.note_remove(self.playhead(), frame);
-        self.refresh_no_gaps();
-        true
     }
 
     fn refresh_no_gaps(&mut self) {
@@ -673,6 +615,12 @@ impl ScrubChunkStore {
     }
 }
 
+impl Default for ScrubChunkStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,13 +636,13 @@ mod tests {
 
     #[test]
     fn next_gap_prefers_nearest_behind_on_tie() {
-        let c = ScrubChunkStore::new(8);
+        let c = ScrubChunkStore::new();
         assert_eq!(c.next_gap_frame(5, 10, 0), Some(5));
     }
 
     #[test]
     fn next_gap_expands_both_directions() {
-        let c = ScrubChunkStore::new(8);
+        let c = ScrubChunkStore::new();
         assert_eq!(c.next_gap_frame(3, 9, 0), Some(3));
     }
 
@@ -751,41 +699,41 @@ mod tests {
     }
 
     #[test]
-    fn chunk_store_evicts_farthest_from_playhead() {
-        let mut c = ScrubChunkStore::new(3);
+    fn chunk_store_keeps_trail_uncapped() {
+        let mut c = ScrubChunkStore::new();
         c.touch_playhead(10);
         for f in [8, 9, 10] {
             assert!(c.insert_chunk(f, ScrubChunk));
         }
-        // 11 is closer than the far end (8) → evicts 8.
         assert!(c.insert_chunk(11, ScrubChunk));
-        assert_eq!(c.cached_frame_ids(), vec![9, 10, 11]);
-        // 20 would only evict closer residents → refused.
-        assert!(!c.insert_chunk(20, ScrubChunk));
-        assert_eq!(c.cached_frame_ids(), vec![9, 10, 11]);
-        assert!(c.no_gaps());
+        // Far from aim still lands — Covered is clip-lifetime presence.
+        assert!(c.insert_chunk(20, ScrubChunk));
+        assert_eq!(c.cached_frame_ids(), vec![8, 9, 10, 11, 20]);
+        assert_eq!(c.max_frames(), 0);
+        assert!(!c.gaps_saturated(10, 30, 0));
     }
 
     #[test]
-    fn put_chunk_forces_presented_frame_in() {
-        let mut c = ScrubChunkStore::new(2);
+    fn put_chunk_always_lands() {
+        let mut c = ScrubChunkStore::new();
         c.touch_playhead(0);
         assert!(c.insert_chunk(0, ScrubChunk));
         assert!(c.insert_chunk(1, ScrubChunk));
-        // Far presented frame still lands (evicts 1, then playhead 0 if needed).
         c.put_chunk(50, ScrubChunk);
-        assert!(c.has_frame(50));
-        assert_eq!(c.frame_count(), 2);
+        assert!(c.has_frame(0) && c.has_frame(1) && c.has_frame(50));
+        assert_eq!(c.frame_count(), 3);
     }
 
     #[test]
-    fn shrinking_cap_keeps_playhead() {
-        let mut c = ScrubChunkStore::new(5);
-        c.touch_playhead(2);
-        for f in 0..5 {
+    fn gap_fill_armed_idle_needs_edge_when_solid() {
+        let mut c = ScrubChunkStore::new();
+        c.touch_playhead(50);
+        for f in 40..=60 {
             assert!(c.insert_chunk(f, ScrubChunk));
         }
-        c.set_max_frames(1);
-        assert_eq!(c.cached_frame_ids(), vec![2]);
+        assert!(c.no_gaps());
+        // Mid-island + solid → only edge margins re-arm (idle must not walk EOF).
+        assert!(!c.gap_fill_armed(50, 1000, 8, 8));
+        assert!(c.gap_fill_armed(45, 1000, 8, 8));
     }
 }

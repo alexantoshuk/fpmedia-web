@@ -5,7 +5,9 @@
 use std::collections::HashSet;
 
 use crate::demux::Mp4VideoTrack;
-use crate::policy::scrub_plan::{decide_next_gap, gop_sample_lead_frames};
+use crate::policy::scrub_plan::{
+    covered_aim_band, covered_edge_margins, decide_next_gap, gop_sample_lead_frames,
+};
 use crate::types::FrameId;
 
 use super::Shared;
@@ -46,11 +48,13 @@ pub(super) fn next_gap_target(shared: &Shared) -> Option<FrameId> {
             margin_right,
         )
     };
+    // Covered-only: fixed frame margins (not Exact cap / not GOP soft-drag).
+    let (cov_ml, cov_mr) = covered_edge_margins();
     let (marker_saturated, marker_armed, marker_gap) = {
         let cache = shared.scrub_chunks.borrow();
         (
             cache.gaps_saturated(playhead_clamped, last_clamped, dir),
-            cache.gap_fill_armed(playhead_clamped, last_clamped, margin_left, margin_right),
+            cache.gap_fill_armed(playhead_clamped, last_clamped, cov_ml, cov_mr),
             cache.next_gap_frame(playhead_clamped, last_clamped, dir),
         )
     };
@@ -93,9 +97,9 @@ pub(super) fn next_gap_unbanned(
     let playhead = playhead.min(last);
     let dir = shared.scrub_dir.get();
     let step: i64 = if dir < 0 { -1 } else { 1 };
-    // Walk the full indexed span — a 512-frame cap stopped Pause densify on
-    // Long-GOP masters (ChG) after a few banned keys left holes farther away.
-    let max_dist = last.saturating_add(1).max(1) as i64;
+    // Bound the unban walk to aim±Covered margin — extent±margin grew forever.
+    let (walk_lo, walk_hi) = covered_aim_band(playhead, last);
+    let max_dist = walk_hi.saturating_sub(walk_lo).saturating_add(1).max(1) as i64;
     for dist in 1i64..=max_dist {
         for sign in [step, -step] {
             let delta = dist * sign;
@@ -104,7 +108,7 @@ pub(super) fn next_gap_unbanned(
             } else {
                 playhead.saturating_sub((-delta) as u64)
             };
-            if cand > last {
+            if cand < walk_lo || cand > walk_hi {
                 continue;
             }
             let ckey = index.nearest_keyframe(cand).unwrap_or(cand);

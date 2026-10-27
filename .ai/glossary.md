@@ -43,7 +43,7 @@ Bytes that have ever been fetched into the source cache plane. Backed by **Fetch
 
 ### Covered (dim green)
 
-“We have decoded coverage for this FrameId” as **gap geometry** — a **marker** in `ScrubChunkStore`, not necessarily a live bitmap. Used so densify / gap-pick know what is already solid. Soft-drag **preview must not** use Covered alone (no pixels).
+“We have decoded coverage for this FrameId” as **gap geometry** — a **marker** in `ScrubChunkStore`, not necessarily a live bitmap. Uncapped for the open clip (presence-only). Used so densify / gap-pick know what is already solid. Soft-drag **preview must not** use Covered alone (no pixels). Covered-only densify hard-bounded to aim±`COVERED_EDGE_MARGIN_FRAMES` (`architecture.md` § Play / scrub residency).
 
 ### Exact (bright green)
 
@@ -51,7 +51,7 @@ A live densify **ImageBitmap** in `ScrubBlitLru` for that FrameId. Means step-re
 
 ### Marker
 
-A Covered store entry without pixels. Cheap residency for strip geometry. Insert may **refuse** at capacity when the new id would only evict something closer to aim.
+A Covered store entry without pixels. Cheap residency for strip geometry. Clip-lifetime accumulate (no capacity refuse / aim-evict).
 
 ### Blit
 
@@ -59,7 +59,7 @@ A Covered store entry without pixels. Cheap residency for strip geometry. Insert
 
 ### Pin-hole
 
-A one-frame (or few-frame) gap in Covered and/or Exact after Pause densify — often PreferSoftware **omit** and/or marker **insert refuse**, then densify **soft-ban**. On constrained machines these may remain as **accepted strip cosmetics** (`product.md`); Pause/seek Exact canvas should still be correct. Do not “fix” by wiping Exact.
+A one-frame (or few-frame) gap in Covered and/or Exact after Pause densify — often PreferSoftware **omit**, then densify **soft-ban** (Covered markers no longer refuse at cap). On constrained machines Exact holes may remain as **accepted strip cosmetics** (`product.md`); Pause/seek Exact canvas should still be correct. Do not “fix” by wiping Exact.
 
 ### Skip-bridge
 
@@ -143,11 +143,11 @@ Decoder accepted packets for a GOP but emitted fewer presentation frames than th
 
 ### Insert refuse
 
-At marker or blit capacity, refuse a new FrameId when inserting it would only evict a resident **closer to aim**. Protects the warm window; can leave edge/swiss-cheese holes if skip-bridge also uses refusing insert.
+At Exact blit capacity, refuse a new FrameId when inserting it would only evict a resident **closer to aim**. Protects the warm Exact window. Covered markers do not refuse.
 
 ### AimWindow
 
-Shared farthest-from-aim residency window under Covered markers and Exact blit. One eviction policy for both planes.
+Farthest-from-aim capped residency for **Exact blit** (and reusable map helpers). Covered markers are uncapped presence — they do not share this eviction ceiling.
 
 ### Dual decoder (+ thumb)
 

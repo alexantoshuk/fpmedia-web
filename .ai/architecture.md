@@ -131,13 +131,13 @@ Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). U
 | `PlayIter` + 2-canvas pool | Play only: ≤ 4 decoded + in-flight samples, one `nextFrame` canvas |
 | Presentation queue | Paused Next hits (`PlayPolicy::presentation_cap`); empty while Playing |
 | Step behind ring | Prev hits; **Play cap 0**; Pause/scrub uses behind=8 |
-| `ScrubChunkStore` | Gap geometry — **markers only** |
-| `ScrubBlitLru` | Live densify bitmaps; cap from `scrub_blit_frame_budget` |
+| `ScrubChunkStore` | Covered gap markers — **presence only, uncapped** for the open clip |
+| `ScrubBlitLru` | Live Exact bitmaps; cap from `scrub_blit_frame_budget` |
 | `ThumbCache` / `ThumbPreview` | Hover filmstrip (3rd decoder); feature `thumbs` |
 
 Runtime gates (host intent, re-applied on every open): `ThumbPolicy` (thumb sink) and **`ScrubCachePolicy`** — `Off` closes the scrub decoder, clears Covered + Exact, refuses densify / gray fill / scrub ingest; seek/step/Play stay on main. Demo: Scrubber toggle → `ScrubCachePolicy`.
 
-**Modes (summary):** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify`. Soft-drag → aim+blit only (no densify under finger — PreferSoftware saturates JS). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Eviction: farthest from aim — one `residency::AimWindow` under markers + blit. `mediabunny:` CanvasSink pool idea — no still-encode store.
+**Modes (summary):** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify`. Soft-drag → aim+blit only (no densify under finger — PreferSoftware saturates JS). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Covered keeps densify/Exact trail for the clip (no marker LRU); Exact eviction = farthest from aim on blit `AimWindow` only. Pause densify fills Exact first; Covered-only densify is hard-bounded to aim±`COVERED_EDGE_MARGIN_FRAMES` (300; store stays uncapped for the trail; pinholes must not walk EOF). Not Exact cap / not GOP soft-drag margins. `mediabunny:` CanvasSink pool idea — no still-encode store.
 
 ### Decode flows
 
@@ -272,7 +272,7 @@ Local invention (no mediabunny CanvasSink densify equivalent). Unit of work = on
 
 **Main play** always probes `prefer-hardware` when supported (`WebCodecsDecoder::create` `allow_hw=true`) — Hd and Uhd. **Scrub/thumb** always `PlayPolicy::hd()` + explicit `prefer-software` (sole HW session on main; `no-preference` can still grab HW). `optimizeForLatency` = false for VOD.
 
-**`ScrubPolicy`** (from `GopProfile`): `densify` / `blit_mib` / `scrub_cache_mib` / edge margins. Soft-drag: Short/Long = blit only + Exact on settle (Long per-tick decode starved the pointer); All-Intra = Exact under finger (`densify` off — 1-frame GOP densify wastes CPU).
+**`ScrubPolicy`** (from `GopProfile`): `densify` / `blit_mib` / edge margins (`scrub_cache_mib` = legacy meter only; Covered uncapped). Soft-drag: Short/Long = blit only + Exact on settle (Long per-tick decode starved the pointer); All-Intra = Exact under finger (`densify` off — 1-frame GOP densify wastes CPU).
 
 **`SettlePolicy`** (clip-invariant defaults): densify yield `250+250 ms`, `gop_sample_lead` 8…24, index warm leads (`play_index_lead` also feeds the Play iterator). Soft-cold / poison are named recovery helpers, not policy fields. Do not retune Settle when changing Play Uhd or Scrub MiB.
 

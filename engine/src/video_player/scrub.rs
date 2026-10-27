@@ -895,8 +895,7 @@ fn evict_exact_orphans_beyond_aim(shared: &Shared) {
 pub(super) fn apply_clip_budgets(shared: &Shared) {
     let meta = shared.track.metadata();
     let policy = meta.scrub_policy();
-    let max_frames = meta.scrub_cache_frame_budget();
-    shared.scrub_chunks.borrow_mut().set_max_frames(max_frames);
+    // Covered markers are uncapped for the open clip; Exact blit keeps the MiB cap.
     // Aim-centered blit: MiB wallet → frame count from canvas buffer (RGBA).
     // `mediabunny:` CanvasSink width/height/fit + poolSize (sized, bounded VRAM).
     let buf_w = shared.canvas.width().max(1);
