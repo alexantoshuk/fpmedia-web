@@ -11,7 +11,6 @@
 - **HEAD:** Soft-drag = main-HW key chase (`drag_aim`, no `cancel_ops` per move; supersede keys paint along `scrub_dir`); Exact = dwell/settle; move must not sync Exact-present (ScrubDrag owns canvas). Prior: `ThumbSink` product; scrub-while-play → `prepare_play_from_scrub`.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
-- **Watch:** rare reverse flash on mobile soft-drag (unconfirmed; possible `scrub_dir==0` supersede).
 
 ---
 

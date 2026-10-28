@@ -192,13 +192,14 @@ pub fn scrub_drag_stage_near_aim(aim: FrameId, key: FrameId, stage: FrameId) -> 
 }
 
 /// Soft-drag: paint a decoded key that finished after aim left its GOP only when
-/// it advances along `scrub_dir` (else reverse flash). Mobile HW key decode often
-/// loses the race to the next GOP — skipping every supersede dropped keyframes.
-/// **no equivalent** (scrub local).
-pub fn scrub_drag_key_advances(dir: i8, displayed: Option<FrameId>, key: FrameId) -> bool {
+/// it advances along `scrub_dir` vs the last **stage** paint id (caller passes
+/// `shared.frame` after blit/`commit_frame` — not stale `displayed` VF alone).
+/// Mobile HW key decode often loses the race to the next GOP — skipping every
+/// supersede dropped keyframes. **no equivalent** (scrub local).
+pub fn scrub_drag_key_advances(dir: i8, painted: Option<FrameId>, key: FrameId) -> bool {
     match dir {
-        d if d > 0 => displayed.is_none_or(|d| key >= d),
-        d if d < 0 => displayed.is_none_or(|d| key <= d),
+        d if d > 0 => painted.is_none_or(|p| key >= p),
+        d if d < 0 => painted.is_none_or(|p| key <= p),
         _ => true,
     }
 }

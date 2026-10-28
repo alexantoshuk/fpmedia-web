@@ -219,13 +219,17 @@ impl VideoPlayer {
         let aim = self.shared.drag_aim.get();
         let aim_key = self.key_for(aim).unwrap_or(aim);
         let dir = self.shared.scrub_dir.get();
+        // Baseline = last drag stage commit (`present_from_cache` + commit_frame),
+        // not `displayed` VF alone — blit present does not refresh displayed, so
+        // advances-vs-displayed allowed a later key to jump backward on canvas
+        // (rare R→L flash without Exact strip). UI playhead still tracks drag_aim.
+        let painted = self.shared.frame.get();
         let displayed = self.shared.displayed.borrow().as_ref().map(|q| q.frame);
         if aim_key != key {
             // Superseded GOP — paint key along scrub_dir (no Exact catch-up).
-            if scrub_drag_key_advances(dir, displayed, key) {
+            if scrub_drag_key_advances(dir, Some(painted), key) {
                 self.present_and_cache(key, video_frame)?;
-                // No commit — UI playhead tracks drag_aim; engine frame until
-                // aim-stable key / dwell Exact.
+                self.shared.commit_frame(key)?;
             } else {
                 self.ingest_scrub_frame(key, video_frame, true);
             }
