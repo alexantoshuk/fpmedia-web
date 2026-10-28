@@ -30,6 +30,7 @@
 | `RefCell already borrowed` (tachys / Loop) | no borrow across await; scrub → `scrub_pointer_*` sync (Move throttled in `<Video>`); no demo TLS |
 | Start stutter / Play lag after scrub | `prepare_play_from_scrub` + clock after prime; no `seek_frame` from `VideoRef::play`; engine: `skills/media.md` scrub→play |
 | Scrub bar lags / pointer jank / hold jumps | sync playhead on move; no sync Exact present on move (ScrubDrag owns canvas); dwell ~100 ms on blit miss; paused rAF `sync_ui` ≤10 Hz while `Scrubbing`; engine: `skills/media.md` soft-drag |
+| Touch playhead jitter on long clips | `<Scrubber>` touch sticky: `|Δx|≥4px` + `|Δframe|≥ceil(n/w)`; mouse/pen 1:1 — `scrub_touch_move_accepts` |
 | EOF: tip/stats on end−1/−2, canvas last frame | `stop_playback` snap when `leaving_play \|\| ended` — `Ended` clears `playing` before snap |
 | Ops dropped while busy | OpQueue coalesce — not `if busy { return }` (`host_op_coalesce`) |
 

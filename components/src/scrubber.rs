@@ -4,6 +4,7 @@
 //! is composed by the host via [`children`]. Spec: `.ai/product.md` § Element-layer
 //! helpers; phases: `.ai/architecture.md` § Scrub phases.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use leptos::html::Div;
@@ -13,7 +14,7 @@ use wasm_bindgen::JsCast;
 use web_sys::Element;
 
 use crate::VideoRef;
-use crate::helpers::scrub_frame_from_x;
+use crate::helpers::{scrub_frame_from_x, scrub_touch_move_accepts};
 
 /// Scrubber → hover wire — call from track `pointermove` / leave / scrub start.
 #[derive(Clone)]
@@ -57,6 +58,8 @@ pub fn Scrubber(
 ) -> impl IntoView {
     let scrubbing = RwSignal::new(false);
     let hover = StoredValue::new_local(None::<HoverThumbApi>);
+    // Touch soft-drag sticky `(last_x, last_frame)`; `None` = mouse/pen (1:1).
+    let touch_sticky = Rc::new(Cell::new(None::<(f64, u32)>));
     let scrubber_ref = NodeRef::<Div>::new();
     let UseElementSizeReturn {
         width: css_width, ..
@@ -90,14 +93,18 @@ pub fn Scrubber(
         });
     };
 
-    let finish_scrub = move || {
-        if !scrubbing.get_untracked() {
-            return;
+    let finish_scrub = Rc::new({
+        let touch_sticky = Rc::clone(&touch_sticky);
+        move || {
+            if !scrubbing.get_untracked() {
+                return;
+            }
+            scrubbing.set(false);
+            touch_sticky.set(None);
+            let frame = video.playhead.get_untracked();
+            video.scrub_pointer_up(frame);
         }
-        scrubbing.set(false);
-        let frame = video.playhead.get_untracked();
-        video.scrub_pointer_up(frame);
-    };
+    });
 
     let root_class = class.unwrap_or_default();
 
@@ -112,56 +119,96 @@ pub fn Scrubber(
             attr:aria-valuenow=move || video.playhead.get().to_string()
             attr:aria-disabled=move || (!video.ready.get()).to_string()
             data-playhead=move || video.playhead.get().to_string()
-            on:pointerdown=move |ev| {
-                if !video.ready.get_untracked() {
-                    return;
-                }
-                hide_hover();
-                let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
-                    return;
-                };
-                if let Ok(html) = el.clone().dyn_into::<web_sys::HtmlElement>() {
-                    let _ = html.set_pointer_capture(ev.pointer_id());
-                }
-                scrubbing.set(true);
-                if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
+            on:pointerdown={
+                let touch_sticky = Rc::clone(&touch_sticky);
+                move |ev| {
+                    if !video.ready.get_untracked() {
+                        return;
+                    }
+                    hide_hover();
+                    let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
+                        return;
+                    };
+                    if let Ok(html) = el.clone().dyn_into::<web_sys::HtmlElement>() {
+                        let _ = html.set_pointer_capture(ev.pointer_id());
+                    }
+                    scrubbing.set(true);
+                    let rect = el.get_bounding_client_rect();
+                    let client_x = ev.client_x();
+                    let x = (client_x - rect.left()).clamp(0.0, rect.width().max(1.0));
+                    let Some(frame) = scrub_frame_from_x(
+                        client_x,
+                        rect.left(),
+                        rect.width(),
+                        video.frame_count.get_untracked(),
+                    ) else {
+                        touch_sticky.set(None);
+                        return;
+                    };
                     video.playhead.set(frame);
                     video.scrub_pointer_down(frame);
+                    // Touch: arm sticky gate. Mouse/pen stay 1:1 on move.
+                    if ev.pointer_type() == "touch" {
+                        touch_sticky.set(Some((x, frame)));
+                    } else {
+                        touch_sticky.set(None);
+                    }
                 }
             }
-            on:pointermove=move |ev| {
-                let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
-                    return;
-                };
-                if scrubbing.get_untracked() {
-                    if let Some(frame) = frame_from_client_x(&el, ev.client_x()) {
+            on:pointermove={
+                let touch_sticky = Rc::clone(&touch_sticky);
+                move |ev| {
+                    let Some(Ok(el)) = ev.current_target().map(|t| t.dyn_into::<Element>()) else {
+                        return;
+                    };
+                    if scrubbing.get_untracked() {
+                        let rect = el.get_bounding_client_rect();
+                        let client_x = ev.client_x();
+                        let w = rect.width().max(1.0);
+                        let x = (client_x - rect.left()).clamp(0.0, w);
+                        let n = video.frame_count.get_untracked();
+                        let Some(frame) = scrub_frame_from_x(client_x, rect.left(), w, n) else {
+                            return;
+                        };
+                        if let Some((last_x, last_frame)) = touch_sticky.get() {
+                            if !scrub_touch_move_accepts(last_x, x, last_frame, frame, n, w) {
+                                return;
+                            }
+                            touch_sticky.set(Some((x, frame)));
+                        }
                         video.playhead.set(frame);
                         video.scrub_pointer_move(frame);
+                        return;
                     }
-                    return;
+                    let Some(frame) = frame_from_client_x(&el, ev.client_x()) else {
+                        hide_hover();
+                        return;
+                    };
+                    let rect = el.get_bounding_client_rect();
+                    let x = ev.client_x() - rect.left();
+                    hover.with_value(|api| {
+                        if let Some(api) = api.as_ref() {
+                            api.update(x, rect.width(), frame);
+                        }
+                    });
                 }
-                let Some(frame) = frame_from_client_x(&el, ev.client_x()) else {
-                    hide_hover();
-                    return;
-                };
-                let rect = el.get_bounding_client_rect();
-                let x = ev.client_x() - rect.left();
-                hover.with_value(|api| {
-                    if let Some(api) = api.as_ref() {
-                        api.update(x, rect.width(), frame);
-                    }
-                });
             }
             on:pointerleave=move |_| {
                 if !scrubbing.get_untracked() {
                     hide_hover();
                 }
             }
-            on:pointerup=move |_| {
-                finish_scrub();
+            on:pointerup={
+                let finish_scrub = Rc::clone(&finish_scrub);
+                move |_| {
+                    finish_scrub();
+                }
             }
-            on:pointercancel=move |_| {
-                finish_scrub();
+            on:pointercancel={
+                let finish_scrub = Rc::clone(&finish_scrub);
+                move |_| {
+                    finish_scrub();
+                }
             }
         >
             {children()}

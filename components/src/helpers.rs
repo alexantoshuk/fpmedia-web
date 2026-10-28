@@ -56,6 +56,39 @@ pub fn scrub_frame_from_x(
     Some(frame.min(n - 1))
 }
 
+/// Min CSS px travel before a touch scrub move may update playhead (pad noise).
+pub const TOUCH_SCRUB_DEADZONE_PX: f64 = 4.0;
+
+/// Min `|Δframe|` for touch scrub ≈ one CSS pixel of the timeline (`ceil(n/w)`).
+pub fn scrub_touch_min_frame_delta(frame_count: u32, track_width: f64) -> u32 {
+    let w = track_width.max(1.0);
+    let n = f64::from(frame_count.max(1));
+    (n / w).ceil() as u32
+}
+
+/// Whether a touch scrub `pointermove` should accept mapped `frame` at track-relative `x`.
+///
+/// Requires both travel past [`TOUCH_SCRUB_DEADZONE_PX`] and
+/// `|frame - last_frame| ≥ scrub_touch_min_frame_delta` so long clips do not
+/// rewrite playhead on finger-pad jitter. Mouse/pen skip this gate.
+pub fn scrub_touch_move_accepts(
+    last_x: f64,
+    x: f64,
+    last_frame: u32,
+    frame: u32,
+    frame_count: u32,
+    track_width: f64,
+) -> bool {
+    if (x - last_x).abs() < TOUCH_SCRUB_DEADZONE_PX {
+        return false;
+    }
+    if frame == last_frame {
+        return false;
+    }
+    let min_df = scrub_touch_min_frame_delta(frame_count, track_width);
+    last_frame.abs_diff(frame) >= min_df
+}
+
 /// Clamp hover-thumb left so the preview stays inside the scrubber track.
 pub fn hover_thumb_left(x: f64, track_width: f64, thumb_w: f64) -> f64 {
     let thumb_w = thumb_w.max(0.0);
@@ -132,6 +165,30 @@ mod tests {
         // Mid of frame-0 cell on 11-frame / 110 px track.
         assert_eq!(scrub_frame_from_x(5.0, 0.0, 110.0, 11), Some(0));
         assert_eq!(scrub_frame_from_x(15.0, 0.0, 110.0, 11), Some(1));
+    }
+
+    #[test]
+    fn touch_min_frame_delta_scales_with_density() {
+        // Short clip: wider than 1 px/frame → step 1.
+        assert_eq!(scrub_touch_min_frame_delta(100, 400.0), 1);
+        // Long clip on phone-wide track: ≈ n/w.
+        assert_eq!(scrub_touch_min_frame_delta(43_200, 360.0), 120);
+    }
+
+    #[test]
+    fn touch_move_rejects_pad_jitter() {
+        let n = 43_200;
+        let w = 360.0;
+        // ±2 px contact noise — under deadzone.
+        assert!(!scrub_touch_move_accepts(
+            100.0, 102.0, 12_000, 12_240, n, w
+        ));
+        // 4 px travel but same frame — no-op.
+        assert!(!scrub_touch_move_accepts(
+            100.0, 104.0, 12_000, 12_000, n, w
+        ));
+        // 4 px + ≥1 px of frames → accept.
+        assert!(scrub_touch_move_accepts(100.0, 104.0, 12_000, 12_480, n, w));
     }
 
     #[test]
