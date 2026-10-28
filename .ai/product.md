@@ -24,6 +24,7 @@
 | Surface | Purpose |
 | ------- | ------- |
 | **`fpmedia-web` crate** | Engine — demux + frame index + `VideoPlayer`; audio under `audio/`. Using only this + hand-rolled demo UI ≈ mediabunny’s example style. |
+| **`ThumbSink`** (engine, feature `thumbs`) | **Thumb / filmstrip generation as its own product** — like mediabunny `CanvasSink`: open track → sized bitmaps via `get` / `at_frames`, no player required. `VideoPlayer` / `<HoverThumb>` are clients (lease + Exact bridge + workload gates). Design: `architecture.md` § Play / scrub residency. |
 | **`fpmedia-web-components` crate** | Element analogs + headless track helpers (below) — hide engine/transport/`pipeline` from host UI authors. **No** player chrome. |
 | **Demo app** | `demo-player` (Trunk) — **all** player UI: file picker, URL open, transport buttons, keyboard (JKL/Space/arrows), progress look, ticks, strip layout/colors, thumb chrome, status. Not production player UI. |
 

@@ -153,13 +153,17 @@ Farthest-from-aim capped residency for **Exact blit** (and reusable map helpers)
 
 Main decoder = Play / Exact seek-settle (prefer-hardware when supported). Scrub decoder = densify PreferSoftware (must not dual-HW poison the main session — especially HEVC). When feature `thumbs` is on, a **third** PreferSoftware decoder serves hover only — never the densify scrub slot. Overview: `architecture.md` § Decode flows.
 
+### ThumbSink
+
+Standalone thumb / filmstrip generation product (`mediabunny:` `CanvasSink`). `open_mp4` → track → `ThumbSink::new` → `get` / `at_frames` (FrameId, sized `ImageBitmap`). Does not require `VideoPlayer`. Design: `architecture.md` § Decode flows; UX surface: `product.md` Surfaces.
+
 ### ThumbCache
 
-Residency store for hover-thumb bitmaps (separate from Exact blit / Covered markers). Eviction policy is thumb-specific today (GOP-oriented); aim-distance `AimWindow` for thumbs is open work (`state.md` Later).
+Residency store for `ThumbSink` bitmaps (separate from Exact blit / Covered markers). Eviction policy is thumb-specific today (GOP-oriented); aim-distance / binary-grid residency is open work (`state.md` Later).
 
 ### ThumbPreview
 
-Engine hover decode/present path on the thumb decoder: refine the aimed hover FrameId into `ThumbCache`, paint via host `<HoverThumb>`. Isolated from densify; Play avoids sparse key_fill; far refine is throttled. Close enough ≈ same sync key (`hover_thumb_close_enough`).
+Retired name — see **ThumbSink**. Host chrome wrapper `<HoverThumbPreview>` remains a thin class-only alias around `<HoverThumb>`.
 
 ---
 
@@ -181,7 +185,7 @@ One meta strip for a kind (`Fetch` / `Keyframes` / `Covered` / `Exact`): pipelin
 
 ### `<HoverThumb>`
 
-Hover filmstrip preview component: canvas **inside** the element; chrome via `children` / `class`. Wired under `<Scrubber>` or manual API. **Play and Pause only — not while scrubbing.** Must not drive densify or buffer strips. Engine: `ThumbPreview` / `ThumbCache`.
+Hover filmstrip preview component: canvas **inside** the element; chrome via `children` / `class`. Wired under `<Scrubber>` or manual API. **Play and Pause only — not while scrubbing.** Must not drive densify or buffer strips. Engine client of `ThumbSink` / `ThumbCache`.
 
 ### Pipeline (debug)
 

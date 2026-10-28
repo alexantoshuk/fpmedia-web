@@ -8,7 +8,7 @@
 
 ### Handoff
 
-- **HEAD:** scrub-while-play → `prepare_play_from_scrub` (no Exact / no audio prewarm); `4dfba8d` mobile 2nd-loop cache + false underrun.
+- **HEAD:** `ThumbSink` product (`get` / `at_frames`, usable without player); hover leases it. Prior: scrub-while-play → `prepare_play_from_scrub`.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -48,7 +48,7 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 - Revisit seek Exact follow **without** wiping Exact on settle (densify yield / unbanned walk only — prove scrub still paints).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
-- `ThumbCache` on `residency::AimWindow` (aim-distance instead of GOP LRU) — behavior change; probe hover first.
+- Thumb residency policy on `ThumbSink` (binary timeline grid / aim-distance vs GOP LRU) — sink API shipped; probe hover first.
 - Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
 - Pure `<Audio>` / `AudioPlayer` (reuses engine `audio`); thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; production player UI.

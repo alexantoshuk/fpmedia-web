@@ -121,7 +121,9 @@ pub use decode::{
     reset_canvas_layout,
 };
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs", feature = "thumbs"))]
-pub use decode::{ThumbPreview, ThumbSink};
+pub use decode::{
+    DEFAULT_THUMB_MAX_H, DEFAULT_THUMB_MAX_W, ThumbSink, ThumbSinkOptions, paint_thumb_canvas,
+};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use video_player::{
     DuePresent, PipelineInterest, PipelineStats, PlayTick, PlayWaits, PlayerState, ReadyFrameKind,

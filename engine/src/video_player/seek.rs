@@ -239,13 +239,16 @@ impl VideoPlayer {
         self.decode_frame(&track, frame, epoch).await
     }
 
-    /// Sparse timestamps API — filmstrip follow-up (mediabunny `samplesAtTimestamps`).
+    /// Full-res sparse VF API — not implemented.
+    ///
+    /// Sized thumbs: [`crate::ThumbSink::at_frames`] / [`Self::thumb_sink`]
+    /// (`mediabunny:` `CanvasSink.canvasesAtTimestamps`). Exact VF: [`Self::frame_at`].
     pub async fn frames_at_timestamps(
         &self,
         _timestamps: &[f64],
     ) -> Result<Vec<Option<OwnedVideoFrame>>, MediaError> {
         Err(MediaError::Unsupported(
-            "frames_at_timestamps — use mediabunny samplesAtTimestamps pattern in a follow-up",
+            "frames_at_timestamps (full-res VF) — use ThumbSink::at_frames for thumbs, or frame_at",
         ))
     }
 }

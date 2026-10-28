@@ -5,9 +5,9 @@ use std::rc::Rc;
 
 use web_sys::HtmlCanvasElement;
 
-use crate::decode::owned_video_frame::AsVideoFrame;
-use crate::decode::thumb_preview::{ThumbPreview, paint_thumb_canvas, run_sparse_key_fill};
-use crate::decode::webcodecs::WebCodecsDecoder;
+use crate::decode::thumb_sink::{
+    ThumbSink, ThumbSinkOptions, paint_thumb_canvas, run_sparse_key_fill,
+};
 use crate::error::MediaError;
 use crate::policy::workload::{
     PLAY_THUMB_AIM_DECODE_MIN_MS, allows_thumb_aim_decode, allows_thumb_key_fill,
@@ -29,7 +29,7 @@ impl VideoPlayer {
         }
     }
 
-    /// Runtime thumb gate. `Off` drops the lazy [`ThumbPreview`] sink.
+    /// Runtime thumb gate. `Off` drops the lazy [`ThumbSink`].
     pub fn set_thumb_policy(&self, policy: ThumbPolicy) {
         self.shared.thumb_policy.set(policy);
         if policy == ThumbPolicy::Off {
@@ -38,6 +38,13 @@ impl VideoPlayer {
                 let _ = slot.take();
             }
         }
+    }
+
+    /// Leased [`ThumbSink`] when policy is On (same instance hover/fill use).
+    ///
+    /// Hosts may also build a sink with [`ThumbSink::new`] without a player.
+    pub fn thumb_sink(&self) -> Option<Rc<ThumbSink>> {
+        self.thumb_sink_inner()
     }
 
     pub fn thumb_policy(&self) -> ThumbPolicy {
@@ -64,8 +71,8 @@ impl VideoPlayer {
         }
     }
 
-    /// Ensure a [`ThumbPreview`] exists when policy is `On`. Returns `false` if off / unavailable.
-    pub(super) fn ensure_thumb_preview(&self) -> bool {
+    /// Ensure a [`ThumbSink`] exists when policy is `On`. Returns `false` if off / unavailable.
+    pub(super) fn ensure_thumb_sink(&self) -> bool {
         if self.shared.thumb_policy.get() != ThumbPolicy::On {
             return false;
         }
@@ -73,12 +80,15 @@ impl VideoPlayer {
             return false;
         };
         if slot.is_none() {
-            *slot = Some(Rc::new(ThumbPreview::new()));
+            *slot = Some(Rc::new(ThumbSink::new(
+                Rc::clone(&self.shared.track),
+                ThumbSinkOptions::default(),
+            )));
         }
         true
     }
 
-    /// Sync hover paint from [`ThumbPreview`] / nearest available preview.
+    /// Sync hover paint from [`ThumbSink`] / nearest available preview.
     ///
     /// Picks ThumbCache vs Exact via [`scrub_preview_choice_with_dir`] (same
     /// floor/ceil-by-motion rule as soft-drag). When Exact wins, downscales into
@@ -92,7 +102,7 @@ impl VideoPlayer {
         max_w: u32,
         max_h: u32,
     ) -> Result<Option<FrameId>, MediaError> {
-        if !self.ensure_thumb_preview() {
+        if !self.ensure_thumb_sink() {
             return Err(MediaError::Cancelled);
         }
         let count = self.state().frame_count;
@@ -209,7 +219,7 @@ impl VideoPlayer {
         max_w: u32,
         max_h: u32,
     ) -> Result<FrameId, MediaError> {
-        if !self.ensure_thumb_preview() {
+        if !self.ensure_thumb_sink() {
             return Err(MediaError::Cancelled);
         }
         let count = self.state().frame_count;
@@ -272,7 +282,7 @@ impl VideoPlayer {
         now - thumbs.last_aim_decode_ms() >= PLAY_THUMB_AIM_DECODE_MIN_MS
     }
 
-    /// Exact blit → sized thumb into [`ThumbPreview`] (read-only densify plane).
+    /// Exact blit → sized thumb into [`ThumbSink`] (read-only densify plane).
     ///
     /// Only runs when Exact is the [`scrub_preview_choice_with_dir`] winner vs
     /// ThumbCache (caller already tried cache). Localizes to directional Exact
@@ -574,94 +584,15 @@ impl VideoPlayer {
             return Err(MediaError::Cancelled);
         }
 
-        let track = self.shared.track.clone();
-
-        let taken = {
-            let Ok(slot) = self.shared.thumb.try_borrow() else {
-                return Err(MediaError::Cancelled);
-            };
-            let Some(thumbs) = slot.as_ref() else {
-                return Err(MediaError::Cancelled);
-            };
-            thumbs.take_decoder()
-        };
-        let mut decoder = match taken {
-            Some(d) => d,
-            None => match WebCodecsDecoder::create_thumb(&meta).await {
-                Ok(d) => d,
-                Err(MediaError::CodecUnsupported(c)) => {
-                    return Err(MediaError::CodecUnsupported(c));
-                }
-                Err(e) => return Err(e),
-            },
-        };
-        if cancelled() {
-            if let Ok(slot) = self.shared.thumb.try_borrow()
-                && let Some(thumbs) = slot.as_ref()
-            {
-                thumbs.put_decoder(decoder);
-            }
+        let Some(thumbs) = self.thumb_sink_inner() else {
             return Err(MediaError::Cancelled);
-        }
-
-        let decoded = decoder.decode_frame(&track, frame, cancelled).await;
-        let video = match decoded {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = decoder.reset();
-                if let Ok(slot) = self.shared.thumb.try_borrow()
-                    && let Some(thumbs) = slot.as_ref()
-                {
-                    thumbs.put_decoder(decoder);
-                }
-                return Err(e);
-            }
         };
-        if let Ok(slot) = self.shared.thumb.try_borrow()
-            && let Some(thumbs) = slot.as_ref()
-        {
-            thumbs.put_decoder(decoder);
-        }
-
-        if cancelled() {
-            drop(video);
-            return Err(MediaError::Cancelled);
-        }
-
-        let thumb = {
-            let Ok(slot) = self.shared.thumb.try_borrow() else {
-                drop(video);
-                return Err(MediaError::Cancelled);
-            };
-            let Some(thumbs) = slot.as_ref() else {
-                drop(video);
-                return Err(MediaError::Cancelled);
-            };
-            thumbs.with_blit(|enc| {
-                enc.frame_to_bitmap(video.as_video_frame(), tw, th)
-                    .map(|(bmp, _, _)| bmp)
-            })?
-        };
-        drop(video);
-        if cancelled() {
-            thumb.close();
-            return Err(MediaError::Cancelled);
-        }
-        let paint_aim = {
-            let Ok(slot) = self.shared.thumb.try_borrow() else {
-                thumb.close();
-                return Err(MediaError::Cancelled);
-            };
-            let Some(thumbs) = slot.as_ref() else {
-                thumb.close();
-                return Err(MediaError::Cancelled);
-            };
-            thumbs.put_ready(store_key, frame, thumb, tw, th);
-            thumbs.hover_aim()
-        };
+        thumbs.note_size(max_w, max_h);
+        thumbs.decode_into_cache(frame, cancelled).await?;
         if cancelled() {
             return Err(MediaError::Cancelled);
         }
+        let paint_aim = thumbs.hover_aim();
         match self.try_paint_hover_thumb_cached(paint_aim, dest, max_w, max_h)? {
             Some(id) => Ok(id),
             None => {
@@ -688,10 +619,10 @@ impl VideoPlayer {
         if !allows_thumb_key_fill(self.shared.workload_hints()) {
             return;
         }
-        if !self.ensure_thumb_preview() {
+        if !self.ensure_thumb_sink() {
             return;
         }
-        let Some(thumbs) = self.thumb_sink() else {
+        let Some(thumbs) = self.thumb_sink_inner() else {
             return;
         };
         if thumbs.decode_blocked() {
@@ -704,7 +635,7 @@ impl VideoPlayer {
         self.kick_thumb_key_fill();
     }
 
-    pub(super) fn thumb_sink(&self) -> Option<Rc<ThumbPreview>> {
+    pub(super) fn thumb_sink_inner(&self) -> Option<Rc<ThumbSink>> {
         self.shared.thumb.try_borrow().ok().and_then(|s| s.clone())
     }
 
@@ -718,7 +649,7 @@ impl VideoPlayer {
         let Some(key) = self.next_thumb_key_gap() else {
             return;
         };
-        let Some(thumbs) = self.thumb_sink() else {
+        let Some(thumbs) = self.thumb_sink_inner() else {
             return;
         };
         if !thumbs.claim_fill_key(key) {
@@ -730,8 +661,6 @@ impl VideoPlayer {
             if shared.is_disposed() {
                 return;
             }
-            let track = shared.track.clone();
-            let meta = shared.track.metadata();
             let yield_play = || {
                 shared.is_disposed()
                     || shared.scrub_bg_suspended()
@@ -743,7 +672,7 @@ impl VideoPlayer {
                 }
                 next_thumb_key_gap_shared(&shared)
             };
-            let _ = run_sparse_key_fill(sink, track, meta, next_gap, yield_play).await;
+            let _ = run_sparse_key_fill(sink, next_gap, yield_play).await;
         });
     }
 

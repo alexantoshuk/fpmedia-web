@@ -322,7 +322,7 @@ impl GopProfile {
     }
 }
 
-/// Runtime gate for hover / filmstrip thumbs (`ThumbPreview` sink).
+/// Runtime gate for hover / filmstrip thumbs (`ThumbSink`).
 ///
 /// Compile feature `thumbs` (default on) must also be enabled; `Off` drops the
 /// lazy sink. Agreed UX: `On` = play **and** pause (host hides only while

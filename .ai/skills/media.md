@@ -30,7 +30,8 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Scrub UI off but scrub decoder / densify still alive | `set_scrub_cache_policy` / `scrub_cache_off` | gate densify + gray + `ingest_scrub_bitmap_only`; checked-out decoder dropped in `return_scrub_decoder`, never closed mid-`decode()`. Host re-applies in `run_open` before `seek_frame(0)` |
-| Hover CPU / freeze / stuck far | ThumbPreview isolation | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
+| Hover CPU / freeze / stuck far | `ThumbSink` / player lease | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
+| Need thumbs without player / filmstrip API | `ThumbSink::get` / `at_frames` | product surface (`product.md`); not `frames_at_timestamps` (full-res stub) |
 | Play stutter / freeze / underrun | `PlayIter` / `update_next_frame` | mediabunny iterator: `MAX_QUEUE_SIZE` 4 + 2-canvas pool for every resolution. Demo `wait/s` line (`PlayWaits`): `rd` = byte reads, `out` = consumer wait, `cap` = pump parked full, `raf>50` = main-thread stalls |
 | Mobile `holds N/…ms` + audio micro-gaps while `held>0 · out 0` (false underrun) | `play_underrun_hold` / `PlayIter::has_ready_sample` | hold only when `nextFrame` empty **and** iterator has no ready sample **and** frame due — never on the present→`updateNextFrame` one-tick gap. `mediabunny: media-sink.ts mediaSamplesInRange queueNotEmpty`; media-player never holds the clock |
 | `flush/idle` pts=0 (All-Intra, mobile) | `run_key_cascade` / `force_prefer_software` | key inclusive after wipe; HW silent miss → sticky PreferSoftware; snap fed **before** finish_gop wipe. `mediabunny: media-sink prefer-software` |
@@ -74,7 +75,7 @@ source/        MediaSource, CachedSource, FetchMap, ReadOrchestrator (+ wasm Blo
 audio/         demux, pcm (+ pcm_entry moov), stretch (WSOLA), output, PlaybackClock
 demux/         boxes, coalesce, mp4, tmcd
 video_player/  mod · api · shared · open · control · clock_ctrl · present · decode_ops · play (`begin_play_session` / `play_raf_tick`) · play_pool · scrub · scrub_gap · scrub_cold · seek · thumb (`thumb_off` when feature off)
-decode/        webcodecs/{mod,core,pump,play_iter}, frame_cache, scrub_blit, thumb_preview, canvas, owned_*
+decode/        webcodecs/{mod,core,pump,play_iter}, frame_cache, scrub_blit, thumb_sink, canvas, owned_*
 ```
 
 Host-facing `VideoPlayer` = methods `fpmedia-web-components` calls (`pub`); sibling-only helpers = `pub(super)` (e.g. scrub pipeline / clock stop).
@@ -119,7 +120,7 @@ Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `a
 - Do not cancel in-flight GOP densify on aim move; do not blit interim; do not wipe markers on settle/Play; do not drop prune salvage “to clean the strip” (re-decodes GOP — `AGENTS.md` Suboptimal).
 - Step: ring → blit → soft goto without abort densify. Pause after Play: refill blit gaps (`next_gap` prefers blit holes). Exact `put` refuses far inserts at cap (no origin/EOF thrash).
 - **GopProfile** → Short on **max** GOP only (scene-cut spread must not force Long).
-- Thumbs: never densify decoder; Play no sparse key_fill; far refine throttled; `hover_thumb_close_enough` = same sync key.
+- Thumbs: `ThumbSink` product (not densify decoder); Play no sparse key_fill; far refine throttled; `hover_thumb_close_enough` = same sync key. `mediabunny: media-sink.ts CanvasSink`.
 
 ### RefCell / WASM re-entry
 

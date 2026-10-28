@@ -15,7 +15,7 @@ use crate::decode::frame_cache::ScrubBlitLru;
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::scrub_blit::BlitCanvasSlot;
 #[cfg(feature = "thumbs")]
-use crate::decode::thumb_preview::ThumbPreview;
+use crate::decode::thumb_sink::ThumbSink;
 use crate::decode::webcodecs::{PlayIter, WebCodecsDecoder};
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
@@ -87,8 +87,9 @@ pub(super) struct Shared {
     pub(super) encode_canvas: BlitCanvasSlot,
     /// Hover / filmstrip sink (`ThumbPolicy::On` → lazy create). Feature `thumbs`.
     /// `Rc` so sparse fill can hold the sink across `.await` without `RefCell` borrow.
+    /// Product: [`crate::ThumbSink`] — also usable without this player.
     #[cfg(feature = "thumbs")]
-    pub(super) thumb: RefCell<Option<Rc<ThumbPreview>>>,
+    pub(super) thumb: RefCell<Option<Rc<ThumbSink>>>,
     #[cfg(feature = "thumbs")]
     pub(super) thumb_policy: Cell<ThumbPolicy>,
     /// Second decoder for background gap fill (does not steal main playback).

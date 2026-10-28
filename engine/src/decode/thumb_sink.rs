@@ -1,11 +1,13 @@
-//! Isolated hover / filmstrip thumb sink (not scrub densify / play decoder).
+//! Standalone thumb / filmstrip sink — **product surface**, not play/scrub.
 //!
-//! `mediabunny:` `CanvasSink` with small `width` + `getCanvas` /
-//! `canvasesAtTimestamps` — a **separate** sink from playback. Holds ThumbCache
-//! + a long-lived 3rd [`WebCodecsDecoder`] (`create_thumb` = scrub isolation).
+//! `mediabunny:` `CanvasSink` (`getCanvas` / `canvasesAtTimestamps`) — separate
+//! PreferSoftware decoder + sized bitmaps. Rust deltas: [`FrameId`] primary,
+//! [`Result`] + RAII `ImageBitmap::close`, residency [`ThumbCache`] (not ring
+//! `poolSize`), sync peek for hover paint.
 //!
-//! Sparse keyframe fill uses the same decoder (hover aim wins over bg).
-//! Player owns Exact→thumb bridge and when to call [`run_sparse_key_fill`].
+//! Usable without [`crate::VideoPlayer`]: `open_mp4` → track → [`ThumbSink::new`].
+//! Player hover / sparse fill are **clients** (Exact bridge + workload gates stay
+//! on `VideoPlayer`).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -21,45 +23,72 @@ use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::model::bg_task::SingleFlight;
 use crate::policy::{hover_thumb_dims, next_missing_sync_key};
-use crate::types::{FrameId, VideoMetadata};
+use crate::types::FrameId;
 
 /// Default hover box (matches `fpmedia_web_components` / `.wm-thumb-preview`).
 pub const DEFAULT_THUMB_MAX_W: u32 = 160;
 pub const DEFAULT_THUMB_MAX_H: u32 = 90;
 
-/// Mediabunny-style name for the thumb [`CanvasSink`](https://mediabunny.dev/api/CanvasSink) port.
-pub type ThumbSink = ThumbPreview;
+/// Options for [`ThumbSink`] (`mediabunny:` `CanvasSinkOptions` width/height).
+///
+/// `max_gops` / `max_thumbs` are **local** residency (MB has canvas `poolSize` for
+/// iterator reuse — we keep sized bitmaps for hover/filmstrip).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThumbSinkOptions {
+    pub max_w: u32,
+    pub max_h: u32,
+    pub max_gops: usize,
+    pub max_thumbs: usize,
+}
 
-/// Lazy thumb plane: cache + cancel epoch + dedicated decoder.
-pub struct ThumbPreview {
+impl Default for ThumbSinkOptions {
+    fn default() -> Self {
+        Self {
+            max_w: DEFAULT_THUMB_MAX_W,
+            max_h: DEFAULT_THUMB_MAX_H,
+            max_gops: DEFAULT_MAX_THUMB_GOPS,
+            max_thumbs: DEFAULT_MAX_THUMBS,
+        }
+    }
+}
+
+/// Thumb generation sink (`mediabunny:` [`CanvasSink`](https://mediabunny.dev/api/CanvasSink)).
+///
+/// Product API: [`Self::get`] / [`Self::at_frames`] / sync peek. Not the play or
+/// densify decoder.
+pub struct ThumbSink {
+    track: Rc<Mp4VideoTrack>,
     cache: RefCell<ThumbCache>,
-    /// Bumped to cancel in-flight Exact downscale / thumb decode.
+    /// Bumped to cancel in-flight decode / Exact downscale clients.
     epoch: Cell<u64>,
     decoder: RefCell<Option<WebCodecsDecoder>>,
     /// Own blit surface — never share densify `encode_canvas` (RefCell re-entry).
     blit: BlitCanvasSlot,
-    /// HEVC HW-only: refuse a 3rd decoder for this clip (Exact downscale only).
+    /// HEVC HW-only: refuse decode for this clip (Exact downscale only).
     decode_blocked: Cell<bool>,
-    /// Exclusive decode worker (latest-wins via [`Self::pending_aim`]).
+    /// Exclusive decode worker (latest-wins via [`Self::pending_aim`] for clients).
     flight: SingleFlight,
     /// Newest aim while a worker is running (presentation / key frame).
     pending_aim: Cell<Option<FrameId>>,
-    /// Latest cursor aim — paint nearest-to-this after decode (not a stale decode id).
+    /// Hover client: paint nearest-to-this after decode.
     hover_aim: Cell<FrameId>,
-    /// Hover motion for preview floor/ceil (`+1` ahead, `-1` behind, `0` neutral).
+    /// Hover client: floor/ceil bias (`+1` / `-1` / `0`).
     hover_dir: Cell<i8>,
     prev_hover_aim: Cell<Option<FrameId>>,
-    /// Last requested thumb box (bg key fill uses the same size).
     last_max_w: Cell<u32>,
     last_max_h: Cell<u32>,
-    /// Wall ms of last hover-aim decode start (Play throttle floor).
+    /// Hover client: wall ms of last aim-decode start (Play throttle).
     last_aim_decode_ms: Cell<f64>,
 }
 
-impl ThumbPreview {
-    pub fn new() -> Self {
+impl ThumbSink {
+    /// Create a sink on an opened video track (decoder lazy on first decode).
+    pub fn new(track: Rc<Mp4VideoTrack>, opts: ThumbSinkOptions) -> Self {
+        let max_w = opts.max_w.max(1);
+        let max_h = opts.max_h.max(1);
         Self {
-            cache: RefCell::new(ThumbCache::new(DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS)),
+            track,
+            cache: RefCell::new(ThumbCache::new(opts.max_gops, opts.max_thumbs)),
             epoch: Cell::new(0),
             decoder: RefCell::new(None),
             blit: BlitCanvasSlot::default(),
@@ -69,10 +98,14 @@ impl ThumbPreview {
             hover_aim: Cell::new(0),
             hover_dir: Cell::new(0),
             prev_hover_aim: Cell::new(None),
-            last_max_w: Cell::new(DEFAULT_THUMB_MAX_W),
-            last_max_h: Cell::new(DEFAULT_THUMB_MAX_H),
+            last_max_w: Cell::new(max_w),
+            last_max_h: Cell::new(max_h),
             last_aim_decode_ms: Cell::new(0.0),
         }
+    }
+
+    pub fn track(&self) -> &Rc<Mp4VideoTrack> {
+        &self.track
     }
 
     pub fn cancel(&self) {
@@ -138,11 +171,23 @@ impl ThumbPreview {
         self.flight.clear_pending();
     }
 
+    pub fn store_key(&self, frame: FrameId) -> FrameId {
+        self.track.index().nearest_keyframe(frame).unwrap_or(frame)
+    }
+
     pub fn contains(&self, key: FrameId, frame: FrameId, width: u32, height: u32) -> bool {
         let Ok(cache) = self.cache.try_borrow() else {
             return false;
         };
         cache.contains(key, frame, width, height)
+    }
+
+    /// Sync cache hit at current thumb size (`mediabunny:` present cached canvas).
+    pub fn try_get(&self, frame: FrameId) -> bool {
+        let meta = self.track.metadata();
+        let (tw, th) = self.thumb_dims(meta.width, meta.height);
+        let key = self.store_key(frame);
+        self.contains(key, frame, tw, th)
     }
 
     /// Sized thumb box for current [`Self::last_size`] and source display size.
@@ -178,7 +223,13 @@ impl ThumbPreview {
         cache.get(key, frame, width, height).map(f)
     }
 
-    /// Cached thumb neighbor biased by hover `dir`.
+    /// Cached thumb neighbor biased by `dir` (`scrub_preview_neighbor`).
+    pub fn nearest(&self, target: FrameId, dir: i8) -> Option<FrameId> {
+        let meta = self.track.metadata();
+        let (tw, th) = self.thumb_dims(meta.width, meta.height);
+        self.nearest_frame_with_dir(target, tw, th, dir)
+    }
+
     pub fn nearest_frame_with_dir(
         &self,
         target: FrameId,
@@ -225,6 +276,26 @@ impl ThumbPreview {
             bitmap.close();
         }
     }
+
+    /// Draw a cached thumb into `dest` when present.
+    pub fn paint_to(
+        &self,
+        frame: FrameId,
+        dest: &HtmlCanvasElement,
+    ) -> Result<Option<FrameId>, MediaError> {
+        let meta = self.track.metadata();
+        let (tw, th) = self.thumb_dims(meta.width, meta.height);
+        let key = self.store_key(frame);
+        match self.with_bitmap(key, frame, tw, th, |bmp| {
+            paint_thumb_canvas(dest, bmp, tw, th)
+        }) {
+            Some(Ok(())) => Ok(Some(frame)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    // —— Hover client session (VideoPlayer / `<HoverThumb>`; not MB CanvasSink) ——
 
     pub fn set_hover_aim(&self, aim: FrameId) {
         if let Some(prev) = self.prev_hover_aim.get() {
@@ -298,11 +369,128 @@ impl ThumbPreview {
     pub fn end_decode(&self) {
         self.flight.release_busy();
     }
-}
 
-impl Default for ThumbPreview {
-    fn default() -> Self {
-        Self::new()
+    /// Decode `frame` into the cache. Caller must own the decode flight (or be
+    /// sole user). Prefer [`Self::get`] for the public single-shot API.
+    pub async fn decode_into_cache(
+        &self,
+        frame: FrameId,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<FrameId, MediaError> {
+        if cancel() {
+            return Err(MediaError::Cancelled);
+        }
+        let meta = self.track.metadata();
+        let count = meta.frame_count;
+        if frame >= count {
+            return Err(MediaError::FrameOutOfRange(frame, count));
+        }
+        let (tw, th) = self.thumb_dims(meta.width, meta.height);
+        let store_key = self.store_key(frame);
+        if self.contains(store_key, frame, tw, th) {
+            return Ok(frame);
+        }
+        if self.decode_blocked.get() {
+            return Err(MediaError::Cancelled);
+        }
+
+        let taken = self.take_decoder();
+        let mut decoder = match taken {
+            Some(d) => d,
+            None => match WebCodecsDecoder::create_thumb(&meta).await {
+                Ok(d) => d,
+                Err(MediaError::CodecUnsupported(c)) => {
+                    self.set_decode_blocked(true);
+                    return Err(MediaError::CodecUnsupported(c));
+                }
+                Err(e) => return Err(e),
+            },
+        };
+        if cancel() {
+            self.put_decoder(decoder);
+            return Err(MediaError::Cancelled);
+        }
+
+        let decoded = decoder.decode_frame(&self.track, frame, cancel).await;
+        let video = match decoded {
+            Ok(v) => {
+                self.put_decoder(decoder);
+                v
+            }
+            Err(e) => {
+                let _ = decoder.reset();
+                self.put_decoder(decoder);
+                return Err(e);
+            }
+        };
+        if cancel() {
+            drop(video);
+            return Err(MediaError::Cancelled);
+        }
+
+        let thumb = self.with_blit(|enc| {
+            enc.frame_to_bitmap(video.as_video_frame(), tw, th)
+                .map(|(bmp, _, _)| bmp)
+        })?;
+        drop(video);
+        if cancel() {
+            thumb.close();
+            return Err(MediaError::Cancelled);
+        }
+        self.put_ready(store_key, frame, thumb, tw, th);
+        Ok(frame)
+    }
+
+    /// Ensure a sized thumb for `frame` is in cache (`mediabunny:` `getCanvas`).
+    ///
+    /// Returns `Ok(None)` when the codec cannot drive a 3rd decoder (Exact-only).
+    /// Claims the decode flight — do not call while a fill/hover worker holds it.
+    pub async fn get(
+        &self,
+        frame: FrameId,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Option<FrameId>, MediaError> {
+        if cancel() {
+            return Err(MediaError::Cancelled);
+        }
+        let meta = self.track.metadata();
+        let (tw, th) = self.thumb_dims(meta.width, meta.height);
+        let store_key = self.store_key(frame);
+        if self.contains(store_key, frame, tw, th) {
+            return Ok(Some(frame));
+        }
+        if self.decode_blocked.get() {
+            return Ok(None);
+        }
+        if !self.flight.try_claim() {
+            return Err(MediaError::Cancelled);
+        }
+        let result = self.decode_into_cache(frame, cancel).await;
+        self.end_decode();
+        match result {
+            Ok(id) => Ok(Some(id)),
+            Err(MediaError::CodecUnsupported(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Sparse FrameIds → cache (`mediabunny:` `canvasesAtTimestamps`).
+    ///
+    /// Decodes sequentially; pass monotonically increasing ids when possible.
+    /// Each slot is `Some(frame)` when ready, `None` when unsupported/skip.
+    pub async fn at_frames(
+        &self,
+        frames: &[FrameId],
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Vec<Option<FrameId>>, MediaError> {
+        let mut out = Vec::with_capacity(frames.len());
+        for &frame in frames {
+            if cancel() {
+                return Err(MediaError::Cancelled);
+            }
+            out.push(self.get(frame, cancel).await?);
+        }
+        Ok(out)
     }
 }
 
@@ -333,9 +521,7 @@ pub fn paint_thumb_canvas(
 /// `next_gap` returns the next missing sync id (caller supplies focus / index).
 /// Releases the worker if hover queues a pending aim mid-fill or `yield_to_play`.
 pub async fn run_sparse_key_fill(
-    sink: Rc<ThumbPreview>,
-    track: Rc<Mp4VideoTrack>,
-    meta: VideoMetadata,
+    sink: Rc<ThumbSink>,
     mut next_gap: impl FnMut() -> Option<FrameId>,
     yield_to_play: impl Fn() -> bool,
 ) -> Result<(), MediaError> {
@@ -351,55 +537,21 @@ pub async fn run_sparse_key_fill(
             return Ok(());
         };
 
+        let meta = sink.track().metadata();
         let (tw, th) = sink.thumb_dims(meta.width, meta.height);
         if !sink.contains(key, key, tw, th) {
-            let taken = sink.take_decoder();
-            let mut decoder = match taken {
-                Some(d) => d,
-                None => match WebCodecsDecoder::create_thumb(&meta).await {
-                    Ok(d) => d,
-                    Err(MediaError::CodecUnsupported(_)) => {
-                        sink.set_decode_blocked(true);
-                        end();
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        end();
-                        return Err(e);
-                    }
-                },
-            };
             let cancelled = || yield_to_play() || sink.decode_blocked() || sink.has_pending_aim();
             if cancelled() {
-                sink.put_decoder(decoder);
                 end();
                 return Ok(());
             }
-            let decoded = decoder.decode_frame(&track, key, &cancelled).await;
-            match decoded {
-                Ok(video) => {
-                    sink.put_decoder(decoder);
-                    // Cache even if hover preempted — key still warms ThumbCache.
-                    if !sink.decode_blocked()
-                        && !yield_to_play()
-                        && let Ok(bmp) = sink.with_blit(|enc| {
-                            enc.frame_to_bitmap(video.as_video_frame(), tw, th)
-                                .map(|(bmp, _, _)| bmp)
-                        })
-                    {
-                        sink.put_ready(key, key, bmp, tw, th);
-                    }
-                    drop(video);
-                }
-                Err(MediaError::Cancelled) => {
-                    let _ = decoder.reset();
-                    sink.put_decoder(decoder);
+            match sink.decode_into_cache(key, &cancelled).await {
+                Ok(_) => {}
+                Err(MediaError::Cancelled) | Err(MediaError::CodecUnsupported(_)) => {
                     end();
                     return Ok(());
                 }
                 Err(e) => {
-                    let _ = decoder.reset();
-                    sink.put_decoder(decoder);
                     end();
                     return Err(e);
                 }
