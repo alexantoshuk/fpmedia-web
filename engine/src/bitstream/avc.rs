@@ -22,6 +22,11 @@ const SEI_PAYLOAD_RECOVERY_POINT: u32 = 6;
 /// Sequence parameter set NAL unit type (ISO/IEC 14496-10).
 const NAL_SPS: u8 = 7;
 
+/// Chromium major that accepts exact Recovery Point SEI as WebCodecs keys
+/// (w3c/webcodecs#650). Older majors brick on non-IDR keys.
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+const CHROMIUM_SEI_RECOVERY_KEY_MAJOR: u32 = 145;
+
 /// `lengthSizeMinusOne + 1` from an `avcC` box payload (ISO/IEC 14496-15).
 ///
 /// Byte 4: top 6 bits reserved (`111111`), bottom 2 bits = length size minus one.
@@ -106,8 +111,6 @@ pub fn canonicalize_avc_webcodecs_config(
 pub fn accept_avc_recovery_point_sei() -> bool {
     #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
     {
-        // Older Chromium bricks on non-IDR keys; ≥145 accepts exact SEI recovery.
-        const CHROMIUM_SEI_RECOVERY_KEY_MAJOR: u32 = 145;
         match chromium_major_version() {
             Some(major) => major >= CHROMIUM_SEI_RECOVERY_KEY_MAJOR,
             None => true, // Firefox / Safari / non-Chromium

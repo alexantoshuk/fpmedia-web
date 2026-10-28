@@ -15,6 +15,9 @@ use crate::error::MediaError;
 pub const PLACEHOLDER_CANVAS_W: u32 = 320;
 pub const PLACEHOLDER_CANVAS_H: u32 = 240;
 
+/// Monitor size fallback when `window.screen` is unavailable (4K device px).
+const MONITOR_FALLBACK_PX: (u32, u32) = (3840, 2160);
+
 /// Clear prior-clip `aspect-ratio` + bitmap attrs on the **shared** stage canvas.
 ///
 /// The DOM canvas outlives [`crate::VideoPlayer`]; without this, open B after A
@@ -105,18 +108,17 @@ pub fn device_pixel_ratio() -> f64 {
 
 /// Monitor size in device pixels (`screen` CSS × DPR). Fallback 4K if unavailable.
 pub fn monitor_pixel_size() -> (u32, u32) {
-    const FALLBACK: (u32, u32) = (3840, 2160);
     let Some(window) = web_sys::window() else {
-        return FALLBACK;
+        return MONITOR_FALLBACK_PX;
     };
     let dpr = device_pixel_ratio();
     let Ok(screen) = window.screen() else {
-        return FALLBACK;
+        return MONITOR_FALLBACK_PX;
     };
     let w = screen.width().unwrap_or(0) as f64;
     let h = screen.height().unwrap_or(0) as f64;
     if w < 1.0 || h < 1.0 {
-        return FALLBACK;
+        return MONITOR_FALLBACK_PX;
     }
     (
         (w * dpr).round().max(1.0) as u32,

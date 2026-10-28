@@ -17,6 +17,9 @@ use crate::types::FrameId;
 
 use super::{Shared, VideoPlayer, now_ms, sleep_ms};
 
+/// Wall cap waiting for a free PreferSoftware claim (no microtask spin).
+const CLAIM_WAIT_MS: f64 = 2_000.0;
+
 impl VideoPlayer {
     /// Abort in-flight hover Exact downscale (scrub start / pointer leave).
     /// Play does not cancel the sink — ThumbCache stays; sparse fill yields via
@@ -424,7 +427,6 @@ impl VideoPlayer {
                     .ok_or(MediaError::Cancelled)?
             };
             let wait_start = now_ms().unwrap_or(0.0);
-            const CLAIM_WAIT_MS: f64 = 2_000.0;
             loop {
                 sleep_ms(0).await;
                 if now_ms().unwrap_or(wait_start) - wait_start >= CLAIM_WAIT_MS {

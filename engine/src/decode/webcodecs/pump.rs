@@ -24,6 +24,14 @@ use super::core::{DecoderCore, GopSink, REORDER_FEED_SLACK, compute_max_queue_si
 /// deadlocking.
 const PUMP_STARVED_SPINS: u32 = 240;
 
+/// Brief drain for in-flight decodeQ at GOP end before `flush()`.
+/// Was 400 ms — blocked prefetch long enough for presentation underrun.
+/// `mediabunny: src/media-sink.ts mediaSamplesInRange` awaits emit without a long
+/// pre-flush sleep.
+const DRAIN_BEFORE_FLUSH_MS: f64 = 80.0;
+/// Extra wait after a timed-out flush while q/stamps remain.
+const DRAIN_AFTER_FLUSH_MS: f64 = 800.0;
+
 /// Cross-task flags between the packet pump and the frame consumer
 /// (mediabunny keeps these as closure-scoped `promiseWithResolvers` pairs).
 #[derive(Default)]
@@ -366,14 +374,6 @@ pub(super) async fn finish_gop_for_target(
     target_us: i64,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<OwnedVideoFrame>, MediaError> {
-    /// Brief drain for in-flight decodeQ at GOP end. Was 400ms — blocked
-    /// prefetch long enough for presentation (cap 6 ≈250ms) to underrun →
-    /// ~0.5s Play freeze every GOP on 1080p. mediabunny awaits emit without
-    /// a long pre-flush sleep (`src/media-sink.ts` mediaSamplesInRange).
-    const DRAIN_BEFORE_FLUSH_MS: f64 = 80.0;
-    /// Extra wait after a timed-out flush while q/stamps remain.
-    const DRAIN_AFTER_FLUSH_MS: f64 = 800.0;
-
     if let Some(ready) =
         drain_for_target(core, target_us, DRAIN_BEFORE_FLUSH_MS, is_cancelled).await?
     {

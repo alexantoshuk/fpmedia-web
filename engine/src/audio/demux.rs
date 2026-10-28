@@ -13,6 +13,10 @@ use crate::types::{
     AudioCodec, AudioCodecConfig, AudioMetadata, EncodedAudioSample, Timestamp, build_aac_asc,
 };
 
+/// AAC (etc.) warm-ahead tile (`mediabunny: URLSource` min-load shape).
+const WARM_TILE_BYTES: usize = 512 * 1024;
+const WARM_MAX_BYTES: usize = 8 * 1024 * 1024;
+
 /// Zero-based audio sample index in track order.
 pub type AudioSampleId = u64;
 
@@ -189,8 +193,6 @@ impl Mp4AudioTrack {
     /// Same role as video [`crate::demux::Mp4VideoTrack::warm_sample_bytes`] —
     /// A/V lag together when only video `mdat` was warmed.
     pub async fn warm_bytes_through(&self, time_secs: f64) -> Result<(), MediaError> {
-        const TILE: usize = 512 * 1024;
-        const MAX_BYTES: usize = 8 * 1024 * 1024;
         let spans = {
             let samples = self.samples.borrow();
             if samples.is_empty() {
@@ -207,14 +209,16 @@ impl Mp4AudioTrack {
         let mut filled = 0usize;
         for (start, end) in spans {
             let mut off = start;
-            while off < end && filled < MAX_BYTES {
-                let chunk = ((end - off) as usize).min(TILE).min(MAX_BYTES - filled);
+            while off < end && filled < WARM_MAX_BYTES {
+                let chunk = ((end - off) as usize)
+                    .min(WARM_TILE_BYTES)
+                    .min(WARM_MAX_BYTES - filled);
                 let _ = source.read(off, chunk).await?;
                 off += chunk as u64;
                 filled += chunk;
                 crate::util::yield_now().await;
             }
-            if filled >= MAX_BYTES {
+            if filled >= WARM_MAX_BYTES {
                 break;
             }
         }

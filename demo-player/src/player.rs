@@ -52,6 +52,11 @@ const RATE_TICKS: [f64; 7] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75];
 const RATE_SLIDER_MIN: f64 = 0.25;
 const RATE_SLIDER_MAX: f64 = 1.75;
 
+/// Keep rate popover this far inside the viewport edge.
+const POPOVER_EDGE_PAD: f64 = 8.0;
+/// Fullscreen chrome auto-hide after idle (ms).
+const CONTROLS_IDLE_MS: f64 = 2200.0;
+
 fn format_rate_tick(r: f64) -> String {
     if (r - r.round()).abs() < 1e-9 {
         format!("{}", r.round() as i32)
@@ -78,19 +83,18 @@ fn rate_pop_viewport_shift(pop: &HtmlElement, applied_shift: f64) -> f64 {
     if vw <= 0.0 {
         return 0.0;
     }
-    const PAD: f64 = 8.0;
     let rect = pop.get_bounding_client_rect();
     let left = rect.left() - applied_shift;
     let right = rect.right() - applied_shift;
     let mut shift = 0.0;
-    if right > vw - PAD {
-        shift -= right - (vw - PAD);
+    if right > vw - POPOVER_EDGE_PAD {
+        shift -= right - (vw - POPOVER_EDGE_PAD);
     }
-    if left + shift < PAD {
-        shift += PAD - (left + shift);
+    if left + shift < POPOVER_EDGE_PAD {
+        shift += POPOVER_EDGE_PAD - (left + shift);
     }
-    if right + shift > vw - PAD {
-        shift -= (right + shift) - (vw - PAD);
+    if right + shift > vw - POPOVER_EDGE_PAD {
+        shift -= (right + shift) - (vw - POPOVER_EDGE_PAD);
     }
     shift
 }
@@ -401,7 +405,6 @@ pub fn DemoPlayer() -> impl IntoView {
         });
     });
 
-    const CONTROLS_IDLE_MS: f64 = 2200.0;
     let UseTimeoutFnReturn {
         start: start_controls_hide,
         stop: stop_controls_hide,

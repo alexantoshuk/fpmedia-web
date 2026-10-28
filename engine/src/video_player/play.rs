@@ -25,6 +25,9 @@ use super::play_pool::PlayCanvasPool;
 use super::shared::PlayNext;
 use super::{DuePresent, PLAY_EXACT_VRAM_VF_SLACK, PlayTick, VideoPlayer, now_ms};
 
+/// After tab visible while Playing — skip audio underrun hold this long.
+const UNDERRUN_CATCHUP_GRACE_MS: f64 = 1000.0;
+
 impl VideoPlayer {
     /// Paused Next ring cap (step only — Play uses [`PlayIter`]).
     pub(super) fn play_presentation_cap(&self) -> usize {
@@ -415,11 +418,10 @@ impl VideoPlayer {
     pub(super) fn arm_underrun_catchup_grace(&self) {
         // Long enough for rAF/iterator to repark after a hidden-tab lag; time-only
         // (not cleared on first `play_next` — that raced hold in the same tick).
-        const GRACE_MS: f64 = 1000.0;
         if let Some(now) = now_ms() {
             self.shared
                 .underrun_catchup_until_ms
-                .set(Some(now + GRACE_MS));
+                .set(Some(now + UNDERRUN_CATCHUP_GRACE_MS));
         }
     }
 

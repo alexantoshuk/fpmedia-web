@@ -21,6 +21,18 @@ use crate::source::{CachedSource, FetchMap, MediaSource, MemorySource};
 use crate::types::{CodecConfig, EncodedSample, FrameId, VideoCodec, VideoMetadata};
 use crate::util::block_on;
 
+/// Prefetch tile under half of [`crate::source::GATE_LARGE_BYTES`] (play Ranges
+/// must not queue behind multi-MiB fills).
+const PREFETCH_TILE_BYTES: u64 = (crate::source::GATE_LARGE_BYTES as u64) / 2;
+const PREFETCH_MAX_TILES: usize = 12;
+/// Nearby-frame seam warm: look this many presentation frames ahead.
+const SEAM_LOOKAHEAD_FRAMES: u64 = 32;
+const SEAM_PREFETCH_TILE_BYTES: usize = 1024 * 1024;
+/// PlayPrime / warm-ahead sample fill (`mediabunny: URLSource` min-load).
+const WARM_SAMPLE_TILE_BYTES: usize = 512 * 1024;
+/// ~12 warm moofs × 1080p can be tens of MiB; under-fill left cold seams.
+const WARM_SAMPLE_MAX_BYTES: usize = 48 * 1024 * 1024;
+
 /// Options for [`open_mp4`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OpenMp4Options {
@@ -243,18 +255,16 @@ impl Mp4VideoTrack {
         };
         // Stay under GATE_LARGE_BYTES so play sample Ranges are not queued
         // behind multi-MiB cache fills (`url_gate` / AAC starve lesson).
-        const TILE: u64 = (crate::source::GATE_LARGE_BYTES as u64) / 2;
-        const MAX_TILES: usize = 12;
         let mut tiles = 0usize;
         for (start, end) in spans {
             let mut off = start;
-            while off < end && tiles < MAX_TILES {
-                let chunk = (end - off).min(TILE);
+            while off < end && tiles < PREFETCH_MAX_TILES {
+                let chunk = (end - off).min(PREFETCH_TILE_BYTES);
                 self.source.prefetch(off, chunk as usize);
                 off += chunk;
                 tiles += 1;
             }
-            if tiles >= MAX_TILES {
+            if tiles >= PREFETCH_MAX_TILES {
                 break;
             }
         }
@@ -265,21 +275,19 @@ impl Mp4VideoTrack {
     /// Called from the decode path so the Range is in flight ~0.5–1 s before
     /// the seam — not only at `play()` when the first 8 MiB tile was still cold.
     fn kick_prefetch_if_fragment_seam(&self, frame: FrameId) {
-        const LOOKAHEAD: u64 = 32;
-        const TILE: usize = 1024 * 1024;
         let gap = crate::demux::coalesce::SAMPLE_COALESCE_GAP;
         let index = self.index.borrow();
         let Some(cur) = index.get(frame) else {
             return;
         };
         let mut end = cur.offset.saturating_add(cur.size);
-        let last = (frame.saturating_add(LOOKAHEAD)).min(index.len() as u64);
+        let last = (frame.saturating_add(SEAM_LOOKAHEAD_FRAMES)).min(index.len() as u64);
         for f in frame.saturating_add(1)..last {
             let Some(n) = index.get(f) else {
                 break;
             };
             if n.offset > end.saturating_add(gap) {
-                self.source.prefetch(n.offset, TILE);
+                self.source.prefetch(n.offset, SEAM_PREFETCH_TILE_BYTES);
                 return;
             }
             end = end.max(n.offset.saturating_add(n.size));
@@ -299,9 +307,6 @@ impl Mp4VideoTrack {
     /// first cold `mdat` inside the warm index (`mediabunny: URLSource` min-load
     /// / worker fill before the sink runs dry).
     pub async fn warm_sample_bytes(&self, from: FrameId, lead: u64) -> Result<(), MediaError> {
-        const TILE: usize = 512 * 1024; // mediabunny URL_SOURCE_MIN_LOAD_AMOUNT
-        // ~12 warm moofs × 1080p can be tens of MiB; under-fill left cold seams.
-        const MAX_BYTES: usize = 48 * 1024 * 1024;
         let indexed = self.index.borrow().len() as u64;
         let to = indexed.min(from.saturating_add(lead)) as usize;
         let from = from as usize;
@@ -318,14 +323,16 @@ impl Mp4VideoTrack {
         let mut filled = 0usize;
         for (start, end) in spans {
             let mut off = start;
-            while off < end && filled < MAX_BYTES {
-                let chunk = ((end - off) as usize).min(TILE).min(MAX_BYTES - filled);
+            while off < end && filled < WARM_SAMPLE_MAX_BYTES {
+                let chunk = ((end - off) as usize)
+                    .min(WARM_SAMPLE_TILE_BYTES)
+                    .min(WARM_SAMPLE_MAX_BYTES - filled);
                 let _ = self.source.read(off, chunk).await?;
                 off += chunk as u64;
                 filled += chunk;
                 crate::util::yield_now().await;
             }
-            if filled >= MAX_BYTES {
+            if filled >= WARM_SAMPLE_MAX_BYTES {
                 break;
             }
         }

@@ -25,6 +25,17 @@ use super::transport_apply::{
 use super::{VideoOps, VideoRef};
 use fpmedia_web::timer::{next_animation_frame, now_ms};
 
+/// Soft-drag stillness → Exact aim while finger still down.
+const SCRUB_DWELL_EXACT_MS: f64 = 100.0;
+/// Rate-limit scrub drag — pointermove is denser than key-repeat.
+const SCRUB_DRAG_THROTTLE_MS: f64 = 50.0;
+/// Play / paused-idle `sync_ui` + fps meter (~10 Hz).
+const SYNC_UI_MS: f64 = 100.0;
+/// While soft-dragging: slower strip/`sync_ui` so pointer CSS stays responsive.
+const SCRUBBING_SYNC_UI_MS: f64 = 150.0;
+/// Hidden-tab present tick (`mediabunny: setInterval(render, 500)`).
+const HIDDEN_PLAY_TICK_MS: u64 = 500;
+
 /// Frame-precise media element (HTML `<video>` analog).
 ///
 /// Renders only the media stage. Drive it through [`VideoRef`].
@@ -83,11 +94,11 @@ pub fn Video(
                 if !playing.get_untracked() {
                     // Match play ~10 Hz — unthrottled paused rAF + strip Effect
                     // starved pointer/playhead CSS (red bar lagged the finger).
-                    // Drag: ~150 ms (hover coalesce) so strips still grow.
+                    // Drag: slower (hover coalesce) so strips still grow.
                     let interval_ms = if transport.is_scrubbing() {
-                        150.0
+                        SCRUBBING_SYNC_UI_MS
                     } else {
-                        100.0
+                        SYNC_UI_MS
                     };
                     let now = now_ms().unwrap_or(0.0);
                     if now - last_paused_ui_ms.get() < interval_ms {
@@ -127,12 +138,12 @@ pub fn Video(
                         let now = now_ms();
                         if did_draw
                             && let Some(measured) = fps_meter.borrow_mut().note_present()
-                            && now.is_some_and(|n| n - last_play_ui_ms.get() >= 100.0)
+                            && now.is_some_and(|n| n - last_play_ui_ms.get() >= SYNC_UI_MS)
                         {
                             fps.set(Some(measured));
                         }
                         if let Some(n) = now
-                            && n - last_play_ui_ms.get() >= 100.0
+                            && n - last_play_ui_ms.get() >= SYNC_UI_MS
                         {
                             last_play_ui_ms.set(n);
                             ctx.sync_ui();
@@ -197,12 +208,12 @@ pub fn Video(
                         let now = now_ms();
                         if did_draw
                             && let Some(measured) = ctx.fps_meter.borrow_mut().note_present()
-                            && now.is_some_and(|n| n - last_play_ui_ms.get() >= 100.0)
+                            && now.is_some_and(|n| n - last_play_ui_ms.get() >= SYNC_UI_MS)
                         {
                             fps.set(Some(measured));
                         }
                         if let Some(n) = now
-                            && n - last_play_ui_ms.get() >= 100.0
+                            && n - last_play_ui_ms.get() >= SYNC_UI_MS
                         {
                             last_play_ui_ms.set(n);
                             ctx.sync_ui();
@@ -219,7 +230,7 @@ pub fn Video(
                 }
             }
         },
-        500_u64,
+        HIDDEN_PLAY_TICK_MS,
         UseIntervalFnOptions::default()
             .immediate(false)
             .immediate_callback(false),
@@ -513,7 +524,6 @@ pub fn Video(
 
     // Soft-drag stillness → Exact aim (same settle path as release; gesture stays).
     // **no equivalent** (scrub local). Reset on every move; cancel on pointer-up.
-    const SCRUB_DWELL_EXACT_MS: f64 = 200.0;
     let UseTimeoutFnReturn {
         start: start_scrub_dwell,
         stop: stop_scrub_dwell,
@@ -565,10 +575,7 @@ pub fn Video(
         }) as Rc<dyn Fn(u32)>
     };
 
-    // Rate-limit scrub drag only — pointermove is denser than key-repeat.
-    // Settle / release stays immediate via transport ScrubRelease.
-    const SCRUB_DRAG_THROTTLE_MS: f64 = 50.0;
-
+    // Rate-limit scrub drag only — settle / release stays immediate via ScrubRelease.
     let scrub_pointer_move_throttled = {
         let dispatch = Rc::clone(&dispatch);
         use_throttle_fn_with_arg_and_options(
