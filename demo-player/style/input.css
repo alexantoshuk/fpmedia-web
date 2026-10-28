@@ -124,6 +124,18 @@ body {
   flex-direction: column;
 }
 
+/* Touch: ~44px hit without thickening the bar; expand upward so controls stay clear. */
+@media (pointer: coarse) {
+  .wm-scrubber::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -22px;
+    bottom: 0;
+  }
+}
+
 .wm-scrubber[aria-disabled="true"] {
   cursor: default;
   opacity: 0.55;

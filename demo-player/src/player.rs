@@ -582,9 +582,56 @@ pub fn DemoPlayer() -> impl IntoView {
     let btn_play = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     let btn_rate = "wm-rate-btn inline-flex h-9 min-w-[2.75rem] items-center justify-center rounded-md border-0 bg-transparent px-1.5 text-sm tabular-nums text-zinc-300 hover:text-zinc-100 disabled:cursor-default disabled:opacity-45";
 
+    let btn_round = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
+    let btn_round_on = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-emerald-400 hover:bg-emerald-400/20 disabled:cursor-default disabled:opacity-45";
+
     view! {
-        <div class="mx-auto w-full max-w-[1100px] px-0 py-6">
-            <h1 class="mb-4 text-center text-xl font-semibold tracking-tight text-emerald-400">"Frame-precise media player"</h1>
+        <header class="flex w-full items-center justify-end gap-2 pt-[2px] pr-[2px]">
+            <button
+                type="button"
+                class=move || {
+                    if debug_on.get() {
+                        btn_round_on.to_string()
+                    } else {
+                        btn_round.to_string()
+                    }
+                }
+                data-testid="btn-debug"
+                prop:aria-pressed=move || debug_on.get()
+                prop:aria-label=move || {
+                    if debug_on.get() {
+                        "Disable debug info"
+                    } else {
+                        "Enable debug info"
+                    }
+                }
+                prop:title=move || {
+                    if debug_on.get() {
+                        "Disable debug info"
+                    } else {
+                        "Enable debug info"
+                    }
+                }
+                on:click=move |_| debug_on.update(|v| *v = !*v)
+            >
+                <icon::DebugInfo class="h-5 w-5 shrink-0"/>
+            </button>
+            <a
+                class=btn_round
+                href="https://github.com/alexantoshuk/fpmedia-web"
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="btn-github"
+                aria-label="fpmedia-web on GitHub"
+                title="fpmedia-web on GitHub"
+            >
+                <icon::GitHub class="h-5 w-5 shrink-0"/>
+            </a>
+        </header>
+        <div class="mx-auto w-full max-w-[1100px] px-0 pb-6">
+            <h1 class="mb-4 text-center text-xl font-semibold tracking-tight text-emerald-400">
+                "Frame-precise media player"
+            </h1>
 
             <div class="mb-3 flex flex-wrap items-center justify-center gap-2" data-testid="source">
                 <label class=format!("wm-file {btn}")>
@@ -609,10 +656,8 @@ pub fn DemoPlayer() -> impl IntoView {
                     />
                 </label>
                 <button
-                    type="button"
                     class=btn
                     data-testid="btn-load-url"
-                    prop:disabled=move || video.busy.get()
                     on:click=move |_| {
                         let Some(w) = window() else { return };
                         let Ok(Some(raw)) = w.prompt_with_message_and_default(
@@ -627,38 +672,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         open_demo_url(&video, raw, clip_label);
                     }
                 >
-                    "Load Remote URL"
-                </button>
-                <button
-                    type="button"
-                    class=move || {
-                        if debug_on.get() {
-                            // Full class set (not `{btn} + …`) — Tailwind ignores HTML
-                            // class order; zinc bg from `btn` would win over emerald.
-                            "inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-emerald-400/20 text-white hover:bg-emerald-400/30 disabled:cursor-default disabled:opacity-45".to_string()
-                        } else {
-                            "inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:cursor-default disabled:opacity-45".to_string()
-                        }
-                    }
-                    data-testid="btn-debug"
-                    prop:aria-pressed=move || debug_on.get()
-                    prop:aria-label=move || {
-                        if debug_on.get() {
-                            "Disable debug info"
-                        } else {
-                            "Enable debug info"
-                        }
-                    }
-                    prop:title=move || {
-                        if debug_on.get() {
-                            "Disable debug info"
-                        } else {
-                            "Enable debug info"
-                        }
-                    }
-                    on:click=move |_| debug_on.update(|v| *v = !*v)
-                >
-                    <icon::DebugInfo class="h-4 w-4 shrink-0"/>
+                    "Load remote URL"
                 </button>
             </div>
 
@@ -676,12 +690,10 @@ pub fn DemoPlayer() -> impl IntoView {
                     type="url"
                     node_ref=url_input
                     data-testid="url-input"
-                    prop:disabled=move || video.busy.get()
                 />
                 <button
                     type="button"
                     data-testid="btn-open-url"
-                    prop:disabled=move || video.busy.get()
                     on:click=move |_| {
                         let Some(input) = url_input.get() else { return };
                         open_demo_url(&video, input.value(), clip_label);
@@ -702,7 +714,20 @@ pub fn DemoPlayer() -> impl IntoView {
                 data-testid="player"
                 node_ref=player_root
             >
-                <div class="wm-media flex flex-col">
+                <div
+                    class="wm-media flex flex-col cursor-pointer"
+                    data-testid="media-stage"
+                    on:click=move |_| {
+                        if !video.ready.get_untracked() {
+                            return;
+                        }
+                        if video.playing.get_untracked() {
+                            video.pause();
+                        } else {
+                            video.play();
+                        }
+                    }
+                >
                     <Video video=video/>
                 </div>
                 <div
@@ -738,7 +763,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             }
                             data-testid="btn-play-pause"
-                            prop:disabled=move || video.busy.get() || !video.ready.get()
+                            prop:disabled=move || !video.ready.get()
                             prop:aria-label=move || {
                                 if video.playing.get() { "Pause" } else { "Play" }
                             }
@@ -782,7 +807,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             type="button"
                             class=btn_icon
                             data-testid="btn-prev"
-                            prop:disabled=move || video.busy.get() || !video.ready.get()
+                            prop:disabled=move || !video.ready.get()
                             prop:aria-label="Previous frame"
                             prop:title="Previous frame"
                             on:click=move |_| {
@@ -799,7 +824,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             type="button"
                             class=btn_icon
                             data-testid="btn-next"
-                            prop:disabled=move || video.busy.get() || !video.ready.get()
+                            prop:disabled=move || !video.ready.get()
                             prop:aria-label="Next frame"
                             prop:title="Next frame"
                             on:click=move |_| {
@@ -818,9 +843,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             data-testid="frame-input"
                             min="0"
                             prop:value=move || video.playhead.get().to_string()
-                            prop:disabled=move || {
-                                video.busy.get() || !video.ready.get() || video.playing.get()
-                            }
+                            prop:disabled=move || !video.ready.get() || video.playing.get()
                             on:change=move |ev| {
                                 let Some(input) = event_target::<HtmlInputElement>(&ev) else {
                                     return;
