@@ -540,8 +540,8 @@ pub fn Video(
         SCRUB_DWELL_EXACT_MS,
     );
 
-    // Exact already under finger → paint now; miss → arm dwell settle.
-    let arm_scrub_dwell = {
+    // Pointer-down: Exact hit → paint once; miss → arm dwell settle.
+    let arm_scrub_dwell_down = {
         let ctx = ctx.clone();
         let start_scrub_dwell = start_scrub_dwell.clone();
         let stop_scrub_dwell = stop_scrub_dwell.clone();
@@ -557,12 +557,31 @@ pub fn Video(
         }) as Rc<dyn Fn(u32)>
     };
 
+    // Pointer-move: never sync-present Exact — that raced throttled ScrubDrag on
+    // Exact-strip R→L (flicker + key стоп-кадр). Canvas = ScrubDrag; dwell Exact
+    // only after stillness when blit miss. **no equivalent** (scrub local).
+    let note_scrub_dwell_move = {
+        let ctx = ctx.clone();
+        let start_scrub_dwell = start_scrub_dwell.clone();
+        let stop_scrub_dwell = stop_scrub_dwell.clone();
+        Rc::new(move |frame: u32| {
+            stop_scrub_dwell();
+            let has = ctx
+                .with_player(|p| p.has_scrub_exact_blit(u64::from(frame)))
+                .unwrap_or(false);
+            if has {
+                return;
+            }
+            start_scrub_dwell(());
+        }) as Rc<dyn Fn(u32)>
+    };
+
     let scrub_pointer_down_fn = {
         let dispatch = Rc::clone(&dispatch);
-        let arm_scrub_dwell = Rc::clone(&arm_scrub_dwell);
+        let arm_scrub_dwell_down = Rc::clone(&arm_scrub_dwell_down);
         Rc::new(move |frame: u32| {
             dispatch(TransportEvent::PointerDown { frame });
-            arm_scrub_dwell(frame);
+            arm_scrub_dwell_down(frame);
         }) as Rc<dyn Fn(u32)>
     };
 
@@ -588,9 +607,9 @@ pub fn Video(
     };
 
     let scrub_pointer_move_fn = {
-        let arm_scrub_dwell = Rc::clone(&arm_scrub_dwell);
+        let note_scrub_dwell_move = Rc::clone(&note_scrub_dwell_move);
         Rc::new(move |target: u32| {
-            arm_scrub_dwell(target);
+            note_scrub_dwell_move(target);
             scrub_pointer_move_throttled(target);
         }) as Rc<dyn Fn(u32)>
     };

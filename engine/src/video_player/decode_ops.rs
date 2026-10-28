@@ -196,6 +196,56 @@ impl VideoPlayer {
         Ok(())
     }
 
+    /// Soft-drag key preview: decode sync `key` only (1 packet).
+    ///
+    /// - Aim still in this GOP: paint when [`scrub_drag_stage_choice`] picks key.
+    /// - Aim already left (mobile HW often loses the race): still paint if
+    ///   [`scrub_drag_key_advances`] — skipping every supersede dropped keyframes.
+    ///
+    /// Exact = dwell / settle. **no equivalent** (scrub local).
+    pub(super) async fn drag_key_chase(
+        &self,
+        key: FrameId,
+        epoch: u64,
+    ) -> Result<bool, MediaError> {
+        use crate::policy::{scrub_drag_key_advances, scrub_drag_stage_choice};
+
+        let track = self.shared.track.clone();
+        let video_frame = self.decode_frame(&track, key, epoch).await?;
+        if !self.is_current(epoch) {
+            drop(video_frame);
+            return Err(MediaError::Cancelled);
+        }
+        let aim = self.shared.drag_aim.get();
+        let aim_key = self.key_for(aim).unwrap_or(aim);
+        let dir = self.shared.scrub_dir.get();
+        let displayed = self.shared.displayed.borrow().as_ref().map(|q| q.frame);
+        if aim_key != key {
+            // Superseded GOP — paint key along scrub_dir (no Exact catch-up).
+            if scrub_drag_key_advances(dir, displayed, key) {
+                self.present_and_cache(key, video_frame)?;
+                // No commit — UI playhead tracks drag_aim; engine frame until
+                // aim-stable key / dwell Exact.
+            } else {
+                self.ingest_scrub_frame(key, video_frame, true);
+            }
+            return Ok(false);
+        }
+        let blit_cached = {
+            let blit = self.shared.scrub_blit.borrow();
+            blit.nearest_frame_with_dir(aim, dir)
+        };
+        // Includes far-ceil → distance fallback; only skip paint when a *near*
+        // warmer blit/display still wins.
+        if scrub_drag_stage_choice(aim, key, blit_cached, displayed, dir) != Some(key) {
+            self.ingest_scrub_frame(key, video_frame, true);
+            return Ok(true);
+        }
+        self.present_and_cache(key, video_frame)?;
+        self.shared.commit_frame(key)?;
+        Ok(true)
+    }
+
     /// Exact seek that salvages pruned early frames into densify markers (no canvas blit).
     ///
     /// Canvas stays on the caller's static best cached/key preview until exact.

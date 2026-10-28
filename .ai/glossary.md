@@ -47,7 +47,7 @@ Bytes that have ever been fetched into the source cache plane. Backed by **Fetch
 
 ### Exact (bright green)
 
-A live densify **ImageBitmap** in `ScrubBlitLru` for that FrameId. Means step-ready near the playhead and is the only plane **soft-drag preview** reads (`scrub_preview_frame`). Pause/seek/settle canvas Exactness is the key→N decode to aim — the strip is the residency map, not a substitute for that decode.
+A live densify **ImageBitmap** in `ScrubBlitLru` for that FrameId. Means step-ready near the playhead; soft-drag interim preview reads this plane (`scrub_preview_frame`) before main-HW key chase. Pause/seek/settle/dwell canvas Exactness is the key→N decode to aim — the strip is the residency map, not a substitute for that decode.
 
 ### Marker
 
@@ -85,7 +85,7 @@ Transport paused / ready. Densify **on** when `ScrubPolicy::densify` (Pause butt
 
 ### Soft-drag
 
-Pointer down/move on the scrubber: update aim + paint preview from Exact blit only. **No densify under the finger** (PreferSoftware fill saturates the main thread). Drag aborts in-flight densify for the gesture.
+Pointer down/move on the scrubber: update `drag_aim`, paint interim Exact blit, then chase nearest **key** on **main** (prefer-hardware). Exact aim = dwell / settle only (Exact-under-finger caused post-stop frame catch-up). Other-GOP supersede keeps blit trail without stage flash. **No densify under the finger**; do **not** `cancel_ops` on every move.
 
 ### Settle
 

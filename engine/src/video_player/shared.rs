@@ -116,6 +116,10 @@ pub(super) struct Shared {
     pub(super) loop_origin_warm_started: Cell<bool>,
     /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).
     pub(super) scrub_gesture: Cell<bool>,
+    /// Latest soft-drag aim (updated sync on every pointer sample). In-flight
+    /// key preview chases this without `cancel_ops` on each move. Exact = dwell
+    /// / settle. **no equivalent** (scrub local).
+    pub(super) drag_aim: Cell<FrameId>,
     /// Play vs scrub densify / exact hold + soft-hold audio.
     pub(super) engine: Cell<EngineModel>,
     pub(super) canvas: HtmlCanvasElement,

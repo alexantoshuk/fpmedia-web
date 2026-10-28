@@ -100,8 +100,10 @@ pub use policy::{
     SETTLE_TAKE_DECODER_WAIT_MS, SHORT_GOP_MAX_LEN, ScrubCachePolicy, ScrubPolicy, SettlePolicy,
     ThumbPolicy, UHD_MIN_HEIGHT, estimated_decoded_frame_bytes, exact_frames_to_free_for_play_vram,
     hover_thumb_dims, nearer_gap_with_dir, next_missing_sync_key, scrub_blit_cap_during_play,
-    scrub_blit_frame_budget, scrub_cache_frame_budget, scrub_edge_margins, scrub_gap_fill_armed,
-    scrub_preview_choice, scrub_preview_choice_with_dir, scrub_preview_neighbor,
+    scrub_blit_frame_budget, scrub_cache_frame_budget, scrub_drag_key_advances,
+    scrub_drag_stage_choice, scrub_drag_stage_near_aim, scrub_edge_margins, scrub_gap_fill_armed,
+    scrub_merge_dir_cached, scrub_preview_choice, scrub_preview_choice_with_dir,
+    scrub_preview_neighbor,
 };
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use source::{BlobSource, UrlSource, UrlSourceOptions, is_no_http_range};

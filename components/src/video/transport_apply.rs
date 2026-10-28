@@ -152,7 +152,8 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd)
                 // Always soft-hold when the cmd fires (even if UI already synced
                 // off Playing) — matches prior SoftPause; clock/session may still
                 // be live for one microtask after transport left Playing.
-                // Pause button: densify idle residency. Soft-drag: aim only.
+                // Pause button: densify idle residency. Soft-drag: densify off
+                // (Exact under finger is ScrubDrag → main HW).
                 web_sys::console::log_1(
                     &format!("fpmedia-web: soft pause (warm audio, densify={densify})").into(),
                 );
@@ -217,8 +218,9 @@ fn enqueue_scrub_drag(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, frame: u32) {
         return;
     };
     p.clear_densify_hold();
-    // Kill densify under the finger (cancel_ops alone left fill running).
-    p.cancel_ops_and_scrub_fill();
+    // Densify off via `note_scrub_frame` — do **not** `cancel_ops` here: that
+    // aborted in-flight main-HW key preview every ~50 ms. Settle / dwell still
+    // `prepare_scrub_settle`. **no equivalent** (scrub local).
     p.note_scrub_frame(u64::from(frame));
     if ctx.queue.enqueue(HostOp::ScrubDrag(frame)) {
         kick_drain();

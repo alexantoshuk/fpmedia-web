@@ -11,7 +11,7 @@ use crate::model::engine_mode::EngineEvent;
 use crate::policy::scrub_plan::{densify_should_ban_after_no_progress, densify_skip_bridge_ids};
 use crate::policy::{
     ScrubCachePolicy, ScrubPolicy, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
-    scrub_blit_frame_budget,
+    scrub_blit_frame_budget, scrub_drag_stage_choice, scrub_drag_stage_near_aim,
 };
 use crate::residency::ScrubChunk;
 use crate::types::FrameId;
@@ -243,10 +243,12 @@ impl VideoPlayer {
     /// Does **not** kick densify: PreferSoftware fill under the finger saturates
     /// the JS thread so the bar lags the cursor. Abort any in-flight Pause densify
     /// for this gesture; settle / hard Pause / step re-arm via
-    /// [`Self::enter_scrub_cache_pipeline`].
+    /// [`Self::enter_scrub_cache_pipeline`]. Updates [`Shared::drag_aim`] so an
+    /// in-flight soft-drag Exact can chase without `cancel_ops` on every move.
     pub fn note_scrub_frame(&self, frame: FrameId) {
         self.cancel_hover_thumb();
         self.shared.scrub_gesture.set(true);
+        self.shared.drag_aim.set(frame);
         self.note_scrub_direction(frame);
         self.aim_scrub_cache(frame);
         if self.shared.densify.is_busy() || self.shared.densify.is_pending() {
@@ -254,9 +256,22 @@ impl VideoPlayer {
         }
     }
 
-    /// Present Exact blit for `frame` when already cached (dwell / settle hit).
+    /// True when Exact blit already holds `frame` (no paint). Host move path uses
+    /// this to skip dwell without sync-present fighting ScrubDrag.
+    /// **no equivalent** (scrub local).
+    pub fn has_scrub_exact_blit(&self, frame: FrameId) -> bool {
+        self.shared
+            .scrub_blit
+            .try_borrow()
+            .map(|b| b.contains(frame))
+            .unwrap_or(false)
+    }
+
+    /// Present Exact blit for `frame` when already cached (dwell / settle / pointer-down).
     ///
-    /// Returns `true` when the stage was painted. **no equivalent** (scrub local).
+    /// Returns `true` when the stage was painted. Do **not** call on every
+    /// pointermove — fights throttled ScrubDrag (Exact-strip flicker).
+    /// **no equivalent** (scrub local).
     pub fn try_present_scrub_exact(&self, frame: FrameId) -> bool {
         match self.try_present_warm_blit(frame) {
             Ok(true) => self.shared.commit_frame(frame).is_ok(),
@@ -266,16 +281,15 @@ impl VideoPlayer {
 
     /// Async timeline scrub (local scrub policy; settle always exact VF).
     ///
-    /// - **Drag** (`settle=false`): aim + warm Exact blit. When
-    ///   [`ScrubPolicy::densify`] is on (Short/Long): never `decode_frame` —
-    ///   key→N per pointer sample froze the bar. When densify is off (All-Intra):
-    ///   Exact is one sync packet — `goto_frame` under the finger so soft-drag
-    ///   paints without a densify trail. OpQueue coalesces `ScrubDrag`.
-    ///   **no equivalent** (scrub local); Exact shape ≈ `mediabunny:
-    ///   samplesAtTimestamps` / settle path.
+    /// - **Drag** (`settle=false`): chase nearest **key** for [`Shared::drag_aim`]
+    ///   on main HW (1 packet). No Exact under the finger — that queued supersede
+    ///   paints and “caught up” after stop. Densify off; no `cancel_ops` per move.
+    ///   Exact = dwell / settle. Cold / densify-busy → blit / yield. **no equivalent**
+    ///   (scrub local).
     /// - **Settle** (`settle=true`, pointer up): abort densify, then one key→exact
     ///   cascade (`goto_frame_with_interim`) so canvas gets decode `VideoFrame`
     ///   (not a soft still). Host arms densify after Exact.
+    ///   Exact shape ≈ `mediabunny: samplesAtTimestamps` / settle path.
     pub async fn scrub_to(&self, frame: FrameId, settle: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         let densify_yield_ms = if settle {
@@ -389,37 +403,80 @@ impl VideoPlayer {
                 }
                 Ok(())
             } else {
-                if self.present_from_cache(frame).await? {
-                    self.shared.commit_frame(frame)?;
-                    return Ok(());
-                }
+                // Soft-drag: key preview via same floor/ceil + key-vs-cache pick as
+                // interim (`scrub_drag_stage_choice`). Blind key present flashed
+                // behind a warmer Exact blit. Exact = dwell/settle.
+                // **no equivalent** (scrub local).
+                self.shared.drag_aim.set(frame);
+                loop {
+                    if !self.is_current(epoch) {
+                        return Err(MediaError::Cancelled);
+                    }
+                    let aim = self.shared.drag_aim.get();
+                    let key = self.key_for(aim).unwrap_or(aim);
+                    let dir = self.shared.scrub_dir.get();
+                    let displayed = self
+                        .shared
+                        .displayed
+                        .borrow()
+                        .as_ref()
+                        .map(|q| q.frame);
+                    let blit_cached = {
+                        let blit = self.shared.scrub_blit.borrow();
+                        blit.nearest_frame_with_dir(aim, dir)
+                    };
+                    let stage = scrub_drag_stage_choice(aim, key, blit_cached, displayed, dir);
 
-                // Interim: nearer Exact blit if any (densify trail or prior drag Exact).
-                if let Some(preview) = self.scrub_preview_frame(frame) {
-                    let _ = self.try_present_warm_blit(preview)?;
-                }
+                    if let Some(id) = stage
+                        && self.present_from_cache(id).await?
+                    {
+                        self.shared.commit_frame(id)?;
+                        // Land only when near aim — same-GOP far ceil froze
+                        // backward Exact-strip scrub (stale displayed/blit).
+                        if scrub_drag_stage_near_aim(aim, key, id) {
+                            if id == aim {
+                                if self.shared.drag_aim.get() == aim {
+                                    return Ok(());
+                                }
+                            } else if self.key_for(self.shared.drag_aim.get()).unwrap_or(aim)
+                                == key
+                            {
+                                return Ok(());
+                            }
+                        }
+                        continue;
+                    }
 
-                // Short/Long: blit-only under the finger — key→N per drag tick froze
-                // the pointer (URL HEVC). Settle does Exact. mediabunny: CanvasSink
-                // pool present; cascade on settle / samplesAtTimestamps.
-                if self.scrub_policy().densify {
-                    return Ok(());
-                }
+                    if !exact_scrub_ready(&self.shared, key) {
+                        return Ok(());
+                    }
+                    if self.shared.densify.is_busy() {
+                        sleep_ms(0).await;
+                        continue;
+                    }
 
-                // All-Intra (`densify: false`): one sync packet — Exact under finger
-                // so soft-drag updates without Pause densify. Cold GOP bytes → keep
-                // interim blit only (same freeze guard as settle soft-cold).
-                if !exact_scrub_ready(&self.shared, frame) {
-                    return Ok(());
-                }
-                match self.goto_frame(frame, epoch).await {
-                    Ok(()) => Ok(()),
-                    Err(e) if e.is_cancelled() => Err(e),
-                    Err(e) => {
-                        web_sys::console::warn_1(
-                            &format!("fpmedia-web: All-Intra drag Exact skipped ({e})").into(),
-                        );
-                        Ok(())
+                    // Near warm preview (not key) — skip key decode. Far stage
+                    // already rejected by near_aim; fall through to key chase.
+                    if stage
+                        .is_some_and(|id| id != key && scrub_drag_stage_near_aim(aim, key, id))
+                    {
+                        return Ok(());
+                    }
+
+                    match self.drag_key_chase(key, epoch).await {
+                        Ok(true) => {
+                            if self.key_for(self.shared.drag_aim.get()).unwrap_or(aim) == key {
+                                return Ok(());
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(e) if e.is_cancelled() => return Err(e),
+                        Err(e) => {
+                            web_sys::console::warn_1(
+                                &format!("fpmedia-web: drag key skipped ({e})").into(),
+                            );
+                            return Ok(());
+                        }
                     }
                 }
             }

@@ -160,6 +160,69 @@ pub fn scrub_preview_choice_with_dir(
     }
 }
 
+/// Merge blit + displayed into one directional cached id (floor/ceil), then the
+/// same key-vs-cache pick as [`scrub_preview_choice_with_dir`]. Soft-drag stage
+/// and interim preview share this so key decode cannot paint behind a warmer
+/// Exact blit (reverse flash).
+///
+/// Backward (`dir < 0`) drops behind keys in the dir pick, so a **far** ceil
+/// (stale displayed / Exact strip) would freeze the stage — if the dir winner is
+/// farther from `aim` than `key`, fall back to distance [`scrub_preview_choice`]
+/// (unfiltered key). **no equivalent** (scrub local).
+pub fn scrub_drag_stage_choice(
+    aim: FrameId,
+    key: FrameId,
+    blit_cached: Option<FrameId>,
+    displayed: Option<FrameId>,
+    dir: i8,
+) -> Option<FrameId> {
+    let cached = scrub_merge_dir_cached(aim, blit_cached, displayed, dir);
+    let picked = scrub_preview_choice_with_dir(aim, Some(key), cached, dir)?;
+    let key_dist = aim.abs_diff(key);
+    if picked != key && picked.abs_diff(aim) > key_dist {
+        return scrub_preview_choice(aim, Some(key), cached);
+    }
+    Some(picked)
+}
+
+/// True when a soft-drag stage id is close enough to `aim` to stop chasing
+/// (not a far ceil freeze in the same GOP). **no equivalent** (scrub local).
+pub fn scrub_drag_stage_near_aim(aim: FrameId, key: FrameId, stage: FrameId) -> bool {
+    stage == aim || stage.abs_diff(aim) <= aim.abs_diff(key)
+}
+
+/// Soft-drag: paint a decoded key that finished after aim left its GOP only when
+/// it advances along `scrub_dir` (else reverse flash). Mobile HW key decode often
+/// loses the race to the next GOP — skipping every supersede dropped keyframes.
+/// **no equivalent** (scrub local).
+pub fn scrub_drag_key_advances(dir: i8, displayed: Option<FrameId>, key: FrameId) -> bool {
+    match dir {
+        d if d > 0 => displayed.is_none_or(|d| key >= d),
+        d if d < 0 => displayed.is_none_or(|d| key <= d),
+        _ => true,
+    }
+}
+
+/// Closest floor (`≤ aim`) / ceil (`≥ aim`) among two optional residents, then
+/// [`scrub_preview_neighbor`].
+pub fn scrub_merge_dir_cached(
+    aim: FrameId,
+    a: Option<FrameId>,
+    b: Option<FrameId>,
+    dir: i8,
+) -> Option<FrameId> {
+    let mut floor = None;
+    let mut ceil = None;
+    for x in [a, b].into_iter().flatten() {
+        if x <= aim {
+            floor = Some(floor.map_or(x, |f: FrameId| f.max(x)));
+        } else {
+            ceil = Some(ceil.map_or(x, |c: FrameId| c.min(x)));
+        }
+    }
+    scrub_preview_neighbor(aim, floor, ceil, dir)
+}
+
 /// Contain `src` into a max box (hover / filmstrip thumb size).
 pub fn hover_thumb_dims(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     let src_w = src_w.max(1) as f64;
@@ -354,12 +417,14 @@ pub enum ScrubCachePolicy {
 /// Local invention (mediabunny: no equivalent). Tune fields per profile; do not
 /// raise globals like [`SCRUB_BLIT_LRU`] from a single ShotGrid probe.
 ///
-/// Drag: Short/Long = blit/aim only (Exact on settle — Long key→N per tick froze
-/// the pointer). All-Intra (`densify: false`) = Exact under finger (1 sync packet).
+/// Drag: interim Exact blit + main-HW nearest-key chase (Exact = dwell/settle).
+/// Pause densify stays PreferSoftware. All-Intra (`densify: false`) skips Pause
+/// fill (1-frame GOPs waste CPU).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScrubPolicy {
-    /// Gap-fill densify (VF → ImageBitmap). Off for All-Intra — soft-drag Exact
-    /// instead (`VideoPlayer::scrub_to`); densify of 1-frame GOPs only wastes CPU.
+    /// Gap-fill densify (VF → ImageBitmap) on Pause / settle rearm. Off for
+    /// All-Intra — soft-drag key (=frame) only (`VideoPlayer::scrub_to`); densify
+    /// of 1-frame GOPs wastes CPU. Soft-drag never runs densify under finger.
     pub densify: bool,
     /// GPU MiB budget for live densify `ImageBitmap`s (→ [`scrub_blit_frame_budget`]).
     pub blit_mib: usize,
@@ -637,6 +702,38 @@ mod tests {
             scrub_preview_choice_with_dir(16, Some(16), Some(20), -1),
             Some(16)
         );
+    }
+
+    #[test]
+    fn scrub_drag_stage_choice_keeps_warmer_blit_over_key() {
+        // Forward: Exact blit at 50 closer than key 48 → do not flash key (reverse).
+        assert_eq!(scrub_drag_stage_choice(55, 48, Some(50), None, 1), Some(50));
+        assert_eq!(scrub_drag_stage_choice(55, 48, None, Some(50), 1), Some(50));
+        // Forward: key closer than old blit → key ok.
+        assert_eq!(scrub_drag_stage_choice(55, 48, Some(20), None, 1), Some(48));
+        // Backward: near ceil wins over behind key (dir bias, still near).
+        assert_eq!(
+            scrub_drag_stage_choice(16, 10, Some(20), None, -1),
+            Some(20)
+        );
+        // Backward: far stale ceil → distance fallback to key (unfreeze).
+        assert_eq!(
+            scrub_drag_stage_choice(70, 60, Some(100), None, -1),
+            Some(60)
+        );
+        assert_eq!(
+            scrub_drag_stage_choice(70, 60, None, Some(100), -1),
+            Some(60)
+        );
+        assert!(scrub_drag_stage_near_aim(70, 60, 65));
+        assert!(scrub_drag_stage_near_aim(70, 60, 70));
+        assert!(!scrub_drag_stage_near_aim(70, 60, 100));
+
+        assert!(scrub_drag_key_advances(1, Some(10), 48));
+        assert!(!scrub_drag_key_advances(1, Some(50), 48));
+        assert!(scrub_drag_key_advances(-1, Some(50), 48));
+        assert!(!scrub_drag_key_advances(-1, Some(40), 48));
+        assert!(scrub_drag_key_advances(0, Some(99), 1));
     }
 
     #[test]
