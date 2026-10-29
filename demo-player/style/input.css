@@ -40,14 +40,14 @@ body {
   height: 100%;
 }
 
-.wm-player:fullscreen .wm-stage {
+.wm-player:fullscreen .fpvideo-stage {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.wm-player:fullscreen .wm-viewport {
+.wm-player:fullscreen .fpvideo-viewport {
   flex: 1 1 auto;
   width: 100%;
   height: auto;
@@ -92,7 +92,7 @@ body {
 }
 
 /* Sized media stage (like <video width height>); canvas contains inside. */
-.wm-viewport {
+.fpvideo-viewport {
   width: 100%;
   aspect-ratio: 16 / 9;
   height: auto;
@@ -104,7 +104,7 @@ body {
 }
 
 /* Fill viewport; scale bitmap contain (up + down). Buffer stays ≤ source. */
-.wm-canvas {
+.fpvideo-canvas {
   display: block;
   width: 100%;
   height: 100%;
@@ -143,7 +143,7 @@ body {
 
 /* Hover thumb — Play+Pause; hide while scrubbing.
    Root gets `transform` from <HoverThumb>; canvas is inside (host chrome = children). */
-.wm-thumb-preview {
+.fpvideo-thumb-preview {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
@@ -161,12 +161,12 @@ body {
   transform: translate3d(0, 0, 0);
 }
 
-.wm-thumb-preview.is-visible {
+.fpvideo-thumb-preview.is-visible {
   display: flex;
 }
 
 /* Intrinsic size from canvas width/height attrs (max-edge 160 via hover_thumb_dims). */
-.wm-thumb-preview > canvas {
+.fpvideo-thumb-preview > canvas {
   display: block;
   max-width: 160px;
   max-height: 160px;

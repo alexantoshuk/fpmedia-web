@@ -176,7 +176,7 @@ pub fn HoverThumb(
     }
 }
 
-/// Interim canvas-only thumb (class `wm-thumb-preview`). Prefer [`HoverThumb`].
+/// Interim canvas-only thumb (class `fpvideo-thumb-preview`). Prefer [`HoverThumb`].
 #[component]
 pub fn HoverThumbPreview(
     video: VideoRef,
@@ -190,7 +190,7 @@ pub fn HoverThumbPreview(
             api=api
             width=max_w
             height=max_h
-            class="wm-thumb-preview".to_string()
+            class="fpvideo-thumb-preview".to_string()
         />
     }
 }

@@ -1370,7 +1370,7 @@ fn DemoScrubber(
     view! {
         <Scrubber video=video class="wm-scrubber".to_string()>
             <Show when=move || thumbs_on.get() && !no_hover.get()>
-                <HoverThumb class="wm-thumb-preview".to_string() />
+                <HoverThumb class="fpvideo-thumb-preview".to_string() />
             </Show>
             <div class="wm-scrubber-track">
                 <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />

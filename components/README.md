@@ -22,6 +22,22 @@ Prefer Blob open for local files. For progressive URL open, the server should su
 - `thumbs` (default) — hover thumb decode path
 - `hevc` — opt-in H.265 (see engine crate)
 
+## Styling
+
+Principle (namespace `fpvideo-*`, no stylesheet, demo chrome ≠ contract): repo `.ai/product.md` § Invariants → Element styling namespace.
+
+This crate ships **no stylesheet**. Stable class hooks (override via props):
+
+| Hook | Default class | Prop |
+| ---- | ------------- | ---- |
+| Stage root | `fpvideo-stage` | `Video` `class` |
+| Viewport | `fpvideo-viewport` | `viewport_class` |
+| Canvas | `fpvideo-canvas` | `canvas_class` |
+| Hover thumb | (none / host) | `HoverThumb` `class` — demo uses `fpvideo-thumb-preview` |
+
+Prefix `fpvideo-` is the public styling namespace; avoid colliding with host CSS.
+Demo chrome (`wm-*` controls, scrubber layout) stays host-only.
+
 ## Demo host
 
 [`demo-player/`](../demo-player) — Trunk CSR: file picker + URL open (`trunk serve`).

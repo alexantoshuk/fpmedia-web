@@ -28,7 +28,7 @@ use crate::policy::{
 };
 use crate::types::FrameId;
 
-/// Default hover box (matches `fpmedia_web_components` / `.wm-thumb-preview`).
+/// Default hover box (matches `fpmedia_web_components` / `.fpvideo-thumb-preview`).
 pub const DEFAULT_THUMB_MAX_W: u32 = 160;
 pub const DEFAULT_THUMB_MAX_H: u32 = 90;
 

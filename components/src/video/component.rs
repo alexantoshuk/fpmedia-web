@@ -761,9 +761,10 @@ pub fn Video(
         }
     });
 
-    let root_class = class.unwrap_or_else(|| "wm-stage".into());
-    let viewport_class = viewport_class.unwrap_or_else(|| "wm-viewport".into());
-    let canvas_class = canvas_class.unwrap_or_else(|| "wm-canvas".into());
+    // Public styling hooks (`fpvideo-*`) — host CSS / override via class props.
+    let root_class = class.unwrap_or_else(|| "fpvideo-stage".into());
+    let viewport_class = viewport_class.unwrap_or_else(|| "fpvideo-viewport".into());
+    let canvas_class = canvas_class.unwrap_or_else(|| "fpvideo-canvas".into());
 
     view! {
         <div class=root_class>
