@@ -1,0 +1,65 @@
+# CONTRIBUTING pre-push gates (fmt / Clippy / tests / wasm check).
+# E2e and Trunk site build stay out of this job — see pages.yml + local e2e.
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+          workspaces: ". -> target"
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy (engine)
+        run: cargo clippy -p fpmedia-web --all-targets --all-features -- -D warnings
+
+      - name: clippy (demo-player wasm)
+        run: cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-demo-player -- -D warnings
+
+      - name: clippy (components wasm)
+        run: cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-components -- -D warnings
+
+      - name: clippy (components native)
+        run: cargo clippy -p fpmedia-web-components --all-targets -- -D warnings
+
+      - name: test (engine)
+        run: cargo test -p fpmedia-web
+
+      - name: test (components)
+        run: cargo test -p fpmedia-web-components
+
+      - name: check (demo-player wasm)
+        run: cargo check --target wasm32-unknown-unknown -p fpmedia-web-demo-player
+
+      - name: check (components wasm)
+        run: cargo check --target wasm32-unknown-unknown -p fpmedia-web-components

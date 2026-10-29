@@ -47,7 +47,7 @@ cargo test -p fpmedia-web-components
 ```
 
 - Always run `cargo fmt` (rustfmt) before committing Rust changes; include any fmt-only touch-ups in the same commit.
-- Never commit code failing the gates above.
+- Never commit code failing the gates above. CI mirrors these gates (minus Trunk build / e2e): [`.github/workflows/check.yml`](.github/workflows/check.yml).
 - For UI/player behaviour changes that e2e covers: also run `npm run e2e` with `trunk serve` (demo-player) on `:3000` when practical.
 
 ### Commit / PR size

@@ -1,5 +1,6 @@
 # fpmedia-web
 
+[![check](https://github.com/alexantoshuk/fpmedia-web/actions/workflows/check.yml/badge.svg)](https://github.com/alexantoshuk/fpmedia-web/actions/workflows/check.yml)
 [![pages](https://github.com/alexantoshuk/fpmedia-web/actions/workflows/pages.yml/badge.svg)](https://github.com/alexantoshuk/fpmedia-web/actions/workflows/pages.yml)
 [![docs fpmedia-web](https://img.shields.io/badge/docs-fpmedia--web-blue)](https://docs.rs/fpmedia-web)
 [![docs fpmedia-web-components](https://img.shields.io/badge/docs-fpmedia--web--components-blue)](https://docs.rs/fpmedia-web-components)
