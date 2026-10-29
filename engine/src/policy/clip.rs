@@ -165,6 +165,10 @@ pub fn scrub_preview_choice_with_dir(
 /// and interim preview share this so key decode cannot paint behind a warmer
 /// Exact blit (reverse flash).
 ///
+/// Exact hit under `aim` (`blit_cached == aim`) wins immediately — blit present
+/// does not refresh `displayed`, so R→L ceil-bias otherwise re-picks the stale
+/// ahead VF (return flicker / skipped Exact aims).
+///
 /// Backward (`dir < 0`) drops behind keys in the dir pick, so a **far** ceil
 /// (stale displayed / Exact strip) would freeze the stage — if the dir winner is
 /// farther from `aim` than `key`, fall back to distance [`scrub_preview_choice`]
@@ -176,6 +180,9 @@ pub fn scrub_drag_stage_choice(
     displayed: Option<FrameId>,
     dir: i8,
 ) -> Option<FrameId> {
+    if blit_cached == Some(aim) {
+        return Some(aim);
+    }
     let cached = scrub_merge_dir_cached(aim, blit_cached, displayed, dir);
     let picked = scrub_preview_choice_with_dir(aim, Some(key), cached, dir)?;
     let key_dist = aim.abs_diff(key);
@@ -895,6 +902,15 @@ mod tests {
         assert_eq!(
             scrub_drag_stage_choice(70, 60, None, Some(100), -1),
             Some(60)
+        );
+        // Exact hit under aim: stale ahead displayed must not win (R→L return).
+        assert_eq!(
+            scrub_drag_stage_choice(199, 192, Some(199), Some(200), -1),
+            Some(199)
+        );
+        assert_eq!(
+            scrub_drag_stage_choice(50, 48, Some(50), Some(51), 1),
+            Some(50)
         );
         assert!(scrub_drag_stage_near_aim(70, 60, 65));
         assert!(scrub_drag_stage_near_aim(70, 60, 70));

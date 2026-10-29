@@ -403,16 +403,27 @@ impl VideoPlayer {
                 }
                 Ok(())
             } else {
-                // Soft-drag: key preview via same floor/ceil + key-vs-cache pick as
-                // interim (`scrub_drag_stage_choice`). Blind key present flashed
-                // behind a warmer Exact blit. Exact = dwell/settle.
-                // **no equivalent** (scrub local).
+                // Soft-drag: Exact hit under aim → present aim (dense strip). Else
+                // floor/ceil + key-vs-cache (`scrub_drag_stage_choice`). Blind key
+                // present flashed behind a warmer Exact blit. Exact *decode* =
+                // dwell/settle only. **no equivalent** (scrub local).
                 self.shared.drag_aim.set(frame);
                 loop {
                     if !self.is_current(epoch) {
                         return Err(MediaError::Cancelled);
                     }
                     let aim = self.shared.drag_aim.get();
+                    // Exact resident at aim — paint before stage merge. Blit does
+                    // not refresh `displayed`; R→L ceil-bias otherwise re-picks
+                    // the stale ahead VF (return / skip). Policy mirrors
+                    // `scrub_drag_stage_choice` Exact-hit short-circuit.
+                    if self.present_from_cache(aim).await? {
+                        self.shared.commit_frame(aim)?;
+                        if self.shared.drag_aim.get() == aim {
+                            return Ok(());
+                        }
+                        continue;
+                    }
                     let key = self.key_for(aim).unwrap_or(aim);
                     let dir = self.shared.scrub_dir.get();
                     let displayed = self
