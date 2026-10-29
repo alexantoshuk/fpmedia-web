@@ -356,14 +356,14 @@ impl VideoPlayer {
         self.shared.track.index().nearest_keyframe(frame)
     }
 
-    /// True when a painted hover preview is the same sync key as `aim`.
+    /// True when the painted hover already is Exact `aim` (skip aim decode).
     ///
-    /// Far interim (other GOP) must still schedule aim decode — otherwise a
-    /// single warm thumb short-circuits Play refine forever (no gray / no update).
+    /// Same-GOP key interim must **not** count — Pause progressive fills keys
+    /// across the timeline; that would permanently block Exact-on-dwell refine.
+    /// Far / key interim: host defers ~150 ms then Exact aim decode on Pause.
+    /// Play still refuses aim decode via workload gates.
     pub fn hover_thumb_close_enough(&self, aim: FrameId, painted: FrameId) -> bool {
-        let ka = self.key_for(aim).unwrap_or(aim);
-        let kp = self.key_for(painted).unwrap_or(painted);
-        ka == kp
+        painted == aim
     }
 
     pub(super) fn touch_playhead(&self, frame: FrameId) {

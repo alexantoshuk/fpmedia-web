@@ -21,8 +21,8 @@ use crate::scrubber::{HoverThumbApi, ScrubberCtx};
 pub const DEFAULT_HOVER_THUMB_MAX_W: u32 = 160;
 pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = 160;
 
-/// Coalesce window before deferred `paint_hover_thumb` (ms). Engine aim-decode
-/// floor is separate (`PLAY_THUMB_AIM_DECODE_MIN_MS` = 800).
+/// Coalesce window before deferred Exact `paint_hover_thumb` (ms). This is the
+/// dwell delay — engine has no second global aim floor (that left Exact stuck).
 const DEFER_HOVER_PAINT_MS: f64 = 150.0;
 
 /// Signals for host chrome under [`HoverThumb`] (`use_context`).

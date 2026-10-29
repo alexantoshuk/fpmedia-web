@@ -22,7 +22,10 @@ use super::webcodecs::WebCodecsDecoder;
 use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::model::bg_task::SingleFlight;
-use crate::policy::{hover_thumb_dims, next_missing_sync_key};
+use crate::policy::{
+    hover_thumb_dims, next_missing_sync_key, next_progressive_sync_key,
+    thumb_progressive_coarse_count, thumb_progressive_rank,
+};
 use crate::types::FrameId;
 
 /// Default hover box (matches `fpmedia_web_components` / `.wm-thumb-preview`).
@@ -79,6 +82,10 @@ pub struct ThumbSink {
     last_max_h: Cell<u32>,
     /// Hover client: wall ms of last aim-decode start (Play throttle).
     last_aim_decode_ms: Cell<f64>,
+    /// Pointer over scrubber — progressive Pause fill yields.
+    hover_active: Cell<bool>,
+    /// Pause progressive reached cap / no candidates — never resumes until clear.
+    progressive_done: Cell<bool>,
 }
 
 impl ThumbSink {
@@ -101,6 +108,8 @@ impl ThumbSink {
             last_max_w: Cell::new(max_w),
             last_max_h: Cell::new(max_h),
             last_aim_decode_ms: Cell::new(0.0),
+            hover_active: Cell::new(false),
+            progressive_done: Cell::new(false),
         }
     }
 
@@ -112,6 +121,23 @@ impl ThumbSink {
         self.epoch.set(self.epoch.get().wrapping_add(1));
         self.pending_aim.set(None);
         self.clear_hover_direction();
+        self.hover_active.set(false);
+    }
+
+    pub fn set_hover_active(&self, active: bool) {
+        self.hover_active.set(active);
+    }
+
+    pub fn hover_active(&self) -> bool {
+        self.hover_active.get()
+    }
+
+    pub fn progressive_done(&self) -> bool {
+        self.progressive_done.get()
+    }
+
+    pub fn mark_progressive_done(&self) {
+        self.progressive_done.set(true);
     }
 
     pub fn generation(&self) -> u64 {
@@ -169,6 +195,26 @@ impl ThumbSink {
         self.decode_blocked.set(false);
         self.flight.release_busy();
         self.flight.clear_pending();
+        self.progressive_done.set(false);
+    }
+
+    pub fn thumb_count(&self) -> usize {
+        self.cache
+            .try_borrow()
+            .map(|c| c.thumb_count())
+            .unwrap_or(0)
+    }
+
+    pub fn max_thumbs(&self) -> usize {
+        self.cache.try_borrow().map(|c| c.max_thumbs()).unwrap_or(1)
+    }
+
+    /// Cache full for another sync-key insert (progressive stops here forever).
+    pub fn at_capacity(&self) -> bool {
+        self.cache
+            .try_borrow()
+            .map(|c| c.at_capacity())
+            .unwrap_or(true)
     }
 
     pub fn store_key(&self, frame: FrameId) -> FrameId {
@@ -206,6 +252,60 @@ impl ThumbSink {
     ) -> Option<FrameId> {
         let (tw, th) = self.thumb_dims(src_w, src_h);
         next_missing_sync_key(keys, focus, |k| self.contains(k, k, tw, th))
+    }
+
+    /// Progressive rank for `frame` (sync key → grid rank; Exact non-key → max).
+    pub fn progressive_rank_for(&self, frame: FrameId) -> u16 {
+        let keys = self.track.index().sync_frame_ids();
+        let duration_sec = self.track.metadata().duration().seconds;
+        let coarse = thumb_progressive_coarse_count(duration_sec, keys.len(), self.max_thumbs());
+        let store_key = self.store_key(frame);
+        if frame != store_key {
+            return u16::MAX;
+        }
+        thumb_progressive_rank(&keys, store_key, coarse)
+    }
+
+    /// Next Pause progressive key (coarse → farthest), or `None` if done / cannot
+    /// admit without dropping a coarser rank (marks [`Self::progressive_done`]).
+    pub fn next_progressive_key(
+        &self,
+        keys: &[FrameId],
+        src_w: u32,
+        src_h: u32,
+    ) -> Option<FrameId> {
+        if self.progressive_done() {
+            return None;
+        }
+        let (tw, th) = self.thumb_dims(src_w, src_h);
+        let duration_sec = self.track.metadata().duration().seconds;
+        let coarse = thumb_progressive_coarse_count(duration_sec, keys.len(), self.max_thumbs());
+        let next = next_progressive_sync_key(keys, |k| self.contains(k, k, tw, th), coarse);
+        let Some(k) = next else {
+            self.mark_progressive_done();
+            return None;
+        };
+        let needs_new_gop = !self.has_gop(k);
+        let rank = thumb_progressive_rank(keys, k, coarse);
+        if !self.can_admit(rank, needs_new_gop) {
+            self.mark_progressive_done();
+            return None;
+        }
+        Some(k)
+    }
+
+    pub fn has_gop(&self, key: FrameId) -> bool {
+        self.cache
+            .try_borrow()
+            .map(|c| c.has_gop(key))
+            .unwrap_or(false)
+    }
+
+    pub fn can_admit(&self, rank: u16, needs_new_gop: bool) -> bool {
+        self.cache
+            .try_borrow()
+            .map(|c| c.can_admit(rank, needs_new_gop))
+            .unwrap_or(false)
     }
 
     /// Lookup + paint while the cache borrow is held (`ImageBitmap` is not `Clone`).
@@ -270,8 +370,9 @@ impl ThumbSink {
         width: u32,
         height: u32,
     ) {
+        let rank = self.progressive_rank_for(frame);
         if let Ok(mut cache) = self.cache.try_borrow_mut() {
-            cache.put_ready(key, frame, bitmap, width, height);
+            cache.put_ready(key, frame, bitmap, width, height, rank);
         } else {
             bitmap.close();
         }
@@ -298,6 +399,7 @@ impl ThumbSink {
     // —— Hover client session (VideoPlayer / `<HoverThumb>`; not MB CanvasSink) ——
 
     pub fn set_hover_aim(&self, aim: FrameId) {
+        self.hover_active.set(true);
         if let Some(prev) = self.prev_hover_aim.get() {
             if aim > prev {
                 self.hover_dir.set(1);
@@ -518,17 +620,20 @@ pub fn paint_thumb_canvas(
 
 /// Sparse keyframe → ThumbCache (`mediabunny:` `canvasesAtTimestamps`).
 ///
-/// `next_gap` returns the next missing sync id (caller supplies focus / index).
-/// Releases the worker if hover queues a pending aim mid-fill or `yield_to_play`.
+/// `next_gap` returns the next progressive sync id. Yields on Play / hover /
+/// pending hover aim. Stops when `next_gap` is `None` (cap or done).
 pub async fn run_sparse_key_fill(
     sink: Rc<ThumbSink>,
     mut next_gap: impl FnMut() -> Option<FrameId>,
     yield_to_play: impl Fn() -> bool,
 ) -> Result<(), MediaError> {
     let end = || sink.end_decode();
+    let should_yield = || {
+        yield_to_play() || sink.decode_blocked() || sink.hover_active() || sink.progressive_done()
+    };
 
     loop {
-        if yield_to_play() || sink.decode_blocked() {
+        if should_yield() {
             end();
             return Ok(());
         }
@@ -540,7 +645,14 @@ pub async fn run_sparse_key_fill(
         let meta = sink.track().metadata();
         let (tw, th) = sink.thumb_dims(meta.width, meta.height);
         if !sink.contains(key, key, tw, th) {
-            let cancelled = || yield_to_play() || sink.decode_blocked() || sink.has_pending_aim();
+            let rank = sink.progressive_rank_for(key);
+            let needs_new_gop = !sink.has_gop(key);
+            if !sink.can_admit(rank, needs_new_gop) {
+                sink.mark_progressive_done();
+                end();
+                return Ok(());
+            }
+            let cancelled = || should_yield() || sink.has_pending_aim() || sink.hover_active();
             if cancelled() {
                 end();
                 return Ok(());
@@ -558,7 +670,7 @@ pub async fn run_sparse_key_fill(
             }
         }
 
-        if yield_to_play() {
+        if should_yield() {
             end();
             return Ok(());
         }
@@ -577,7 +689,7 @@ pub async fn run_sparse_key_fill(
         let want_again = sink.take_fill_pending();
         end();
         if want_again
-            && !yield_to_play()
+            && !should_yield()
             && let Some(k) = next_gap()
             && sink.claim_fill_key(k)
         {

@@ -370,6 +370,9 @@ pub fn DemoPlayer() -> impl IntoView {
     // Demo A/B (debug panel): hide timeline chrome / drop thumb sink.
     let scrubber_on = RwSignal::new(true);
     let thumbs_on = RwSignal::new(true);
+    // Touch-primary (phone/tablet): no hover UI → no ThumbSink / progressive.
+    // Laptops with a touchscreen usually stay `(hover: hover)` via trackpad/mouse.
+    let no_hover = use_media_query("(hover: none)");
     let debug_on = RwSignal::new(false);
     // Rate / volume popovers.
     let rate_open = RwSignal::new(false);
@@ -397,7 +400,7 @@ pub fn DemoPlayer() -> impl IntoView {
         });
     });
     Effect::new(move |_| {
-        let on = scrubber_on.get() && thumbs_on.get();
+        let on = scrubber_on.get() && thumbs_on.get() && !no_hover.get();
         video.set_thumb_policy(if on {
             ThumbPolicy::On
         } else {
@@ -573,7 +576,6 @@ pub fn DemoPlayer() -> impl IntoView {
     // Tailwind viewport breakpoints (leptos-use) — volume slider H vs V.
     let bp = use_breakpoints(breakpoints_tailwind());
     let volume_wide = bp.ge(BreakpointsTailwind::Md);
-    let no_hover = use_media_query("(hover: none)");
 
     // Text buttons: filled bg, no border. Icon buttons: icon-only (no chrome).
     let btn = "inline-flex items-center justify-center rounded-md border-0 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 hover:bg-zinc-700 disabled:cursor-default disabled:opacity-45";
@@ -746,7 +748,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     }
                 >
                     <Show when=move || scrubber_on.get()>
-                        <DemoScrubber video=video thumbs_on=thumbs_on/>
+                        <DemoScrubber video=video thumbs_on=thumbs_on no_hover=no_hover/>
                     </Show>
                     <div
                         class="wm-controls flex w-full flex-nowrap items-center gap-1 px-3 py-3"
@@ -1144,14 +1146,14 @@ pub fn DemoPlayer() -> impl IntoView {
                     </label>
                     <label
                         class="inline-flex cursor-pointer items-center gap-1.5 text-sm text-zinc-300 select-none"
-                        title="Hover thumbs (ThumbPolicy). Needs Scrub on."
+                        title="Hover thumbs (ThumbPolicy). Needs Scrub on. Off when (hover: none)."
                     >
                         <input
                             type="checkbox"
                             class="accent-emerald-400"
                             data-testid="chk-thumbs"
-                            prop:checked=move || thumbs_on.get()
-                            prop:disabled=move || !scrubber_on.get()
+                            prop:checked=move || thumbs_on.get() && !no_hover.get()
+                            prop:disabled=move || !scrubber_on.get() || no_hover.get()
                             on:change=move |ev| {
                                 let Some(input) = event_target::<HtmlInputElement>(&ev) else {
                                     return;
@@ -1366,10 +1368,14 @@ fn ScrubProgress() -> impl IntoView {
 
 /// Demo scrubber chrome over headless [`Scrubber`] / [`TimelineMeta`] / [`HoverThumb`].
 #[component]
-fn DemoScrubber(video: VideoRef, thumbs_on: RwSignal<bool>) -> impl IntoView {
+fn DemoScrubber(
+    video: VideoRef,
+    thumbs_on: RwSignal<bool>,
+    no_hover: Signal<bool>,
+) -> impl IntoView {
     view! {
         <Scrubber video=video class="wm-scrubber".to_string()>
-            <Show when=move || thumbs_on.get()>
+            <Show when=move || thumbs_on.get() && !no_hover.get()>
                 <HoverThumb class="wm-thumb-preview".to_string() />
             </Show>
             <div class="wm-scrubber-track">

@@ -681,8 +681,9 @@ pub fn Video(
                 ctx.with_player(|p| {
                     let aim = u64::from(frame);
                     match p.try_paint_hover_thumb_cached(aim, &dest, max_w, max_h) {
-                        // Far interim still paints, but return false so host defers
-                        // throttled aim decode (Pause+Play far refine floor).
+                        // Exact frame hit → skip defer. Key/far interim still
+                        // paints, but return false so host defers Exact refine
+                        // (Pause floor; Play refuses aim decode).
                         Ok(Some(painted)) => p.hover_thumb_close_enough(aim, painted),
                         _ => false,
                     }

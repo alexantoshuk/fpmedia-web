@@ -48,7 +48,5 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 - Revisit seek Exact follow **without** wiping Exact on settle (densify yield / unbanned walk only — prove scrub still paints).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
-- Thumb residency policy on `ThumbSink` (binary timeline grid / aim-distance vs GOP LRU) — sink API shipped; probe hover first.
-- Play hover thumb: if 800 ms floor + 150 ms UI defer still janks → try 1000 ms or Play cache-only (no aim decode).
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
 - Pure `<Audio>` / `AudioPlayer` (reuses engine `audio`); thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; production player UI.

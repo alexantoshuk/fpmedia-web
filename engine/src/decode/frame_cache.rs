@@ -5,17 +5,17 @@
 //!   [`crate::residency`]. Thumbs stay separate.
 
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 
 use crate::policy::scrub_preview_neighbor;
 use crate::residency::AimWindow;
 use crate::types::FrameId;
-use lru::LruCache;
 use web_sys::ImageBitmap;
 
-/// Scrub/filmstrip keyframe GOPs retained.
-pub const DEFAULT_MAX_THUMB_GOPS: usize = 8;
-pub const DEFAULT_MAX_THUMBS: usize = 64;
+/// Scrub/filmstrip keyframe GOPs retained (one sync-key slot each).
+/// Sized for Pause sparse fill (≥16 timeline keys + midpoint densify headroom).
+/// **no equivalent** — mediabunny `CanvasSink` `poolSize` is iterator reuse, not residency.
+pub const DEFAULT_MAX_THUMB_GOPS: usize = 256;
+pub const DEFAULT_MAX_THUMBS: usize = 256;
 
 /// Live scrub blit handles. Evict farthest from playhead (not classic LRU) so
 /// densify ahead cannot wipe just-presented frames (Prev stayed cold on long-GOP).
@@ -170,6 +170,8 @@ pub enum ThumbBitmap {
         bitmap: ImageBitmap,
         width: u32,
         height: u32,
+        /// Progressive rank — lower = coarser timeline grid (kept longer).
+        rank: u16,
     },
 }
 
@@ -195,31 +197,74 @@ impl ThumbBitmap {
             Self::Ready { bitmap, .. } => bitmap,
         }
     }
+
+    fn rank(&self) -> u16 {
+        match self {
+            Self::Ready { rank, .. } => *rank,
+        }
+    }
 }
 
 /// Filmstrip / hover thumbs — **not** charged to Exact `blit_mib`.
+///
+/// Residency is progressive-rank based (not LRU): denser / Exact thumbs yield
+/// so the coarse timeline grid stays even. **no equivalent** (filmstrip local).
 pub struct ThumbCache {
-    gops: LruCache<FrameId, ThumbGop>,
+    gops: HashMap<FrameId, ThumbGop>,
+    max_gops: usize,
     max_thumbs: usize,
 }
 
 impl ThumbCache {
     pub fn new(max_key_gops: usize, max_thumbs: usize) -> Self {
-        let cap = NonZeroUsize::new(max_key_gops.max(1)).expect("max_key_gops >= 1");
         Self {
-            gops: LruCache::new(cap),
+            gops: HashMap::new(),
+            max_gops: max_key_gops.max(1),
             max_thumbs: max_thumbs.max(1),
         }
     }
 
     pub fn clear(&mut self) {
-        while let Some((_, mut gop)) = self.gops.pop_lru() {
+        for (_, mut gop) in self.gops.drain() {
             gop.close_all();
         }
     }
 
     pub fn thumb_count(&self) -> usize {
-        self.gops.iter().map(|(_, g)| g.by_time.len()).sum()
+        self.gops.values().map(|g| g.by_time.len()).sum()
+    }
+
+    pub fn max_thumbs(&self) -> usize {
+        self.max_thumbs
+    }
+
+    /// True when another distinct thumb / sync-key slot would hit caps.
+    pub fn at_capacity(&self) -> bool {
+        self.thumb_count() >= self.max_thumbs || self.gops.len() >= self.max_gops
+    }
+
+    pub fn has_gop(&self, key: FrameId) -> bool {
+        self.gops.contains_key(&key)
+    }
+
+    /// Whether a new thumb with `rank` may enter (evict only denser / same band).
+    ///
+    /// Protects coarser grid: never admits by dropping below the eviction floor.
+    /// Exact (`u16::MAX`) may displace densify (`≥1`) but not coarse `0`.
+    pub fn can_admit(&self, rank: u16, needs_new_gop: bool) -> bool {
+        let thumb_room = self.thumb_count() < self.max_thumbs;
+        let gop_room = !needs_new_gop || self.gops.len() < self.max_gops;
+        if thumb_room && gop_room {
+            return true;
+        }
+        let floor = Self::eviction_floor(rank);
+        self.has_evictable_thumb(floor, None)
+            || (needs_new_gop && self.has_evictable_gop(floor, None))
+    }
+
+    /// Exact non-key (`u16::MAX`) displaces densify only — never coarse rank 0.
+    fn eviction_floor(rank: u16) -> u16 {
+        if rank == u16::MAX { 1 } else { rank }
     }
 
     /// Lookup a ready thumb for `frame` under GOP `key` at the requested size.
@@ -239,9 +284,9 @@ impl ThumbCache {
         }
     }
 
-    /// Whether a ready thumb exists for `frame` under `key` at size (no LRU touch).
+    /// Whether a ready thumb exists for `frame` under `key` at size.
     pub fn contains(&self, key: FrameId, frame: FrameId, width: u32, height: u32) -> bool {
-        let Some(gop) = self.gops.peek(&key) else {
+        let Some(gop) = self.gops.get(&key) else {
             return false;
         };
         gop.by_time
@@ -260,7 +305,7 @@ impl ThumbCache {
     ) -> Option<(FrameId, FrameId)> {
         let mut floor: Option<(FrameId, FrameId, u64)> = None;
         let mut ceil: Option<(FrameId, FrameId, u64)> = None;
-        for (&key, gop) in self.gops.iter() {
+        for (&key, gop) in &self.gops {
             for (&ts, thumb) in &gop.by_time {
                 if !thumb.matches_size(width, height) {
                     continue;
@@ -298,7 +343,10 @@ impl ThumbCache {
         }
     }
 
-    /// Insert or replace a ready thumb. Closes any previous plane for the same frame.
+    /// Insert or replace a ready thumb with progressive `rank`.
+    ///
+    /// Evicts denser thumbs (higher rank) first so the coarse grid stays even.
+    /// Refuses the insert (closes `bitmap`) when nothing denser can be freed.
     pub fn put_ready(
         &mut self,
         key: FrameId,
@@ -306,22 +354,48 @@ impl ThumbCache {
         bitmap: ImageBitmap,
         width: u32,
         height: u32,
+        rank: u16,
     ) {
-        if !self.gops.contains(&key) {
-            self.gops.put(
-                key,
-                ThumbGop {
-                    by_time: HashMap::new(),
-                },
-            );
+        let replacing = self
+            .gops
+            .get(&key)
+            .is_some_and(|g| g.by_time.contains_key(&(frame as i64)));
+        let new_gop = !self.gops.contains_key(&key);
+
+        if !replacing {
+            let floor = Self::eviction_floor(rank);
+            while self.thumb_count() >= self.max_thumbs {
+                if !self.evict_thumb(floor, Some((key, frame as i64))) {
+                    bitmap.close();
+                    return;
+                }
+            }
+            if new_gop {
+                while self.gops.len() >= self.max_gops {
+                    if !self.evict_gop(floor, Some(key)) {
+                        bitmap.close();
+                        return;
+                    }
+                }
+            }
         }
+
+        self.gops.entry(key).or_insert_with(|| ThumbGop {
+            by_time: HashMap::new(),
+        });
         let gop = self.gops.get_mut(&key).expect("just ensured");
+        let keep_rank = gop
+            .by_time
+            .get(&(frame as i64))
+            .map(|t| t.rank().min(rank))
+            .unwrap_or(rank);
         if let Some(old) = gop.by_time.insert(
             frame as i64,
             ThumbBitmap::Ready {
                 bitmap,
                 width,
                 height,
+                rank: keep_rank,
             },
         ) {
             old.close();
@@ -330,15 +404,119 @@ impl ThumbCache {
     }
 
     fn enforce_thumb_budget(&mut self) {
-        while self.thumb_count() > self.max_thumbs && self.gops.len() > 1 {
-            let victim = self.gops.iter().rev().map(|(k, _)| *k).next();
-            if let Some(k) = victim {
-                if let Some(mut gop) = self.gops.pop(&k) {
-                    gop.close_all();
-                }
-            } else {
+        while self.thumb_count() > self.max_thumbs {
+            if !self.evict_thumb(0, None) {
                 break;
             }
+        }
+        while self.gops.len() > self.max_gops {
+            if !self.evict_gop(0, None) {
+                break;
+            }
+        }
+    }
+
+    fn has_evictable_thumb(&self, incoming_rank: u16, skip: Option<(FrameId, i64)>) -> bool {
+        for (&key, gop) in &self.gops {
+            for (&ts, thumb) in &gop.by_time {
+                if skip == Some((key, ts)) {
+                    continue;
+                }
+                if thumb.rank() >= incoming_rank {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn has_evictable_gop(&self, incoming_rank: u16, skip: Option<FrameId>) -> bool {
+        if self.gops.len() <= 1 {
+            return false;
+        }
+        for (&key, gop) in &self.gops {
+            if skip == Some(key) {
+                continue;
+            }
+            let max_r = gop.by_time.values().map(|t| t.rank()).max().unwrap_or(0);
+            if max_r >= incoming_rank {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Drop one thumb with highest rank among those `>= incoming_rank`.
+    fn evict_thumb(&mut self, incoming_rank: u16, skip: Option<(FrameId, i64)>) -> bool {
+        let mut best: Option<(u16, bool, FrameId, i64)> = None; // rank, is_exact, key, ts
+        for (&key, gop) in &self.gops {
+            for (&ts, thumb) in &gop.by_time {
+                if skip == Some((key, ts)) {
+                    continue;
+                }
+                let r = thumb.rank();
+                if r < incoming_rank {
+                    continue;
+                }
+                let is_exact = ts as FrameId != key;
+                let replace = match best {
+                    None => true,
+                    Some((br, be, bk, bts)) => {
+                        r > br
+                            || (r == br && is_exact && !be)
+                            || (r == br && is_exact == be && (key > bk || (key == bk && ts > bts)))
+                    }
+                };
+                if replace {
+                    best = Some((r, is_exact, key, ts));
+                }
+            }
+        }
+        let Some((_, _, key, ts)) = best else {
+            return false;
+        };
+        let Some(gop) = self.gops.get_mut(&key) else {
+            return false;
+        };
+        if let Some(old) = gop.by_time.remove(&ts) {
+            old.close();
+        }
+        if gop.by_time.is_empty() {
+            self.gops.remove(&key);
+        }
+        true
+    }
+
+    /// Drop one GOP whose densest thumb rank is highest (`>= incoming_rank`).
+    fn evict_gop(&mut self, incoming_rank: u16, skip: Option<FrameId>) -> bool {
+        if self.gops.len() <= 1 {
+            return false;
+        }
+        let mut best: Option<(u16, FrameId)> = None; // max_rank, key
+        for (&key, gop) in &self.gops {
+            if skip == Some(key) {
+                continue;
+            }
+            let max_r = gop.by_time.values().map(|t| t.rank()).max().unwrap_or(0);
+            if max_r < incoming_rank {
+                continue;
+            }
+            let replace = match best {
+                None => true,
+                Some((br, bk)) => max_r > br || (max_r == br && key > bk),
+            };
+            if replace {
+                best = Some((max_r, key));
+            }
+        }
+        let Some((_, key)) = best else {
+            return false;
+        };
+        if let Some(mut gop) = self.gops.remove(&key) {
+            gop.close_all();
+            true
+        } else {
+            false
         }
     }
 }

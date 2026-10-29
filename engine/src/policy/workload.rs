@@ -9,10 +9,9 @@
 //! mediabunny: `verifyKeyPackets` on packet retrieve — no background full-file
 //! sync walk during playback. Our deferred `verify_next_pending` loop is a local
 //! adaptation for scrub geometry and must yield while Play / Seek own the network.
-//! Thumb sparse fill similarly yields under Play; single hover-aim decode may
-//! run throttled (`PLAY_THUMB_AIM_DECODE_MIN_MS` — always for far refine; Play
-//! also for cold miss). `mediabunny:` separate CanvasSink still competes for
-//! main-thread / Ranges — Product Play-first.
+//! Thumb progressive fill **and** hover-aim decode yield under Play (cache /
+//! Exact bridge only while playing). Pause Exact-on-dwell: host 150 ms only.
+//! `mediabunny:` separate CanvasSink; Product Play-first.
 
 use std::fmt;
 
@@ -102,21 +101,17 @@ pub fn allows_thumb_key_fill(hints: WorkloadHints) -> bool {
 
 /// Whether a **single** hover-aim thumb decode may run.
 ///
-/// Allowed on Play (caller applies a strong ms floor) and Bg. False under Seek
-/// / ExactHold so settle owns the machine. `mediabunny:` separate CanvasSink;
-/// local Play-first throttle — not a full hard gate on aim decode.
+/// Pause/idle (`Bg`) / Open only — same band as [`allows_thumb_key_fill`].
+/// Play is cache + Exact→thumb bridge only (no 3rd-decoder generation). Seek /
+/// ExactHold blocked so settle owns the machine. `mediabunny:` CanvasSink;
+/// local Play-first.
 pub fn allows_thumb_aim_decode(hints: WorkloadHints) -> bool {
-    !matches!(classify(hints), WorkloadMode::Seek)
+    matches!(classify(hints), WorkloadMode::Bg | WorkloadMode::Open)
 }
 
-/// Min wall time between hover-aim thumb decodes on Play, and for **far-refine**
-/// on Pause as well.
-///
-/// Host UI already debounces ~150 ms; this floor stops sparse-rate decode storms
-/// on long clips (and Play judder from 3rd-decoder contention). Pause **cold
-/// miss** stays free ([`allows_thumb_key_fill`]); far interim (e.g. Exact-at-0
-/// after open) must still respect the floor or Pause hover storms the 3rd
-/// decoder against densify.
+/// Legacy name — hover Exact-on-dwell no longer uses a global aim floor
+/// (host 150 ms coalesce only; see `may_start_hover_aim_decode`). Kept so
+/// older call sites / docs still compile; value unused for gating.
 pub const PLAY_THUMB_AIM_DECODE_MIN_MS: f64 = 800.0;
 
 /// Whether fMP4 fragment backfill should `yield_now` between chunks.
@@ -233,8 +228,8 @@ mod tests {
     }
 
     #[test]
-    fn thumb_aim_decode_allowed_on_play_not_seek() {
-        assert!(allows_thumb_aim_decode(hints(
+    fn thumb_aim_decode_bg_only_not_play_or_seek() {
+        assert!(!allows_thumb_aim_decode(hints(
             EngineMode::Play,
             false,
             false,

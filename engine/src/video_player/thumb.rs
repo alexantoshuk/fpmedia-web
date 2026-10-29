@@ -9,9 +9,7 @@ use crate::decode::thumb_sink::{
     ThumbSink, ThumbSinkOptions, paint_thumb_canvas, run_sparse_key_fill,
 };
 use crate::error::MediaError;
-use crate::policy::workload::{
-    PLAY_THUMB_AIM_DECODE_MIN_MS, allows_thumb_aim_decode, allows_thumb_key_fill,
-};
+use crate::policy::workload::{allows_thumb_aim_decode, allows_thumb_key_fill};
 use crate::policy::{ThumbPolicy, hover_thumb_dims, scrub_preview_choice_with_dir};
 use crate::types::FrameId;
 
@@ -22,13 +20,21 @@ const CLAIM_WAIT_MS: f64 = 2_000.0;
 
 impl VideoPlayer {
     /// Abort in-flight hover Exact downscale (scrub start / pointer leave).
-    /// Play does not cancel the sink — ThumbCache stays; sparse fill yields via
-    /// `allows_thumb_key_fill`, aim decode is throttled. `mediabunny:` separate thumb `CanvasSink`.
+    /// Play does not cancel the sink — ThumbCache stays; fill/aim decode only
+    /// when paused. `resume_progressive` restarts Pause fill after hover leave.
+    /// `mediabunny:` separate thumb `CanvasSink`.
     pub fn cancel_hover_thumb(&self) {
+        self.cancel_hover_thumb_inner(true);
+    }
+
+    fn cancel_hover_thumb_inner(&self, resume_progressive: bool) {
         if let Ok(slot) = self.shared.thumb.try_borrow()
             && let Some(preview) = slot.as_ref()
         {
             preview.cancel();
+        }
+        if resume_progressive {
+            self.schedule_thumb_key_fill();
         }
     }
 
@@ -36,7 +42,7 @@ impl VideoPlayer {
     pub fn set_thumb_policy(&self, policy: ThumbPolicy) {
         self.shared.thumb_policy.set(policy);
         if policy == ThumbPolicy::Off {
-            self.cancel_hover_thumb();
+            self.cancel_hover_thumb_inner(false);
             if let Ok(mut slot) = self.shared.thumb.try_borrow_mut() {
                 let _ = slot.take();
             }
@@ -97,7 +103,7 @@ impl VideoPlayer {
     /// floor/ceil-by-motion rule as soft-drag). When Exact wins, downscales into
     /// ThumbCache **synchronously** (cheap `bitmap_to_sized`) so pointermove
     /// never leaves a farther thumb on the canvas. `mediabunny:` present cached
-    /// canvas immediately; decode only on true miss. Allowed while playing.
+    /// canvas immediately; decode only on true miss (Pause). Play: cache/Exact only.
     pub fn try_paint_hover_thumb_cached(
         &self,
         frame: FrameId,
@@ -160,7 +166,7 @@ impl VideoPlayer {
                 paint_thumb_canvas(dest, bmp, tw, th)
             })
         };
-        let result = match painted {
+        match painted {
             Some(Ok(())) => Ok(Some(preview)),
             Some(Err(e)) => Err(e),
             None if cached_exact == Some(preview) => {
@@ -200,21 +206,16 @@ impl VideoPlayer {
                     None => Ok(None),
                 }
             }
-        };
-        if matches!(&result, Ok(Some(_))) && allows_thumb_key_fill(self.shared.workload_hints()) {
-            self.schedule_thumb_key_fill();
         }
-        result
     }
 
     /// Paint a hover preview into `dest`.
     ///
-    /// Sync nearest (ThumbCache ∪ Exact) first. Sparse key fill only when paused
-    /// ([`allows_thumb_key_fill`]). Cold miss → aim decode (free on Pause, Play
-    /// floor). Far interim → aim decode with [`PLAY_THUMB_AIM_DECODE_MIN_MS`] on
-    /// **both** Pause and Play (Exact-at-0 after open must not storm the 3rd
-    /// decoder against densify). Seek blocks aim decode. `mediabunny:` present
-    /// cached canvas immediately; sparse fill off present path.
+    /// Sync nearest (ThumbCache ∪ Exact) first. Aim decode only when paused
+    /// ([`allows_thumb_aim_decode`]). Progressive Pause fill suspends while
+    /// hover is active. Play: cache / Exact bridge only. Key/far interim on
+    /// Pause → Exact aim decode after host ~150 ms coalesce. Seek blocks.
+    /// `mediabunny:` present cached canvas immediately.
     pub async fn paint_hover_thumb(
         &self,
         frame: FrameId,
@@ -238,14 +239,12 @@ impl VideoPlayer {
         }
 
         let interim = self.try_paint_hover_thumb_cached(frame, dest, max_w, max_h)?;
-        if allows_thumb_key_fill(self.shared.workload_hints()) {
-            self.schedule_thumb_key_fill();
-        }
         if let Some(p) = interim {
+            // Exact frame already — done. Same-GOP key still far-refines on Pause.
             if self.hover_thumb_close_enough(frame, p) {
                 return Ok(p);
             }
-            // Far interim on canvas — always throttle refine (Pause+Play).
+            // Key / far interim — throttle Exact refine (Pause; Play refuses).
             if !self.may_start_hover_aim_decode(true) {
                 return Ok(p);
             }
@@ -264,25 +263,13 @@ impl VideoPlayer {
 
     /// Whether a hover-aim decode may start now.
     ///
-    /// Seek blocks. Cold miss (`far_refine=false`): free on Pause, floor on Play.
-    /// Far refine: floor on Pause **and** Play — after open Exact frame 0 is a
-    /// far hit for almost every aim; unthrottled Pause refine froze the tab.
-    fn may_start_hover_aim_decode(&self, far_refine: bool) -> bool {
-        let hints = self.shared.workload_hints();
-        if !allows_thumb_aim_decode(hints) {
-            return false;
-        }
-        if !far_refine && allows_thumb_key_fill(hints) {
-            return true;
-        }
-        let now = now_ms().unwrap_or(0.0);
-        let Ok(slot) = self.shared.thumb.try_borrow() else {
-            return false;
-        };
-        let Some(thumbs) = slot.as_ref() else {
-            return false;
-        };
-        now - thumbs.last_aim_decode_ms() >= PLAY_THUMB_AIM_DECODE_MIN_MS
+    /// Play / Seek blocked ([`allows_thumb_aim_decode`]). Pause cold miss **and**
+    /// Exact-on-dwell refine are free — host `<HoverThumb>` already coalesces
+    /// ~150 ms. A global 800 ms floor was wrong: one trailing paint bails on the
+    /// floor, keeps the key interim, and nothing reschedules while the pointer
+    /// holds still. Progressive suspends on hover so densify thrash is limited.
+    fn may_start_hover_aim_decode(&self, _far_refine: bool) -> bool {
+        allows_thumb_aim_decode(self.shared.workload_hints())
     }
 
     /// Exact blit → sized thumb into [`ThumbSink`] (read-only densify plane).
@@ -387,12 +374,6 @@ impl VideoPlayer {
     ) -> Result<FrameId, MediaError> {
         if !self.may_start_hover_aim_decode(far_refine) {
             return Err(MediaError::Cancelled);
-        }
-        // Stamp before claim so concurrent paints see the Play floor.
-        if let Ok(slot) = self.shared.thumb.try_borrow()
-            && let Some(thumbs) = slot.as_ref()
-        {
-            thumbs.note_aim_decode_ms(now_ms().unwrap_or(0.0));
         }
         let blocked = {
             let Ok(slot) = self.shared.thumb.try_borrow() else {
@@ -527,9 +508,7 @@ impl VideoPlayer {
         }
 
         end_decode();
-        let result = last_ok.ok_or(MediaError::Cancelled);
-        self.schedule_thumb_key_fill();
-        result
+        last_ok.ok_or(MediaError::Cancelled)
     }
 
     pub(super) async fn decode_one_hover_thumb(
@@ -610,10 +589,10 @@ impl VideoPlayer {
         }
     }
 
-    /// Kick sparse keyframe → ThumbCache fill (same 3rd decoder; hover wins).
+    /// Kick Pause progressive key → ThumbCache fill (same 3rd decoder; hover wins).
     ///
-    /// Pause/idle only ([`allows_thumb_key_fill`]). Play uses throttled single-aim
-    /// decode instead — no fill chain.
+    /// Pause/idle only ([`allows_thumb_key_fill`]). Suspended while hover active;
+    /// stops forever once progressive hits cap / no candidates. Play: no fill.
     pub(super) fn schedule_thumb_key_fill(&self) {
         if self.shared.is_disposed() || self.shared.scrub_bg_suspended() {
             return;
@@ -627,7 +606,7 @@ impl VideoPlayer {
         let Some(thumbs) = self.thumb_sink_inner() else {
             return;
         };
-        if thumbs.decode_blocked() {
+        if thumbs.decode_blocked() || thumbs.progressive_done() || thumbs.hover_active() {
             return;
         }
         if thumbs.is_busy() {
@@ -648,10 +627,13 @@ impl VideoPlayer {
         if !allows_thumb_key_fill(self.shared.workload_hints()) {
             return;
         }
-        let Some(key) = self.next_thumb_key_gap() else {
+        let Some(thumbs) = self.thumb_sink_inner() else {
             return;
         };
-        let Some(thumbs) = self.thumb_sink_inner() else {
+        if thumbs.hover_active() || thumbs.progressive_done() {
+            return;
+        }
+        let Some(key) = self.next_thumb_progressive_key() else {
             return;
         };
         if !thumbs.claim_fill_key(key) {
@@ -667,28 +649,36 @@ impl VideoPlayer {
                 shared.is_disposed()
                     || shared.scrub_bg_suspended()
                     || !allows_thumb_key_fill(shared.workload_hints())
+                    || shared
+                        .thumb
+                        .try_borrow()
+                        .ok()
+                        .and_then(|s| s.as_ref().map(|t| t.hover_active()))
+                        .unwrap_or(false)
             };
             let next_gap = || {
                 if yield_play() {
                     return None;
                 }
-                next_thumb_key_gap_shared(&shared)
+                next_thumb_progressive_key_shared(&shared)
             };
             let _ = run_sparse_key_fill(sink, next_gap, yield_play).await;
         });
     }
 
-    /// Next sync frame missing from ThumbCache, nearest to hover aim / playhead.
-    pub(super) fn next_thumb_key_gap(&self) -> Option<FrameId> {
-        next_thumb_key_gap_shared(&self.shared)
+    /// Next progressive sync key for Pause fill.
+    pub(super) fn next_thumb_progressive_key(&self) -> Option<FrameId> {
+        next_thumb_progressive_key_shared(&self.shared)
     }
 }
 
-/// Next missing sync key for sparse thumb fill (focus = hover aim).
-fn next_thumb_key_gap_shared(shared: &Shared) -> Option<FrameId> {
+/// Next Pause progressive sync key (coarse → farthest densify).
+fn next_thumb_progressive_key_shared(shared: &Shared) -> Option<FrameId> {
     let thumbs = shared.thumb.try_borrow().ok().and_then(|s| s.clone())?;
+    if thumbs.hover_active() || thumbs.progressive_done() {
+        return None;
+    }
     let meta = shared.track.metadata();
-    let focus = thumbs.hover_aim();
     let keys = shared.track.index().sync_frame_ids();
-    thumbs.next_missing_key(&keys, focus, meta.width, meta.height)
+    thumbs.next_progressive_key(&keys, meta.width, meta.height)
 }

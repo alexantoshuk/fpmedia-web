@@ -238,8 +238,8 @@ pub fn hover_thumb_dims(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32,
 
 /// Nearest sync id in `keys` that is not yet `ready`, by `|id − focus|`.
 ///
-/// Used by sparse thumb key fill (`mediabunny:` `canvasesAtTimestamps` pick order
-/// is caller-defined; we bias to hover/playhead focus).
+/// Hover-forced local fill under the pointer. Bg progressive uses
+/// [`next_progressive_sync_key`] instead.
 pub fn next_missing_sync_key(
     keys: &[FrameId],
     focus: FrameId,
@@ -249,6 +249,176 @@ pub fn next_missing_sync_key(
         .copied()
         .filter(|&k| !ready(k))
         .min_by_key(|k| k.abs_diff(focus))
+}
+
+/// First-pass thumb spacing along the timeline (seconds).
+pub const THUMB_PROGRESSIVE_SPACING_SEC: f64 = 3.0;
+/// Floor / ceiling for [`thumb_progressive_coarse_count`].
+pub const THUMB_PROGRESSIVE_COARSE_MIN: usize = 8;
+pub const THUMB_PROGRESSIVE_COARSE_MAX: usize = 32;
+
+/// Coarse grid size for Pause progressive thumb fill.
+///
+/// `duration_sec / `[`THUMB_PROGRESSIVE_SPACING_SEC`], clamped, then
+/// `min(key_count, max_thumbs/4)` so midpoint densify keeps budget.
+/// **no equivalent** (filmstrip local); decode: `mediabunny:` `CanvasSink`
+/// `canvasesAtTimestamps`.
+pub fn thumb_progressive_coarse_count(
+    duration_sec: f64,
+    key_count: usize,
+    max_thumbs: usize,
+) -> usize {
+    if key_count == 0 || max_thumbs == 0 {
+        return 0;
+    }
+    let from_dur = if duration_sec.is_finite() && duration_sec > 0.0 {
+        (duration_sec / THUMB_PROGRESSIVE_SPACING_SEC).round() as usize
+    } else {
+        THUMB_PROGRESSIVE_COARSE_MIN
+    };
+    let coarse = from_dur.clamp(THUMB_PROGRESSIVE_COARSE_MIN, THUMB_PROGRESSIVE_COARSE_MAX);
+    let budget = (max_thumbs / 4).max(1);
+    coarse.min(key_count).min(budget).min(max_thumbs)
+}
+
+/// Progressive rank for a sync key (lower = coarser grid, kept longer).
+///
+/// - `0` — first-pass evenly spaced coarse set
+/// - `1…` — order of farthest-midpoint densify after coarse is filled
+/// - [`u16::MAX`] — not in `keys` (Exact non-key / unknown); first to evict
+///
+/// Hover and Pause use the same helper so dwell Exact does not pin a dense
+/// pocket while the far timeline stays empty. **no equivalent** (filmstrip local).
+pub fn thumb_progressive_rank(keys: &[FrameId], target: FrameId, coarse_count: usize) -> u16 {
+    let n = keys.len();
+    if n == 0 || coarse_count == 0 {
+        return u16::MAX;
+    }
+    let Some(ti) = keys.iter().position(|&k| k == target) else {
+        return u16::MAX;
+    };
+    let coarse = coarse_count.min(n);
+    for i in 0..coarse {
+        let idx = if coarse == 1 {
+            0
+        } else {
+            i * (n - 1) / (coarse - 1)
+        };
+        if idx == ti {
+            return 0;
+        }
+    }
+
+    let mut ready = vec![false; n];
+    for i in 0..coarse {
+        let idx = if coarse == 1 {
+            0
+        } else {
+            i * (n - 1) / (coarse - 1)
+        };
+        ready[idx] = true;
+    }
+    let mut rank = 1u16;
+    loop {
+        let ready_idx: Vec<usize> = ready
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| **r)
+            .map(|(i, _)| i)
+            .collect();
+        if ready_idx.is_empty() {
+            return rank;
+        }
+        let mut best: Option<(usize, usize)> = None; // (min_dist, idx)
+        for (i, is_ready) in ready.iter().enumerate() {
+            if *is_ready {
+                continue;
+            }
+            let min_d = ready_idx.iter().map(|r| i.abs_diff(*r)).min().unwrap_or(0);
+            if min_d == 0 {
+                continue;
+            }
+            let replace = match best {
+                None => true,
+                Some((bd, bi)) if min_d > bd || (min_d == bd && i < bi) => true,
+                _ => false,
+            };
+            if replace {
+                best = Some((min_d, i));
+            }
+        }
+        let Some((_, i)) = best else {
+            return rank;
+        };
+        if i == ti {
+            return rank;
+        }
+        ready[i] = true;
+        rank = rank.saturating_add(1);
+        if rank == u16::MAX {
+            return rank;
+        }
+    }
+}
+
+/// Next sync key for Pause progressive fill.
+///
+/// 1. Evenly spaced coarse grid (`coarse_count` among `keys`).
+/// 2. Then farthest missing key from any ready (midpoint densify + ends).
+///
+/// Returns `None` when every sync key is ready (caller marks progressive done).
+/// **no equivalent** (filmstrip local).
+pub fn next_progressive_sync_key(
+    keys: &[FrameId],
+    ready: impl Fn(FrameId) -> bool,
+    coarse_count: usize,
+) -> Option<FrameId> {
+    let n = keys.len();
+    if n == 0 || coarse_count == 0 {
+        return None;
+    }
+    let coarse = coarse_count.min(n);
+    for i in 0..coarse {
+        let idx = if coarse == 1 {
+            0
+        } else {
+            i * (n - 1) / (coarse - 1)
+        };
+        let k = keys[idx];
+        if !ready(k) {
+            return Some(k);
+        }
+    }
+
+    let ready_idx: Vec<usize> = keys
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| ready(**k))
+        .map(|(i, _)| i)
+        .collect();
+    if ready_idx.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(usize, usize)> = None; // (min_dist, idx)
+    for (i, &k) in keys.iter().enumerate() {
+        if ready(k) {
+            continue;
+        }
+        let min_d = ready_idx.iter().map(|r| i.abs_diff(*r)).min().unwrap_or(0);
+        if min_d == 0 {
+            continue;
+        }
+        let replace = match best {
+            None => true,
+            Some((bd, bi)) if min_d > bd || (min_d == bd && i < bi) => true,
+            _ => false,
+        };
+        if replace {
+            best = Some((min_d, i));
+        }
+    }
+    best.map(|(_, i)| keys[i])
 }
 
 /// Dense-cache gap pick for scrub densify.
@@ -756,6 +926,46 @@ mod tests {
         );
         assert_eq!(next_missing_sync_key(&keys, 50, |_| true), None);
         assert_eq!(next_missing_sync_key(&keys, 10, |_| false), Some(0));
+    }
+
+    #[test]
+    fn thumb_progressive_coarse_clamps_and_caps() {
+        // 60s → 20 @ 3s spacing, clamp stays in [8,32], budget max/4.
+        assert_eq!(thumb_progressive_coarse_count(60.0, 200, 256), 20);
+        assert_eq!(thumb_progressive_coarse_count(3.0, 200, 256), 8);
+        assert_eq!(thumb_progressive_coarse_count(600.0, 200, 256), 32);
+        assert_eq!(thumb_progressive_coarse_count(60.0, 5, 256), 5);
+        assert_eq!(thumb_progressive_coarse_count(60.0, 200, 16), 4);
+        assert_eq!(thumb_progressive_coarse_count(60.0, 0, 256), 0);
+    }
+
+    #[test]
+    fn next_progressive_sync_key_coarse_then_farthest() {
+        let keys: Vec<u64> = (0..9).map(|i| i * 10).collect(); // 0,10,…,80
+        // Coarse 3 → indices 0, 4, 8 → frames 0, 40, 80.
+        assert_eq!(next_progressive_sync_key(&keys, |_| false, 3), Some(0));
+        assert_eq!(next_progressive_sync_key(&keys, |k| k == 0, 3), Some(40));
+        assert_eq!(
+            next_progressive_sync_key(&keys, |k| k == 0 || k == 40, 3),
+            Some(80)
+        );
+        // After coarse: farthest from {0,40,80} among missing → 20 or 60 (tie → lower idx).
+        assert_eq!(
+            next_progressive_sync_key(&keys, |k| matches!(k, 0 | 40 | 80), 3),
+            Some(20)
+        );
+        assert_eq!(next_progressive_sync_key(&keys, |_| true, 3), None);
+    }
+
+    #[test]
+    fn thumb_progressive_rank_coarse_then_densify_order() {
+        let keys: Vec<u64> = (0..9).map(|i| i * 10).collect();
+        assert_eq!(thumb_progressive_rank(&keys, 0, 3), 0);
+        assert_eq!(thumb_progressive_rank(&keys, 40, 3), 0);
+        assert_eq!(thumb_progressive_rank(&keys, 80, 3), 0);
+        // First farthest after coarse → 20 (or 60); that key is rank 1.
+        assert_eq!(thumb_progressive_rank(&keys, 20, 3), 1);
+        assert_eq!(thumb_progressive_rank(&keys, 99, 3), u16::MAX);
     }
 
     #[test]

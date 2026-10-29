@@ -34,7 +34,8 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Scrub UI off but scrub decoder / densify still alive | `set_scrub_cache_policy` / `scrub_cache_off` | gate densify + gray + `ingest_scrub_bitmap_only`; checked-out decoder dropped in `return_scrub_decoder`, never closed mid-`decode()`. Host re-applies in `run_open` before `seek_frame(0)` |
-| Hover CPU / freeze / stuck far | `ThumbSink` / player lease | 3rd decoder; Play: no key_fill; 800 ms aim + 150 ms UI; no microtask spin |
+| Hover Exact never after dwell (key stuck) | `may_start_hover_aim_decode` / `<HoverThumb>` | Pause Exact refine free after host 150 ms; do **not** global 800 ms floor without reschedule. Skip only `painted==aim`. Play: no aim |
+| Thumb cache dense in one place, empty elsewhere | `ThumbCache` rank eviction / `thumb_progressive_rank` | rank 0=coarse … Exact=`MAX`; at cap drop highest rank first (not LRU). Hover+Pause same rank helper |
 | Need thumbs without player / filmstrip API | `ThumbSink::get` / `at_frames` | product surface (`product.md`); not `frames_at_timestamps` (full-res stub) |
 | Play stutter / freeze / underrun | `PlayIter` / `update_next_frame` | mediabunny iterator: `MAX_QUEUE_SIZE` 4 + 2-canvas pool for every resolution. Demo `wait/s` line (`PlayWaits`): `rd` = byte reads, `out` = consumer wait, `cap` = pump parked full, `raf>50` = main-thread stalls |
 | Mobile `holds N/…ms` + audio micro-gaps while `held>0 · out 0` (false underrun) | `play_underrun_hold` / `PlayIter::has_ready_sample` | hold only when `nextFrame` empty **and** iterator has no ready sample **and** frame due — never on the present→`updateNextFrame` one-tick gap. `mediabunny: media-sink.ts mediaSamplesInRange queueNotEmpty`; media-player never holds the clock |
@@ -124,7 +125,7 @@ Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `a
 - Do not cancel in-flight GOP densify on aim move; do not blit interim; do not wipe markers on settle/Play; do not drop prune salvage “to clean the strip” (re-decodes GOP — `AGENTS.md` Suboptimal).
 - Step: ring → blit → soft goto without abort densify. Pause after Play: refill blit gaps (`next_gap` prefers blit holes). Exact `put` refuses far inserts at cap (no origin/EOF thrash).
 - **GopProfile** → Short on **max** GOP only (scene-cut spread must not force Long).
-- Thumbs: `ThumbSink` product (not densify decoder); Play no sparse key_fill; far refine throttled; `hover_thumb_close_enough` = same sync key. `mediabunny: media-sink.ts CanvasSink`.
+- Thumbs: `ThumbSink` product (not densify decoder); Play cache/Exact only; Pause progressive + rank eviction (even grid); hover same ranks; Exact-on-dwell after host 150 ms. Skip only `painted==aim`. **no equivalent** (filmstrip); `mediabunny: media-sink.ts CanvasSink`.
 
 ### RefCell / WASM re-entry
 
