@@ -1,6 +1,6 @@
 [package]
 name = "fpmedia-web"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -30,7 +30,7 @@ webcodecs = [
 
 [dependencies]
 re_mp4 = { workspace = true }
-fpmedia-timecode = { path = "../timecode" }
+fpmedia-timecode = { path = "../timecode", version = "0.1.0-alpha.1" }
 thiserror = { workspace = true }
 lru = { workspace = true }
 futures = { workspace = true }

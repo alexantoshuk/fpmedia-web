@@ -1238,15 +1238,6 @@ fn FrameZebra(contrast: u8) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let track_w = RwSignal::new(0.0_f64);
 
-    let measure_host = move || {
-        if let Some(el) = host_ref.get_untracked() {
-            let w = el.get_bounding_client_rect().width();
-            if w > 0.0 {
-                track_w.set(w);
-            }
-        }
-    };
-
     use_resize_observer(host_ref, move |entries, _| {
         let Some(entry) = entries.first() else {
             return;
@@ -1256,10 +1247,6 @@ fn FrameZebra(contrast: u8) -> impl IntoView {
             track_w.set(w);
         }
     });
-
-    if let Some(win) = window() {
-        let _resize_stop = use_event_listener(win, ev::resize, move |_| measure_host());
-    }
 
     let visible = Memo::new(move |_| {
         frame_zebra_step(video.frame_count.get(), track_w.get()) >= FRAME_ZEBRA_MIN_SLOT_PX

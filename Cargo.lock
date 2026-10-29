@@ -434,14 +434,14 @@ dependencies = [
 
 [[package]]
 name = "fpmedia-timecode"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "fpmedia-web"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "bytes",
  "fpmedia-timecode",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "fpmedia-web-components"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "fpmedia-web",
  "leptos",

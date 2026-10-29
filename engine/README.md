@@ -1,7 +1,7 @@
 # fpmedia-web
 
-[![docs.rs](https://img.shields.io/badge/docs-docs.rs-blue)](https://docs.rs/fpmedia-web)
-[![crates.io](https://img.shields.io/badge/crates.io-fpmedia--web-orange)](https://crates.io/crates/fpmedia-web)
+[![version](https://img.shields.io/badge/version-0.1.0--alpha.1-lightgrey)](../Cargo.toml)
+[![publish](https://img.shields.io/badge/crates.io-pending-lightgrey)](../.ai/state.md)
 
 Frame-precise media **engine** for the browser: MP4 demux + presentation frame index +
 `VideoPlayer` (WebCodecs → canvas). No Leptos UI.

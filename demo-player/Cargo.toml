@@ -34,4 +34,4 @@ web-sys = { workspace = true, features = [
     "Window",
     "Location",
 ] }
-fpmedia-web-components = { path = "../components" }
+fpmedia-web-components = { path = "../components", version = "0.1.0-alpha.1" }
