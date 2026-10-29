@@ -336,6 +336,7 @@ pub fn DemoPlayer() -> impl IntoView {
     let rate_open = RwSignal::new(false);
     let volume_open = RwSignal::new(false);
     let position_open = RwSignal::new(false);
+    let position_format = RwSignal::new(PositionFormat::Frames);
     // Keep V volume pop open while dragging past the panel.
     let volume_sliding = RwSignal::new(false);
     let rate_root = NodeRef::<Div>::new();
@@ -514,13 +515,13 @@ pub fn DemoPlayer() -> impl IntoView {
     // Step buttons: no bare `inline-flex` — it fights `@max-*`/`hidden` and leaves a gap.
     // Hidden until player container ≥ `@3xl` (~768px); then no layout space when gone.
     let btn_icon_step = "wm-btn-icon hidden @3xl:inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
-    let btn_rate = "wm-rate-btn inline-flex h-9 min-w-[2.75rem] items-center justify-center rounded-md border-0 bg-transparent px-1.5 text-sm tabular-nums text-zinc-300 hover:text-zinc-100 disabled:cursor-default disabled:opacity-45";
+    let btn_rate = "wm-rate-btn inline-flex h-9 min-w-11 items-center justify-center rounded-md border-0 bg-transparent px-1.5 text-sm tabular-nums text-zinc-300 hover:text-zinc-100 disabled:cursor-default disabled:opacity-45";
 
     let btn_round = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     let btn_round_on = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-emerald-400 hover:bg-emerald-400/20 disabled:cursor-default disabled:opacity-45";
 
     view! {
-        <header class="flex w-full items-center justify-end gap-2 pt-[2px] pr-[2px]">
+        <header class="flex w-full items-center justify-end gap-2 pt-0.5 pr-0.5">
             <button
                 type="button"
                 class=move || {
@@ -611,7 +612,7 @@ pub fn DemoPlayer() -> impl IntoView {
             </div>
 
             <p
-                class="mb-4 min-h-[1.25rem] truncate text-center font-mono text-sm text-zinc-400"
+                class="mb-4 min-h-5 truncate text-center font-mono text-sm text-zinc-400"
                 data-testid="clip-label"
                 title=move || clip_label.get().unwrap_or_default()
             >
@@ -681,10 +682,15 @@ pub fn DemoPlayer() -> impl IntoView {
                     }
                 >
                     <Show when=move || scrubber_on.get()>
-                        <DemoScrubber video=video thumbs_on=thumbs_on no_hover=no_hover/>
+                        <DemoScrubber
+                            video=video
+                            thumbs_on=thumbs_on
+                            no_hover=no_hover
+                            position_format=position_format
+                        />
                     </Show>
                     <div
-                        class="wm-controls relative flex w-full flex-nowrap items-center gap-1 px-3 py-3"
+                        class="wm-controls relative flex w-full flex-nowrap items-center gap-1 px-1 py-3"
                         data-testid="controls"
                     >
                         <div class="wm-controls-side flex shrink-0 flex-nowrap items-center justify-start gap-1">
@@ -777,6 +783,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             <PositionDisplay
                                 video=video
                                 open=position_open
+                                format=position_format
                                 root=position_root
                                 rate_open=rate_open
                                 volume_open=volume_open
@@ -866,11 +873,9 @@ pub fn DemoPlayer() -> impl IntoView {
                         </div>
                         <div
                             class=move || {
-                                if rate_open.get() {
-                                    "wm-rate shrink-0 is-open".to_string()
-                                } else {
-                                    "wm-rate shrink-0".to_string()
-                                }
+                                // Next tier after step buttons (`@3xl`): rate needs `@4xl` (~896px).
+                                let open = if rate_open.get() { " is-open" } else { "" };
+                                format!("wm-rate shrink-0 hidden @4xl:block{open}")
                             }
                             node_ref=rate_root
                             data-testid="playback-rate"
@@ -1069,14 +1074,14 @@ pub fn DemoPlayer() -> impl IntoView {
                 </div>
                 <div class="wm-stats-head flex items-start gap-2">
                     <div class="flex min-w-0 flex-1 flex-col gap-0 text-sm leading-5 tabular-nums text-zinc-400">
-                        <p class="wm-meta m-0 min-h-[1.25rem]" data-testid="meta">
+                        <p class="wm-meta m-0 min-h-5" data-testid="meta">
                             {move || demo_meta_line(&video, clip_label.get())}
                         </p>
-                        <p class="wm-status m-0 min-h-[1.25rem]" data-testid="status">
+                        <p class="wm-status m-0 min-h-5" data-testid="status">
                             {move || demo_status_line(&video)}
                         </p>
                         <p
-                            class="wm-pipeline m-0 min-h-[2.5rem] whitespace-pre-line"
+                            class="wm-pipeline m-0 min-h-10 whitespace-pre-line"
                             data-testid="pipeline"
                         >
                             {move || demo_pipeline_line(video.pipeline.get())}
@@ -1125,7 +1130,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 {move || pipeline_stats_json(video.pipeline.get())}
             </pre>
             <p
-                class="wm-error mt-3 min-h-[1.2em] whitespace-pre-wrap text-red-400"
+                class="wm-error mt-3 min-h-5 whitespace-pre-wrap text-red-400"
                 data-testid="error"
             >
                 {move || video.error.get().unwrap_or_default()}
@@ -1290,11 +1295,11 @@ fn position_sides(video: &VideoRef, format: PositionFormat) -> (String, String) 
 fn PositionDisplay(
     video: VideoRef,
     open: RwSignal<bool>,
+    format: RwSignal<PositionFormat>,
     root: NodeRef<Div>,
     rate_open: RwSignal<bool>,
     volume_open: RwSignal<bool>,
 ) -> impl IntoView {
-    let format = RwSignal::new(PositionFormat::Frames);
     let editing = RwSignal::new(false);
     let draft = RwSignal::new(String::new());
     let input_ref = NodeRef::<Input>::new();
@@ -1524,16 +1529,16 @@ fn PositionDisplay(
     }
 }
 
-/// Hover aim frame under the thumb canvas (`HoverThumbCtx.frame`, not painted key).
+/// Hover aim under the thumb — same Frames/Timecode format as position menu.
 #[component]
-fn HoverThumbFrameLabel() -> impl IntoView {
+fn HoverThumbFrameLabel(video: VideoRef, format: RwSignal<PositionFormat>) -> impl IntoView {
     let ctx = use_context::<HoverThumbCtx>().expect("HoverThumbFrameLabel under HoverThumb");
     view! {
         <div class="wm-thumb-frame" data-testid="scrubber-thumb-frame">
             {move || {
                 ctx.frame
                     .get()
-                    .map(|f| f.to_string())
+                    .map(|f| format_position_side(&video, f, format.get()))
                     .unwrap_or_default()
             }}
         </div>
@@ -1546,12 +1551,13 @@ fn DemoScrubber(
     video: VideoRef,
     thumbs_on: RwSignal<bool>,
     no_hover: Signal<bool>,
+    position_format: RwSignal<PositionFormat>,
 ) -> impl IntoView {
     view! {
         <Scrubber video=video class="wm-scrubber".to_string()>
             <Show when=move || thumbs_on.get() && !no_hover.get()>
                 <HoverThumb class="fpvideo-thumb-preview".to_string()>
-                    <HoverThumbFrameLabel />
+                    <HoverThumbFrameLabel video=video format=position_format />
                 </HoverThumb>
             </Show>
             <div class="wm-scrubber-track">

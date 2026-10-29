@@ -29,17 +29,17 @@ body {
 }
 
 @utility wm-thumb-frame {
-  @apply whitespace-nowrap rounded-full bg-black/50 px-2.5 py-[3px] text-center font-mono text-[11px]/tight tabular-nums text-white;
+  @apply whitespace-nowrap rounded-full bg-black/50 px-2.5 py-0.5 text-center font-mono text-[11px]/tight tabular-nums text-white;
 }
 
 @utility wm-position {
   /* Sits in the flex middle column — centered in the gap between side clusters
      (not the full bar; left/right button counts differ). */
-  @apply relative z-[15] flex items-center justify-center;
+  @apply relative z-20 flex items-center justify-center;
 }
 
 @utility wm-position-field {
-  @apply h-9 min-w-[7.5rem] max-w-[min(18rem,42vw)] rounded-md border-0 px-2.5 text-center font-mono text-[13px]/tight tabular-nums whitespace-nowrap text-zinc-100;
+  @apply h-9 min-w-30 max-w-[min(18rem,42vw)] rounded-md border-0 px-2.5 text-center font-mono text-[13px]/tight tabular-nums whitespace-nowrap text-zinc-100;
 }
 
 @utility wm-position-display {
@@ -51,7 +51,7 @@ body {
 }
 
 @utility wm-position-label {
-  @apply inline-flex items-baseline gap-[0.35em];
+  @apply inline-flex items-baseline gap-1;
 }
 
 @utility wm-position-menu {
@@ -59,7 +59,7 @@ body {
 }
 
 @utility wm-position-item {
-  @apply flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2.5 py-[0.45rem] text-left text-[13px]/tight text-zinc-100 hover:bg-zinc-700/55;
+  @apply flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2.5 py-1.5 text-left text-[13px]/tight text-zinc-100 hover:bg-zinc-700/55;
 }
 
 @utility wm-position-item-active {
@@ -67,7 +67,7 @@ body {
 }
 
 @utility wm-position-check {
-  @apply inline-flex w-[0.9rem] justify-center text-emerald-400;
+  @apply inline-flex w-3.5 justify-center text-emerald-400;
 }
 
 @utility wm-position-menu-sep {
@@ -202,7 +202,7 @@ body {
 
 /* Hover thumb — class on <HoverThumb>; visibility via `.is-visible`. */
 .fpvideo-thumb-preview {
-  @apply pointer-events-none absolute bottom-[calc(100%+8px)] left-0 z-[5] hidden w-fit max-w-[40%] flex-col items-center gap-1.5 border-0 bg-transparent will-change-transform;
+  @apply pointer-events-none absolute bottom-[calc(100%+8px)] left-0 z-10 hidden w-fit max-w-[40%] flex-col items-center gap-1.5 border-0 bg-transparent will-change-transform;
   transform: translate3d(0, 0, 0);
 }
 
@@ -357,7 +357,7 @@ body {
 
 /* Rate popover — anchored to `.wm-controls`. */
 .wm-rate-pop {
-  @apply wm-pop right-1 bottom-[calc(100%-0.75rem+0.4rem)] left-auto hidden px-[0.85rem] pt-[0.65rem] pb-[0.45rem];
+  @apply wm-pop right-1 bottom-[calc(100%-0.75rem+0.4rem)] left-auto hidden px-3.5 pt-2.5 pb-1.5;
 }
 
 .wm-rate.is-open .wm-rate-pop {
@@ -459,7 +459,7 @@ body {
 }
 
 .wm-rate-tick-label {
-  @apply select-none text-[0.65rem]/none tabular-nums;
+  @apply select-none text-[10px]/none tabular-nums;
 }
 
 .wm-rate-tick.is-active {
@@ -481,7 +481,7 @@ body {
 /* Vertical volume popover — `::before` hit-bridge keeps :hover. */
 .wm-volume-slider-v {
   --wm-volume-v-gap: 0.4rem;
-  @apply wm-pop bottom-[calc(100%+var(--wm-volume-v-gap))] left-1/2 flex -translate-x-1/2 items-center justify-center px-[0.65rem] py-[0.55rem] opacity-0 invisible pointer-events-none transition-[opacity,visibility] duration-100;
+  @apply wm-pop bottom-[calc(100%+var(--wm-volume-v-gap))] left-1/2 flex -translate-x-1/2 items-center justify-center px-2.5 py-2 opacity-0 invisible pointer-events-none transition-[opacity,visibility] duration-100;
 }
 
 .wm-volume-slider-v::before {

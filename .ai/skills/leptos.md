@@ -45,7 +45,7 @@
 | Canvas / Performance / File | raw `web-sys` OK |
 | CSS vars / inline geometry | declarative `style=` / `class=` from signals — **not** `el.style().set_property` |
 
-Tailwind: only literal class strings in `.rs`/`.css`; computed geometry → `style=` from a signal (measure in Effect/rAF → write signal → view binds).
+Tailwind: only literal class strings in `.rs`/`.css`; prefer canonical utilities over `[…]` (see `architecture.md` § Stack → Styling); computed geometry → `style=` from a signal (measure in Effect/rAF → write signal → view binds).
 
 ## Host gotchas
 
