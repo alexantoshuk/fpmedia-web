@@ -321,16 +321,16 @@ body {
 }
 
 /* Rate: ghost button + popover (slider + 0.25 ticks).
-   Centered on the control; `--wm-rate-shift` (demo JS) slides it to stay
-   inside the viewport. Track shrinks on narrow viewports. */
+   Anchored to `.wm-controls` (right: 4px). `.wm-rate` is not positioned so
+   the pop’s CB is the controls row. `bottom` subtracts `py-3` so the gap
+   matches volume (above the icon row, not above the padded bar). */
 .wm-rate-pop {
   display: none;
   position: absolute;
-  bottom: calc(100% + 0.4rem);
-  left: 50%;
+  right: 4px;
+  bottom: calc(100% - 0.75rem + 0.4rem);
+  left: auto;
   z-index: 20;
-  --wm-rate-shift: 0px;
-  transform: translateX(calc(-50% + var(--wm-rate-shift)));
   padding: 0.65rem 0.85rem 0.45rem;
   border: 1px solid var(--wm-border);
   border-radius: 0.5rem;
@@ -461,44 +461,8 @@ body {
   background: var(--wm-ink);
 }
 
-/* Volume: H expand (width 0→N in flow); V popover when narrow.
-   Orientation from leptos-use Tailwind breakpoints (`md` → H, else V). */
-
-/* Horizontal: collapsed width, expands on panel hover / open / sliding. */
-.wm-volume-slider-h {
-  display: flex;
-  align-items: center;
-  width: 0;
-  overflow: hidden;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  pointer-events: none;
-  transition: width 0.15s ease;
-}
-
-.wm-volume-control:hover .wm-volume-slider-h,
-.wm-volume-control:focus-within .wm-volume-slider-h,
-.wm-volume-control.is-open .wm-volume-slider-h,
-.wm-volume-control.is-sliding .wm-volume-slider-h {
-  width: 5.85rem;
-  padding-left: 0.35rem;
-  pointer-events: auto;
-}
-
-.wm-volume-slider-h .wm-volume-input {
-  width: 5.5rem;
-  min-width: 5.5rem;
-  height: 1.25rem;
-  flex-shrink: 0;
-}
-
-/* Vertical: absolute popover above the icon.
-   H/V are separate `Show` shells (remount) so fade in/out is safe — same-node
-   H→V class flip used to inherit opacity:1 and flash. `::before` bridges the
-   gap so pointer travel icon→pop keeps :hover. */
+/* Vertical volume popover above the icon.
+   `::before` bridges the gap so pointer travel icon→pop keeps :hover. */
 .wm-volume-slider-v {
   --wm-volume-v-gap: 0.4rem;
   display: flex;

@@ -37,7 +37,6 @@ leptos-use = { version = "0.19", default-features = false, features = [
     "use_clipboard",
     "use_document_visibility",
     "on_click_outside",
-    "use_breakpoints",
     "use_media_query",
 ] }
 console_error_panic_hook = "0.1.7"

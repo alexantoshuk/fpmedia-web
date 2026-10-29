@@ -14,9 +14,8 @@ use leptos::ev;
 use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
 use leptos_use::{
-    BreakpointsTailwind, UseClipboardReturn, UseTimeoutFnReturn, breakpoints_tailwind,
-    on_click_outside, use_breakpoints, use_clipboard, use_event_listener, use_media_query,
-    use_resize_observer, use_timeout_fn,
+    UseClipboardReturn, UseTimeoutFnReturn, on_click_outside, use_clipboard, use_event_listener,
+    use_media_query, use_resize_observer, use_timeout_fn,
 };
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
@@ -52,8 +51,6 @@ const RATE_TICKS: [f64; 7] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75];
 const RATE_SLIDER_MIN: f64 = 0.25;
 const RATE_SLIDER_MAX: f64 = 1.75;
 
-/// Keep rate popover this far inside the viewport edge.
-const POPOVER_EDGE_PAD: f64 = 8.0;
 /// Fullscreen chrome auto-hide after idle (ms).
 const CONTROLS_IDLE_MS: f64 = 2200.0;
 
@@ -63,40 +60,6 @@ fn format_rate_tick(r: f64) -> String {
     } else {
         format!("{r}")
     }
-}
-
-/// Thumb-center % along the track (matches styled `--wm-rate-thumb` inset).
-/// Horizontal shift (px) so a centered `.wm-rate-pop` stays in the viewport.
-/// `applied_shift` is the CSS `--wm-rate-shift` already on the element (undo
-/// before measuring). Host binds the return value declaratively — no
-/// `set_property`.
-fn rate_pop_viewport_shift(pop: &HtmlElement, applied_shift: f64) -> f64 {
-    let Some(win) = window() else {
-        return 0.0;
-    };
-    let Ok(vw_js) = win.inner_width() else {
-        return 0.0;
-    };
-    let Some(vw) = vw_js.as_f64() else {
-        return 0.0;
-    };
-    if vw <= 0.0 {
-        return 0.0;
-    }
-    let rect = pop.get_bounding_client_rect();
-    let left = rect.left() - applied_shift;
-    let right = rect.right() - applied_shift;
-    let mut shift = 0.0;
-    if right > vw - POPOVER_EDGE_PAD {
-        shift -= right - (vw - POPOVER_EDGE_PAD);
-    }
-    if left + shift < POPOVER_EDGE_PAD {
-        shift += POPOVER_EDGE_PAD - (left + shift);
-    }
-    if right + shift > vw - POPOVER_EDGE_PAD {
-        shift -= (right + shift) - (vw - POPOVER_EDGE_PAD);
-    }
-    shift
 }
 
 fn rate_tick_left_pct(r: f64) -> String {
@@ -371,12 +334,9 @@ pub fn DemoPlayer() -> impl IntoView {
     // Rate / volume popovers.
     let rate_open = RwSignal::new(false);
     let volume_open = RwSignal::new(false);
-    // Keep H volume expanded while dragging past the panel.
+    // Keep V volume pop open while dragging past the panel.
     let volume_sliding = RwSignal::new(false);
     let rate_root = NodeRef::<Div>::new();
-    let rate_pop = NodeRef::<Div>::new();
-    // Declarative `--wm-rate-shift` for viewport collide (not `set_property`).
-    let rate_pop_shift = RwSignal::new(0.0_f64);
     let volume_root = NodeRef::<Div>::new();
     // File name or URL string from last open (clip line under the toolbar).
     let clip_label = RwSignal::new(None::<String>);
@@ -537,39 +497,6 @@ pub fn DemoPlayer() -> impl IntoView {
     let _volume_outside = on_click_outside(volume_root, move |_| {
         volume_open.set(false);
     });
-
-    // Rate pop: measure after open / resize → `rate_pop_shift` (view binds CSS var).
-    Effect::new(move |_| {
-        if !rate_open.get() {
-            rate_pop_shift.set(0.0);
-            return;
-        }
-        let pop = rate_pop;
-        let shift_sig = rate_pop_shift;
-        request_animation_frame(move || {
-            request_animation_frame(move || {
-                if let Some(el) = pop.get_untracked() {
-                    let el: HtmlElement = el.unchecked_into();
-                    let applied = shift_sig.get_untracked();
-                    shift_sig.set(rate_pop_viewport_shift(&el, applied));
-                }
-            });
-        });
-    });
-    let _rate_pop_resize = use_event_listener(window(), ev::resize, move |_| {
-        if !rate_open.get_untracked() {
-            return;
-        }
-        if let Some(el) = rate_pop.get_untracked() {
-            let el: HtmlElement = el.unchecked_into();
-            let applied = rate_pop_shift.get_untracked();
-            rate_pop_shift.set(rate_pop_viewport_shift(&el, applied));
-        }
-    });
-
-    // Tailwind viewport breakpoints (leptos-use) — volume slider H vs V.
-    let bp = use_breakpoints(breakpoints_tailwind());
-    let volume_wide = bp.ge(BreakpointsTailwind::Md);
 
     // Text buttons: filled bg, no border. Icon buttons: icon-only (no chrome).
     let btn = "inline-flex items-center justify-center rounded-md border-0 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 hover:bg-zinc-700 disabled:cursor-default disabled:opacity-45";
@@ -745,7 +672,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         <DemoScrubber video=video thumbs_on=thumbs_on no_hover=no_hover/>
                     </Show>
                     <div
-                        class="wm-controls flex w-full flex-nowrap items-center gap-1 px-3 py-3"
+                        class="wm-controls relative flex w-full flex-nowrap items-center gap-1 px-3 py-3"
                         data-testid="controls"
                     >
                         <div class="flex min-w-0 flex-1 flex-nowrap items-center gap-1">
@@ -849,12 +776,95 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             }
                         />
+                        </div>
+                        <div class="flex shrink-0 flex-nowrap items-center gap-1">
+                        <div
+                            class=move || {
+                                let mut c = String::from(
+                                    "wm-volume-control group relative flex shrink-0 items-center",
+                                );
+                                if volume_open.get() {
+                                    c.push_str(" is-open");
+                                }
+                                if volume_sliding.get() {
+                                    c.push_str(" is-sliding");
+                                }
+                                c
+                            }
+                            node_ref=volume_root
+                            data-testid="volume"
+                            on:mouseleave=move |_| {
+                                // Hover devices: drop tap-latch so V can fade with :hover.
+                                // Coarse: `is-open` stays until outside click / second tap.
+                                if !no_hover.get_untracked() {
+                                    volume_open.set(false);
+                                }
+                            }
+                        >
+                            <button
+                                type="button"
+                                class=move || {
+                                    if video.muted.get() {
+                                        format!("{btn_icon_on} is-on")
+                                    } else {
+                                        btn_icon.to_string()
+                                    }
+                                }
+                                data-testid="btn-mute"
+                                prop:disabled=move || !video.ready.get() || !video.has_audio.get()
+                                prop:aria-pressed=move || video.muted.get()
+                                prop:aria-label=move || {
+                                    if video.muted.get() { "Unmute" } else { "Mute" }
+                                }
+                                prop:title=move || {
+                                    if video.muted.get() { "Unmute" } else { "Mute" }
+                                }
+                                on:click=move |_| {
+                                    // Coarse / no-hover: first tap opens slider; later taps mute.
+                                    if no_hover.get_untracked() && !volume_open.get_untracked() {
+                                        volume_open.set(true);
+                                        rate_open.set(false);
+                                        return;
+                                    }
+                                    // Volume already 0: mute toggle is a no-op visually — unmute + max.
+                                    if video.volume.get_untracked() <= 0.0 {
+                                        video.set_volume(1.0);
+                                        video.set_muted(false);
+                                        return;
+                                    }
+                                    video.set_muted(!video.muted.get_untracked());
+                                }
+                            >
+                                {move || {
+                                    let muted = video.muted.get();
+                                    let vol = video.volume.get();
+                                    if muted || vol <= 0.0 {
+                                        EitherOf3::A(view! { <icon::Volume0 class="wm-icon"/> })
+                                    } else if vol < 0.5 {
+                                        EitherOf3::B(view! { <icon::Volume1 class="wm-icon"/> })
+                                    } else {
+                                        EitherOf3::C(view! { <icon::Volume2 class="wm-icon"/> })
+                                    }
+                                }}
+                            </button>
+                            <div
+                                class="wm-volume-slider wm-volume-slider-v"
+                                role="dialog"
+                                aria-label="Volume"
+                            >
+                                <VolumeRangeInput
+                                    video=video
+                                    volume_sliding=volume_sliding
+                                    no_hover=no_hover
+                                />
+                            </div>
+                        </div>
                         <div
                             class=move || {
                                 if rate_open.get() {
-                                    "wm-rate relative shrink-0 is-open".to_string()
+                                    "wm-rate shrink-0 is-open".to_string()
                                 } else {
-                                    "wm-rate relative shrink-0".to_string()
+                                    "wm-rate shrink-0".to_string()
                                 }
                             }
                             node_ref=rate_root
@@ -884,12 +894,8 @@ pub fn DemoPlayer() -> impl IntoView {
                             </button>
                             <div
                                 class="wm-rate-pop"
-                                node_ref=rate_pop
                                 role="dialog"
                                 aria-label="Playback rate"
-                                style=move || {
-                                    format!("--wm-rate-shift: {}px", rate_pop_shift.get())
-                                }
                             >
                                 <div class="wm-rate-track">
                                     <input
@@ -965,109 +971,6 @@ pub fn DemoPlayer() -> impl IntoView {
                                 </div>
                             </div>
                         </div>
-                        <div
-                            class=move || {
-                                let mut c = String::from(
-                                    "wm-volume-control group relative flex shrink-0 items-center",
-                                );
-                                if volume_open.get() {
-                                    c.push_str(" is-open");
-                                }
-                                if volume_sliding.get() {
-                                    c.push_str(" is-sliding");
-                                }
-                                c
-                            }
-                            node_ref=volume_root
-                            data-testid="volume"
-                            on:mouseleave=move |_| {
-                                // Hover devices: drop tap-latch so V/H can fade with :hover.
-                                // Coarse: `is-open` stays until outside click / second tap.
-                                if !no_hover.get_untracked() {
-                                    volume_open.set(false);
-                                }
-                            }
-                        >
-                            <button
-                                type="button"
-                                class=move || {
-                                    if video.muted.get() {
-                                        format!("{btn_icon_on} is-on")
-                                    } else {
-                                        btn_icon.to_string()
-                                    }
-                                }
-                                data-testid="btn-mute"
-                                prop:disabled=move || !video.ready.get() || !video.has_audio.get()
-                                prop:aria-pressed=move || video.muted.get()
-                                prop:aria-label=move || {
-                                    if video.muted.get() { "Unmute" } else { "Mute" }
-                                }
-                                prop:title=move || {
-                                    if video.muted.get() { "Unmute" } else { "Mute" }
-                                }
-                                on:click=move |_| {
-                                    // Coarse / no-hover: first tap opens slider; later taps mute.
-                                    if no_hover.get_untracked() && !volume_open.get_untracked() {
-                                        volume_open.set(true);
-                                        rate_open.set(false);
-                                        return;
-                                    }
-                                    // Volume already 0: mute toggle is a no-op visually — unmute + max.
-                                    if video.volume.get_untracked() <= 0.0 {
-                                        video.set_volume(1.0);
-                                        video.set_muted(false);
-                                        return;
-                                    }
-                                    video.set_muted(!video.muted.get_untracked());
-                                }
-                            >
-                                {move || {
-                                    let muted = video.muted.get();
-                                    let vol = video.volume.get();
-                                    if muted || vol <= 0.0 {
-                                        EitherOf3::A(view! { <icon::Volume0 class="wm-icon"/> })
-                                    } else if vol < 0.5 {
-                                        EitherOf3::B(view! { <icon::Volume1 class="wm-icon"/> })
-                                    } else {
-                                        EitherOf3::C(view! { <icon::Volume2 class="wm-icon"/> })
-                                    }
-                                }}
-                            </button>
-                            // Separate H/V shells (remount) — same-node class flip flashed V;
-                            // remount keeps fade in/out without inheriting H opacity.
-                            <Show
-                                when=move || volume_wide.get()
-                                fallback=move || {
-                                    view! {
-                                        <div
-                                            class="wm-volume-slider wm-volume-slider-v"
-                                            role="dialog"
-                                            aria-label="Volume"
-                                        >
-                                            <VolumeRangeInput
-                                                video=video
-                                                volume_sliding=volume_sliding
-                                                no_hover=no_hover
-                                            />
-                                        </div>
-                                    }
-                                }
-                            >
-                                <div
-                                    class="wm-volume-slider wm-volume-slider-h"
-                                    role="dialog"
-                                    aria-label="Volume"
-                                >
-                                    <VolumeRangeInput
-                                        video=video
-                                        volume_sliding=volume_sliding
-                                        no_hover=no_hover
-                                    />
-                                </div>
-                            </Show>
-                        </div>
-                        </div>
                         <button
                             type="button"
                             class=move || {
@@ -1100,6 +1003,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             <icon::FullScreenEnter class="wm-icon wm-icon-fullscreen"/>
                             <icon::FullScreenExit class="wm-icon wm-icon-fullscreen-exit"/>
                         </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1395,7 +1299,7 @@ fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> Option<T> {
     ev.target()?.dyn_into::<T>().ok()
 }
 
-/// Range control shared by H/V volume shells (`Show` remounts orientation).
+/// Vertical volume range popover input.
 #[component]
 fn VolumeRangeInput(
     video: VideoRef,
