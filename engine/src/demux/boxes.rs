@@ -1322,7 +1322,7 @@ mod tests {
 
     #[test]
     fn progressive_parse_matches_full_file_offsets() {
-        let path = fixture("short_gop.mp4");
+        let path = fixture("fixture_short_gop.mp4");
         if !path.exists() {
             eprintln!("skip: missing fixture");
             return;

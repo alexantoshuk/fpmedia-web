@@ -14,8 +14,9 @@ package-lock.json
 # Third-party packages
 **/node_modules/
 
-# Binary / media assets
+# Binary / media assets (tracked `fixture_*.mp4` still skipped for indexing)
 public/
+**/fixture_*.mp4
 engine/tests/fixtures/*.mp4
 
 # Large e2e baseline JSON (keep e2e/baselines/**/README.md)

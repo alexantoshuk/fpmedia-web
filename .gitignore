@@ -40,14 +40,11 @@ Thumbs.db
 .DS_Store
 
 # Local / large media — never commit camera dumps or long clips.
-# Only tiny fixtures under engine/tests/fixtures/ stay trackable.
+# Trackable exception: tiny plates named `fixture_*.mp4` (engine + demo-player/public).
 *.mp4
 *.mov
 *.webm
 *.mkv
 *.m4v
 *.avi
-!engine/tests/fixtures/
-!engine/tests/fixtures/**
-# Optional local fMP4 (see fixtures README) — still ignore even under fixtures/
-engine/tests/fixtures/fragmented_tiny.mp4
+!**/fixture_*.mp4

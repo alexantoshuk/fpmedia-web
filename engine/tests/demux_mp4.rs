@@ -43,7 +43,7 @@ fn block_on<F: Future>(fut: F) -> F::Output {
 
 #[test]
 fn demux_short_gop_metadata_and_frames() {
-    let path = fixture("short_gop.mp4");
+    let path = fixture("fixture_short_gop.mp4");
     if !path.exists() {
         eprintln!("skip: missing fixture {}", path.display());
         return;
@@ -119,7 +119,7 @@ fn demux_short_gop_metadata_and_frames() {
 
 #[test]
 fn demux_with_b_frames_reorder_windows() {
-    let path = fixture("with_b_frames.mp4");
+    let path = fixture("fixture_with_b_frames.mp4");
     if !path.exists() {
         eprintln!("skip: missing fixture {}", path.display());
         return;
@@ -159,7 +159,7 @@ fn demux_with_b_frames_reorder_windows() {
 
 #[test]
 fn progressive_source_open_matches_bytes_offsets() {
-    let path = fixture("short_gop.mp4");
+    let path = fixture("fixture_short_gop.mp4");
     if !path.exists() {
         eprintln!("skip: missing fixture {}", path.display());
         return;
@@ -196,7 +196,7 @@ fn progressive_source_open_matches_bytes_offsets() {
 
 #[test]
 fn progressive_cached_open_seeds_fetch_map_at_file_head() {
-    let path = fixture("short_gop.mp4");
+    let path = fixture("fixture_short_gop.mp4");
     if !path.exists() {
         eprintln!("skip: missing fixture {}", path.display());
         return;
@@ -383,7 +383,7 @@ fn progressive_fmp4_from_url() {
 
 #[test]
 fn deferred_avc_sync_verify_on_demand() {
-    let path = fixture("short_gop.mp4");
+    let path = fixture("fixture_short_gop.mp4");
     if !path.exists() {
         eprintln!("skip: missing fixture {}", path.display());
         return;
@@ -419,7 +419,7 @@ fn deferred_avc_sync_verify_on_demand() {
 fn demux_with_audio_track() {
     use fpmedia_web::{AudioCodec, open_mp4_bytes};
 
-    let path = fixture("with_audio.mp4");
+    let path = fixture("fixture_with_audio.mp4");
     if !path.exists() {
         eprintln!("skip: missing fixture {}", path.display());
         return;
