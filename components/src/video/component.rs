@@ -703,6 +703,7 @@ pub fn Video(
     let set_thumb_policy_fn = {
         let ctx = ctx.clone();
         Rc::new(move |policy: fpmedia_web::ThumbPolicy| {
+            ctx.thumb_policy.set(policy);
             ctx.with_player(|p| p.set_thumb_policy(policy));
         }) as Rc<dyn Fn(fpmedia_web::ThumbPolicy)>
     };

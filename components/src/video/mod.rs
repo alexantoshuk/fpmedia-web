@@ -351,7 +351,7 @@ impl VideoRef {
         }
     }
 
-    /// Runtime thumb sink gate (`Off` drops [`fpmedia_web::ThumbSink`]).
+    /// Runtime thumb sink gate — persists across opens. `Off` drops [`fpmedia_web::ThumbSink`].
     pub fn set_thumb_policy(&self, policy: ThumbPolicy) {
         if let Some(set) = self.op(|o| &o.set_thumb_policy) {
             set(policy);

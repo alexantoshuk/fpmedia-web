@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use fpmedia_web::{ScrubCachePolicy, TransportEvent, VideoPlayer};
+use fpmedia_web::{ScrubCachePolicy, ThumbPolicy, TransportEvent, VideoPlayer};
 use leptos::prelude::*;
 
 use super::VideoRef;
@@ -24,6 +24,8 @@ pub(super) struct HostCtx {
     pub transport: TransportHandle,
     /// Host intent — re-applied to every newly opened player (`run_open`).
     pub scrub_cache_policy: Rc<Cell<ScrubCachePolicy>>,
+    /// Host intent — re-applied on open (same pattern as `scrub_cache_policy`).
+    pub thumb_policy: Rc<Cell<ThumbPolicy>>,
 }
 
 impl HostCtx {
@@ -35,6 +37,7 @@ impl HostCtx {
             queue,
             transport,
             scrub_cache_policy: Rc::new(Cell::new(ScrubCachePolicy::default())),
+            thumb_policy: Rc::new(Cell::new(ThumbPolicy::On)),
         }
     }
 
