@@ -1,33 +1,33 @@
-ï»¿/**
+/**
  * Canonical e2e media: [testvideo](https://github.com/alexantoshuk/testvideo) Release assets.
  *
  * Do not point probes at Downloads / ad-hoc local paths. In-repo tiny fixtures
  * (`demo-player/public/`, `engine/tests/fixtures/`) remain for smoke + Rust unit demux only.
  *
- * Local e2e opens same-origin `/media/<stem>.mp4` â€” files in `demo-player/public/media/`
- * (`npm run media:fetch`). Override download base: `TESTVIDEO_BASE=https://â€¦/download/vX.Y.Z`.
+ * Local e2e opens same-origin `/media/<stem>.mp4` — files in `demo-player/public/media/`
+ * (`npm run media:fetch`). Override download base: `TESTVIDEO_BASE=https://…/download/vX.Y.Z`.
  *
- * v0.3.0: primary AAC matrix is **25â€¯fps** (not 24); see release notes.
+ * v0.3.0: primary AAC matrix is **25?fps** (not 24); see release notes.
  */
 export const TESTVIDEO_BASE =
   process.env.TESTVIDEO_BASE ??
   "https://github.com/alexantoshuk/testvideo/releases/download/v0.3.0";
 
-/** Asset stem (no `.mp4`) â€” matches testvideo `manifest.json` expand rule. */
+/** Asset stem (no `.mp4`) — matches testvideo `manifest.json` expand rule. */
 export const TestvideoClip = {
-  /** ~1â€¯MB scenecut â€” light open / variable keys. */
+  /** ~1?MB scenecut — light open / variable keys. */
   scenecut: "avc_1080p_25_scenecut_bf0",
-  /** AVC 1080p 25â€¯fps GOP12 bf0 ~60â€¯s AAC â€” default smoke / play / JKL / EOF. */
+  /** AVC 1080p 25?fps GOP12 bf0 ~60?s AAC — default smoke / play / JKL / EOF. */
   gop12: "avc_1080p_25_gop12_bf0",
-  /** AVC 1080p 25â€¯fps GOP12 bf2 â€” B-frame reorder / scrub. */
+  /** AVC 1080p 25?fps GOP12 bf2 — B-frame reorder / scrub. */
   gop12Bf2: "avc_1080p_25_gop12_bf2",
-  /** AVC 1080p 25â€¯fps GOP48 bf0 â€” long-GOP play + scrub settle / baseline. */
+  /** AVC 1080p 25?fps GOP48 bf0 — long-GOP play + scrub settle / baseline. */
   gop48: "avc_1080p_25_gop48_bf0",
-  /** AVC 1080p 25â€¯fps fMP4 GOP12 â€” progressive open / moof path. */
+  /** AVC 1080p 25?fps fMP4 GOP12 — progressive open / moof path. */
   fmp4: "avc_1080p_25_fmp4_gop12_bf0",
-  /** AVC 1080p 60â€¯fps GOP12 bf0 â€” high-fps clock / Aâ€‘V. */
+  /** AVC 1080p 60?fps GOP12 bf0 — high-fps clock / A?V. */
   gop12_60: "avc_1080p_60_gop12_bf0",
-  /** HEVC 1080p 25â€¯fps GOP12 â€” key-verify later (`WEBMEDIA_MATRIX_HEVC=1`). */
+  /** HEVC 1080p 25?fps GOP12 — key-verify later (`WEBMEDIA_MATRIX_HEVC=1`). */
   hevc: "hevc_1080p_25_gop12_bf0",
 } as const;
 
@@ -51,7 +51,7 @@ export function testvideoUrl(id: TestvideoClipId | string): string {
   return `/media/${stem}.mp4`;
 }
 
-/** Absolute GitHub Release URL (demo UI may rewrite to `/media/â€¦` when base matches). */
+/** Absolute GitHub Release URL (demo UI may rewrite to `/media/…` when base matches). */
 export function testvideoRemoteUrl(id: TestvideoClipId | string): string {
   const base = TESTVIDEO_BASE.replace(/\/$/, "");
   const stem = id.endsWith(".mp4") ? id.slice(0, -4) : id;
@@ -84,9 +84,8 @@ export type MatrixRole = {
     fpsMax: number;
     /** Substring of codec string (`avc1` / `hvc1`). */
     codecIncludes: string;
-    /** Status GOP label fragment (`GOP 12`, `GOP ~48`, â€¦). Empty = skip. */
+    /** Status GOP label fragment (`GOP 12`, `GOP ~48`, …). Empty = skip. */
     gopStatusIncludes: string;
-    playPolicy: string;
     hasAudio: boolean;
     minLastFrame: number;
   };
@@ -94,7 +93,7 @@ export type MatrixRole = {
 };
 
 /**
- * Narrow Release subset for profile / path tuning â€” not the full matrix.
+ * Narrow Release subset for profile / path tuning — not the full matrix.
  * HEVC included only when `WEBMEDIA_MATRIX_HEVC=1`.
  */
 export const MATRIX_ROLES: MatrixRole[] = [
@@ -110,7 +109,6 @@ export const MATRIX_ROLES: MatrixRole[] = [
       fpsMax: 25.5,
       codecIncludes: "avc1",
       gopStatusIncludes: "GOP 12",
-      playPolicy: "play:hd",
       hasAudio: true,
       minLastFrame: 1000,
     },
@@ -128,7 +126,6 @@ export const MATRIX_ROLES: MatrixRole[] = [
       fpsMax: 25.5,
       codecIncludes: "avc1",
       gopStatusIncludes: "GOP 12",
-      playPolicy: "play:hd",
       hasAudio: true,
       minLastFrame: 1000,
     },
@@ -146,7 +143,6 @@ export const MATRIX_ROLES: MatrixRole[] = [
       fpsMax: 25.5,
       codecIncludes: "avc1",
       gopStatusIncludes: "GOP ~48",
-      playPolicy: "play:hd",
       hasAudio: true,
       minLastFrame: 1000,
     },
@@ -164,7 +160,6 @@ export const MATRIX_ROLES: MatrixRole[] = [
       fpsMax: 26.0,
       codecIncludes: "avc1",
       gopStatusIncludes: "GOP 12",
-      playPolicy: "play:hd",
       hasAudio: true,
       minLastFrame: 1000,
     },
@@ -182,7 +177,6 @@ export const MATRIX_ROLES: MatrixRole[] = [
       fpsMax: 61,
       codecIncludes: "avc1",
       gopStatusIncludes: "GOP 12",
-      playPolicy: "play:hd",
       hasAudio: true,
       minLastFrame: 2000,
     },
@@ -199,9 +193,8 @@ export const MATRIX_ROLES: MatrixRole[] = [
       fpsMin: 24.5,
       fpsMax: 25.5,
       codecIncludes: "avc1",
-      // Variable keys â€” don't assert a fixed GOP label.
+      // Variable keys — don't assert a fixed GOP label.
       gopStatusIncludes: "",
-      playPolicy: "play:hd",
       hasAudio: true,
       minLastFrame: 100,
     },
@@ -224,7 +217,6 @@ export function matrixRolesForRun(): MatrixRole[] {
         fpsMax: 25.5,
         codecIncludes: "hvc1",
         gopStatusIncludes: "GOP 12",
-        playPolicy: "play:hd",
         hasAudio: true,
         minLastFrame: 1000,
       },

@@ -16,11 +16,6 @@
 
 ## Next up
 
-### Play follow-ups
-
-- Flaky smoke «Play preserves densify trail» (playhead >6 then <12 across polls on a short clip).
-- Status line still shows `play:hd` (Play has no profiles now).
-
 ### Publish crates (`0.1.0-alpha`)
 
 Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. Demo `demo-player` stays `publish = false`.

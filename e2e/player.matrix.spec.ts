@@ -44,9 +44,6 @@ async function assertOpenExpectations(
   expect(fps!).toBeGreaterThanOrEqual(role.expect.fpsMin);
   expect(fps!).toBeLessThanOrEqual(role.expect.fpsMax);
 
-  expect(status.raw.toLowerCase(), status.raw).toContain(
-    role.expect.playPolicy.toLowerCase(),
-  );
   if (role.expect.gopStatusIncludes) {
     expect(status.raw, status.raw).toContain(role.expect.gopStatusIncludes);
   }

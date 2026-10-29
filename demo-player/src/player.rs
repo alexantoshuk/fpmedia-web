@@ -184,13 +184,7 @@ fn demo_status_line(video: &VideoRef) -> String {
         video
             .metadata
             .get()
-            .map(|m| {
-                format!(
-                    "{} · play:{}",
-                    m.gop_profile.label(),
-                    m.play_policy().label()
-                )
-            })
+            .map(|m| m.gop_profile.label())
             .unwrap_or_else(|| "—".into()),
         video.timestamp.get(),
         fps_part,
