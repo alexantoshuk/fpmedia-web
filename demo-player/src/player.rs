@@ -2,14 +2,15 @@
 
 use crate::icon;
 use fpmedia_web_components::helpers::{
-    FRAME_ZEBRA_MIN_SLOT_PX, format_metadata, format_timecode_at, frame_zebra_step, odd_frame_runs,
-    playhead_tip_css, playhead_width_css, strip_canvas_buffer_width,
+    FRAME_ZEBRA_MIN_SLOT_PX, format_metadata, format_timecode_at, format_timecode_at_loose,
+    frame_zebra_step, last_frame_id, odd_frame_runs, parse_position, playhead_tip_css,
+    playhead_width_css, strip_canvas_buffer_width,
 };
 use fpmedia_web_components::{
-    HoverThumb, PipelinePlane, PipelineStats, ReadyFrameKind, ScrubCachePolicy, Scrubber,
-    ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, Video, VideoRef,
+    HoverThumb, HoverThumbCtx, PipelinePlane, PipelineStats, ReadyFrameKind, ScrubCachePolicy,
+    Scrubber, ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, Video, VideoRef,
 };
-use leptos::either::EitherOf3;
+use leptos::either::{Either, EitherOf3};
 use leptos::ev;
 use leptos::html::{Canvas, Div, Input};
 use leptos::prelude::*;
@@ -331,13 +332,15 @@ pub fn DemoPlayer() -> impl IntoView {
     // Laptops with a touchscreen usually stay `(hover: hover)` via trackpad/mouse.
     let no_hover = use_media_query("(hover: none)");
     let debug_on = RwSignal::new(false);
-    // Rate / volume popovers.
+    // Rate / volume / position popovers.
     let rate_open = RwSignal::new(false);
     let volume_open = RwSignal::new(false);
+    let position_open = RwSignal::new(false);
     // Keep V volume pop open while dragging past the panel.
     let volume_sliding = RwSignal::new(false);
     let rate_root = NodeRef::<Div>::new();
     let volume_root = NodeRef::<Div>::new();
+    let position_root = NodeRef::<Div>::new();
     // File name or URL string from last open (clip line under the toolbar).
     let clip_label = RwSignal::new(None::<String>);
     let url_input = NodeRef::<Input>::new();
@@ -486,6 +489,7 @@ pub fn DemoPlayer() -> impl IntoView {
             "Escape" => {
                 rate_open.set(false);
                 volume_open.set(false);
+                position_open.set(false);
             }
             _ => {}
         }
@@ -497,12 +501,19 @@ pub fn DemoPlayer() -> impl IntoView {
     let _volume_outside = on_click_outside(volume_root, move |_| {
         volume_open.set(false);
     });
+    let _position_outside = on_click_outside(position_root, move |_| {
+        // Menu only — Go to edit keeps `open=false` and must not be cancelled here.
+        position_open.set(false);
+    });
 
     // Text buttons: filled bg, no border. Icon buttons: icon-only (no chrome).
     let btn = "inline-flex items-center justify-center rounded-md border-0 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 hover:bg-zinc-700 disabled:cursor-default disabled:opacity-45";
     let btn_icon = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     let btn_icon_on = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-emerald-400 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     let btn_play = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
+    // Step buttons: no bare `inline-flex` — it fights `@max-*`/`hidden` and leaves a gap.
+    // Hidden until player container ≥ `@3xl` (~768px); then no layout space when gone.
+    let btn_icon_step = "wm-btn-icon hidden @3xl:inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     let btn_rate = "wm-rate-btn inline-flex h-9 min-w-[2.75rem] items-center justify-center rounded-md border-0 bg-transparent px-1.5 text-sm tabular-nums text-zinc-300 hover:text-zinc-100 disabled:cursor-default disabled:opacity-45";
 
     let btn_round = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
@@ -628,10 +639,11 @@ pub fn DemoPlayer() -> impl IntoView {
 
             <div
                 class=move || {
+                    // `@container` — chrome responds to player width (embed-safe), not viewport.
                     if fullscreen.get() && !controls_visible.get() {
-                        "wm-player is-controls-hidden overflow-hidden bg-zinc-900"
+                        "wm-player @container is-controls-hidden overflow-hidden bg-zinc-900"
                     } else {
-                        "wm-player overflow-hidden bg-zinc-900"
+                        "wm-player @container overflow-hidden bg-zinc-900"
                     }
                 }
                 data-testid="player"
@@ -675,7 +687,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         class="wm-controls relative flex w-full flex-nowrap items-center gap-1 px-3 py-3"
                         data-testid="controls"
                     >
-                        <div class="flex min-w-0 flex-1 flex-nowrap items-center gap-1">
+                        <div class="wm-controls-side flex shrink-0 flex-nowrap items-center justify-start gap-1">
                         <button
                             type="button"
                             class=move || {
@@ -728,7 +740,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         </button>
                         <button
                             type="button"
-                            class=btn_icon
+                            class=btn_icon_step
                             data-testid="btn-prev"
                             prop:disabled=move || !video.ready.get()
                             prop:aria-label="Previous frame"
@@ -745,7 +757,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         </button>
                         <button
                             type="button"
-                            class=btn_icon
+                            class=btn_icon_step
                             data-testid="btn-next"
                             prop:disabled=move || !video.ready.get()
                             prop:aria-label="Next frame"
@@ -760,24 +772,17 @@ pub fn DemoPlayer() -> impl IntoView {
                         >
                             <icon::NextFrame class="wm-icon wm-icon-next"/>
                         </button>
-                        <input
-                            type="number"
-                            class="wm-frame-input"
-                            data-testid="frame-input"
-                            min="0"
-                            prop:value=move || video.playhead.get().to_string()
-                            prop:disabled=move || !video.ready.get() || video.playing.get()
-                            on:change=move |ev| {
-                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                                    return;
-                                };
-                                if let Ok(v) = input.value().parse::<u32>() {
-                                    video.seek_frame(v);
-                                }
-                            }
-                        />
                         </div>
-                        <div class="flex shrink-0 flex-nowrap items-center gap-1">
+                        <div class="flex min-w-0 flex-1 items-center justify-center">
+                            <PositionDisplay
+                                video=video
+                                open=position_open
+                                root=position_root
+                                rate_open=rate_open
+                                volume_open=volume_open
+                            />
+                        </div>
+                        <div class="wm-controls-side flex shrink-0 flex-nowrap items-center justify-end gap-1">
                         <div
                             class=move || {
                                 let mut c = String::from(
@@ -1251,6 +1256,290 @@ fn ScrubProgress() -> impl IntoView {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PositionFormat {
+    Frames,
+    Timecode,
+}
+
+fn format_position_side(video: &VideoRef, frame: u32, format: PositionFormat) -> String {
+    match format {
+        PositionFormat::Frames => frame.to_string(),
+        PositionFormat::Timecode => match video.metadata.get() {
+            Some(m) => format_timecode_at_loose(&m, frame),
+            None => frame.to_string(),
+        },
+    }
+}
+
+fn position_sides(video: &VideoRef, format: PositionFormat) -> (String, String) {
+    let n = video.frame_count.get();
+    if n == 0 {
+        return ("—".into(), "—".into());
+    }
+    let cur = video.playhead.get().min(last_frame_id(n));
+    let last = last_frame_id(n);
+    (
+        format_position_side(video, cur, format),
+        format_position_side(video, last, format),
+    )
+}
+
+/// Frame.io-like center position: `current / last`, format menu, Go to… edit.
+#[component]
+fn PositionDisplay(
+    video: VideoRef,
+    open: RwSignal<bool>,
+    root: NodeRef<Div>,
+    rate_open: RwSignal<bool>,
+    volume_open: RwSignal<bool>,
+) -> impl IntoView {
+    let format = RwSignal::new(PositionFormat::Frames);
+    let editing = RwSignal::new(false);
+    let draft = RwSignal::new(String::new());
+    let input_ref = NodeRef::<Input>::new();
+
+    // Do **not** clear `editing` when `open` closes — Go to… closes the menu
+    // then enters edit mode; a sync Effect would cancel it immediately.
+
+    Effect::new(move |_| {
+        if !editing.get() {
+            return;
+        }
+        let Some(el) = input_ref.get() else {
+            return;
+        };
+        let _ = el.focus();
+        el.select();
+    });
+
+    let commit_goto = move || {
+        if !editing.get_untracked() {
+            return;
+        }
+        // Prefer live input value — controlled `draft` can lag behind the DOM.
+        let raw = input_ref
+            .get_untracked()
+            .map(|el| el.value())
+            .unwrap_or_else(|| draft.get_untracked());
+        editing.set(false);
+        open.set(false);
+        if !video.ready.get_untracked() {
+            return;
+        }
+        let Some(meta) = video.metadata.get_untracked() else {
+            if let Ok(v) = raw.trim().parse::<u32>() {
+                video.seek_frame(v);
+            }
+            return;
+        };
+        if let Some(frame) = parse_position(&meta, &raw) {
+            video.seek_frame(frame);
+        }
+    };
+
+    let cancel_goto = move || {
+        editing.set(false);
+        open.set(false);
+    };
+
+    let start_goto = move || {
+        if !video.ready.get_untracked() {
+            return;
+        }
+        let fmt = format.get_untracked();
+        let n = video.frame_count.get_untracked();
+        let cur = video.playhead.get_untracked().min(last_frame_id(n));
+        draft.set(format_position_side(&video, cur, fmt));
+        rate_open.set(false);
+        volume_open.set(false);
+        // Edit first, then close menu — never clear editing on menu close.
+        editing.set(true);
+        open.set(false);
+    };
+
+    view! {
+        <div
+            class=move || {
+                if open.get() {
+                    "wm-position shrink-0 is-open".to_string()
+                } else {
+                    "wm-position shrink-0".to_string()
+                }
+            }
+            node_ref=root
+            data-testid="position"
+        >
+            {move || {
+                if editing.get() {
+                    Either::Left(view! {
+                        <input
+                            type="text"
+                            class="wm-position-input"
+                            data-testid="frame-input"
+                            node_ref=input_ref
+                            prop:value=move || draft.get()
+                            prop:aria-label="Go to"
+                            on:input=move |ev| {
+                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                    return;
+                                };
+                                draft.set(input.value());
+                            }
+                            on:keydown=move |ev| {
+                                let key = ev.key();
+                                if key == "Enter" {
+                                    ev.prevent_default();
+                                    commit_goto();
+                                } else if key == "Escape" {
+                                    ev.prevent_default();
+                                    cancel_goto();
+                                }
+                            }
+                            on:blur=move |_| {
+                                commit_goto();
+                            }
+                        />
+                    })
+                } else {
+                    Either::Right(view! {
+                        <button
+                            type="button"
+                            class="wm-position-display"
+                            data-testid="position-display"
+                            prop:disabled=move || !video.ready.get()
+                            prop:aria-expanded=move || open.get()
+                            prop:aria-haspopup="menu"
+                            prop:aria-label=move || {
+                                let (cur, last) = position_sides(&video, format.get());
+                                format!("{cur} / {last}")
+                            }
+                            prop:title="Position (format / Go to…)"
+                            on:click=move |_| {
+                                if !video.ready.get_untracked() {
+                                    return;
+                                }
+                                let next = !open.get_untracked();
+                                open.set(next);
+                                if next {
+                                    rate_open.set(false);
+                                    volume_open.set(false);
+                                }
+                            }
+                        >
+                            <span class="wm-position-label">
+                                <span class="wm-position-cur">
+                                    {move || position_sides(&video, format.get()).0}
+                                </span>
+                                <span class="wm-position-slash" aria-hidden="true">
+                                    "/"
+                                </span>
+                                <span class="wm-position-rest">
+                                    {move || position_sides(&video, format.get()).1}
+                                </span>
+                            </span>
+                        </button>
+                    })
+                }
+            }}
+            <div
+                class="wm-position-menu"
+                role="menu"
+                aria-label="Position format"
+                data-testid="position-menu"
+            >
+                <button
+                    type="button"
+                    class=move || {
+                        if format.get() == PositionFormat::Frames {
+                            "wm-position-item-active"
+                        } else {
+                            "wm-position-item"
+                        }
+                    }
+                    role="menuitemradio"
+                    prop:aria-checked=move || format.get() == PositionFormat::Frames
+                    data-testid="position-format-frames"
+                    on:click=move |ev| {
+                        ev.stop_propagation();
+                        format.set(PositionFormat::Frames);
+                        open.set(false);
+                    }
+                >
+                    <span class="wm-position-check" aria-hidden="true">
+                        {move || {
+                            if format.get() == PositionFormat::Frames {
+                                "✓"
+                            } else {
+                                ""
+                            }
+                        }}
+                    </span>
+                    "Frames"
+                </button>
+                <button
+                    type="button"
+                    class=move || {
+                        if format.get() == PositionFormat::Timecode {
+                            "wm-position-item-active"
+                        } else {
+                            "wm-position-item"
+                        }
+                    }
+                    role="menuitemradio"
+                    prop:aria-checked=move || format.get() == PositionFormat::Timecode
+                    data-testid="position-format-timecode"
+                    on:click=move |ev| {
+                        ev.stop_propagation();
+                        format.set(PositionFormat::Timecode);
+                        open.set(false);
+                    }
+                >
+                    <span class="wm-position-check" aria-hidden="true">
+                        {move || {
+                            if format.get() == PositionFormat::Timecode {
+                                "✓"
+                            } else {
+                                ""
+                            }
+                        }}
+                    </span>
+                    "Timecode"
+                </button>
+                <div class="wm-position-menu-sep" role="separator"></div>
+                <button
+                    type="button"
+                    class="wm-position-item wm-position-goto"
+                    role="menuitem"
+                    data-testid="position-goto"
+                    on:click=move |ev| {
+                        ev.stop_propagation();
+                        start_goto();
+                    }
+                >
+                    "Go to…"
+                </button>
+            </div>
+        </div>
+    }
+}
+
+/// Hover aim frame under the thumb canvas (`HoverThumbCtx.frame`, not painted key).
+#[component]
+fn HoverThumbFrameLabel() -> impl IntoView {
+    let ctx = use_context::<HoverThumbCtx>().expect("HoverThumbFrameLabel under HoverThumb");
+    view! {
+        <div class="wm-thumb-frame" data-testid="scrubber-thumb-frame">
+            {move || {
+                ctx.frame
+                    .get()
+                    .map(|f| f.to_string())
+                    .unwrap_or_default()
+            }}
+        </div>
+    }
+}
+
 /// Demo scrubber chrome over headless [`Scrubber`] / [`TimelineMeta`] / [`HoverThumb`].
 #[component]
 fn DemoScrubber(
@@ -1261,7 +1550,9 @@ fn DemoScrubber(
     view! {
         <Scrubber video=video class="wm-scrubber".to_string()>
             <Show when=move || thumbs_on.get() && !no_hover.get()>
-                <HoverThumb class="fpvideo-thumb-preview".to_string() />
+                <HoverThumb class="fpvideo-thumb-preview".to_string()>
+                    <HoverThumbFrameLabel />
+                </HoverThumb>
             </Show>
             <div class="wm-scrubber-track">
                 <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />

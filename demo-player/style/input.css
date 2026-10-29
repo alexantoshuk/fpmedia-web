@@ -18,7 +18,68 @@ body {
   background: var(--wm-bg);
 }
 
-/* Demo fullscreen: video fills the screen; controls overlay and auto-hide. */
+/* ── Shared utilities (Tailwind v4 `@utility` + `@apply`) ─────────────── */
+
+@utility wm-pop {
+  @apply absolute z-20 rounded-lg border border-zinc-700 bg-zinc-900 shadow-[0_8px_24px_rgba(0,0,0,0.45)];
+}
+
+@utility wm-file {
+  @apply relative inline-flex overflow-hidden;
+}
+
+@utility wm-thumb-frame {
+  @apply whitespace-nowrap rounded-full bg-black/50 px-2.5 py-[3px] text-center font-mono text-[11px]/tight tabular-nums text-white;
+}
+
+@utility wm-position {
+  /* Sits in the flex middle column — centered in the gap between side clusters
+     (not the full bar; left/right button counts differ). */
+  @apply relative z-[15] flex items-center justify-center;
+}
+
+@utility wm-position-field {
+  @apply h-9 min-w-[7.5rem] max-w-[min(18rem,42vw)] rounded-md border-0 px-2.5 text-center font-mono text-[13px]/tight tabular-nums whitespace-nowrap text-zinc-100;
+}
+
+@utility wm-position-display {
+  @apply wm-position-field inline-flex cursor-pointer items-center justify-center bg-transparent hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45;
+}
+
+@utility wm-position-input {
+  @apply wm-position-field bg-zinc-950 outline outline-1 outline-zinc-700;
+}
+
+@utility wm-position-label {
+  @apply inline-flex items-baseline gap-[0.35em];
+}
+
+@utility wm-position-menu {
+  @apply wm-pop bottom-[calc(100%+0.35rem)] left-1/2 hidden min-w-40 -translate-x-1/2 flex-col gap-0.5 p-1.5;
+}
+
+@utility wm-position-item {
+  @apply flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2.5 py-[0.45rem] text-left text-[13px]/tight text-zinc-100 hover:bg-zinc-700/55;
+}
+
+@utility wm-position-item-active {
+  @apply wm-position-item bg-zinc-700/55;
+}
+
+@utility wm-position-check {
+  @apply inline-flex w-[0.9rem] justify-center text-emerald-400;
+}
+
+@utility wm-position-menu-sep {
+  @apply mx-1.5 my-1 h-px bg-zinc-700;
+}
+
+@utility wm-position-goto {
+  @apply text-zinc-400 hover:text-zinc-100;
+}
+
+/* ── Fullscreen chrome (structural — keep custom) ─────────────────────── */
+
 .wm-player:fullscreen {
   display: flex;
   flex-direction: column;
@@ -103,7 +164,6 @@ body {
   overflow: hidden;
 }
 
-/* Fill viewport; scale bitmap contain (up + down). Buffer stays ≤ source. */
 .fpvideo-canvas {
   display: block;
   width: 100%;
@@ -112,7 +172,7 @@ body {
   background: #111;
 }
 
-/* Timeline scrubber — sits on the bottom edge of the video stage. */
+/* Timeline scrubber — pixel strips / hit targets stay custom. */
 .wm-scrubber {
   position: relative;
   height: 22px;
@@ -124,7 +184,6 @@ body {
   flex-direction: column;
 }
 
-/* Touch: ~44px hit without thickening the bar; expand upward so controls stay clear. */
 @media (pointer: coarse) {
   .wm-scrubber::before {
     content: "";
@@ -141,35 +200,18 @@ body {
   opacity: 0.55;
 }
 
-/* Hover thumb — Play+Pause; hide while scrubbing.
-   Root gets `transform` from <HoverThumb>; canvas is inside (host chrome = children). */
+/* Hover thumb — class on <HoverThumb>; visibility via `.is-visible`. */
 .fpvideo-thumb-preview {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  width: fit-content;
-  max-width: 40%;
-  background: #0a0a0a;
-  border: 1px solid #404040;
-  border-radius: 2px;
-  pointer-events: none;
-  z-index: 5;
-  display: none;
-  flex-direction: column;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
-  will-change: transform;
+  @apply pointer-events-none absolute bottom-[calc(100%+8px)] left-0 z-[5] hidden w-fit max-w-[40%] flex-col items-center gap-1.5 border-0 bg-transparent will-change-transform;
   transform: translate3d(0, 0, 0);
 }
 
 .fpvideo-thumb-preview.is-visible {
-  display: flex;
+  @apply flex;
 }
 
-/* Intrinsic size from canvas width/height attrs (max-edge 160 via hover_thumb_dims). */
 .fpvideo-thumb-preview > canvas {
-  display: block;
-  max-width: 160px;
-  max-height: 160px;
+  @apply block max-h-40 max-w-40 rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.55)];
 }
 
 .wm-scrubber-track {
@@ -180,7 +222,6 @@ body {
   flex: 0 0 auto;
 }
 
-/* Odd-frame zebra (demo). Host div is measured; canvas unmounts when slot < 2px. */
 .wm-scrubber-zebra-host {
   position: absolute;
   inset: 0;
@@ -189,6 +230,7 @@ body {
   pointer-events: none;
   z-index: 0;
 }
+
 .wm-scrubber-zebra {
   position: absolute;
   inset: 0;
@@ -199,8 +241,6 @@ body {
   image-rendering: crisp-edges;
 }
 
-/* File-byte fetch coverage (behind playhead). 1px canvas, CSS-stretched.
-   Semi-transparent so the odd-frame zebra remains visible. */
 .wm-scrubber-fetched {
   position: absolute;
   inset: 0;
@@ -222,7 +262,6 @@ body {
   opacity: 0.55;
 }
 
-/* Opaque tip (left = f/n; width = max(2px, 100%/n); track clips EOF). */
 .wm-scrubber-playhead {
   position: absolute;
   top: 0;
@@ -232,7 +271,6 @@ body {
   z-index: 2;
 }
 
-/* Cache / ahead readiness under the progress bar (frame ticks). */
 .wm-scrubber-ready {
   position: relative;
   height: 12px;
@@ -249,7 +287,6 @@ body {
   top: 2px;
   bottom: 2px;
   width: 100%;
-  /* Replaced element: top+bottom alone leaves intrinsic 1px — force stretch. */
   height: calc(100% - 4px);
   pointer-events: none;
   image-rendering: pixelated;
@@ -266,6 +303,11 @@ body {
 
 .wm-ready-strip.is-exact {
   z-index: 2;
+}
+
+/* Control bar buttons — finger cursor (disabled stay default). */
+.wm-controls button:not(:disabled) {
+  cursor: pointer;
 }
 
 /* Icon play/pause + fullscreen + mute swaps (state classes on the button). */
@@ -300,14 +342,7 @@ body {
   display: block;
 }
 
-/* Must stay in layout (not display:none) — Android Chrome ignores
-   label activation / .click() on display:none file inputs. */
-.wm-file {
-  position: relative;
-  display: inline-flex;
-  overflow: hidden;
-}
-
+/* File input must stay in layout (not display:none) — Android Chrome. */
 .wm-file input[type="file"] {
   position: absolute;
   inset: 0;
@@ -320,30 +355,16 @@ body {
   font-size: 0;
 }
 
-/* Rate: ghost button + popover (slider + 0.25 ticks).
-   Anchored to `.wm-controls` (right: 4px). `.wm-rate` is not positioned so
-   the pop’s CB is the controls row. `bottom` subtracts `py-3` so the gap
-   matches volume (above the icon row, not above the padded bar). */
+/* Rate popover — anchored to `.wm-controls`. */
 .wm-rate-pop {
-  display: none;
-  position: absolute;
-  right: 4px;
-  bottom: calc(100% - 0.75rem + 0.4rem);
-  left: auto;
-  z-index: 20;
-  padding: 0.65rem 0.85rem 0.45rem;
-  border: 1px solid var(--wm-border);
-  border-radius: 0.5rem;
-  background: var(--wm-panel);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  @apply wm-pop right-1 bottom-[calc(100%-0.75rem+0.4rem)] left-auto hidden px-[0.85rem] pt-[0.65rem] pb-[0.45rem];
 }
 
 .wm-rate.is-open .wm-rate-pop {
-  display: block;
+  @apply block;
 }
 
 .wm-rate-track {
-  /* Thumb size — ticks pad by half so marks sit under the thumb center. */
   --wm-rate-thumb: 14px;
   width: min(17.5rem, calc(100vw - 1rem));
   display: flex;
@@ -397,7 +418,6 @@ body {
 .wm-rate-ticks {
   width: 100%;
   height: 1.55rem;
-  /* Inset equals half thumb — rail width matches thumb travel span. */
   padding: 0 calc(var(--wm-rate-thumb) / 2);
   box-sizing: border-box;
   pointer-events: none;
@@ -439,10 +459,7 @@ body {
 }
 
 .wm-rate-tick-label {
-  font-size: 0.65rem;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  user-select: none;
+  @apply select-none text-[0.65rem]/none tabular-nums;
 }
 
 .wm-rate-tick.is-active {
@@ -461,29 +478,10 @@ body {
   background: var(--wm-ink);
 }
 
-/* Vertical volume popover above the icon.
-   `::before` bridges the gap so pointer travel icon→pop keeps :hover. */
+/* Vertical volume popover — `::before` hit-bridge keeps :hover. */
 .wm-volume-slider-v {
   --wm-volume-v-gap: 0.4rem;
-  display: flex;
-  position: absolute;
-  z-index: 20;
-  bottom: calc(100% + var(--wm-volume-v-gap));
-  left: 50%;
-  transform: translateX(-50%);
-  align-items: center;
-  justify-content: center;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid var(--wm-border);
-  border-radius: 0.5rem;
-  background: var(--wm-panel);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition:
-    opacity 0.12s ease,
-    visibility 0.12s ease;
+  @apply wm-pop bottom-[calc(100%+var(--wm-volume-v-gap))] left-1/2 flex -translate-x-1/2 items-center justify-center px-[0.65rem] py-[0.55rem] opacity-0 invisible pointer-events-none transition-[opacity,visibility] duration-100;
 }
 
 .wm-volume-slider-v::before {
@@ -499,9 +497,7 @@ body {
 .wm-volume-control:focus-within .wm-volume-slider-v,
 .wm-volume-control.is-open .wm-volume-slider-v,
 .wm-volume-control.is-sliding .wm-volume-slider-v {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
+  @apply visible opacity-100 pointer-events-auto;
 }
 
 .wm-volume-slider-v .wm-volume-input {
@@ -522,32 +518,12 @@ body {
   cursor: default;
 }
 
-.wm-frame-input {
-  width: 3.75rem;
-  padding: 0.35rem 0.4rem;
-  border: 1px solid var(--wm-border);
-  border-radius: 0.375rem;
-  background: #09090b;
-  color: var(--wm-ink);
-  font: inherit;
-  /* No spinner — seek on Enter / blur via `change`. */
-  appearance: textfield;
-  -moz-appearance: textfield;
+/* Position menu open + muted `/` / last (state not expressible as one utility). */
+.wm-position.is-open .wm-position-menu {
+  @apply flex;
 }
 
-@media (min-width: 640px) {
-  .wm-frame-input {
-    width: 4.5rem;
-    padding: 0.35rem 0.5rem;
-  }
-}
-
-.wm-frame-input::-webkit-outer-spin-button,
-.wm-frame-input::-webkit-inner-spin-button {
-  appearance: none;
-  margin: 0;
-}
-
-.wm-frame-input:disabled {
-  opacity: 0.45;
+.wm-position-slash,
+.wm-position-rest {
+  @apply opacity-50;
 }

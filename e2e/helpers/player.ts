@@ -350,8 +350,9 @@ export class DemoPlayer {
   }
 
   async seekToFrame(frame: number, timeout = 60_000) {
-    // One seek only: fill + blur fires `change` → `seek_frame`. Do **not** also
-    // click Seek (second enqueue cancelled the first / left soft-cold eng≪aim).
+    // Position menu → Go to… → fill + blur commits `seek_frame`. One seek only.
+    await this.page.getByTestId("position-display").click();
+    await this.page.getByTestId("position-goto").click();
     await this.frameInput.fill(String(frame));
     await this.frameInput.blur();
     await this.waitEngine(frame, timeout);
