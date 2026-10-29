@@ -459,6 +459,7 @@ dependencies = [
 name = "fpmedia-web-components"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "fpmedia-timecode",
  "fpmedia-web",
  "leptos",
  "leptos-use",

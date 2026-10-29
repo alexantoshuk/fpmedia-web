@@ -45,3 +45,4 @@ web-sys = { workspace = true, features = [
     "VisibilityState",
 ] }
 fpmedia-web = { path = "../engine", version = "0.1.0-alpha.1", features = ["webcodecs"] }
+fpmedia-timecode = { path = "../timecode", version = "0.1.0-alpha.1" }

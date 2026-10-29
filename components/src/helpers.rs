@@ -127,9 +127,128 @@ pub fn format_timecode_at(meta: &VideoMetadata, frame: u32) -> Option<String> {
     meta.timecode_at(u64::from(frame)).map(|tc| tc.to_string())
 }
 
+/// SMPTE for display even when [`format_timecode_at`] has no known rate.
+///
+/// Falls back to nominal fps from `meta.fps` (or 24) so UI never silently looks
+/// like bare frame numbers in Timecode mode.
+pub fn format_timecode_at_loose(meta: &VideoMetadata, frame: u32) -> String {
+    if let Some(s) = format_timecode_at(meta, frame) {
+        return s;
+    }
+    let fps = meta.fps.unwrap_or(24.0).max(1.0);
+    let nominal = fps.round().max(1.0) as u32;
+    let ff = frame % nominal;
+    let total_sec = frame / nominal;
+    let ss = total_sec % 60;
+    let mm = (total_sec / 60) % 60;
+    let hh = total_sec / 3600;
+    format!("{hh:02}:{mm:02}:{ss:02}:{ff:02}")
+}
+
+/// Last presentation frame id (`frame_count − 1`), or `0` when empty.
+pub fn last_frame_id(frame_count: u32) -> u32 {
+    frame_count.saturating_sub(1)
+}
+
+/// Nominal fps used by [`format_timecode_at_loose`] / loose Go-to parse.
+fn loose_nominal_fps(meta: &VideoMetadata) -> u32 {
+    meta.fps.unwrap_or(24.0).round().max(1.0) as u32
+}
+
+/// Reverse of the loose SMPTE formatter: `H:M:S:F` / `H:M:S;F` → frame index.
+fn parse_timecode_loose(s: &str, nominal_fps: u32) -> Option<u64> {
+    let parts: Vec<&str> = s.split([':', ';']).collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let h: u64 = parts[0].parse().ok()?;
+    let m: u64 = parts[1].parse().ok()?;
+    let sec: u64 = parts[2].parse().ok()?;
+    let f: u64 = parts[3].parse().ok()?;
+    let nom = u64::from(nominal_fps.max(1));
+    if m > 59 || sec > 59 || f >= nom {
+        return None;
+    }
+    Some(((h * 60 + m) * 60 + sec) * nom + f)
+}
+
+/// Parse a Go-to string as a presentation frame: bare integer, else SMPTE TC.
+///
+/// Clamps to `0…frame_count−1`. Prefers embedded rate via [`Timecode::parse`];
+/// falls back to the same loose math as [`format_timecode_at_loose`].
+pub fn parse_position(meta: &VideoMetadata, raw: &str) -> Option<u32> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let last = meta.frame_count.saturating_sub(1);
+    let clamp = |f: u64| -> u32 { f.min(last) as u32 };
+
+    if let Ok(f) = s.parse::<u64>() {
+        return Some(clamp(f));
+    }
+
+    if let Some(rate) = meta.timecode_rate()
+        && let Ok(tc) = fpmedia_timecode::Timecode::parse(s, rate)
+    {
+        let start = meta
+            .timecode_start
+            .unwrap_or_else(|| fpmedia_timecode::Timecode::from_frames(0, rate));
+        if let Ok(frame) = tc.to_frame_from_start(start) {
+            return Some(clamp(frame));
+        }
+    }
+
+    parse_timecode_loose(s, loose_nominal_fps(meta)).map(clamp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fpmedia_web::{CodecConfig, GopProfile, VideoCodec, VideoMetadata};
+
+    fn meta_24fps(frames: u64) -> VideoMetadata {
+        VideoMetadata {
+            width: 1920,
+            height: 1080,
+            timescale: 24,
+            duration_ticks: frames,
+            frame_count: frames,
+            fps: Some(24.0),
+            codec: CodecConfig {
+                codec: VideoCodec::Avc,
+                codec_string: None,
+                description: Vec::new(),
+            },
+            gop_profile: GopProfile::ShortFixed { len: 12 },
+            timecode_start: None,
+        }
+    }
+
+    #[test]
+    fn parse_position_frame_and_timecode() {
+        let meta = meta_24fps(240);
+        assert_eq!(parse_position(&meta, "12"), Some(12));
+        assert_eq!(parse_position(&meta, "999"), Some(239));
+        assert_eq!(parse_position(&meta, "00:00:01:00"), Some(24));
+        assert_eq!(parse_position(&meta, ""), None);
+    }
+
+    #[test]
+    fn parse_position_roundtrips_loose_timecode() {
+        let meta = meta_24fps(240);
+        for frame in [0u32, 1, 24, 100, 239] {
+            let s = format_timecode_at_loose(&meta, frame);
+            assert_eq!(parse_position(&meta, &s), Some(frame), "tc={s}");
+        }
+        // Unknown fps → loose path still round-trips.
+        let mut odd = meta_24fps(120);
+        odd.fps = Some(48.0);
+        let s = format_timecode_at_loose(&odd, 96);
+        assert_eq!(s, "00:00:02:00");
+        assert_eq!(parse_position(&odd, &s), Some(96));
+        assert_eq!(parse_position(&odd, "0:00:01:00"), Some(48));
+    }
 
     #[test]
     fn playhead_pct_edges() {
