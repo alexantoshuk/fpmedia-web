@@ -173,15 +173,19 @@ Surfaces: `product.md`. Host traps: `skills/leptos.md`.
 
 ### TimelineRef
 
-Shared scrub/hover handle in `fpmedia-web-components` (`ready` / `playhead` / `frame_count` + scrub/hover ops). Backed by [`VideoRef`](#video--videoref) today; Sequence will add another backend. `<Scrubber>` / `<HoverThumb>` take this (or `video=` → `as_timeline`). Not the engine clock.
+Shared scrub/hover handle in `fpmedia-web-components` (`ready` / `playhead` / `frame_count` + scrub/hover ops). Backed by [`VideoRef`](#video--videoref) or [`VideoPlaylistRef`](#videoplaylist--videoplaylistref). `<Scrubber>` / `<HoverThumb>` take this (or `video=` → `as_timeline`). Not the engine clock.
 
-### SequencePos
+### PlaylistPos
 
-Position inside a playlist: **clip index** (0-based in the model; **1-based** `[i]` in UI) + **local** presentation frame or timecode of that clip. Not a single global FrameId / SMPTE across mixed-fps clips. UX: `product.md` § Sequence position UI.
+Position inside a playlist: **clip index** (0-based in the model; **1-based** `[i]` in UI) + **local** presentation frame or timecode of that clip. Not a single global FrameId / SMPTE across mixed-fps clips. Type + helpers: `fpmedia_web_components::video_playlist`. UX: `product.md` § Playlist position UI.
 
-### Sequence (playlist)
+### Playlist
 
-Ordered list of media sources reviewed as one **duration-weighted** timeline (Play All). Composition: two `<Video>` slots (live + idle). Agreed design: `architecture.md` § Sequence composition; not shipped — `state.md`.
+Ordered list of media sources reviewed as one **duration-weighted** timeline (Play All). Element: [`<VideoPlaylist>`](#videoplaylist--videoplaylistref). Design: `architecture.md` § Playlist composition; open work: `state.md`.
+
+### `<VideoPlaylist>` / VideoPlaylistRef
+
+Dual-slot playlist stage (live + idle `<Video>`) + handle. Probe → `PlaylistModel`; `as_timeline()` uses milliseconds.
 
 ### `<Video>` / VideoRef
 

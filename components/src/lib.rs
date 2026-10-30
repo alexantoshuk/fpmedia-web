@@ -1,12 +1,13 @@
 //! Leptos media elements over [`fpmedia_web`] — HTML `<video>` / `<audio>` analogs.
 //!
 //! - [`video`] — frame-precise `<Video>` + [`VideoRef`]
-//! - [`timeline`] — shared [`TimelineRef`] for scrub/hover (Video now; Sequence later)
+//! - [`timeline`] — shared [`TimelineRef`] for scrub/hover (Video / VideoPlaylist)
 //! - [`scrubber`] — headless `<Scrubber>` (gesture + context)
 //! - [`timeline_meta`] — `<TimelineMeta>` (one fetch/residency strip)
 //! - [`hover_thumb`] — `<HoverThumb>` (paint inside; host chrome via children)
 //! - [`strip`] — strip pixel-run math + 1 px canvas paint
 //! - [`helpers`] — playhead / scrub-x CSS math, hover geometry, metadata formatters
+//! - [`video_playlist`] — playlist model + `[i]` helpers + [`VideoPlaylist`] / [`VideoPlaylistRef`] (wasm)
 //! - `audio` — planned pure-audio host (`AudioRef`)
 //!
 //! Player chrome (keyboard, transport, scrubber look) stays in the demo `app` crate.
@@ -24,6 +25,7 @@ pub mod timeline;
 pub mod timeline_meta;
 #[cfg(target_arch = "wasm32")]
 pub mod video;
+pub mod video_playlist;
 
 #[cfg(target_arch = "wasm32")]
 pub use hover_thumb::{
@@ -41,3 +43,9 @@ pub use video::{
     PipelineInterest, PipelineInterestLease, PipelinePlane, PipelineStats, ReadyFrameKind,
     ReadyFrameMark, ScrubCachePolicy, ThumbPolicy, Video, VideoMetadata, VideoRef,
 };
+pub use video_playlist::{
+    PlaylistClip, PlaylistModel, PlaylistPos, format_playlist_frames, format_playlist_timecode,
+    parse_playlist_goto, split_playlist_goto,
+};
+#[cfg(target_arch = "wasm32")]
+pub use video_playlist::{VideoPlaylist, VideoPlaylistRef};

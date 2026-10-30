@@ -8,8 +8,8 @@
 
 ### Handoff
 
-- **HEAD:** `TimelineRef` shipped (`feat(components): add TimelineRef…`) — Scrubber/HoverThumb shared scrub handle; Sequence backend next. Prior: soft-drag main-HW key chase; ThumbSink; scrub→play.
-- **In progress:** Sequence playlist **implementation** starting at **model** (duration map + `SequencePos` / `[i]` helpers). UX/design locked — `product.md` / `architecture.md` § Sequence / `glossary.md` § SequencePos · TimelineRef.
+- **HEAD:** `<VideoPlaylist>` / `VideoPlaylistRef` in `video_playlist` (2× Video live/idle, probe → model, `TimelineRef` ms). Cross-clip scrub/seam not wired yet. Prior: `TimelineRef`; soft-drag.
+- **In progress:** Playlist — next **play seam** (EOF → swap). Then duration scrub rebind; demo multi-open.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -17,16 +17,14 @@
 
 ## Next up
 
-### Sequence playlist
+### Playlist
 
-**Now:** (1) model + `[i]` helpers. Then 2–6. Shared scrub (`TimelineRef`) done.
+Model + `<VideoPlaylist>` host in tree (probe/open live+idle; scrub only within live clip). **Now:**
 
-1. **Model** — clip list + duration offsets + `t ↔ (clip_index, local FrameId)`; unit tests; `SequencePos` / `[i]` format helpers (readout + go-to parse).
-2. **`<Sequence>` + 2× `<Video>`** — open blobs/URLs; metadata probe → durations; live + idle assign; one visible stage; `TimelineRef` backend.
 3. **Play seam** — EOF mid-list → swap + play next; last → `ended` / loop; idle = next (forward).
 4. **Seek / scrub / step** — duration scrubber; map to local; rebind idle; facade transport.
-5. **Demo** — multi file + multi URL; position `[i] now / end` (Frames/Timecode); go-to `[i] …` or bare = current clip.
-6. **Docs trim** — drop this block when shipped; mark Sequence surface shipped in product/architecture.
+5. **Demo** — multi file + multi URL; position `[i] now / end` (Frames/Timecode); go-to `[i] …` or bare = current clip; host CSS for `.fpvideo-playlist-slot.is-idle`.
+6. **Docs trim** — drop this block when shipped; mark Playlist UI shipped in product/architecture.
 
 **Out of v1:** clip name in readout/go-to; cut markers on bar; gapless audio; app-wide shared `ThumbSink`; compare dual-visible.
 
@@ -60,5 +58,5 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
-- Sequence: clip **name** in `[i]` readout / go-to; cut markers on scrubber; gapless / tighter A/V seam; shared ThumbSink across sources.
+- Playlist: clip **name** in `[i]` readout / go-to; cut markers on scrubber; gapless / tighter A/V seam; shared ThumbSink across sources.
 - Compare dual-visible (reuse 2-slot pool); pure `<Audio>` / `AudioPlayer`; thumb Worker; 4K loop residual; reverse playback (if revisited); production player UI.

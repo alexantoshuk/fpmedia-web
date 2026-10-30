@@ -42,7 +42,7 @@ impl HoverThumbApi {
 /// Shared by nested [`crate::TimelineMeta`] / [`crate::HoverThumb`].
 #[derive(Clone, Copy)]
 pub struct ScrubberCtx {
-    /// Scrub / hover domain (Video or future Sequence).
+    /// Scrub / hover domain (Video or future Playlist).
     pub timeline: TimelineRef,
     /// Set when the scrubber is bound to a single [`VideoRef`] (pipeline strips).
     pub video: Option<VideoRef>,
