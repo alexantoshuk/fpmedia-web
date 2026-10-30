@@ -19,7 +19,46 @@ use leptos_use::{
     use_media_query, use_resize_observer, use_timeout_fn,
 };
 use wasm_bindgen::JsCast;
-use web_sys::{Blob, Element, HtmlElement, HtmlInputElement, window};
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{
+    Blob, Element, HtmlElement, HtmlInputElement, OrientationLockType, OrientationType, window,
+};
+
+/// Android Chrome (etc.): after fullscreen, lock landscape if still portrait.
+/// iOS / desktop: `lock()` rejects — swallow. Exit fullscreen unlocks per spec.
+fn try_lock_fs_landscape() {
+    let Some(w) = window() else {
+        return;
+    };
+    let Ok(screen) = w.screen() else {
+        return;
+    };
+    let orient = screen.orientation();
+    if let Ok(t) = orient.type_()
+        && matches!(
+            t,
+            OrientationType::LandscapePrimary | OrientationType::LandscapeSecondary
+        )
+    {
+        return;
+    }
+    let Ok(p) = orient.lock(OrientationLockType::Landscape) else {
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = JsFuture::from(p).await;
+    });
+}
+
+fn try_unlock_orientation() {
+    let Some(w) = window() else {
+        return;
+    };
+    let Ok(screen) = w.screen() else {
+        return;
+    };
+    let _ = screen.orientation().unlock();
+}
 
 /// Matches `.wm-scrubber-track` background (`#2a2a2a`). Zebra even/odd =
 /// this ± `contrast` per channel (demo chrome).
@@ -402,8 +441,15 @@ pub fn DemoPlayer() -> impl IntoView {
                 .is_some();
             fullscreen.set(active);
             if active {
+                // Phone/tablet: lock landscape after FS is active (needs FS context).
+                if no_hover.get_untracked() {
+                    try_lock_fs_landscape();
+                }
                 bump_controls();
             } else {
+                if no_hover.get_untracked() {
+                    try_unlock_orientation();
+                }
                 stop_controls_hide();
                 controls_visible.set(true);
                 over_controls.set(false);
