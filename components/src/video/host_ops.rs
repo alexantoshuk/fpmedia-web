@@ -276,6 +276,15 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
         .min(u64::from(u32::MAX)) as u32;
     let eng = p.state().frame.min(u64::from(u32::MAX)) as u32;
     let mut ph = playhead.get_untracked().min(indexed_last);
+    // At last frame (EOF or seek-to-end): restart from 0 — loop on or off.
+    // Otherwise PlayPrime arms the clock on the last sample and leaks ~½ s audio
+    // before the EOF wall. mediabunny: examples/media-player/media-player.ts
+    // `play` — `getPlaybackTime() === endTimestamp` → snap to `firstTimestamp`.
+    if p.state().frame_count > 0 && ph >= indexed_last {
+        web_sys::console::log_1(&"fpmedia-web: play at last frame → restart 0".into());
+        playhead.set(0);
+        ph = 0;
+    }
     if !p.frame_exact_ready(u64::from(ph)) {
         let safe = eng.min(indexed_last);
         if safe != ph {

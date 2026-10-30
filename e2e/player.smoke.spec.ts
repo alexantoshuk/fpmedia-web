@@ -122,18 +122,24 @@ test.describe("demo player smoke", () => {
 
     const last = (await player.readStatus()).lastFrame;
     expect(last).toBeGreaterThan(2);
-    // Land on the last frame so Play hits EOF and leaves the media clock there.
+    // Play on last frame restarts from 0 (mediabunny endTimestamp → first).
     await player.seekToFrame(last!);
-    // Only one frame-duration of media remains, so `playing` may flip back
-    // before a poll lands — latch it in-page instead.
-    const sawPlaying = await player.watchPlaying();
     await player.play.click();
-    await expect.poll(sawPlaying).toBe(true);
     await expect
       .poll(async () => (await player.readStatus()).playing, {
-        timeout: 20_000,
-        message: "expected EOF to clear playing after last frame",
+        timeout: 15_000,
+        message: "Play on last frame did not start (restart-from-0?)",
       })
+      .toBe(true);
+    await expect
+      .poll(async () => (await player.readStatus()).playhead ?? last!, {
+        timeout: 15_000,
+        message: "Play on last frame did not restart toward origin",
+      })
+      .toBeLessThan(last! - 1);
+    await player.pause.click();
+    await expect
+      .poll(async () => (await player.readStatus()).playing)
       .toBe(false);
 
     await player.scrubToFraction(0.1);

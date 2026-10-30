@@ -33,6 +33,7 @@
 | Scrub bar lags / pointer jank / hold jumps | sync playhead on move; no sync Exact present on move (ScrubDrag owns canvas); dwell ~100 ms on blit miss; paused rAF `sync_ui` ≤10 Hz while `Scrubbing`; engine: `skills/media.md` soft-drag |
 | Touch playhead jitter on long clips | `<Scrubber>` touch sticky: `|Δx|≥4px` + `|Δframe|≥ceil(n/w)`; mouse/pen 1:1 — `scrub_touch_move_accepts` |
 | EOF: tip/stats on end−1/−2, canvas last frame | `stop_playback` snap when `leaving_play \|\| ended` — `Ended` clears `playing` before snap |
+| Play on last frame → ½ s audio blip / instant End | `run_play_prime` snap playhead→0 before clock; loop on/off same. `mediabunny: media-player play` endTimestamp→first |
 | Ops dropped while busy | OpQueue coalesce — not `if busy { return }` (`host_op_coalesce`) |
 
 ## Quick reference
