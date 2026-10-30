@@ -9,6 +9,8 @@ mod position;
 #[cfg(target_arch = "wasm32")]
 mod component;
 #[cfg(target_arch = "wasm32")]
+mod slots;
+#[cfg(target_arch = "wasm32")]
 mod source;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod video_playlist_ref;

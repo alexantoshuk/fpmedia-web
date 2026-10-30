@@ -8,8 +8,7 @@
 
 ### Handoff
 
-- **HEAD:** `<VideoPlaylist>` play **seam** (live EOF → swap idle / playlist loop / `ended`). Still open: cross-clip scrub rebind; demo multi-open. Prior: probe + TimelineRef ms.
-- **In progress:** Playlist — next **seek/scrub rebind** across clips; then demo.
+- **HEAD:** `<VideoPlaylist>` seek/scrub/step rebind (`slots.rs` + facade + cross-clip `scrub_timeline`). Next: **demo** multi-open + `[i]` chrome.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -19,9 +18,8 @@
 
 ### Playlist
 
-Model + `<VideoPlaylist>` + play seam in tree (scrub still live-clip only). **Now:**
+Model + probe + seam + **seek/scrub/step rebind** in components (facade + `TimelineRef` ms). **Now:**
 
-4. **Seek / scrub / step** — duration scrubber; map to local; rebind idle; facade transport.
 5. **Demo** — multi file + multi URL; position `[i] now / end` (Frames/Timecode); go-to `[i] …` or bare = current clip; host CSS for `.fpvideo-playlist-slot.is-idle`.
 6. **Docs trim** — drop this block when shipped; mark Playlist UI shipped in product/architecture.
 

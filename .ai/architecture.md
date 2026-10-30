@@ -73,11 +73,11 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Component API like HTML media | Elements: open/play/seek/rate/volume + `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `fpmedia_web_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
-| Playlist = 2× `<Video>` composition (agreed, UI not shipped) | Review playlist without N decoders / NLE in engine. See [Playlist composition](#playlist-composition-agreed-ui-not-shipped). UX: `product.md`. Steps: `state.md`. |
+| Playlist = 2× `<Video>` composition (agreed, demo chrome next) | Review playlist without N decoders / NLE in engine. See [Playlist composition](#playlist-composition-agreed-demo-chrome-next). UX: `product.md`. Steps: `state.md`. |
 
 ---
 
-## Playlist composition (agreed, UI not shipped)
+## Playlist composition (agreed, demo chrome next)
 
 **no equivalent** (playlist / dual-slot composition local). Per-clip open/play/EOF still mediabunny-shaped inside each `VideoPlayer`.
 
@@ -86,8 +86,8 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Slots | Exactly **2** `<Video>`: **live** (play / aim) + **idle** (preload neighbor: open + byte/index warm; densify/thumbs off until live or aim) |
 | Timeline axis | Global scrub = **duration** (sum of clip durations). Map `t → (clip_index, local FrameId)` via each clip’s fps/duration. Mixed fps = native rate per clip (no conform) |
 | Shared scrub handle | **Shipped:** `TimelineRef` — scrub/hover for `<Scrubber>` / `<HoverThumb>` (`VideoRef` / `VideoPlaylistRef` `as_timeline`). `VideoPlayer` / `<Video>` stay single-clip |
-| Playlist model + host | **Shipped:** `video_playlist` — model/`[i]`; `<VideoPlaylist>` / `VideoPlaylistRef` (2 slots, probe, play seam, `TimelineRef` ms). Cross-clip scrub rebind — `state.md` |
-| Facade | Host sees one logical media (play/pause/seek/scrub/rate). `VideoPlayer` unchanged (single-clip) |
+| Playlist model + host | **Shipped:** `video_playlist` — model/`[i]`; `<VideoPlaylist>` / `VideoPlaylistRef` (2 slots, probe, play seam, seek/scrub/step rebind, `TimelineRef` ms). Demo multi-open chrome — `state.md` |
+| Facade | Host sees one logical media (play/pause/seek/scrub/rate/step). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
 | Seam | Clip EOF → swap live/idle, play next from local 0; last clip → `ended` / loop. Short hitch OK; gapless audio later |
 | Shared scrub / thumbs | One scrub gesture over playlist model; thumbs route to the slot that owns the source (shared app-wide `ThumbSink` later) |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |

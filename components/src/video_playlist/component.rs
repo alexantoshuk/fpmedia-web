@@ -3,19 +3,16 @@
 use std::rc::Rc;
 
 use fpmedia_web::timer::sleep_ms;
-use fpmedia_web::{ScrubCachePolicy, ThumbPolicy, VideoMetadata};
+use fpmedia_web::{ScrubCachePolicy, ThumbPolicy};
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::Video;
-use crate::VideoRef;
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
+use super::slots::{advance_after_ended, seek_to_pos, wait_ready};
 use super::source::PlaylistSource;
 use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};
-
-const PROBE_TIMEOUT_MS: f64 = 120_000.0;
-const PROBE_POLL_MS: i32 = 32;
 
 /// Dual-slot playlist stage. Drive via [`VideoPlaylistRef`].
 ///
@@ -273,12 +270,114 @@ pub fn VideoPlaylist(
         live.pause();
     }) as Rc<dyn Fn()>;
 
+    let seek_ms_fn = {
+        let pl = playlist;
+        Rc::new(move |ms: u32| {
+            if !ready.get_untracked() {
+                return;
+            }
+            let Some(aim) = model.get_untracked().at_ms(ms) else {
+                return;
+            };
+            let epoch = open_gen.get_value();
+            spawn_local(async move {
+                if let Err(e) = seek_to_pos(pl, aim, epoch).await {
+                    if pl.open_gen.get_value() != epoch {
+                        return;
+                    }
+                    pl.error.set(Some(e));
+                    pl.status.set("Seek failed.".into());
+                }
+            });
+        }) as Rc<dyn Fn(u32)>
+    };
+
+    let seek_pos_fn = {
+        let pl = playlist;
+        Rc::new(move |aim: PlaylistPos| {
+            if !ready.get_untracked() {
+                return;
+            }
+            let epoch = open_gen.get_value();
+            spawn_local(async move {
+                if let Err(e) = seek_to_pos(pl, aim, epoch).await {
+                    if pl.open_gen.get_value() != epoch {
+                        return;
+                    }
+                    pl.error.set(Some(e));
+                    pl.status.set("Seek failed.".into());
+                }
+            });
+        }) as Rc<dyn Fn(PlaylistPos)>
+    };
+
+    let next_frame_fn = {
+        let pl = playlist;
+        let seek_pos = Rc::clone(&seek_pos_fn);
+        Rc::new(move || {
+            if !ready.get_untracked() {
+                return;
+            }
+            ended.set(false);
+            let model = model.get_untracked();
+            let cur = pos.get_untracked();
+            let Some(clip) = model.clip(cur.clip_index as usize) else {
+                return;
+            };
+            if cur.local_frame < clip.last_frame() {
+                pl.live_video().next_frame();
+                return;
+            }
+            if let Some(n) = model.next_clip_index(cur.clip_index) {
+                seek_pos(PlaylistPos::new(n, 0));
+            } else if looping.get_untracked() {
+                seek_pos(PlaylistPos::new(0, 0));
+            }
+        }) as Rc<dyn Fn()>
+    };
+
+    let previous_frame_fn = {
+        let pl = playlist;
+        let seek_pos = Rc::clone(&seek_pos_fn);
+        Rc::new(move || {
+            if !ready.get_untracked() {
+                return;
+            }
+            ended.set(false);
+            let model = model.get_untracked();
+            let cur = pos.get_untracked();
+            if cur.local_frame > 0 {
+                pl.live_video().previous_frame();
+                return;
+            }
+            if cur.clip_index > 0 {
+                let prev = cur.clip_index - 1;
+                let last = model
+                    .clip(prev as usize)
+                    .map(|c| c.last_frame())
+                    .unwrap_or(0);
+                seek_pos(PlaylistPos::new(prev, last));
+            } else if looping.get_untracked() {
+                let last_i = model.len().saturating_sub(1) as u32;
+                let last = model
+                    .clip(last_i as usize)
+                    .map(|c| c.last_frame())
+                    .unwrap_or(0);
+                seek_pos(PlaylistPos::new(last_i, last));
+            }
+        }) as Rc<dyn Fn()>
+    };
+
     ops.set_value(Some(VideoPlaylistOps {
         open_blobs,
         open_urls,
         play: play_fn,
         pause: pause_fn,
         close: Rc::clone(&close_all),
+        seek_ms: seek_ms_fn,
+        seek_pos: seek_pos_fn,
+        next_frame: next_frame_fn,
+        previous_frame: previous_frame_fn,
     }));
 
     on_cleanup(move || {
@@ -321,152 +420,4 @@ pub fn VideoPlaylist(
             </div>
         </div>
     }
-}
-
-async fn wait_ready(
-    video: VideoRef,
-    epoch: u64,
-    open_gen: StoredValue<u64, LocalStorage>,
-) -> Result<VideoMetadata, String> {
-    let start = fpmedia_web::timer::now_ms().unwrap_or(0.0);
-    loop {
-        if open_gen.get_value() != epoch {
-            return Err("cancelled".into());
-        }
-        if let Some(err) = video.error.get_untracked() {
-            return Err(err);
-        }
-        if video.ready.get_untracked()
-            && let Some(meta) = video.metadata.get_untracked()
-        {
-            return Ok(meta);
-        }
-        let now = fpmedia_web::timer::now_ms().unwrap_or(start);
-        if now - start > PROBE_TIMEOUT_MS {
-            return Err("open timed out".into());
-        }
-        sleep_ms(PROBE_POLL_MS).await;
-    }
-}
-
-async fn ensure_clip_on_idle(
-    pl: VideoPlaylistRef,
-    clip_index: u32,
-    epoch: u64,
-) -> Result<(), String> {
-    if pl.open_gen.get_value() != epoch {
-        return Err("cancelled".into());
-    }
-    if pl.idle_clip.get_untracked() == Some(clip_index) && pl.idle_video().ready.get_untracked() {
-        return Ok(());
-    }
-    let src = pl
-        .sources
-        .try_with_value(|s| s.get(clip_index as usize).cloned())
-        .flatten()
-        .ok_or_else(|| format!("missing source for clip {}", clip_index + 1))?;
-    let idle = pl.idle_video();
-    idle.set_loop(false);
-    idle.set_thumb_policy(ThumbPolicy::Off);
-    idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
-    idle.close();
-    sleep_ms(0).await;
-    if pl.open_gen.get_value() != epoch {
-        return Err("cancelled".into());
-    }
-    src.open_on(idle);
-    pl.idle_clip.set(Some(clip_index));
-    wait_ready(idle, epoch, pl.open_gen).await?;
-    Ok(())
-}
-
-fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32, new_idle_clip: Option<u32>) {
-    pl.live_is_a.set(!pl.live_is_a.get_untracked());
-    pl.live_clip.set(new_live_clip);
-    pl.idle_clip.set(new_idle_clip);
-    let live = pl.live_video();
-    live.set_loop(false);
-    live.set_thumb_policy(ThumbPolicy::On);
-    live.set_scrub_cache_policy(ScrubCachePolicy::On);
-    live.ended.set(false);
-    let idle = pl.idle_video();
-    idle.set_thumb_policy(ThumbPolicy::Off);
-    idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
-    idle.set_loop(false);
-}
-
-async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, epoch: u64) {
-    let Some(i) = clip_index else {
-        return;
-    };
-    if pl.open_gen.get_value() != epoch {
-        return;
-    }
-    let Some(src) = pl
-        .sources
-        .try_with_value(|s| s.get(i as usize).cloned())
-        .flatten()
-    else {
-        return;
-    };
-    let idle = pl.idle_video();
-    idle.set_loop(false);
-    idle.set_thumb_policy(ThumbPolicy::Off);
-    idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
-    src.open_on(idle);
-    pl.idle_clip.set(Some(i));
-    let _ = wait_ready(idle, epoch, pl.open_gen).await;
-}
-
-/// After live clip EOF: play next, wrap on playlist loop, or mark playlist ended.
-async fn advance_after_ended(pl: VideoPlaylistRef, epoch: u64) -> Result<(), String> {
-    if pl.open_gen.get_value() != epoch {
-        return Ok(());
-    }
-    let model = pl.model.get_untracked();
-    let cur = pl.live_clip.get_untracked();
-
-    if let Some(next_i) = model.next_clip_index(cur) {
-        pl.status.set(format!("Seam → clip {}…", next_i + 1));
-        ensure_clip_on_idle(pl, next_i, epoch).await?;
-        if pl.open_gen.get_value() != epoch {
-            return Ok(());
-        }
-        let following = model.next_clip_index(next_i);
-        swap_live_idle(pl, next_i, following);
-        pl.live_video().seek_frame(0);
-        pl.live_video().play();
-        pl.ended.set(false);
-        pl.status.set(format!("Playing clip {}/{}", next_i + 1, model.len()));
-        preload_idle(pl, following, epoch).await;
-        return Ok(());
-    }
-
-    if pl.looping.get_untracked() {
-        pl.status.set("Loop → clip 1…".into());
-        if model.len() <= 1 {
-            let live = pl.live_video();
-            live.ended.set(false);
-            live.seek_frame(0);
-            live.play();
-            pl.ended.set(false);
-            return Ok(());
-        }
-        ensure_clip_on_idle(pl, 0, epoch).await?;
-        if pl.open_gen.get_value() != epoch {
-            return Ok(());
-        }
-        let following = model.next_clip_index(0);
-        swap_live_idle(pl, 0, following);
-        pl.live_video().seek_frame(0);
-        pl.live_video().play();
-        pl.ended.set(false);
-        pl.status.set(format!("Playing clip 1/{}", model.len()));
-        preload_idle(pl, following, epoch).await;
-        return Ok(());
-    }
-
-    pl.ended.set(true);
-    pl.status.set("Ended.".into());
-    Ok(())
 }

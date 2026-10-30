@@ -8,7 +8,9 @@ use web_sys::HtmlCanvasElement;
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
+use super::slots::{preload_idle, try_promote_idle};
 use super::source::PlaylistSource;
+use wasm_bindgen_futures::spawn_local;
 
 /// Cloneable handle to a mounted [`super::VideoPlaylist`] (two [`VideoRef`] slots).
 #[derive(Clone, Copy)]
@@ -44,6 +46,10 @@ pub(crate) struct VideoPlaylistOps {
     pub play: Rc<dyn Fn()>,
     pub pause: Rc<dyn Fn()>,
     pub close: Rc<dyn Fn()>,
+    pub seek_ms: Rc<dyn Fn(u32)>,
+    pub seek_pos: Rc<dyn Fn(PlaylistPos)>,
+    pub next_frame: Rc<dyn Fn()>,
+    pub previous_frame: Rc<dyn Fn()>,
 }
 
 impl VideoPlaylistRef {
@@ -135,21 +141,73 @@ impl VideoPlaylistRef {
         }
     }
 
-    /// Timeline scrub units (ms). Cross-clip aim updates playhead only until rebind ships.
+    pub fn seek_ms(self, ms: u32) {
+        self.ended.set(false);
+        if let Some(seek) = self.op(|o| &o.seek_ms) {
+            seek(ms);
+        }
+    }
+
+    pub fn seek_pos(self, pos: PlaylistPos) {
+        self.ended.set(false);
+        if let Some(seek) = self.op(|o| &o.seek_pos) {
+            seek(pos);
+        }
+    }
+
+    pub fn next_frame(self) {
+        if let Some(next) = self.op(|o| &o.next_frame) {
+            next();
+        }
+    }
+
+    pub fn previous_frame(self) {
+        if let Some(prev) = self.op(|o| &o.previous_frame) {
+            prev();
+        }
+    }
+
+    /// Timeline scrub units (ms). Promotes idle when it already holds the aim clip;
+    /// settle (`Up`) async-seeks if the clip still needs open/rebind.
     pub(crate) fn scrub_timeline(self, ms: u32, phase: ScrubPhase) {
+        self.ended.set(false);
         self.playhead_ms.set(ms);
         let Some(aim) = self.model.get_untracked().at_ms(ms) else {
             return;
         };
         self.pos.set(aim);
+
+        let mut promoted = false;
         if aim.clip_index != self.live_clip.get_untracked() {
+            // Leave Scrubbing on the outgoing live so idle is not stuck soft-paused.
+            if matches!(phase, ScrubPhase::Down | ScrubPhase::Move) {
+                self.live_video().pause();
+            }
+            promoted = try_promote_idle(self, aim.clip_index);
+        }
+
+        if aim.clip_index == self.live_clip.get_untracked() {
+            let live = self.live_video();
+            match phase {
+                ScrubPhase::Down => live.scrub_pointer_down(aim.local_frame),
+                // After promote the new live never saw PointerDown — Move alone is a no-op.
+                ScrubPhase::Move if promoted => live.scrub_pointer_down(aim.local_frame),
+                ScrubPhase::Move => live.scrub_pointer_move(aim.local_frame),
+                ScrubPhase::Up => live.scrub_pointer_up(aim.local_frame),
+            }
+            if matches!(phase, ScrubPhase::Up) {
+                let neighbor = self.idle_clip.get_untracked();
+                let epoch = self.open_gen.get_value();
+                spawn_local(async move {
+                    preload_idle(self, neighbor, epoch).await;
+                });
+            }
             return;
         }
-        let live = self.live_video();
-        match phase {
-            ScrubPhase::Down => live.scrub_pointer_down(aim.local_frame),
-            ScrubPhase::Move => live.scrub_pointer_move(aim.local_frame),
-            ScrubPhase::Up => live.scrub_pointer_up(aim.local_frame),
+
+        // Aim clip not live yet — settle via seek (open/swap).
+        if matches!(phase, ScrubPhase::Up) {
+            self.seek_pos(aim);
         }
     }
 
@@ -193,7 +251,7 @@ impl VideoPlaylistRef {
         if self.idle_clip.get_untracked() == Some(clip_index) {
             return self.idle_video();
         }
-        // Fall back to live (hover may miss until idle is rebound — scrub step later).
+        // Fall back to live until idle is rebound to that clip.
         self.live_video()
     }
 }
