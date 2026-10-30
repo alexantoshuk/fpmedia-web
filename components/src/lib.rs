@@ -44,8 +44,9 @@ pub use video::{
     ReadyFrameMark, ScrubCachePolicy, ThumbPolicy, Video, VideoMetadata, VideoRef,
 };
 pub use video_playlist::{
-    PlaylistClip, PlaylistModel, PlaylistPos, format_playlist_frames, format_playlist_timecode,
-    parse_playlist_goto, split_playlist_goto,
+    PlaylistClip, PlaylistModel, PlaylistPos, format_playlist_frames, format_playlist_goto_frames,
+    format_playlist_goto_timecode, format_playlist_timecode, parse_playlist_goto,
+    split_playlist_goto,
 };
 #[cfg(target_arch = "wasm32")]
 pub use video_playlist::{VideoPlaylist, VideoPlaylistRef};

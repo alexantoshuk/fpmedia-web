@@ -9,8 +9,8 @@ use fpmedia_web_components::helpers::{
 use fpmedia_web_components::{
     HoverThumb, HoverThumbCtx, PipelinePlane, PipelineStats, ReadyFrameKind, ScrubCachePolicy,
     Scrubber, ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, Video, VideoPlaylist,
-    VideoPlaylistRef, VideoRef, format_playlist_frames, format_playlist_timecode,
-    parse_playlist_goto,
+    VideoPlaylistRef, VideoRef, format_playlist_frames, format_playlist_goto_frames,
+    format_playlist_goto_timecode, format_playlist_timecode, parse_playlist_goto,
 };
 use leptos::either::{Either, EitherOf3};
 use leptos::ev;
@@ -1767,7 +1767,19 @@ fn PositionDisplay(
             if !playlist.ready.get_untracked() {
                 return;
             }
-            draft.set(playlist_position_label(playlist, format.get_untracked()));
+            // Editable `[i] now` only — `/ end` is display-only (product § Playlist position UI).
+            let pos = playlist.pos.get_untracked();
+            let draft_s = match format.get_untracked() {
+                PositionFormat::Frames => format_playlist_goto_frames(pos),
+                PositionFormat::Timecode => {
+                    let live = playlist.live_video();
+                    match live.metadata.get_untracked() {
+                        Some(m) => format_playlist_goto_timecode(pos, &m),
+                        None => format_playlist_goto_frames(pos),
+                    }
+                }
+            };
+            draft.set(draft_s);
         } else {
             if !video.ready.get_untracked() {
                 return;

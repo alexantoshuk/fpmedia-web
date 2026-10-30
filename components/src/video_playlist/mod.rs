@@ -17,7 +17,8 @@ pub(crate) mod video_playlist_ref;
 
 pub use model::{PlaylistClip, PlaylistModel};
 pub use position::{
-    PlaylistPos, format_playlist_frames, format_playlist_timecode, parse_playlist_goto,
+    PlaylistPos, format_playlist_frames, format_playlist_goto_frames,
+    format_playlist_goto_timecode, format_playlist_timecode, parse_playlist_goto,
     split_playlist_goto,
 };
 

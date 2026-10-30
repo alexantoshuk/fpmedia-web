@@ -43,6 +43,17 @@ pub fn format_playlist_timecode(pos: PlaylistPos, meta: &VideoMetadata) -> Strin
     format!("[{}] {now} / {end}", pos.display_index())
 }
 
+/// Go-to draft seed: `[i] now` only — `/ end` stays display-only.
+pub fn format_playlist_goto_frames(pos: PlaylistPos) -> String {
+    format!("[{}] {}", pos.display_index(), pos.local_frame)
+}
+
+/// Go-to draft seed (timecode): `[i] 00:00:01:23`.
+pub fn format_playlist_goto_timecode(pos: PlaylistPos, meta: &VideoMetadata) -> String {
+    let now = format_timecode_at_loose(meta, pos.local_frame);
+    format!("[{}] {now}", pos.display_index())
+}
+
 /// Split optional `[i]` prefix from a go-to string.
 ///
 /// - `"[1] 00:00:01:23"` → `(Some(0), "00:00:01:23")` (0-based clip)
@@ -118,9 +129,14 @@ mod tests {
     fn format_frames_and_timecode() {
         let pos = PlaylistPos::new(1, 10);
         assert_eq!(format_playlist_frames(pos, 100), "[2] 10 / 100");
+        assert_eq!(format_playlist_goto_frames(pos), "[2] 10");
         let meta = meta_24fps(240);
         let s = format_playlist_timecode(PlaylistPos::new(0, 24), &meta);
         assert_eq!(s, "[1] 00:00:01:00 / 00:00:09:23");
+        assert_eq!(
+            format_playlist_goto_timecode(PlaylistPos::new(0, 24), &meta),
+            "[1] 00:00:01:00"
+        );
     }
 
     #[test]
