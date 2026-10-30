@@ -17,6 +17,10 @@ pub struct VideoPlaylistRef {
     pub busy: RwSignal<bool>,
     pub status: RwSignal<String>,
     pub error: RwSignal<Option<String>>,
+    /// Playlist-level end (last clip EOF, loop off) — not a single-clip `VideoRef::ended`.
+    pub ended: RwSignal<bool>,
+    /// Loop the whole playlist (clips themselves stay non-looping for seam).
+    pub looping: RwSignal<bool>,
     pub model: RwSignal<PlaylistModel>,
     pub pos: RwSignal<PlaylistPos>,
     /// Scrub domain: milliseconds from playlist start ([`PlaylistModel::total_duration_ms`]).
@@ -49,6 +53,8 @@ impl VideoPlaylistRef {
             busy: RwSignal::new(false),
             status: RwSignal::new(String::from("Load a playlist to begin.")),
             error: RwSignal::new(None),
+            ended: RwSignal::new(false),
+            looping: RwSignal::new(false),
             model: RwSignal::new(PlaylistModel::default()),
             pos: RwSignal::new(PlaylistPos::new(0, 0)),
             playhead_ms: RwSignal::new(0),
@@ -62,6 +68,10 @@ impl VideoPlaylistRef {
             sources: StoredValue::new_local(Vec::new()),
             open_gen: StoredValue::new_local(0),
         }
+    }
+
+    pub fn set_loop(self, on: bool) {
+        self.looping.set(on);
     }
 
     pub fn live_video(self) -> VideoRef {
@@ -107,6 +117,7 @@ impl VideoPlaylistRef {
     }
 
     pub fn play(self) {
+        self.ended.set(false);
         if let Some(play) = self.op(|o| &o.play) {
             play();
         }

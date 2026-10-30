@@ -86,7 +86,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Slots | Exactly **2** `<Video>`: **live** (play / aim) + **idle** (preload neighbor: open + byte/index warm; densify/thumbs off until live or aim) |
 | Timeline axis | Global scrub = **duration** (sum of clip durations). Map `t → (clip_index, local FrameId)` via each clip’s fps/duration. Mixed fps = native rate per clip (no conform) |
 | Shared scrub handle | **Shipped:** `TimelineRef` — scrub/hover for `<Scrubber>` / `<HoverThumb>` (`VideoRef` / `VideoPlaylistRef` `as_timeline`). `VideoPlayer` / `<Video>` stay single-clip |
-| Playlist model + host | **Shipped:** `video_playlist` — `PlaylistModel` / `PlaylistPos` / `[i]`; wasm `<VideoPlaylist>` / `VideoPlaylistRef` (2 slots, probe, `TimelineRef` ms). Play seam + cross-clip scrub — `state.md` |
+| Playlist model + host | **Shipped:** `video_playlist` — model/`[i]`; `<VideoPlaylist>` / `VideoPlaylistRef` (2 slots, probe, play seam, `TimelineRef` ms). Cross-clip scrub rebind — `state.md` |
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate). `VideoPlayer` unchanged (single-clip) |
 | Seam | Clip EOF → swap live/idle, play next from local 0; last clip → `ended` / loop. Short hitch OK; gapless audio later |
 | Shared scrub / thumbs | One scrub gesture over playlist model; thumbs route to the slot that owns the source (shared app-wide `ThumbSink` later) |
