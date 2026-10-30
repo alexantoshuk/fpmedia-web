@@ -8,8 +8,8 @@
 
 ### Handoff
 
-- **HEAD:** Soft-drag = main-HW key chase (`drag_aim`, no `cancel_ops` per move; supersede keys paint along `scrub_dir`); Exact = dwell/settle; move must not sync Exact-present (ScrubDrag owns canvas). Prior: `ThumbSink` product; scrub-while-play → `prepare_play_from_scrub`.
-- **Sequence docs locked;** `TimelineRef` shipped (Scrubber/HoverThumb). Playlist composition **not** implemented — `product.md` / `architecture.md` § Sequence / `glossary.md` § SequencePos · TimelineRef.
+- **HEAD:** `TimelineRef` shipped (`feat(components): add TimelineRef…`) — Scrubber/HoverThumb shared scrub handle; Sequence backend next. Prior: soft-drag main-HW key chase; ThumbSink; scrub→play.
+- **In progress:** Sequence playlist **implementation** starting at **model** (duration map + `SequencePos` / `[i]` helpers). UX/design locked — `product.md` / `architecture.md` § Sequence / `glossary.md` § SequencePos · TimelineRef.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -19,7 +19,7 @@
 
 ### Sequence playlist
 
-UX/design locked: `product.md` (Sequence + position UI), `architecture.md` § Sequence composition, `glossary.md` § SequencePos. Shared scrub: `TimelineRef` (done).
+**Now:** (1) model + `[i]` helpers. Then 2–6. Shared scrub (`TimelineRef`) done.
 
 1. **Model** — clip list + duration offsets + `t ↔ (clip_index, local FrameId)`; unit tests; `SequencePos` / `[i]` format helpers (readout + go-to parse).
 2. **`<Sequence>` + 2× `<Video>`** — open blobs/URLs; metadata probe → durations; live + idle assign; one visible stage; `TimelineRef` backend.
