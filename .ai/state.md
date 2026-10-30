@@ -9,12 +9,26 @@
 ### Handoff
 
 - **HEAD:** Soft-drag = main-HW key chase (`drag_aim`, no `cancel_ops` per move; supersede keys paint along `scrub_dir`); Exact = dwell/settle; move must not sync Exact-present (ScrubDrag owns canvas). Prior: `ThumbSink` product; scrub-while-play → `prepare_play_from_scrub`.
+- **Agreed (docs only):** Sequence playlist UX + 2-slot composition — `product.md` / `architecture.md` § Sequence / `glossary.md` § SequencePos. **Not implemented.**
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
 ---
 
 ## Next up
+
+### Sequence playlist
+
+UX/design locked: `product.md` (Sequence + position UI), `architecture.md` § Sequence composition, `glossary.md` § SequencePos.
+
+1. **Model** — clip list + duration offsets + `t ↔ (clip_index, local FrameId)`; unit tests; `SequencePos` / `[i]` format helpers (readout + go-to parse).
+2. **`<Sequence>` + 2× `<Video>`** — open blobs/URLs; metadata probe → durations; live + idle assign; one visible stage.
+3. **Play seam** — EOF mid-list → swap + play next; last → `ended` / loop; idle = next (forward).
+4. **Seek / scrub / step** — duration scrubber; map to local; rebind idle; facade transport.
+5. **Demo** — multi file + multi URL; position `[i] now / end` (Frames/Timecode); go-to `[i] …` or bare = current clip.
+6. **Docs trim** — drop this block when shipped; mark Sequence surface shipped in product/architecture.
+
+**Out of v1:** clip name in readout/go-to; cut markers on bar; gapless audio; app-wide shared `ThumbSink`; compare dual-visible.
 
 ### Publish crates (`0.1.0-alpha`)
 
@@ -46,4 +60,5 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
-- Pure `<Audio>` / `AudioPlayer` (reuses engine `audio`); thumb Worker; 4K loop residual; reverse playback (if revisited); dual-source; production player UI.
+- Sequence: clip **name** in `[i]` readout / go-to; cut markers on scrubber; gapless / tighter A/V seam; shared ThumbSink across sources.
+- Compare dual-visible (reuse 2-slot pool); pure `<Audio>` / `AudioPlayer`; thumb Worker; 4K loop residual; reverse playback (if revisited); production player UI.

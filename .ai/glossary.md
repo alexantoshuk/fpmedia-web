@@ -171,6 +171,14 @@ Retired name — see **ThumbSink**. Host chrome wrapper `<HoverThumbPreview>` re
 
 Surfaces: `product.md`. Host traps: `skills/leptos.md`.
 
+### SequencePos
+
+Position inside a playlist: **clip index** (0-based in the model; **1-based** `[i]` in UI) + **local** presentation frame or timecode of that clip. Not a single global FrameId / SMPTE across mixed-fps clips. UX: `product.md` § Sequence position UI.
+
+### Sequence (playlist)
+
+Ordered list of media sources reviewed as one **duration-weighted** timeline (Play All). Composition: two `<Video>` slots (live + idle). Agreed design: `architecture.md` § Sequence composition; not shipped — `state.md`.
+
 ### `<Video>` / VideoRef
 
 Sized stage + element-like API (open, play, pause, seek, rate, volume). Owns canvas present; does not ship player chrome.

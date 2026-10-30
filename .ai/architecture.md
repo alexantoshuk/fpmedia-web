@@ -73,6 +73,24 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Component API like HTML media | Elements: open/play/seek/rate/volume + `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `fpmedia_web_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
+| Sequence = 2× `<Video>` composition (agreed, not shipped) | Playlist UX without N decoders / NLE in engine. See [Sequence composition](#sequence-composition-agreed-not-shipped). UX: `product.md`. Steps: `state.md`. |
+
+---
+
+## Sequence composition (agreed, not shipped)
+
+**no equivalent** (playlist / dual-slot composition local). Per-clip open/play/EOF still mediabunny-shaped inside each `VideoPlayer`.
+
+| Piece | Rule |
+| ----- | ---- |
+| Slots | Exactly **2** `<Video>`: **live** (play / aim) + **idle** (preload neighbor: open + byte/index warm; densify/thumbs off until live or aim) |
+| Timeline axis | Global scrub = **duration** (sum of clip durations). Map `t → (clip_index, local FrameId)` via each clip’s fps/duration. Mixed fps = native rate per clip (no conform) |
+| Facade | Host sees one logical media (play/pause/seek/scrub/rate). `VideoPlayer` unchanged (single-clip) |
+| Seam | Clip EOF → swap live/idle, play next from local 0; last clip → `ended` / loop. Short hitch OK; gapless audio later |
+| Shared scrub / thumbs | One scrub gesture over sequence model; thumbs route to the slot that owns the source (shared app-wide `ThumbSink` later) |
+| Compare (later) | Same 2-slot pool, both visible — not the sequence playhead model |
+
+Implementation slices: `state.md` § Sequence playlist.
 
 ---
 
