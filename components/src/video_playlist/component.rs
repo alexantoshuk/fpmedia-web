@@ -52,9 +52,9 @@ pub fn VideoPlaylist(
         idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     });
 
-    // Mirror live presentation → playlist pos + ms playhead.
+    // Mirror live presentation → playlist pos + ms playhead (yield while host scrubbing).
     Effect::new(move |_| {
-        if !ready.get() {
+        if !ready.get() || playlist.scrubbing.get() {
             return;
         }
         let clip = live_clip.get();
@@ -114,6 +114,7 @@ pub fn VideoPlaylist(
             live_clip.set(0);
             idle_clip.set(None);
             live_is_a.set(true);
+            playlist.scrubbing.set(false);
             sources.set_value(Vec::new());
             error.set(None);
             status.set("Closed.".into());

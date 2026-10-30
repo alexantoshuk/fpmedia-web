@@ -40,11 +40,16 @@ impl HoverThumbApi {
 }
 
 /// Shared by nested [`crate::TimelineMeta`] / [`crate::HoverThumb`].
+///
+/// Scrub **domain** is always [`timeline`](TimelineRef). Pipeline strips follow
+/// [`TimelineRef::strip_video`] (not a frozen `video=` prop) so playlist live
+/// swaps never remount this scrubber.
 #[derive(Clone, Copy)]
 pub struct ScrubberCtx {
-    /// Scrub / hover domain (Video or future Playlist).
+    /// Scrub / hover / strip domain (Video or Playlist).
     pub timeline: TimelineRef,
-    /// Set when the scrubber is bound to a single [`VideoRef`] (pipeline strips).
+    /// Optional single-clip handle when opened via `video=` (BC / hosts that want it).
+    /// Prefer [`TimelineRef::strip_video`] for pipeline paint.
     pub video: Option<VideoRef>,
     pub scrubbing: RwSignal<bool>,
     /// Track CSS width from [`use_element_size`].
@@ -55,8 +60,10 @@ pub struct ScrubberCtx {
 
 /// Track hit-target: pointer → playhead + `scrub_pointer_*`. Host supplies children.
 ///
-/// Pass [`video`](VideoRef) (demo BC) and/or [`timeline`](TimelineRef). At least one
-/// is required; `video=` also fills `timeline` via [`VideoRef::as_timeline`].
+/// Pass [`timeline`](TimelineRef) and/or [`video`](VideoRef). At least one is
+/// required; `video=` fills `timeline` via [`VideoRef::as_timeline`]. Playlist
+/// hosts should pass `timeline=playlist.as_timeline()` only — do not remount on
+/// live swap.
 #[component]
 pub fn Scrubber(
     #[prop(optional)] video: Option<VideoRef>,

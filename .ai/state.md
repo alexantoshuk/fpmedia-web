@@ -8,7 +8,8 @@
 
 ### Handoff
 
-- **HEAD:** `<VideoPlaylist>` seek/scrub/step rebind (`slots.rs` + facade + cross-clip `scrub_timeline`). Next: **demo** multi-open + `[i]` chrome.
+- **HEAD:** timeline-first strips (`TimelineRef::strip_*`, Meta re-lease on live key) + demo multi-open / playlist scrub. Smoke: drag over cut OK.
+- **Next chat:** playlist play seam lag — `advance_after_ended` still does `seek_frame(0)` before `play()`; when idle ready, promote + `play()` only (mirror `then_play` / PlayPrime). Cite: **no equivalent** (playlist local); Play = `mediabunny: media-player seekToTime` → iterator → `play`. Gapless audio stays Later.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -18,10 +19,10 @@
 
 ### Playlist
 
-Model + probe + seam + **seek/scrub/step rebind** in components (facade + `TimelineRef` ms). **Now:**
+Element seek/scrub/step + demo multi-open shipped. **Now:**
 
-5. **Demo** — multi file + multi URL; position `[i] now / end` (Frames/Timecode); go-to `[i] …` or bare = current clip; host CSS for `.fpvideo-playlist-slot.is-idle`.
-6. **Docs trim** — drop this block when shipped; mark Playlist UI shipped in product/architecture.
+1. **Play seam hitch** — drop Exact `seek_frame(0)` when idle already ready at local 0; promote + `play()` (`slots::advance_after_ended` / loop→clip0). Optional follow-up: near-EOF idle warm (loop-origin prewarm shape). Not gapless A/V.
+2. **Docs trim** — drop this block when seam item ships; Playlist UI already in product/architecture.
 
 **Out of v1:** clip name in readout/go-to; cut markers on bar; gapless audio; app-wide shared `ThumbSink`; compare dual-visible.
 
@@ -55,5 +56,5 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
-- Playlist: clip **name** in `[i]` readout / go-to; cut markers on scrubber; gapless / tighter A/V seam; shared ThumbSink across sources.
+- Playlist: clip **name** in `[i]` readout / go-to; cut markers on scrubber; gapless A/V; shared ThumbSink across sources.
 - Compare dual-visible (reuse 2-slot pool); pure `<Audio>` / `AudioPlayer`; thumb Worker; 4K loop residual; reverse playback (if revisited); production player UI.

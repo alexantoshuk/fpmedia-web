@@ -8,7 +8,7 @@ use web_sys::HtmlCanvasElement;
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
-use super::slots::{preload_idle, try_promote_idle};
+use super::slots::{ensure_clip_on_idle, preload_idle, try_promote_idle};
 use super::source::PlaylistSource;
 use wasm_bindgen_futures::spawn_local;
 
@@ -32,6 +32,8 @@ pub struct VideoPlaylistRef {
     pub idle_clip: RwSignal<Option<u32>>,
     /// When true, [`Self::slot_a`] is the live (visible) stage.
     pub live_is_a: RwSignal<bool>,
+    /// Host scrub gesture in flight — mirror Effect must not overwrite `playhead_ms`.
+    pub scrubbing: RwSignal<bool>,
     pub slot_a: VideoRef,
     pub slot_b: VideoRef,
     pub(crate) ops: StoredValue<Option<VideoPlaylistOps>, LocalStorage>,
@@ -68,6 +70,7 @@ impl VideoPlaylistRef {
             live_clip: RwSignal::new(0),
             idle_clip: RwSignal::new(None),
             live_is_a: RwSignal::new(true),
+            scrubbing: RwSignal::new(false),
             slot_a: VideoRef::new(),
             slot_b: VideoRef::new(),
             ops: StoredValue::new_local(None),
@@ -171,6 +174,10 @@ impl VideoPlaylistRef {
     /// settle (`Up`) async-seeks if the clip still needs open/rebind.
     pub(crate) fn scrub_timeline(self, ms: u32, phase: ScrubPhase) {
         self.ended.set(false);
+        match phase {
+            ScrubPhase::Down | ScrubPhase::Move => self.scrubbing.set(true),
+            ScrubPhase::Up => self.scrubbing.set(false),
+        }
         self.playhead_ms.set(ms);
         let Some(aim) = self.model.get_untracked().at_ms(ms) else {
             return;
@@ -184,6 +191,18 @@ impl VideoPlaylistRef {
                 self.live_video().pause();
             }
             promoted = try_promote_idle(self, aim.clip_index);
+            // Aim clip not on idle (e.g. drag back across cut while idle holds next):
+            // warm idle once; later Moves promote when ready. Do not remount Scrubber.
+            if !promoted
+                && matches!(phase, ScrubPhase::Down | ScrubPhase::Move)
+                && self.idle_clip.get_untracked() != Some(aim.clip_index)
+            {
+                let epoch = self.open_gen.get_value();
+                let want = aim.clip_index;
+                spawn_local(async move {
+                    let _ = ensure_clip_on_idle(self, want, epoch).await;
+                });
+            }
         }
 
         if aim.clip_index == self.live_clip.get_untracked() {

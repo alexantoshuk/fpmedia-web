@@ -120,6 +120,24 @@ impl PlaylistModel {
         self.starts.get(index).copied()
     }
 
+    /// Scrub-domain start of clip `index` (ms).
+    pub fn clip_start_ms(&self, index: u32) -> Option<u32> {
+        self.clip_start_secs(index as usize).map(secs_to_ms)
+    }
+
+    /// Scrub-domain end of clip `index` (ms, exclusive vs next start / total).
+    pub fn clip_end_ms(&self, index: u32) -> Option<u32> {
+        let i = index as usize;
+        if i >= self.clips.len() {
+            return None;
+        }
+        if i + 1 < self.clips.len() {
+            self.clip_start_ms(index + 1)
+        } else {
+            Some(self.total_duration_ms())
+        }
+    }
+
     /// Map playlist scrub units (ms) → position.
     pub fn at_ms(&self, ms: u32) -> Option<PlaylistPos> {
         self.at_time(ms_to_secs(ms))
@@ -265,5 +283,15 @@ mod tests {
         assert_eq!(m.total_duration_ms(), 2000);
         assert_eq!(m.at_ms(1000), Some(PlaylistPos::new(1, 0)));
         assert_eq!(m.ms_at(PlaylistPos::new(1, 0)), Some(1000));
+    }
+
+    #[test]
+    fn clip_ms_windows() {
+        let m = PlaylistModel::new(vec![clip(24, 1.0, 24.0), clip(60, 1.0, 60.0)]);
+        assert_eq!(m.clip_start_ms(0), Some(0));
+        assert_eq!(m.clip_end_ms(0), Some(1000));
+        assert_eq!(m.clip_start_ms(1), Some(1000));
+        assert_eq!(m.clip_end_ms(1), Some(2000));
+        assert_eq!(m.clip_start_ms(2), None);
     }
 }

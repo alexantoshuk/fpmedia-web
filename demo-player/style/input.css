@@ -172,6 +172,19 @@ body {
   background: #111;
 }
 
+/* Playlist: only the live slot is visible; idle stays mounted for preload. */
+.fpvideo-playlist {
+  display: contents;
+}
+
+.fpvideo-playlist-slot.is-idle {
+  display: none;
+}
+
+.fpvideo-playlist-slot.is-live {
+  display: contents;
+}
+
 /* Timeline scrubber — pixel strips / hit targets stay custom. */
 .wm-scrubber {
   position: relative;
