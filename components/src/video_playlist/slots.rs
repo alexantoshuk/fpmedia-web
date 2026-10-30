@@ -166,6 +166,17 @@ pub(crate) async fn seek_to_pos(
     Ok(())
 }
 
+/// Start live at local 0 after a promote. Idle open already Exact-settled to 0 —
+/// skip another Exact seek when still aimed there (PlayPrime paints via iterator).
+/// **no equivalent** (playlist seam local); Play = mediabunny media-player seek→iter→play.
+fn play_seam_from_origin(live: &VideoRef) {
+    live.ended.set(false);
+    if live.playhead.get_untracked() != 0 {
+        live.seek_frame(0);
+    }
+    live.play();
+}
+
 /// After live clip EOF: play next, wrap on playlist loop, or mark playlist ended.
 pub(crate) async fn advance_after_ended(pl: VideoPlaylistRef, epoch: u64) -> Result<(), String> {
     if pl.open_gen.get_value() != epoch {
@@ -182,8 +193,7 @@ pub(crate) async fn advance_after_ended(pl: VideoPlaylistRef, epoch: u64) -> Res
         }
         let following = model.next_clip_index(next_i);
         swap_live_idle(pl, next_i, following);
-        pl.live_video().seek_frame(0);
-        pl.live_video().play();
+        play_seam_from_origin(&pl.live_video());
         pl.ended.set(false);
         pl.status
             .set(format!("Playing clip {}/{}", next_i + 1, model.len()));
@@ -194,6 +204,7 @@ pub(crate) async fn advance_after_ended(pl: VideoPlaylistRef, epoch: u64) -> Res
     if pl.looping.get_untracked() {
         pl.status.set("Loop → clip 1…".into());
         if model.len() <= 1 {
+            // Same clip at EOF — must Exact-seek origin (Play-on-last-frame).
             let live = pl.live_video();
             live.ended.set(false);
             live.seek_frame(0);
@@ -207,8 +218,7 @@ pub(crate) async fn advance_after_ended(pl: VideoPlaylistRef, epoch: u64) -> Res
         }
         let following = model.next_clip_index(0);
         swap_live_idle(pl, 0, following);
-        pl.live_video().seek_frame(0);
-        pl.live_video().play();
+        play_seam_from_origin(&pl.live_video());
         pl.ended.set(false);
         pl.status.set(format!("Playing clip 1/{}", model.len()));
         preload_idle(pl, following, epoch).await;

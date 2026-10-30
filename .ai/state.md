@@ -8,8 +8,8 @@
 
 ### Handoff
 
-- **HEAD:** timeline-first strips (`TimelineRef::strip_*`, Meta re-lease on live key) + demo multi-open / playlist scrub. Smoke: drag over cut OK.
-- **Next chat:** playlist play seam lag — `advance_after_ended` still does `seek_frame(0)` before `play()`; when idle ready, promote + `play()` only (mirror `then_play` / PlayPrime). Cite: **no equivalent** (playlist local); Play = `mediabunny: media-player seekToTime` → iterator → `play`. Gapless audio stays Later.
+- **HEAD:** playlist seam — `play_seam_from_origin`: skip Exact `seek_frame(0)` when promoted live already at local 0; single-clip loop still seeks. Cite: **no equivalent** (playlist local).
+- **Smoke:** multi-clip play across cut (no re-Exact hitch when idle ready); loop→clip0 same; single-clip loop still Exact→0.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -19,10 +19,9 @@
 
 ### Playlist
 
-Element seek/scrub/step + demo multi-open shipped. **Now:**
+Element seek/scrub/step + seam skip-Exact shipped. Playlist UI in product/architecture.
 
-1. **Play seam hitch** — drop Exact `seek_frame(0)` when idle already ready at local 0; promote + `play()` (`slots::advance_after_ended` / loop→clip0). Optional follow-up: near-EOF idle warm (loop-origin prewarm shape). Not gapless A/V.
-2. **Docs trim** — drop this block when seam item ships; Playlist UI already in product/architecture.
+**Optional next:** near-EOF idle Play-warm (loop-origin prewarm shape). Not gapless A/V.
 
 **Out of v1:** clip name in readout/go-to; cut markers on bar; gapless audio; app-wide shared `ThumbSink`; compare dual-visible.
 
