@@ -493,10 +493,11 @@ body {
   height: var(--wm-volume-v-gap);
 }
 
-.wm-volume-control:hover .wm-volume-slider-v,
-.wm-volume-control:focus-within .wm-volume-slider-v,
-.wm-volume-control.is-open .wm-volume-slider-v,
-.wm-volume-control.is-sliding .wm-volume-slider-v {
+/* No V pop while Mute is disabled (!ready / no audio). */
+.wm-volume-control:hover:not(:has(button:disabled)) .wm-volume-slider-v,
+.wm-volume-control:focus-within:not(:has(button:disabled)) .wm-volume-slider-v,
+.wm-volume-control.is-open:not(:has(button:disabled)) .wm-volume-slider-v,
+.wm-volume-control.is-sliding:not(:has(button:disabled)) .wm-volume-slider-v {
   @apply visible opacity-100 pointer-events-auto;
 }
 
