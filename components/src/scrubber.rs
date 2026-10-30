@@ -13,6 +13,7 @@ use leptos_use::{UseElementSizeReturn, use_element_size};
 use wasm_bindgen::JsCast;
 use web_sys::Element;
 
+use crate::TimelineRef;
 use crate::VideoRef;
 use crate::helpers::{scrub_frame_from_x, scrub_touch_move_accepts};
 
@@ -41,7 +42,10 @@ impl HoverThumbApi {
 /// Shared by nested [`crate::TimelineMeta`] / [`crate::HoverThumb`].
 #[derive(Clone, Copy)]
 pub struct ScrubberCtx {
-    pub video: VideoRef,
+    /// Scrub / hover domain (Video or future Sequence).
+    pub timeline: TimelineRef,
+    /// Set when the scrubber is bound to a single [`VideoRef`] (pipeline strips).
+    pub video: Option<VideoRef>,
     pub scrubbing: RwSignal<bool>,
     /// Track CSS width from [`use_element_size`].
     pub css_width: Signal<f64>,
@@ -50,12 +54,21 @@ pub struct ScrubberCtx {
 }
 
 /// Track hit-target: pointer → playhead + `scrub_pointer_*`. Host supplies children.
+///
+/// Pass [`video`](VideoRef) (demo BC) and/or [`timeline`](TimelineRef). At least one
+/// is required; `video=` also fills `timeline` via [`VideoRef::as_timeline`].
 #[component]
 pub fn Scrubber(
-    video: VideoRef,
+    #[prop(optional)] video: Option<VideoRef>,
+    #[prop(optional)] timeline: Option<TimelineRef>,
     #[prop(optional)] class: Option<String>,
     children: Children,
 ) -> impl IntoView {
+    let timeline = timeline
+        .or_else(|| video.map(VideoRef::as_timeline))
+        .expect("Scrubber needs video=… or timeline=…");
+    let video = video.or_else(|| timeline.video());
+
     let scrubbing = RwSignal::new(false);
     let hover = StoredValue::new_local(None::<HoverThumbApi>);
     // Touch soft-drag sticky `(last_x, last_frame)`; `None` = mouse/pen (1:1).
@@ -66,6 +79,7 @@ pub fn Scrubber(
     } = use_element_size(scrubber_ref);
 
     provide_context(ScrubberCtx {
+        timeline,
         video,
         scrubbing,
         css_width,
@@ -73,7 +87,7 @@ pub fn Scrubber(
     });
 
     let frame_from_client_x = move |el: &Element, client_x: f64| -> Option<u32> {
-        if !video.ready.get_untracked() {
+        if !timeline.ready.get_untracked() {
             return None;
         }
         let rect = el.get_bounding_client_rect();
@@ -81,7 +95,7 @@ pub fn Scrubber(
             client_x,
             rect.left(),
             rect.width(),
-            video.frame_count.get_untracked(),
+            timeline.frame_count.get_untracked(),
         )
     };
 
@@ -101,8 +115,8 @@ pub fn Scrubber(
             }
             scrubbing.set(false);
             touch_sticky.set(None);
-            let frame = video.playhead.get_untracked();
-            video.scrub_pointer_up(frame);
+            let frame = timeline.playhead.get_untracked();
+            timeline.scrub_pointer_up(frame);
         }
     });
 
@@ -115,14 +129,14 @@ pub fn Scrubber(
             data-testid="scrubber"
             role="slider"
             attr:aria-valuemin="0"
-            attr:aria-valuemax=move || video.frame_count.get().saturating_sub(1).to_string()
-            attr:aria-valuenow=move || video.playhead.get().to_string()
-            attr:aria-disabled=move || (!video.ready.get()).to_string()
-            data-playhead=move || video.playhead.get().to_string()
+            attr:aria-valuemax=move || timeline.frame_count.get().saturating_sub(1).to_string()
+            attr:aria-valuenow=move || timeline.playhead.get().to_string()
+            attr:aria-disabled=move || (!timeline.ready.get()).to_string()
+            data-playhead=move || timeline.playhead.get().to_string()
             on:pointerdown={
                 let touch_sticky = Rc::clone(&touch_sticky);
                 move |ev| {
-                    if !video.ready.get_untracked() {
+                    if !timeline.ready.get_untracked() {
                         return;
                     }
                     hide_hover();
@@ -140,13 +154,13 @@ pub fn Scrubber(
                         client_x,
                         rect.left(),
                         rect.width(),
-                        video.frame_count.get_untracked(),
+                        timeline.frame_count.get_untracked(),
                     ) else {
                         touch_sticky.set(None);
                         return;
                     };
-                    video.playhead.set(frame);
-                    video.scrub_pointer_down(frame);
+                    timeline.playhead.set(frame);
+                    timeline.scrub_pointer_down(frame);
                     // Touch: arm sticky gate. Mouse/pen stay 1:1 on move.
                     if ev.pointer_type() == "touch" {
                         touch_sticky.set(Some((x, frame)));
@@ -166,7 +180,7 @@ pub fn Scrubber(
                         let client_x = ev.client_x();
                         let w = rect.width().max(1.0);
                         let x = (client_x - rect.left()).clamp(0.0, w);
-                        let n = video.frame_count.get_untracked();
+                        let n = timeline.frame_count.get_untracked();
                         let Some(frame) = scrub_frame_from_x(client_x, rect.left(), w, n) else {
                             return;
                         };
@@ -176,8 +190,8 @@ pub fn Scrubber(
                             }
                             touch_sticky.set(Some((x, frame)));
                         }
-                        video.playhead.set(frame);
-                        video.scrub_pointer_move(frame);
+                        timeline.playhead.set(frame);
+                        timeline.scrub_pointer_move(frame);
                         return;
                     }
                     let Some(frame) = frame_from_client_x(&el, ev.client_x()) else {

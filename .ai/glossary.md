@@ -171,6 +171,10 @@ Retired name — see **ThumbSink**. Host chrome wrapper `<HoverThumbPreview>` re
 
 Surfaces: `product.md`. Host traps: `skills/leptos.md`.
 
+### TimelineRef
+
+Shared scrub/hover handle in `fpmedia-web-components` (`ready` / `playhead` / `frame_count` + scrub/hover ops). Backed by [`VideoRef`](#video--videoref) today; Sequence will add another backend. `<Scrubber>` / `<HoverThumb>` take this (or `video=` → `as_timeline`). Not the engine clock.
+
 ### SequencePos
 
 Position inside a playlist: **clip index** (0-based in the model; **1-based** `[i]` in UI) + **local** presentation frame or timecode of that clip. Not a single global FrameId / SMPTE across mixed-fps clips. UX: `product.md` § Sequence position UI.

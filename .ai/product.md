@@ -35,7 +35,8 @@ Headless / paint-inside components in `fpmedia-web-components` (compose in demo;
 | Piece | Role |
 | ----- | ---- |
 | `<Video>` / `VideoRef` | Stage + element API (open/play/seek/rate/volume). |
-| `<Scrubber>` | Gesture + track container + context. Owns pointer → playhead + `scrub_pointer_*` / transport / scrub phases. Host: children + CSS; may observe `scrubbing`. Does **not** ship progress fill, ticks, or strip layout. |
+| `TimelineRef` | Shared scrub/hover handle (`VideoRef::as_timeline` today; Sequence later). `<Scrubber>` / `<HoverThumb>` bind this (or `video=`). Vocab: `glossary.md` § TimelineRef. |
+| `<Scrubber>` | Gesture + track container + context. Owns pointer → playhead + `scrub_pointer_*` / transport / scrub phases. Takes `video=` and/or `timeline=`. Host: children + CSS; may observe `scrubbing`. Does **not** ship progress fill, ticks, or strip layout. |
 | `<TimelineMeta kind>` | One timeline meta strip (`Fetch` / `Keyframes` / `Covered` / `Exact`). Hides `pipeline` → continuous `f/n` runs → 1 px canvas paint (same grid as tip / zebra). Host: `class` / color + DOM placement (overlay vs stacked rows). Mount leases `PipelineInterest` (Fetch vs Ready) so unused planes are not built each `sync_ui`. |
 | `<HoverThumb>` | Hover preview: canvas **inside**; props `width` / `height` / `class`; `children` = chrome (border, timecode, frame #); exposes `frame` / `visible`. Position (`transform`) computed from scrubber `update(x, track_w, frame)`. Auto-wire when under `<Scrubber>`; manual API escape hatch OK. |
 | **Sequence** (agreed, not shipped) | Playlist of files/URLs as **one** review timeline. Elements: composition over **2×** `<Video>` (live + idle). Chrome (multi-open, `[i]` readout, go-to): demo/host. Design: `architecture.md` § Sequence composition; steps: `state.md`. |

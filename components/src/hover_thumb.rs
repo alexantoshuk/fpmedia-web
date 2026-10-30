@@ -13,6 +13,7 @@ use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use web_sys::HtmlCanvasElement;
 
+use crate::TimelineRef;
 use crate::VideoRef;
 use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
 use crate::scrubber::{HoverThumbApi, ScrubberCtx};
@@ -35,10 +36,11 @@ pub struct HoverThumbCtx {
 /// Hover preview: canvas inside; `children` = chrome; position on root.
 ///
 /// Prefer nesting under [`crate::Scrubber`] (auto-wire). Optional [`api`] for a
-/// custom track. Optional [`video`] when not under a scrubber.
+/// custom track. Optional [`timeline`] / [`video`] when not under a scrubber.
 #[component]
 pub fn HoverThumb(
     #[prop(optional)] video: Option<VideoRef>,
+    #[prop(optional)] timeline: Option<TimelineRef>,
     /// Escape hatch / legacy wire-up — also filled when nested under [`crate::Scrubber`].
     #[prop(optional)]
     api: Option<StoredValue<Option<HoverThumbApi>, LocalStorage>>,
@@ -48,9 +50,10 @@ pub fn HoverThumb(
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
     let scrub_ctx = use_context::<ScrubberCtx>();
-    let video = video
-        .or_else(|| scrub_ctx.map(|c| c.video))
-        .expect("HoverThumb needs video=… or a parent <Scrubber>");
+    let timeline = timeline
+        .or_else(|| video.map(VideoRef::as_timeline))
+        .or_else(|| scrub_ctx.map(|c| c.timeline))
+        .expect("HoverThumb needs timeline=…, video=…, or a parent <Scrubber>");
 
     let frame = RwSignal::new(None::<u32>);
     let visible = RwSignal::new(false);
@@ -71,8 +74,8 @@ pub fn HoverThumb(
                 if epoch.get_value() != scheduled_epoch {
                     return;
                 }
-                if video.ready.get_untracked() {
-                    video.paint_hover_thumb(frame, dest, w, h);
+                if timeline.ready.get_untracked() {
+                    timeline.paint_hover_thumb(frame, dest, w, h);
                 }
             },
             DEFER_HOVER_PAINT_MS,
@@ -85,7 +88,7 @@ pub fn HoverThumb(
         frame.set(None);
         let e = epoch.get_value().wrapping_add(1);
         epoch.set_value(e);
-        video.cancel_hover_thumb();
+        timeline.cancel_hover_thumb();
     });
 
     let update: Rc<dyn Fn(f64, f64, u32)> = {
@@ -93,12 +96,21 @@ pub fn HoverThumb(
         Rc::new(move |x: f64, track_width: f64, aim: u32| {
             #[cfg(not(feature = "thumbs"))]
             {
-                let _ = (x, track_width, aim, &video, &hide, width, height, root_ref);
+                let _ = (
+                    x,
+                    track_width,
+                    aim,
+                    &timeline,
+                    &hide,
+                    width,
+                    height,
+                    root_ref,
+                );
                 return;
             }
             #[cfg(feature = "thumbs")]
             {
-                if !video.ready.get_untracked() {
+                if !timeline.ready.get_untracked() {
                     hide();
                     return;
                 }
@@ -111,7 +123,7 @@ pub fn HoverThumb(
                 let Some(canvas) = canvas_ref.get_untracked() else {
                     return;
                 };
-                if video.try_paint_hover_thumb(aim, canvas.clone(), width, height) {
+                if timeline.try_paint_hover_thumb(aim, canvas.clone(), width, height) {
                     return;
                 }
                 let scheduled_epoch = epoch.get_value();
@@ -123,7 +135,7 @@ pub fn HoverThumb(
     Effect::new({
         let hide = Rc::clone(&hide);
         move |_| {
-            if !video.ready.get() {
+            if !timeline.ready.get() {
                 hide();
             }
         }
@@ -142,7 +154,7 @@ pub fn HoverThumb(
         epoch.set_value(e);
         visible.set(false);
         frame.set(None);
-        video.cancel_hover_thumb();
+        timeline.cancel_hover_thumb();
         if let Some(api) = api {
             api.set_value(None);
         }

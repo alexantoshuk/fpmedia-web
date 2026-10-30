@@ -17,7 +17,7 @@
 | Local media URL | Same-origin `/media/*` from `demo-player/public/media/` (`npm run media:fetch` ← testvideo v0.3.0) |
 | Pages demo | `trunk build --release --public-url /fpmedia-web/` → `demo-player/dist` (`state.md`) |
 | Demo UI | `demo-player` — **all** player chrome (controls, scrubber composition, thumb labels). Product boundary: `product.md` § Surfaces |
-| Media element | `fpmedia-web-components` — `<Video>` / `VideoRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
+| Media element | `fpmedia-web-components` — `<Video>` / `VideoRef` + `TimelineRef` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `timeline`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
 | Media engine | `fpmedia-web` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `components/` / `demo-player/` |
 | Styling | Tailwind in `demo-player/style/input.css` (Trunk `rel="tailwind-css"`, auto-download CLI). Prefer **canonical** utilities (`min-w-11`, `min-h-5`, …) over arbitrary `[…]` values when a scale class exists; reuse combos via `@utility` + `@apply`. Arbitrary OK only when no scale fit (e.g. `text-[11px]`, `max-w-[min(18rem,42vw)]`, complex shadows). |
@@ -85,6 +85,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | ----- | ---- |
 | Slots | Exactly **2** `<Video>`: **live** (play / aim) + **idle** (preload neighbor: open + byte/index warm; densify/thumbs off until live or aim) |
 | Timeline axis | Global scrub = **duration** (sum of clip durations). Map `t → (clip_index, local FrameId)` via each clip’s fps/duration. Mixed fps = native rate per clip (no conform) |
+| Shared scrub handle | **Shipped:** `TimelineRef` — scrub/hover surface for `<Scrubber>` / `<HoverThumb>` (`VideoRef::as_timeline` today; Sequence variant later). `VideoPlayer` / `<Video>` stay single-clip |
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate). `VideoPlayer` unchanged (single-clip) |
 | Seam | Clip EOF → swap live/idle, play next from local 0; last clip → `ended` / loop. Short hitch OK; gapless audio later |
 | Shared scrub / thumbs | One scrub gesture over sequence model; thumbs route to the slot that owns the source (shared app-wide `ThumbSink` later) |

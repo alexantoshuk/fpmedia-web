@@ -1,6 +1,7 @@
 //! Leptos media elements over [`fpmedia_web`] — HTML `<video>` / `<audio>` analogs.
 //!
 //! - [`video`] — frame-precise `<Video>` + [`VideoRef`]
+//! - [`timeline`] — shared [`TimelineRef`] for scrub/hover (Video now; Sequence later)
 //! - [`scrubber`] — headless `<Scrubber>` (gesture + context)
 //! - [`timeline_meta`] — `<TimelineMeta>` (one fetch/residency strip)
 //! - [`hover_thumb`] — `<HoverThumb>` (paint inside; host chrome via children)
@@ -18,6 +19,8 @@ pub mod hover_thumb;
 pub mod scrubber;
 pub mod strip;
 #[cfg(target_arch = "wasm32")]
+pub mod timeline;
+#[cfg(target_arch = "wasm32")]
 pub mod timeline_meta;
 #[cfg(target_arch = "wasm32")]
 pub mod video;
@@ -29,6 +32,8 @@ pub use hover_thumb::{
 };
 #[cfg(target_arch = "wasm32")]
 pub use scrubber::{HoverThumbApi, Scrubber, ScrubberCtx};
+#[cfg(target_arch = "wasm32")]
+pub use timeline::TimelineRef;
 #[cfg(target_arch = "wasm32")]
 pub use timeline_meta::{TimelineMeta, TimelineMetaKind};
 #[cfg(target_arch = "wasm32")]

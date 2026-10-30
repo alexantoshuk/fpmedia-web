@@ -58,7 +58,9 @@ pub fn TimelineMeta(
     test_id: Option<&'static str>,
 ) -> impl IntoView {
     let ctx = use_context::<ScrubberCtx>().expect("TimelineMeta must be used inside <Scrubber>");
-    let video = ctx.video;
+    let video = ctx
+        .video
+        .expect("TimelineMeta requires <Scrubber video=…> (pipeline strips)");
     let css_width = ctx.css_width;
     let canvas_ref = NodeRef::<Canvas>::new();
     let latch = StoredValue::new_local(StripPaintLatch::new());

@@ -1193,7 +1193,7 @@ pub fn DemoPlayer() -> impl IntoView {
 #[component]
 fn FrameZebra(contrast: u8) -> impl IntoView {
     let ctx = use_context::<ScrubberCtx>().expect("FrameZebra must be used inside <Scrubber>");
-    let video = ctx.video;
+    let video = ctx.timeline;
     let host_ref = NodeRef::<Div>::new();
     let canvas_ref = NodeRef::<Canvas>::new();
     let track_w = RwSignal::new(0.0_f64);
@@ -1278,8 +1278,9 @@ fn paint_frame_zebra(
 fn ScrubPlayheadTip() -> impl IntoView {
     let ctx =
         use_context::<ScrubberCtx>().expect("ScrubPlayheadTip must be used inside <Scrubber>");
-    let video = ctx.video;
-    let tip = Memo::new(move |_| playhead_tip_css(video.playhead.get(), video.frame_count.get()));
+    let timeline = ctx.timeline;
+    let tip =
+        Memo::new(move |_| playhead_tip_css(timeline.playhead.get(), timeline.frame_count.get()));
     view! {
         <div
             class="wm-scrubber-playhead"
@@ -1295,9 +1296,9 @@ fn ScrubPlayheadTip() -> impl IntoView {
 #[component]
 fn ScrubProgress() -> impl IntoView {
     let ctx = use_context::<ScrubberCtx>().expect("ScrubProgress must be used inside <Scrubber>");
-    let video = ctx.video;
+    let timeline = ctx.timeline;
     let width =
-        Memo::new(move |_| playhead_width_css(video.playhead.get(), video.frame_count.get()));
+        Memo::new(move |_| playhead_width_css(timeline.playhead.get(), timeline.frame_count.get()));
     view! {
         <div
             class="wm-scrubber-progress"

@@ -9,7 +9,7 @@
 ### Handoff
 
 - **HEAD:** Soft-drag = main-HW key chase (`drag_aim`, no `cancel_ops` per move; supersede keys paint along `scrub_dir`); Exact = dwell/settle; move must not sync Exact-present (ScrubDrag owns canvas). Prior: `ThumbSink` product; scrub-while-play → `prepare_play_from_scrub`.
-- **Agreed (docs only):** Sequence playlist UX + 2-slot composition — `product.md` / `architecture.md` § Sequence / `glossary.md` § SequencePos. **Not implemented.**
+- **Sequence docs locked;** `TimelineRef` shipped (Scrubber/HoverThumb). Playlist composition **not** implemented — `product.md` / `architecture.md` § Sequence / `glossary.md` § SequencePos · TimelineRef.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -19,10 +19,10 @@
 
 ### Sequence playlist
 
-UX/design locked: `product.md` (Sequence + position UI), `architecture.md` § Sequence composition, `glossary.md` § SequencePos.
+UX/design locked: `product.md` (Sequence + position UI), `architecture.md` § Sequence composition, `glossary.md` § SequencePos. Shared scrub: `TimelineRef` (done).
 
 1. **Model** — clip list + duration offsets + `t ↔ (clip_index, local FrameId)`; unit tests; `SequencePos` / `[i]` format helpers (readout + go-to parse).
-2. **`<Sequence>` + 2× `<Video>`** — open blobs/URLs; metadata probe → durations; live + idle assign; one visible stage.
+2. **`<Sequence>` + 2× `<Video>`** — open blobs/URLs; metadata probe → durations; live + idle assign; one visible stage; `TimelineRef` backend.
 3. **Play seam** — EOF mid-list → swap + play next; last → `ended` / loop; idle = next (forward).
 4. **Seek / scrub / step** — duration scrubber; map to local; rebind idle; facade transport.
 5. **Demo** — multi file + multi URL; position `[i] now / end` (Frames/Timecode); go-to `[i] …` or bare = current clip.
