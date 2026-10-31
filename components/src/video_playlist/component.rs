@@ -2,8 +2,8 @@
 
 use std::rc::Rc;
 
+use fpmedia_web::ScrubCachePolicy;
 use fpmedia_web::timer::sleep_ms;
-use fpmedia_web::{ScrubCachePolicy, ThumbPolicy};
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
@@ -45,10 +45,9 @@ pub fn VideoPlaylist(
         ..
     } = playlist;
 
-    // Idle: no densify / thumbs while standby.
+    // Idle: no densify / scrub cache. Thumbs follow host `ThumbPolicy` (both slots).
     Effect::new(move |_| {
         let idle = if live_is_a.get() { slot_b } else { slot_a };
-        idle.set_thumb_policy(ThumbPolicy::Off);
         idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     });
 
@@ -197,14 +196,13 @@ pub fn VideoPlaylist(
                 status.set("Opening live clip…".into());
                 list[0].open_on(slot_a);
                 slot_a.set_loop(false);
-                slot_a.set_thumb_policy(ThumbPolicy::On);
                 slot_a.set_scrub_cache_policy(ScrubCachePolicy::On);
+                // ThumbPolicy: host Effect applies to both slots (do not force idle Off).
 
                 if list.len() > 1 {
                     status.set("Opening idle clip…".into());
                     list[1].open_on(slot_b);
                     slot_b.set_loop(false);
-                    slot_b.set_thumb_policy(ThumbPolicy::Off);
                     slot_b.set_scrub_cache_policy(ScrubCachePolicy::Off);
                 }
 

@@ -44,7 +44,7 @@ fpmedia-web/               ← GitHub repo
 
 Engine module map (file triage): `.ai/skills/media.md`.
 
-**Versions:** publishable crates lockstep (`Cargo.toml`). Demo shows [`fpmedia_web_components::VERSION`](../components/src/lib.rs) (`CARGO_PKG_VERSION`). Until crates.io: bump `0.1.0-alpha.N` lockstep (path `version =` too) when cutting a visible milestone — not a parallel VERSION file. Publish backlog: `state.md`.
+**Versions:** one source until crates.io — root `[workspace.package] version`; publishable members `version.workspace = true`. Path deps omit `version =` while `publish = false` (Cargo cannot inherit `version.workspace` on deps). Demo shows [`fpmedia_web_components::VERSION`](../components/src/lib.rs). Bump only the workspace version for a milestone. At crates.io publish: restore matching `version` on path deps. Backlog: `state.md`.
 
 ### Layer rules
 
@@ -85,7 +85,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 
 | Piece | Rule |
 | ----- | ---- |
-| Slots | Exactly **2** `<Video>`: **live** (play / aim) + **idle** (preload neighbor: open + byte/index warm; densify/thumbs off until live or aim) |
+| Slots | Exactly **2** `<Video>`: **live** (play / aim) + **idle** (preload neighbor: open + byte/index warm; densify/scrub-cache off; thumbs follow host `ThumbPolicy`) |
 | Timeline axis | Global scrub = **duration** (sum of clip durations). Map `t → (clip_index, local FrameId)` via each clip’s fps/duration. Mixed fps = native rate per clip (no conform) |
 | Shared scrub handle | **Shipped:** `TimelineRef` — scrub/hover for `<Scrubber>` / `<HoverThumb>` (`VideoRef` / `VideoPlaylistRef` `as_timeline`). `VideoPlayer` / `<Video>` stay single-clip |
 | Playlist model + host | **Shipped:** `video_playlist` — model/`[i]`; `<VideoPlaylist>` / `VideoPlaylistRef` (2 slots, probe, play seam, seek/scrub/step rebind, `TimelineRef` ms) |
@@ -93,7 +93,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Strip / tip domain | One owner: `TimelineRef` (playlist units = **ms**). Gesture / tip / hover / `<TimelineMeta>` all use it. `strip_video()` → live slot; ready/fetch remapped via `strip_ready_marks` / `strip_fetch_ranges`. Meta re-leases on `strip_video_key` change — **never** remount `<Scrubber>` on live swap. Mirror live→`playhead_ms` only while live `playing` (scrub/seek own aim; yields while `scrubbing`) |
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate/step). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
 | Seam | Clip EOF → swap live/idle, play next from local 0; last clip → `ended` / loop. Short hitch OK; gapless audio later |
-| Shared scrub / thumbs | One scrub gesture over playlist model; thumbs route to the slot that owns the source (shared app-wide `ThumbSink` later) |
+| Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
 
 Docs trim / leftover smoke: `state.md` § Playlist.

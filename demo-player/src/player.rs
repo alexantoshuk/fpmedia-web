@@ -546,8 +546,9 @@ pub fn DemoPlayer() -> impl IntoView {
             ThumbPolicy::Off
         };
         if use_playlist.get() {
-            let _ = playlist.live_is_a.get();
-            playlist.live_video().set_thumb_policy(policy);
+            // Both slots: idle keeps ThumbSink for neighbor / hover across cuts.
+            playlist.slot_a.set_thumb_policy(policy);
+            playlist.slot_b.set_thumb_policy(policy);
         } else {
             video.set_thumb_policy(policy);
         }

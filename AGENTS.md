@@ -69,13 +69,14 @@ Example: dropping prune→dense salvage on settle “to avoid strip noise” re-
 
 Before **any** write to the repo (code, config, docs, generated assets):
 
-1. **Describe the plan first** — short: what, where, why (files/symbols if known).
+1. **Describe the plan first** — short: what, where, why (files/symbols if known). Stop there.
 2. **Media changes:** plan must satisfy [Pre-edit gate (media)](#pre-edit-gate-media--hard-stop) (mediabunny cite or explicit no-equivalent).
 3. **`.ai/` / docs changes:** plan must satisfy [Documentation write gate](#documentation-write-gate--hard-stop) (canonical file + no duplicate prose).
-4. **Do not edit until the user explicitly consents** (e.g. `ok`, `go`, `да`, `approve`).
-5. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
-6. **Exception:** only if the user explicitly says to skip approval for that task or session.
-7. **Commits are separate** — edit/`go` approval is **not** commit consent. See [Commits](#commits).
+4. **Do not start implementation** until the user explicitly approves **that plan** (e.g. `ok`, `go`, `да`, `approve` on the plan you just stated).
+5. **Not plan approval:** `next`, priority reorder, “разбери”, diagnosis-only, or a bare `go` that meant “show the plan” / “start researching”. If unclear, ask — do not code.
+6. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
+7. **Exception:** only if the user explicitly says to skip approval for that task or session.
+8. **Commits are separate** — edit/`go` approval is **not** commit consent. See [Commits](#commits).
 
 If the plan changes mid-work (scope creep, different files), stop and re-approve before further edits.
 

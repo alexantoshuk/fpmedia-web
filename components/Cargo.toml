@@ -1,6 +1,6 @@
 [package]
 name = "fpmedia-web-components"
-version = "0.1.0-alpha.1"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -44,5 +44,5 @@ web-sys = { workspace = true, features = [
     "console",
     "VisibilityState",
 ] }
-fpmedia-web = { path = "../engine", version = "0.1.0-alpha.1", features = ["webcodecs"] }
-fpmedia-timecode = { path = "../timecode", version = "0.1.0-alpha.1" }
+fpmedia-web = { path = "../engine", features = ["webcodecs"] }
+fpmedia-timecode = { path = "../timecode" }

@@ -39,4 +39,4 @@ web-sys = { workspace = true, features = [
     "OrientationLockType",
     "OrientationType",
 ] }
-fpmedia-web-components = { path = "../components", version = "0.1.0-alpha.1" }
+fpmedia-web-components = { path = "../components" }

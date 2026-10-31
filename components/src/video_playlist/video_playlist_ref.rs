@@ -8,7 +8,7 @@ use web_sys::HtmlCanvasElement;
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
-use super::slots::{ensure_clip_on_idle, preload_idle, try_promote_idle};
+use super::slots::{ensure_clip_on_idle, idle_neighbor, preload_idle, try_promote_idle};
 use super::source::PlaylistSource;
 use wasm_bindgen_futures::spawn_local;
 
@@ -202,12 +202,17 @@ impl VideoPlaylistRef {
                 self.live_video().pause();
             }
             promoted = try_promote_idle(self, aim.clip_index);
-            // Aim clip not on idle (e.g. drag back across cut while idle holds next):
-            // warm idle once; later Moves promote when ready. Do not remount Scrubber.
-            if !promoted
-                && matches!(phase, ScrubPhase::Down | ScrubPhase::Move)
+            if promoted {
+                // Idle now holds former live — warm the true neighbor (not a lying label).
+                let want = idle_neighbor(&self.model.get_untracked(), aim.clip_index);
+                let epoch = self.open_gen.get_value();
+                spawn_local(async move {
+                    preload_idle(self, want, epoch).await;
+                });
+            } else if matches!(phase, ScrubPhase::Down | ScrubPhase::Move)
                 && self.idle_clip.get_untracked() != Some(aim.clip_index)
             {
+                // Aim not on idle yet — warm then later Moves promote when ready.
                 let epoch = self.open_gen.get_value();
                 let want = aim.clip_index;
                 spawn_local(async move {
@@ -231,7 +236,8 @@ impl VideoPlaylistRef {
                 if resume {
                     live.play();
                 }
-                let neighbor = self.idle_clip.get_untracked();
+                let neighbor =
+                    idle_neighbor(&self.model.get_untracked(), self.live_clip.get_untracked());
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
                     preload_idle(self, neighbor, epoch).await;
@@ -271,7 +277,10 @@ impl VideoPlaylistRef {
         let Some(pos) = self.model.get_untracked().at_ms(ms) else {
             return;
         };
-        let video = self.video_for_clip(pos.clip_index);
+        let Some(video) = self.video_for_clip(pos.clip_index) else {
+            self.warm_idle_for_clip(pos.clip_index);
+            return;
+        };
         video.paint_hover_thumb(pos.local_frame, dest, max_w, max_h);
     }
 
@@ -285,7 +294,10 @@ impl VideoPlaylistRef {
         let Some(pos) = self.model.get_untracked().at_ms(ms) else {
             return false;
         };
-        let video = self.video_for_clip(pos.clip_index);
+        let Some(video) = self.video_for_clip(pos.clip_index) else {
+            self.warm_idle_for_clip(pos.clip_index);
+            return false;
+        };
         video.try_paint_hover_thumb(pos.local_frame, dest, max_w, max_h)
     }
 
@@ -294,15 +306,26 @@ impl VideoPlaylistRef {
         self.slot_b.cancel_hover_thumb();
     }
 
-    fn video_for_clip(self, clip_index: u32) -> VideoRef {
+    /// Slot that owns `clip_index`, if already open on live or idle.
+    fn video_for_clip(self, clip_index: u32) -> Option<VideoRef> {
         if self.live_clip.get_untracked() == clip_index {
-            return self.live_video();
+            return Some(self.live_video());
         }
         if self.idle_clip.get_untracked() == Some(clip_index) {
-            return self.idle_video();
+            return Some(self.idle_video());
         }
-        // Fall back to live until idle is rebound to that clip.
-        self.live_video()
+        None
+    }
+
+    /// Hover/scrub over a clip not on either slot — open it on idle (same as cut drag).
+    fn warm_idle_for_clip(self, clip_index: u32) {
+        if self.idle_clip.get_untracked() == Some(clip_index) {
+            return;
+        }
+        let epoch = self.open_gen.get_value();
+        spawn_local(async move {
+            let _ = ensure_clip_on_idle(self, clip_index, epoch).await;
+        });
     }
 }
 

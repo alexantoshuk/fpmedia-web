@@ -1,7 +1,7 @@
 //! Live/idle slot helpers for [`super::VideoPlaylist`].
 
 use fpmedia_web::timer::sleep_ms;
-use fpmedia_web::{ScrubCachePolicy, ThumbPolicy, VideoMetadata};
+use fpmedia_web::{ScrubCachePolicy, VideoMetadata};
 use leptos::prelude::*;
 
 use crate::VideoRef;
@@ -63,7 +63,6 @@ pub(crate) async fn ensure_clip_on_idle(
         .ok_or_else(|| format!("missing source for clip {}", clip_index + 1))?;
     let idle = pl.idle_video();
     idle.set_loop(false);
-    idle.set_thumb_policy(ThumbPolicy::Off);
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     idle.close();
     sleep_ms(0).await;
@@ -76,17 +75,19 @@ pub(crate) async fn ensure_clip_on_idle(
     Ok(())
 }
 
-pub(crate) fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32, new_idle_clip: Option<u32>) {
+/// Flip live/idle slots. `idle_clip` becomes the clip that **physically** moved
+/// to idle (former live) — never an aspirational neighbor (that lied and made
+/// scrub promote the wrong media). Caller [`preload_idle`]s the desired neighbor.
+pub(crate) fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32) {
+    let former_live = pl.live_clip.get_untracked();
     pl.live_is_a.set(!pl.live_is_a.get_untracked());
     pl.live_clip.set(new_live_clip);
-    pl.idle_clip.set(new_idle_clip);
+    pl.idle_clip.set(Some(former_live));
     let live = pl.live_video();
     live.set_loop(false);
-    live.set_thumb_policy(ThumbPolicy::On);
     live.set_scrub_cache_policy(ScrubCachePolicy::On);
     live.ended.set(false);
     let idle = pl.idle_video();
-    idle.set_thumb_policy(ThumbPolicy::Off);
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     idle.set_loop(false);
 }
@@ -99,9 +100,7 @@ pub(crate) fn try_promote_idle(pl: VideoPlaylistRef, clip_index: u32) -> bool {
     if pl.idle_clip.get_untracked() != Some(clip_index) || !pl.idle_video().ready.get_untracked() {
         return false;
     }
-    let model = pl.model.get_untracked();
-    let neighbor = idle_neighbor(&model, clip_index);
-    swap_live_idle(pl, clip_index, neighbor);
+    swap_live_idle(pl, clip_index);
     true
 }
 
@@ -110,6 +109,9 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
         return;
     };
     if pl.open_gen.get_value() != epoch {
+        return;
+    }
+    if pl.idle_clip.get_untracked() == Some(i) && pl.idle_video().ready.get_untracked() {
         return;
     }
     let Some(src) = pl
@@ -121,7 +123,6 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     };
     let idle = pl.idle_video();
     idle.set_loop(false);
-    idle.set_thumb_policy(ThumbPolicy::Off);
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     src.open_on(idle);
     pl.idle_clip.set(Some(i));
@@ -151,10 +152,9 @@ pub(crate) async fn seek_to_pos(
             if pl.open_gen.get_value() != epoch {
                 return Ok(());
             }
-            let neighbor = idle_neighbor(&pl.model.get_untracked(), aim.clip_index);
-            swap_live_idle(pl, aim.clip_index, neighbor);
+            swap_live_idle(pl, aim.clip_index);
         }
-        let neighbor = pl.idle_clip.get_untracked();
+        let neighbor = idle_neighbor(&pl.model.get_untracked(), aim.clip_index);
         preload_idle(pl, neighbor, epoch).await;
     }
 
@@ -196,8 +196,8 @@ pub(crate) async fn advance_after_ended(pl: VideoPlaylistRef, epoch: u64) -> Res
         if pl.open_gen.get_value() != epoch {
             return Ok(());
         }
-        let following = model.next_clip_index(next_i);
-        swap_live_idle(pl, next_i, following);
+        let following = idle_neighbor(&model, next_i);
+        swap_live_idle(pl, next_i);
         play_seam_from_origin(&pl.live_video());
         pl.ended.set(false);
         pl.status
@@ -221,8 +221,8 @@ pub(crate) async fn advance_after_ended(pl: VideoPlaylistRef, epoch: u64) -> Res
         if pl.open_gen.get_value() != epoch {
             return Ok(());
         }
-        let following = model.next_clip_index(0);
-        swap_live_idle(pl, 0, following);
+        let following = idle_neighbor(&model, 0);
+        swap_live_idle(pl, 0);
         play_seam_from_origin(&pl.live_video());
         pl.ended.set(false);
         pl.status.set(format!("Playing clip 1/{}", model.len()));
