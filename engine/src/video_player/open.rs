@@ -186,6 +186,8 @@ impl VideoPlayer {
             scrub_bg_suspended: Cell::new(false),
             underrun_catchup_until_ms: Cell::new(None),
             loop_origin_warm_started: Cell::new(false),
+            play_origin_warm: crate::SingleFlight::new(),
+            seam_audio_warm: Cell::new(false),
             scrub_gesture: Cell::new(false),
             drag_aim: Cell::new(0),
             engine: Cell::new(EngineModel::new()),

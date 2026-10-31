@@ -10,7 +10,10 @@ use wasm_bindgen_futures::spawn_local;
 use crate::Video;
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
-use super::slots::{advance_after_ended, seek_to_pos, wait_ready};
+use super::slots::{
+    advance_after_ended, maybe_arm_idle_seam_hold, maybe_handoff_seam, maybe_kick_idle_seam_warm,
+    seek_to_pos, wait_ready,
+};
 use super::source::PlaylistSource;
 use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};
 
@@ -92,6 +95,24 @@ pub fn VideoPlaylist(
         });
     });
 
+    // Near-EOF: warm + SeamHold arm; near cut: dual-present handoff.
+    Effect::new(move |_| {
+        if !ready.get() {
+            return;
+        }
+        let live = if live_is_a.get() { slot_a } else { slot_b };
+        if !live.playing.get() {
+            return;
+        }
+        let _ = live.timestamp.get();
+        let _ = live_clip.get();
+        let _ = idle_clip.get();
+        let _ = looping.get();
+        maybe_kick_idle_seam_warm(playlist);
+        maybe_arm_idle_seam_hold(playlist);
+        maybe_handoff_seam(playlist);
+    });
+
     let bump_gen = Rc::new({
         move || {
             let g = open_gen.get_value().wrapping_add(1);
@@ -118,6 +139,10 @@ pub fn VideoPlaylist(
             live_is_a.set(true);
             playlist.scrubbing.set(false);
             playlist.scrub_resume.set(false);
+            playlist.seam_warm_for.set_value(None);
+            playlist.seam_hold_for.set_value(None);
+            playlist.seam_arming.set_value(false);
+            playlist.seam_handoff_inflight.set_value(false);
             sources.set_value(Vec::new());
             error.set(None);
             status.set("Closed.".into());
@@ -215,6 +240,7 @@ pub fn VideoPlaylist(
                         busy.set(false);
                         ready.set(true);
                         ended.set(false);
+                        playlist.apply_gain_to_slots();
                         status.set(format!("Playlist ready · {} clip(s).", list.len()));
                         error.set(None);
                     }

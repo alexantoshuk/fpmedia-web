@@ -63,12 +63,18 @@ impl VideoPlayer {
         self.shared.play_phase.get().is_live()
     }
 
+    /// Playlist idle: PlayIter@0 primed, clock held (`PlayPhase::SeamHold`).
+    pub fn seam_hold_armed(&self) -> bool {
+        self.shared.play_phase.get().is_seam_hold()
+    }
+
     pub(super) fn clear_play_session(&self) {
         self.apply_play_phase(PlayPhaseEvent::End);
         self.shared.pending_silent_clock.set(false);
         self.shared.resuming_clock.set(false);
         self.shared.held_media_origin.set(None);
         self.shared.loop_origin_warm_started.set(false);
+        self.shared.seam_audio_warm.set(false);
         *self.shared.play_driver_error.borrow_mut() = None;
         self.end_play_iter();
     }
@@ -326,7 +332,7 @@ impl VideoPlayer {
         wasm_bindgen_futures::spawn_local(async move {
             let epoch = player.shared.op_epoch.get();
             // Finish (or start) origin warm under the held clock — hit path is cheap.
-            let _ = player.warm_play_sample_lead(0).await;
+            let _ = player.warm_play_origin_bytes().await;
             if player.shared.play_phase.get() != PlayPhase::LoopSeam {
                 return;
             }
@@ -374,7 +380,7 @@ impl VideoPlayer {
         self.shared.loop_origin_warm_started.set(true);
         let player = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = player.warm_play_sample_lead(0).await;
+            let _ = player.warm_play_origin_bytes().await;
         });
     }
 
@@ -494,11 +500,18 @@ impl VideoPlayer {
         blit.set_max(scrub_blit_cap_during_play(full, reserve));
     }
 
-    /// Index + sample (+ origin audio) warm for PlayPrime / loop seam.
+    /// Index + sample (+ origin audio) warm for PlayPrime / loop / playlist seam.
     ///
     /// `mediabunny: URLSource` min-load / worker fill before the sink runs dry.
-    async fn warm_play_sample_lead(&self, head: FrameId) -> Result<(), MediaError> {
+    /// `require_playing`: PlayPrime / mid-clip — bail if paused. Playlist idle
+    /// near-EOF origin warm uses `false` (paused ready slot).
+    async fn warm_play_sample_lead(
+        &self,
+        head: FrameId,
+        require_playing: bool,
+    ) -> Result<(), MediaError> {
         let epoch = self.shared.op_epoch.get();
+        let still_ok = || self.is_current(epoch) && (!require_playing || self.is_playing());
         let settle = self.shared.track.metadata_ref().settle_policy();
         // fMP4: arm a long index lead in bg, but only *await* one urgent batch
         // past the current index (`mediabunny: first samples before play`).
@@ -513,7 +526,7 @@ impl VideoPlayer {
                 let await_through = want.min(indexed.saturating_add(play_index_await_batch));
                 if await_through > indexed {
                     track.ensure_indexed_through(await_through).await?;
-                    if !self.is_current(epoch) || !self.is_playing() {
+                    if !still_ok() {
                         return Err(MediaError::Cancelled);
                     }
                 }
@@ -549,7 +562,7 @@ impl VideoPlayer {
             );
             (secs, key)
         };
-        if !self.is_current(epoch) || !self.is_playing() {
+        if !still_ok() {
             return Err(MediaError::Cancelled);
         }
         // Audio bulk warm is 0..t — only near start (mid-clip pump primes at origin).
@@ -557,11 +570,121 @@ impl VideoPlayer {
             let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
             if let Some(a) = audio {
                 a.warm_bytes_through(warm_secs).await?;
-                if !self.is_current(epoch) || !self.is_playing() {
+                if !still_ok() {
                     return Err(MediaError::Cancelled);
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Frame-0 index/sample/audio warm for loop seam + playlist idle near-EOF.
+    ///
+    /// Joins [`Shared::play_origin_warm`] so a near-EOF kick and PlayPrime at
+    /// head 0 share one flight. **no equivalent** for playlist; loop shape =
+    /// Remotion `prewarmIteratorForLooping` / `maybe_kick_loop_origin_prewarm`.
+    pub async fn warm_play_origin_bytes(&self) -> Result<(), MediaError> {
+        loop {
+            if self.shared.play_origin_warm.request() {
+                let result = self.warm_play_sample_lead(0, false).await;
+                let again = self.shared.play_origin_warm.finish();
+                if again {
+                    continue;
+                }
+                return result;
+            }
+            // Another flight owns origin warm — wait it out (PlayPrime joins kick).
+            crate::timer::sleep_ms(8).await;
+            if !self.shared.play_origin_warm.is_busy() {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Playlist dual-present: prime PlayIter at 0 under a held clock (`SeamHold`).
+    ///
+    /// First frame is drawn; media clock does not advance until
+    /// [`Self::release_playlist_seam_hold`]. **no equivalent** (playlist local);
+    /// loop cousin = [`Self::start_loop_seam`].
+    pub async fn arm_playlist_seam_hold(self: &Rc<Self>) -> Result<(), MediaError> {
+        if self.shared.play_phase.get().is_seam_hold() {
+            return Ok(());
+        }
+        // Tear any prior play session on this slot (idle should be paused).
+        if self.shared.play_phase.get().is_live() {
+            self.pause();
+        }
+        self.abort_scrub_fill(false);
+        self.await_scrub_densify_yield(false).await;
+        self.play();
+        self.apply_play_phase(PlayPhaseEvent::ArmSeamHold);
+        if !self.shared.play_phase.get().is_seam_hold() {
+            return Err(MediaError::Cancelled);
+        }
+        self.warm_play_origin_bytes().await?;
+        if !self.shared.play_phase.get().is_seam_hold() || !self.is_playing() {
+            return Err(MediaError::Cancelled);
+        }
+        let epoch = self.shared.op_epoch.get();
+        self.start_play_iter(0, epoch).await?;
+        if !self.shared.play_phase.get().is_seam_hold() || !self.is_current(epoch) {
+            return Err(MediaError::Cancelled);
+        }
+        // AAC: muted cold begin + soft-hold so release uses `restart_warm` (no
+        // reconfigure gap). Host keeps slot muted until handoff unmutes.
+        // mediabunny: pause keeps audio path warm; playlist dual-present local.
+        self.shared.seam_audio_warm.set(false);
+        if self.shared.audio.borrow().is_some() {
+            self.set_muted(true);
+            self.start_media_clock(0.0).await?;
+            if !self.shared.play_phase.get().is_seam_hold() || !self.is_playing() {
+                return Err(MediaError::Cancelled);
+            }
+            let _ = self.hold_media_clock_for_scrub();
+            self.shared.seam_audio_warm.set(true);
+        }
+        self.shared.held_media_origin.set(Some(0.0));
+        self.kick_update_next_frame();
+        web_sys::console::log_1(&"fpmedia-web: playlist seam hold armed".into());
+        Ok(())
+    }
+
+    /// Playlist cut: `SeamHold` → `Live` + warm (or silent) media clock at origin.
+    pub async fn release_playlist_seam_hold(self: &Rc<Self>) -> Result<(), MediaError> {
+        if self.shared.play_phase.get() == PlayPhase::Live && self.is_playing() {
+            return Ok(());
+        }
+        if !self.shared.play_phase.get().is_seam_hold() {
+            return Err(MediaError::Cancelled);
+        }
+        self.apply_play_phase(PlayPhaseEvent::ReleaseSeamHold);
+        if self.shared.play_phase.get() != PlayPhase::Live {
+            return Err(MediaError::Cancelled);
+        }
+        self.arm_underrun_catchup_grace();
+        let t0 = self
+            .shared
+            .held_media_origin
+            .get()
+            .unwrap_or_else(|| self.state().timestamp.seconds);
+        let warm = self.shared.seam_audio_warm.replace(false);
+        if warm {
+            // Soft-held during arm — `restart_warm` primes buffers without begin gap.
+            let _ = self.take_audio_warm_resume();
+            self.resume_media_clock(t0).await?;
+        } else if self.shared.audio.borrow().is_some() {
+            self.start_media_clock(t0).await?;
+        } else {
+            // No AAC: arm silent driver on first present (PlayPrime shape).
+            self.shared.pending_silent_clock.set(true);
+            self.shared.held_media_origin.set(Some(t0));
+        }
+        if warm || self.shared.audio.borrow().is_some() {
+            self.shared.held_media_origin.set(None);
+        }
+        web_sys::console::log_1(
+            &format!("fpmedia-web: playlist seam hold released warm_audio={warm}").into(),
+        );
         Ok(())
     }
 
@@ -581,7 +704,12 @@ impl VideoPlayer {
         }
         let epoch = self.shared.op_epoch.get();
         let head = self.state().frame;
-        self.warm_play_sample_lead(head).await?;
+        // Origin: join playlist/loop near-EOF prewarm. Mid-clip: require Playing.
+        if head == 0 {
+            self.warm_play_origin_bytes().await?;
+        } else {
+            self.warm_play_sample_lead(head, true).await?;
+        }
         if !self.is_current(epoch) || !self.is_playing() {
             return Err(MediaError::Cancelled);
         }

@@ -91,8 +91,8 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Playlist model + host | **Shipped:** `video_playlist` — model/`[i]`; `<VideoPlaylist>` / `VideoPlaylistRef` (2 slots, probe, play seam, seek/scrub/step rebind, `TimelineRef` ms) |
 | Demo open | **Shipped:** multi-file picker + `;`-separated URLs → playlist; 1 source → `<Video>`; `[i]` position/go-to. Host CSS hides `.fpvideo-playlist-slot.is-idle` |
 | Strip / tip domain | One owner: `TimelineRef` (playlist units = **ms**). Gesture / tip / hover / `<TimelineMeta>` all use it. `strip_video()` → live slot; ready/fetch remapped via `strip_ready_marks` / `strip_fetch_ranges`. Meta re-leases on `strip_video_key` change — **never** remount `<Scrubber>` on live swap. Mirror live→`playhead_ms` only while live `playing` (scrub/seek own aim; yields while `scrubbing`) |
-| Facade | Host sees one logical media (play/pause/seek/scrub/rate/step). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
-| Seam | Clip EOF → swap live/idle, play next from local 0; last clip → `ended` / loop. Short hitch OK; gapless audio later |
+| Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
+| Seam | Near-EOF (~1 s): idle origin warm + `SeamHold` (PlayIter@0; AAC muted begin→soft-hold). Cut (`remain≤50 ms` or EOF): mute/pause outgoing → promote → warm `release` (no cold PlayPrime/begin). Fallback: EOF → swap → play |
 | Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
 

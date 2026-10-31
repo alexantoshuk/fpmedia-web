@@ -131,7 +131,8 @@ impl AudioOutput {
         let context = AudioContext::new_with_context_options(&opts)?;
         let gain = context.create_gain()?;
         gain.connect_with_audio_node(&context.destination())?;
-        gain.gain().set_value(0.7_f32.powi(2));
+        // HTMLMediaElement default volume is 1.0 (squared gain curve below).
+        gain.gain().set_value(1.0);
 
         let pending: Rc<RefCell<VecDeque<PendingSample>>> = Rc::new(RefCell::new(VecDeque::new()));
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
@@ -211,7 +212,7 @@ impl AudioOutput {
             track: Rc::new(track),
             context,
             gain,
-            volume: Cell::new(0.7),
+            volume: Cell::new(1.0),
             muted: Cell::new(false),
             rate: Cell::new(1.0),
             epoch: Cell::new(0),

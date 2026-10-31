@@ -19,10 +19,16 @@ pub use fpmedia_web::{
 };
 pub use pipeline_interest::{PipelineInterestLease, PipelinePlane};
 
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
 
 use leptos::prelude::*;
+use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
+
+type BoxedLocalFut<T> = Pin<Box<dyn Future<Output = T>>>;
+type LocalFutFn<T> = Rc<dyn Fn() -> BoxedLocalFut<T>>;
 
 /// Cloneable handle to a mounted [`Video`] — like a ref to an HTMLMediaElement.
 #[derive(Clone, Copy)]
@@ -88,6 +94,14 @@ pub(crate) struct VideoOps {
     pub cancel_hover_thumb: Rc<dyn Fn()>,
     pub set_thumb_policy: Rc<dyn Fn(ThumbPolicy)>,
     pub set_scrub_cache_policy: Rc<dyn Fn(ScrubCachePolicy)>,
+    /// Playlist / loop: frame-0 byte warm future (joins PlayPrime at origin).
+    pub warm_play_origin: LocalFutFn<()>,
+    /// Playlist dual-present: arm PlayIter@0 under held clock.
+    pub arm_seam_hold: LocalFutFn<Result<(), String>>,
+    /// Playlist cut: release held seam → Live + clock.
+    pub release_seam_hold: LocalFutFn<Result<(), String>>,
+    /// Engine `PlayPhase::SeamHold`.
+    pub seam_hold_armed: Rc<dyn Fn() -> bool>,
 }
 
 impl VideoRef {
@@ -108,7 +122,8 @@ impl VideoRef {
             pipeline: RwSignal::new(None),
             status: RwSignal::new(String::from("Load an MP4 to begin.")),
             has_audio: RwSignal::new(false),
-            volume: RwSignal::new(0.7),
+            // HTMLMediaElement default volume is 1.0.
+            volume: RwSignal::new(1.0),
             muted: RwSignal::new(false),
             playback_rate: RwSignal::new(1.0),
             ops: StoredValue::new_local(None),
@@ -364,6 +379,49 @@ impl VideoRef {
         if let Some(set) = self.op(|o| &o.set_scrub_cache_policy) {
             set(policy);
         }
+    }
+
+    /// Fire-and-forget frame-0 sample/audio warm (playlist near-EOF idle; joins
+    /// PlayPrime at origin via engine `play_origin_warm` SingleFlight).
+    pub fn kick_warm_play_origin(&self) {
+        if let Some(make) = self.op(|o| &o.warm_play_origin) {
+            let fut = make();
+            spawn_local(async move {
+                fut.await;
+            });
+        }
+    }
+
+    /// Await frame-0 byte warm (playlist seam before PlayPrime — hit path cheap).
+    pub async fn warm_play_origin(&self) {
+        if let Some(make) = self.op(|o| &o.warm_play_origin) {
+            make().await;
+        }
+    }
+
+    /// Playlist: prime idle PlayIter@0 with clock held (`SeamHold`).
+    pub async fn arm_seam_hold(&self) -> Result<(), String> {
+        if let Some(make) = self.op(|o| &o.arm_seam_hold) {
+            make().await
+        } else {
+            Err("Video not mounted".into())
+        }
+    }
+
+    /// Playlist cut: release `SeamHold` → playing Live (no cold PlayPrime).
+    pub async fn release_seam_hold(&self) -> Result<(), String> {
+        if let Some(make) = self.op(|o| &o.release_seam_hold) {
+            make().await
+        } else {
+            Err("Video not mounted".into())
+        }
+    }
+
+    /// True while this slot is in engine `SeamHold`.
+    pub fn seam_hold_armed(&self) -> bool {
+        self.op(|o| &o.seam_hold_armed)
+            .map(|f| f())
+            .unwrap_or(false)
     }
 }
 

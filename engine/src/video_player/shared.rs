@@ -114,6 +114,11 @@ pub(super) struct Shared {
     /// Near-EOF / seam already kicked loop-origin byte warm this lap (clear on
     /// [`PlayPhase::LoopDone`] / session end).
     pub(super) loop_origin_warm_started: Cell<bool>,
+    /// Origin (frame 0) byte warm — loop prewarm, playlist idle near-EOF, and
+    /// PlayPrime at head 0 share one flight so kick + prime do not double-read.
+    pub(super) play_origin_warm: SingleFlight,
+    /// Playlist `SeamHold` primed AAC via muted start→hold (release = warm resume).
+    pub(super) seam_audio_warm: Cell<bool>,
     /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).
     pub(super) scrub_gesture: Cell<bool>,
     /// Latest soft-drag aim (updated sync on every pointer sample). In-flight

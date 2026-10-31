@@ -26,6 +26,8 @@
 | Playlist scrub tip jumps on pointer-up | mirror must not stomp `playhead_ms` from stale `frame` after `scrubbing` clears |
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
 | Playlist scrub→other clip drops Play | latch `scrub_resume` on Down while `playing` (soft-pause clears it before cross-cut) |
+| Playlist seam hitch / A/V gap | near-EOF `SeamHold` + warm audio release; mute/pause outgoing before release — `skills/media.md` |
+| Playlist seam volume jump | `VideoPlaylistRef::volume`/`muted` + `apply_gain_to_slots`; demo binds playlist gain, not live slot |
 | Playlist scrub stuck at cut on drag | never remount `<Scrubber>`; Meta re-leases via `strip_video_key` — `architecture.md` § Playlist |
 | Effect side-effect runs on mount | `Effect::watch(deps, handler, false)` — handler skips initial; `Effect::new` runs once after mount |
 | Zebra / tip / strip drift | continuous `f/n` (float canvas + tip `calc`); no CSS gradient tiles / integer tip snap |

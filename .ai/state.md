@@ -8,9 +8,9 @@
 
 ### Handoff
 
-- **HEAD:** `0.1.0-alpha.2` — dual-slot thumbs + honest `idle_clip` after promote (scrub 3rd≠1st). Cite: **no equivalent** (playlist local).
-- **Smoke:** continuous scrub 1→2→3; thumbs on neighbor; Play seam OK; header shows alpha.2.
-- **Prior:** `9ad3a35` VERSION UI; Meta ready-gate / scrub resume / seam.
+- **HEAD:** playlist dual-present SeamHold + warm audio + shared volume/mute (this commit). Cite: **no equivalent** (playlist local).
+- **Smoke:** Play All cut (`seam hold released warm_audio=true`); volume stable across clips; scrub 1→2→3 OK.
+- **Prior:** `6c24865` alpha.2 thumbs / idle promote.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -20,11 +20,11 @@
 
 ### Playlist
 
-Element seek/scrub/step + seam + host polish + dual-slot thumbs shipped (`0.1.0-alpha.2`). Thumbs mirror 2-Video pool (`product.md` / `architecture.md` § Playlist).
+Dual-present seam + playlist-wide volume/mute shipped (with `0.1.0-alpha.2` thumbs). Design: `architecture.md` § Playlist.
 
-**Optional next:** near-EOF idle Play-warm (loop-origin prewarm shape). Not gapless A/V.
+**Optional next:** cut markers / clip name in `[i]` (Later).
 
-**Out of v1:** clip name in readout/go-to; cut markers on bar; gapless audio; compare dual-visible.
+**Out of v1:** compare dual-visible.
 
 ### Publish crates (`0.1.0-alpha`)
 
@@ -56,5 +56,5 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
-- Playlist: clip **name** in `[i]` readout / go-to; cut markers on scrubber; gapless A/V.
+- Playlist: clip **name** in `[i]` readout / go-to; cut markers on scrubber.
 - Compare dual-visible (reuse 2-slot pool); pure `<Audio>` / `AudioPlayer`; thumb Worker; 4K loop residual; reverse playback (if revisited); production player UI.

@@ -34,6 +34,10 @@ pub struct VideoPlaylistRef {
     pub live_is_a: RwSignal<bool>,
     /// Host scrub gesture in flight — mirror Effect must not overwrite `playhead_ms`.
     pub scrubbing: RwSignal<bool>,
+    /// Playlist-wide volume (both slots). Facade — not per-clip.
+    pub volume: RwSignal<f64>,
+    /// Playlist-wide mute (both slots). Idle may stay muted while `SeamHold` arms.
+    pub muted: RwSignal<bool>,
     /// Resume Play after scrub that crossed clips (per-slot `then_play` does not survive promote).
     pub(crate) scrub_resume: RwSignal<bool>,
     pub slot_a: VideoRef,
@@ -41,6 +45,14 @@ pub struct VideoPlaylistRef {
     pub(crate) ops: StoredValue<Option<VideoPlaylistOps>, LocalStorage>,
     pub(crate) sources: StoredValue<Vec<PlaylistSource>, LocalStorage>,
     pub(crate) open_gen: StoredValue<u64, LocalStorage>,
+    /// Clip index already kicked for near-EOF origin warm this lap (`None` = none).
+    pub(crate) seam_warm_for: StoredValue<Option<u32>, LocalStorage>,
+    /// Idle clip with engine `SeamHold` armed (ready for dual-present handoff).
+    pub(crate) seam_hold_for: StoredValue<Option<u32>, LocalStorage>,
+    /// `arm_seam_hold` in flight (avoid double spawn).
+    pub(crate) seam_arming: StoredValue<bool, LocalStorage>,
+    /// Handoff task in flight.
+    pub(crate) seam_handoff_inflight: StoredValue<bool, LocalStorage>,
 }
 
 #[derive(Clone)]
@@ -73,17 +85,58 @@ impl VideoPlaylistRef {
             idle_clip: RwSignal::new(None),
             live_is_a: RwSignal::new(true),
             scrubbing: RwSignal::new(false),
+            // HTMLMediaElement default volume is 1.0.
+            volume: RwSignal::new(1.0),
+            muted: RwSignal::new(false),
             scrub_resume: RwSignal::new(false),
             slot_a: VideoRef::new(),
             slot_b: VideoRef::new(),
             ops: StoredValue::new_local(None),
             sources: StoredValue::new_local(Vec::new()),
             open_gen: StoredValue::new_local(0),
+            seam_warm_for: StoredValue::new_local(None),
+            seam_hold_for: StoredValue::new_local(None),
+            seam_arming: StoredValue::new_local(false),
+            seam_handoff_inflight: StoredValue::new_local(false),
         }
     }
 
     pub fn set_loop(self, on: bool) {
         self.looping.set(on);
+    }
+
+    /// Playlist-wide volume → both slots (live + idle).
+    pub fn set_volume(self, volume: f64) {
+        let v = volume.clamp(0.0, 1.0);
+        self.volume.set(v);
+        self.slot_a.set_volume(v);
+        self.slot_b.set_volume(v);
+    }
+
+    /// Playlist-wide mute → both slots (idle forced mute while seam-arming / held).
+    pub fn set_muted(self, muted: bool) {
+        self.muted.set(muted);
+        self.apply_mute_to_slots();
+    }
+
+    /// Re-push volume + mute onto both `<Video>` slots (after open / swap / handoff).
+    pub(crate) fn apply_gain_to_slots(self) {
+        let v = self.volume.get_untracked();
+        self.slot_a.set_volume(v);
+        self.slot_b.set_volume(v);
+        self.apply_mute_to_slots();
+    }
+
+    fn apply_mute_to_slots(self) {
+        let m = self.muted.get_untracked();
+        let live = self.live_video();
+        let idle = self.idle_video();
+        live.set_muted(m);
+        // Silent SeamHold prime must not unmute idle when playlist mute is off.
+        let idle_seam_mute = self.seam_arming.get_value()
+            || self.seam_hold_for.get_value().is_some()
+            || idle.seam_hold_armed();
+        idle.set_muted(m || idle_seam_mute);
     }
 
     pub fn live_video(self) -> VideoRef {

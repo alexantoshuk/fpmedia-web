@@ -1,14 +1,17 @@
 //! Play session phase — replaces `play_session_live` / `play_loop_seam` flags.
 //!
-//! | Phase      | Render (`present_due`) | `updateNextFrame` overdue draw | Underrun hold |
-//! | ---------- | ---------------------- | ------------------------------ | ------------- |
-//! | `Idle`     | no                     | no                             | no            |
-//! | `Live`     | yes                    | yes                            | yes           |
-//! | `LoopSeam` | no                     | no (store as next only)        | no            |
+//! | Phase       | Render (`present_due`) | `updateNextFrame` overdue draw | Underrun hold |
+//! | ----------- | ---------------------- | ------------------------------ | ------------- |
+//! | `Idle`      | no                     | no                             | no            |
+//! | `Live`      | yes                    | yes                            | yes           |
+//! | `LoopSeam`  | no                     | no (store as next only)        | no            |
+//! | `SeamHold`  | no                     | no (next parked)               | no            |
 //!
 //! mediabunny: `examples/media-player/media-player.ts` — `play()` after
 //! `startVideoIterator`; loop = `startVideoIterator(0)` while the clock is held
 //! (local adaptation: the example has no loop).
+//! `SeamHold` — **no equivalent** (playlist dual-present local): idle slot
+//! primes PlayIter@0 under a held clock until host handoff.
 
 use std::fmt;
 
@@ -21,17 +24,24 @@ pub enum PlayPhase {
     Live,
     /// Iterator restart at frame 0 under a soft-held clock.
     LoopSeam,
+    /// Playlist idle: PlayIter@0 primed, clock held until handoff release.
+    SeamHold,
 }
 
 impl PlayPhase {
     /// Session started and not torn down (host may treat UI as playing).
     pub fn is_live(self) -> bool {
-        matches!(self, Self::Live | Self::LoopSeam)
+        matches!(self, Self::Live | Self::LoopSeam | Self::SeamHold)
     }
 
     /// Render may present due frames / run underrun hold.
     pub fn presents(self) -> bool {
         self == Self::Live
+    }
+
+    /// Playlist dual-present arm (idle waiting for cut).
+    pub fn is_seam_hold(self) -> bool {
+        self == Self::SeamHold
     }
 }
 
@@ -41,6 +51,7 @@ impl fmt::Display for PlayPhase {
             Self::Idle => "Idle",
             Self::Live => "Live",
             Self::LoopSeam => "LoopSeam",
+            Self::SeamHold => "SeamHold",
         };
         f.write_str(s)
     }
@@ -54,6 +65,10 @@ pub enum PlayPhaseEvent {
     LoopStart,
     /// New iterator primed at frame 0 (or the restart was cancelled).
     LoopDone,
+    /// Playlist: arm PlayIter@0 under held clock (idle slot).
+    ArmSeamHold,
+    /// Playlist: release held seam → Live (present + clock).
+    ReleaseSeamHold,
     /// Pause / soft-hold / teardown.
     End,
 }
@@ -64,6 +79,8 @@ pub fn reduce(phase: PlayPhase, event: PlayPhaseEvent) -> PlayPhase {
         (_, PlayPhaseEvent::End) => PlayPhase::Idle,
         (PlayPhase::Live, PlayPhaseEvent::LoopStart) => PlayPhase::LoopSeam,
         (PlayPhase::LoopSeam, PlayPhaseEvent::LoopDone) => PlayPhase::Live,
+        (PlayPhase::Idle | PlayPhase::SeamHold, PlayPhaseEvent::ArmSeamHold) => PlayPhase::SeamHold,
+        (PlayPhase::SeamHold, PlayPhaseEvent::ReleaseSeamHold) => PlayPhase::Live,
         (p, _) => p,
     }
 }
@@ -96,5 +113,15 @@ mod tests {
             reduce(PlayPhase::Idle, PlayPhaseEvent::LoopStart),
             PlayPhase::Idle
         );
+    }
+
+    #[test]
+    fn seam_hold_arm_release() {
+        let p = reduce(PlayPhase::Idle, PlayPhaseEvent::ArmSeamHold);
+        assert_eq!(p, PlayPhase::SeamHold);
+        assert!(p.is_live() && !p.presents() && p.is_seam_hold());
+        let p = reduce(p, PlayPhaseEvent::ReleaseSeamHold);
+        assert_eq!(p, PlayPhase::Live);
+        assert!(p.presents());
     }
 }

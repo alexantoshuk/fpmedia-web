@@ -54,6 +54,10 @@ pub fn eof_wall_decision(past_end: bool, pending: bool, looping: bool) -> Option
 /// shape; mediabunny `examples/media-player` has no loop).
 pub const LOOP_ORIGIN_PREWARM_SECS: f64 = 1.0;
 
+/// Playlist dual-present: hand off live→idle when remain ≤ this (before EOF stop).
+/// **no equivalent** (playlist local).
+pub const PLAYLIST_SEAM_HANDOFF_SECS: f64 = 0.05;
+
 /// True while media time is inside `(last_end - lead, last_end]` (still before EOF).
 pub fn should_prewarm_loop_origin(media_time: f64, last_end: f64, lead_secs: f64) -> bool {
     if !(media_time.is_finite() && last_end.is_finite() && lead_secs.is_finite())

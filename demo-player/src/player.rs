@@ -171,6 +171,9 @@ fn open_demo_urls(
         return;
     }
     clip_label.set(Some(parts.join("; ")));
+    // Carry single-video gain into playlist-wide volume/mute.
+    playlist.set_volume(video.volume.get_untracked());
+    playlist.set_muted(video.muted.get_untracked());
     video.close();
     use_playlist.set(true);
     let resolved = parts
@@ -217,6 +220,8 @@ fn open_demo_files(
         return;
     }
     clip_label.set(Some(names.join(", ")));
+    playlist.set_volume(video.volume.get_untracked());
+    playlist.set_muted(video.muted.get_untracked());
     video.close();
     use_playlist.set(true);
     playlist
@@ -240,6 +245,49 @@ fn demo_active_video(
         }
     } else {
         video
+    }
+}
+
+/// Playlist-wide gain when in playlist mode; else the single `<Video>`.
+fn demo_volume(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) -> f64 {
+    if use_playlist.get() {
+        playlist.volume.get()
+    } else {
+        video.volume.get()
+    }
+}
+
+fn demo_muted(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) -> bool {
+    if use_playlist.get() {
+        playlist.muted.get()
+    } else {
+        video.muted.get()
+    }
+}
+
+fn demo_set_volume(
+    video: VideoRef,
+    playlist: VideoPlaylistRef,
+    use_playlist: RwSignal<bool>,
+    volume: f64,
+) {
+    if use_playlist.get_untracked() {
+        playlist.set_volume(volume);
+    } else {
+        video.set_volume(volume);
+    }
+}
+
+fn demo_set_muted(
+    video: VideoRef,
+    playlist: VideoPlaylistRef,
+    use_playlist: RwSignal<bool>,
+    muted: bool,
+) {
+    if use_playlist.get_untracked() {
+        playlist.set_muted(muted);
+    } else {
+        video.set_muted(muted);
     }
 }
 
@@ -1109,8 +1157,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             <button
                                 type="button"
                                 class=move || {
-                                    let v = demo_active_video(video, playlist, use_playlist);
-                                    if v.muted.get() {
+                                    if demo_muted(video, playlist, use_playlist) {
                                         format!("{btn_icon_on} is-on")
                                     } else {
                                         btn_icon.to_string()
@@ -1122,17 +1169,17 @@ pub fn DemoPlayer() -> impl IntoView {
                                     !media_ready.get() || !v.has_audio.get()
                                 }
                                 prop:aria-pressed=move || {
-                                    demo_active_video(video, playlist, use_playlist).muted.get()
+                                    demo_muted(video, playlist, use_playlist)
                                 }
                                 prop:aria-label=move || {
-                                    if demo_active_video(video, playlist, use_playlist).muted.get() {
+                                    if demo_muted(video, playlist, use_playlist) {
                                         "Unmute"
                                     } else {
                                         "Mute"
                                     }
                                 }
                                 prop:title=move || {
-                                    if demo_active_video(video, playlist, use_playlist).muted.get() {
+                                    if demo_muted(video, playlist, use_playlist) {
                                         "Unmute"
                                     } else {
                                         "Mute"
@@ -1145,20 +1192,28 @@ pub fn DemoPlayer() -> impl IntoView {
                                         rate_open.set(false);
                                         return;
                                     }
-                                    let v = demo_active_video(video, playlist, use_playlist);
+                                    let vol = if use_playlist.get_untracked() {
+                                        playlist.volume.get_untracked()
+                                    } else {
+                                        video.volume.get_untracked()
+                                    };
                                     // Volume already 0: mute toggle is a no-op visually — unmute + max.
-                                    if v.volume.get_untracked() <= 0.0 {
-                                        v.set_volume(1.0);
-                                        v.set_muted(false);
+                                    if vol <= 0.0 {
+                                        demo_set_volume(video, playlist, use_playlist, 1.0);
+                                        demo_set_muted(video, playlist, use_playlist, false);
                                         return;
                                     }
-                                    v.set_muted(!v.muted.get_untracked());
+                                    let muted = if use_playlist.get_untracked() {
+                                        playlist.muted.get_untracked()
+                                    } else {
+                                        video.muted.get_untracked()
+                                    };
+                                    demo_set_muted(video, playlist, use_playlist, !muted);
                                 }
                             >
                                 {move || {
-                                    let v = demo_active_video(video, playlist, use_playlist);
-                                    let muted = v.muted.get();
-                                    let vol = v.volume.get();
+                                    let muted = demo_muted(video, playlist, use_playlist);
+                                    let vol = demo_volume(video, playlist, use_playlist);
                                     if muted || vol <= 0.0 {
                                         EitherOf3::A(view! { <icon::Volume0 class="wm-icon"/> })
                                     } else if vol < 0.5 {
@@ -2178,13 +2233,12 @@ fn VolumeRangeInput(
             max="1"
             step="0.05"
             prop:value=move || {
-                let v = demo_active_video(video, playlist, use_playlist);
                 // Mute parks the thumb at 0 without clearing stored volume;
-                // unmute restores `video.volume`.
-                if v.muted.get() {
+                // unmute restores playlist/single `volume`.
+                if demo_muted(video, playlist, use_playlist) {
                     "0".to_string()
                 } else {
-                    v.volume.get().to_string()
+                    demo_volume(video, playlist, use_playlist).to_string()
                 }
             }
             prop:disabled=move || {
@@ -2227,10 +2281,14 @@ fn VolumeRangeInput(
                 if let Ok(v) = input.value().parse::<f64>() {
                     // Snap to 0.05 so icon thresholds stay clean.
                     let snapped = (v / 0.05).round() * 0.05;
-                    let active = demo_active_video(video, playlist, use_playlist);
-                    active.set_volume(snapped.clamp(0.0, 1.0));
-                    if active.muted.get_untracked() {
-                        active.set_muted(false);
+                    demo_set_volume(video, playlist, use_playlist, snapped.clamp(0.0, 1.0));
+                    let muted = if use_playlist.get_untracked() {
+                        playlist.muted.get_untracked()
+                    } else {
+                        video.muted.get_untracked()
+                    };
+                    if muted {
+                        demo_set_muted(video, playlist, use_playlist, false);
                     }
                 }
             }
