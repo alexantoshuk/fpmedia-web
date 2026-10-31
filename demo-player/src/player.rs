@@ -8,8 +8,8 @@ use fpmedia_web_components::helpers::{
 };
 use fpmedia_web_components::{
     HoverThumb, HoverThumbCtx, PipelinePlane, PipelineStats, ReadyFrameKind, ScrubCachePolicy,
-    Scrubber, ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, Video, VideoPlaylist,
-    VideoPlaylistRef, VideoRef, format_playlist_frames, format_playlist_goto_frames,
+    Scrubber, ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, VERSION, Video,
+    VideoPlaylist, VideoPlaylistRef, VideoRef, format_playlist_frames, format_playlist_goto_frames,
     format_playlist_goto_timecode, format_playlist_timecode, parse_playlist_goto,
 };
 use leptos::either::{Either, EitherOf3};
@@ -752,47 +752,56 @@ pub fn DemoPlayer() -> impl IntoView {
     let btn_round_on = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-emerald-400 hover:bg-emerald-400/20 disabled:cursor-default disabled:opacity-45";
 
     view! {
-        <header class="flex w-full items-center justify-end gap-2 pt-0.5 pr-0.5">
-            <button
-                type="button"
-                class=move || {
-                    if debug_on.get() {
-                        btn_round_on.to_string()
-                    } else {
-                        btn_round.to_string()
-                    }
-                }
-                data-testid="btn-debug"
-                prop:aria-pressed=move || debug_on.get()
-                prop:aria-label=move || {
-                    if debug_on.get() {
-                        "Disable debug info"
-                    } else {
-                        "Enable debug info"
-                    }
-                }
-                prop:title=move || {
-                    if debug_on.get() {
-                        "Disable debug info"
-                    } else {
-                        "Enable debug info"
-                    }
-                }
-                on:click=move |_| debug_on.update(|v| *v = !*v)
+        <header class="flex w-full items-center justify-between gap-2 pt-0.5 px-0.5">
+            <span
+                class="pl-1 text-xs tabular-nums text-zinc-500"
+                data-testid="app-version"
+                title="fpmedia-web-components"
             >
-                <icon::DebugInfo class="h-5 w-5 shrink-0"/>
-            </button>
-            <a
-                class=btn_round
-                href="https://github.com/alexantoshuk/fpmedia-web"
-                target="_blank"
-                rel="noopener noreferrer"
-                data-testid="btn-github"
-                aria-label="fpmedia-web on GitHub"
-                title="fpmedia-web on GitHub"
-            >
-                <icon::GitHub class="h-5 w-5 shrink-0"/>
-            </a>
+                {VERSION}
+            </span>
+            <div class="flex items-center gap-2">
+                <button
+                    type="button"
+                    class=move || {
+                        if debug_on.get() {
+                            btn_round_on.to_string()
+                        } else {
+                            btn_round.to_string()
+                        }
+                    }
+                    data-testid="btn-debug"
+                    prop:aria-pressed=move || debug_on.get()
+                    prop:aria-label=move || {
+                        if debug_on.get() {
+                            "Disable debug info"
+                        } else {
+                            "Enable debug info"
+                        }
+                    }
+                    prop:title=move || {
+                        if debug_on.get() {
+                            "Disable debug info"
+                        } else {
+                            "Enable debug info"
+                        }
+                    }
+                    on:click=move |_| debug_on.update(|v| *v = !*v)
+                >
+                    <icon::DebugInfo class="h-5 w-5 shrink-0"/>
+                </button>
+                <a
+                    class=btn_round
+                    href="https://github.com/alexantoshuk/fpmedia-web"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-testid="btn-github"
+                    aria-label="fpmedia-web on GitHub"
+                    title="fpmedia-web on GitHub"
+                >
+                    <icon::GitHub class="h-5 w-5 shrink-0"/>
+                </a>
+            </div>
         </header>
         <div class="mx-auto w-full max-w-[1100px] px-0 pb-6">
             <h1 class="mb-4 text-center text-xl font-semibold tracking-tight text-emerald-400">

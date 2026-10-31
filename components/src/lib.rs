@@ -13,6 +13,9 @@
 //! Player chrome (keyboard, transport, scrubber look) stays in the demo `app` crate.
 //! Spec: `.ai/product.md` § Element-layer helpers.
 
+/// Crate version (`Cargo.toml`) — demo / host chrome should show this, not a parallel number.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod helpers;
 #[cfg(target_arch = "wasm32")]
 pub mod hover_thumb;

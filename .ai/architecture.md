@@ -44,6 +44,8 @@ fpmedia-web/               ← GitHub repo
 
 Engine module map (file triage): `.ai/skills/media.md`.
 
+**Versions:** publishable crates lockstep (`Cargo.toml`). Demo shows [`fpmedia_web_components::VERSION`](../components/src/lib.rs) (`CARGO_PKG_VERSION`). Until crates.io: bump `0.1.0-alpha.N` lockstep (path `version =` too) when cutting a visible milestone — not a parallel VERSION file. Publish backlog: `state.md`.
+
 ### Layer rules
 
 | Layer | Can import from |
