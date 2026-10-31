@@ -19,8 +19,12 @@
 | URL open CORS / `/media/` 404 | element needs CORS-ok or same-origin URL; local `/media/` = `public/media/` after `npm run media:fetch` — `architecture.md` Progressive open + `components/README.md` |
 | e2e `openUrl` outside viewport / never ready | `DemoPlayer.openUrl` | demo chrome = `btn-load-url` + `prompt`; off-screen `url-input`/`btn-open-url` are not Playwright-clickable. Empty-URL seed → `openEmptyUrl` |
 | Gray vs green strips lie / blur | `<TimelineMeta>` + float `paint_strip_canvas` on `f/n·w` — UX: `product.md` |
-| Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap; mirror skips while `scrubbing` — `architecture.md` § Playlist |
+| Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap; mirror only while live `playing` — `architecture.md` § Playlist |
+| Playlist scrub tip jumps on pointer-up | mirror must not stomp `playhead_ms` from stale `frame` after `scrubbing` clears |
+| Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
+| Playlist scrub→other clip drops Play | latch `scrub_resume` on Down while `playing` (soft-pause clears it before cross-cut) |
 | Playlist scrub stuck at cut on drag | never remount `<Scrubber>`; Meta re-leases via `strip_video_key` — `architecture.md` § Playlist |
+| Effect side-effect runs on mount | `Effect::watch(deps, handler, false)` — handler skips initial; `Effect::new` runs once after mount |
 | Zebra / tip / strip drift | continuous `f/n` (float canvas + tip `calc`); no CSS gradient tiles / integer tip snap |
 | Zebra subpixel mush on narrow resize | Host-div `use_resize_observer` + `Show` unmount; gate `FRAME_ZEBRA_MIN_SLOT_PX` (2); never RO the canvas after `set_width` |
 | Volume V pop closes in gap above icon | `.wm-volume-slider-v::before` hit-bridge = `--wm-volume-v-gap` (keeps `:hover` while crossing) |
@@ -45,6 +49,7 @@
 | Local state | `RwSignal` / `Memo` |
 | Browser async | `LocalResource` / `wasm_bindgen_futures::spawn_local` |
 | DOM / rAF / resize / events | **`leptos-use`** — not raw `Closure` |
+| Effect after change only | `Effect::watch(deps, handler, false)` — not on mount |
 | Canvas / Performance / File | raw `web-sys` OK |
 | CSS vars / inline geometry | declarative `style=` / `class=` from signals — **not** `el.style().set_property` |
 

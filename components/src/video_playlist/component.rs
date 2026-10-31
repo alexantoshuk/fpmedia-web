@@ -52,13 +52,16 @@ pub fn VideoPlaylist(
         idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     });
 
-    // Mirror live presentation → playlist pos + ms playhead (yield while host scrubbing).
+    // Mirror live presentation → playlist pos + ms (only while playing; scrub/seek own aim).
     Effect::new(move |_| {
         if !ready.get() || playlist.scrubbing.get() {
             return;
         }
         let clip = live_clip.get();
         let live = if live_is_a.get() { slot_a } else { slot_b };
+        if !live.playing.get() {
+            return;
+        }
         let local = live.frame.get();
         let p = PlaylistPos::new(clip, local);
         pos.set(p);
@@ -115,6 +118,7 @@ pub fn VideoPlaylist(
             idle_clip.set(None);
             live_is_a.set(true);
             playlist.scrubbing.set(false);
+            playlist.scrub_resume.set(false);
             sources.set_value(Vec::new());
             error.set(None);
             status.set("Closed.".into());
@@ -282,7 +286,7 @@ pub fn VideoPlaylist(
             };
             let epoch = open_gen.get_value();
             spawn_local(async move {
-                if let Err(e) = seek_to_pos(pl, aim, epoch).await {
+                if let Err(e) = seek_to_pos(pl, aim, epoch, false).await {
                     if pl.open_gen.get_value() != epoch {
                         return;
                     }
@@ -301,7 +305,7 @@ pub fn VideoPlaylist(
             }
             let epoch = open_gen.get_value();
             spawn_local(async move {
-                if let Err(e) = seek_to_pos(pl, aim, epoch).await {
+                if let Err(e) = seek_to_pos(pl, aim, epoch, false).await {
                     if pl.open_gen.get_value() != epoch {
                         return;
                     }

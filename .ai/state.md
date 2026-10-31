@@ -8,8 +8,9 @@
 
 ### Handoff
 
-- **HEAD:** playlist seam — `play_seam_from_origin`: skip Exact `seek_frame(0)` when promoted live already at local 0; single-clip loop still seeks. Cite: **no equivalent** (playlist local).
-- **Smoke:** multi-clip play across cut (no re-Exact hitch when idle ready); loop→clip0 same; single-clip loop still Exact→0.
+- **HEAD:** playlist host polish — `visibility:hidden` while `data-ready=false` (probe flash, keep height); mirror `playhead_ms` only while playing; `scrub_resume` latch on Down. Cite: **no equivalent** (playlist local). Skill: `Effect::watch(..., false)`.
+- **Smoke:** multi-open no first-frame parade / no height-0 flash; scrub across cut tip stable; Play→scrub other clip→resume Play.
+- **Prior:** seam `play_seam_from_origin` (bd2aaf9).
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -19,7 +20,7 @@
 
 ### Playlist
 
-Element seek/scrub/step + seam skip-Exact shipped. Playlist UI in product/architecture.
+Element seek/scrub/step + seam + host polish shipped. Playlist UI in product/architecture.
 
 **Optional next:** near-EOF idle Play-warm (loop-origin prewarm shape). Not gapless A/V.
 

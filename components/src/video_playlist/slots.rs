@@ -129,10 +129,12 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
 }
 
 /// Make `aim.clip_index` live (swap or open), then seek to `aim.local_frame`.
+/// `then_play`: after seek, start Play (cross-clip scrub resume — playlist local).
 pub(crate) async fn seek_to_pos(
     pl: VideoPlaylistRef,
     aim: crate::video_playlist::PlaylistPos,
     epoch: u64,
+    then_play: bool,
 ) -> Result<(), String> {
     if pl.open_gen.get_value() != epoch {
         return Ok(());
@@ -163,6 +165,9 @@ pub(crate) async fn seek_to_pos(
     live.set_loop(false);
     live.ended.set(false);
     live.seek_frame(aim.local_frame);
+    if then_play {
+        live.play();
+    }
     Ok(())
 }
 

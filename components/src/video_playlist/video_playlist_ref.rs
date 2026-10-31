@@ -34,6 +34,8 @@ pub struct VideoPlaylistRef {
     pub live_is_a: RwSignal<bool>,
     /// Host scrub gesture in flight — mirror Effect must not overwrite `playhead_ms`.
     pub scrubbing: RwSignal<bool>,
+    /// Resume Play after scrub that crossed clips (per-slot `then_play` does not survive promote).
+    pub(crate) scrub_resume: RwSignal<bool>,
     pub slot_a: VideoRef,
     pub slot_b: VideoRef,
     pub(crate) ops: StoredValue<Option<VideoPlaylistOps>, LocalStorage>,
@@ -71,6 +73,7 @@ impl VideoPlaylistRef {
             idle_clip: RwSignal::new(None),
             live_is_a: RwSignal::new(true),
             scrubbing: RwSignal::new(false),
+            scrub_resume: RwSignal::new(false),
             slot_a: VideoRef::new(),
             slot_b: VideoRef::new(),
             ops: StoredValue::new_local(None),
@@ -175,7 +178,14 @@ impl VideoPlaylistRef {
     pub(crate) fn scrub_timeline(self, ms: u32, phase: ScrubPhase) {
         self.ended.set(false);
         match phase {
-            ScrubPhase::Down | ScrubPhase::Move => self.scrubbing.set(true),
+            ScrubPhase::Down => {
+                self.scrubbing.set(true);
+                // Before soft-pause / cross-clip hard-pause clears UI `playing`.
+                // Per-slot `then_play` does not survive promote — playlist owns resume.
+                self.scrub_resume
+                    .set(self.live_video().playing.get_untracked());
+            }
+            ScrubPhase::Move => self.scrubbing.set(true),
             ScrubPhase::Up => self.scrubbing.set(false),
         }
         self.playhead_ms.set(ms);
@@ -186,7 +196,8 @@ impl VideoPlaylistRef {
 
         let mut promoted = false;
         if aim.clip_index != self.live_clip.get_untracked() {
-            // Leave Scrubbing on the outgoing live so idle is not stuck soft-paused.
+            // Cross-clip: hard-pause outgoing (idle must not stay soft-held).
+            // New slot PointerDown is from Ready → `then_play` false; use `scrub_resume`.
             if matches!(phase, ScrubPhase::Down | ScrubPhase::Move) {
                 self.live_video().pause();
             }
@@ -215,6 +226,11 @@ impl VideoPlaylistRef {
                 ScrubPhase::Up => live.scrub_pointer_up(aim.local_frame),
             }
             if matches!(phase, ScrubPhase::Up) {
+                let resume = self.scrub_resume.get_untracked();
+                self.scrub_resume.set(false);
+                if resume {
+                    live.play();
+                }
                 let neighbor = self.idle_clip.get_untracked();
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
@@ -226,7 +242,22 @@ impl VideoPlaylistRef {
 
         // Aim clip not live yet — settle via seek (open/swap).
         if matches!(phase, ScrubPhase::Up) {
-            self.seek_pos(aim);
+            let resume = self.scrub_resume.get_untracked();
+            self.scrub_resume.set(false);
+            if resume {
+                let epoch = self.open_gen.get_value();
+                spawn_local(async move {
+                    if let Err(e) = super::slots::seek_to_pos(self, aim, epoch, true).await {
+                        if self.open_gen.get_value() != epoch {
+                            return;
+                        }
+                        self.error.set(Some(e));
+                        self.status.set("Seek failed.".into());
+                    }
+                });
+            } else {
+                self.seek_pos(aim);
+            }
         }
     }
 

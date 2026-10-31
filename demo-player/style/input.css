@@ -177,6 +177,11 @@ body {
   display: contents;
 }
 
+/* Probe opens each clip on the live slot — hide paint, keep stage layout height. */
+.fpvideo-playlist[data-ready="false"] .fpvideo-playlist-slot {
+  visibility: hidden;
+}
+
 .fpvideo-playlist-slot.is-idle {
   display: none;
 }
