@@ -797,8 +797,8 @@ pub fn DemoPlayer() -> impl IntoView {
     let btn_icon_step = "wm-btn-icon hidden @3xl:inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     let btn_rate = "wm-rate-btn inline-flex h-9 min-w-11 items-center justify-center rounded-md border-0 bg-transparent px-1.5 text-sm tabular-nums text-zinc-300 hover:text-zinc-100 disabled:cursor-default disabled:opacity-45";
 
-    let btn_round = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
-    let btn_round_on = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-emerald-400 hover:bg-emerald-400/20 disabled:cursor-default disabled:opacity-45";
+    let btn_round = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-zinc-100 opacity-50 hover:bg-zinc-800/60 hover:opacity-100 disabled:cursor-default disabled:opacity-45";
+    let btn_round_on = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-emerald-400 opacity-100 hover:bg-emerald-400/20 disabled:cursor-default disabled:opacity-45";
 
     view! {
         <header class="flex w-full items-center justify-between gap-2 pt-0.5 px-0.5">
