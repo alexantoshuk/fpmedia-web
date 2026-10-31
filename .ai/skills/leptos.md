@@ -22,8 +22,9 @@
 | Playlist load: gray fills then wipes | `<TimelineMeta>` holds paint until `timeline.ready` (probe open→close) |
 | Playlist thumbs only on live clip | max **2** slot-bound `ThumbSink`s (host policy on both); idle densify off; hover rebinds idle for off-slot clips — not N / not app-wide shared |
 | Scrub 3rd clip shows 1st media | `swap_live_idle`: `idle_clip` = former live only; neighbor via `preload_idle` — never label aspirational clip |
-| Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap; mirror only while live `playing` — `architecture.md` § Playlist |
-| Playlist scrub tip jumps on pointer-up | mirror must not stomp `playhead_ms` from stale `frame` after `scrubbing` clears |
+| Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap (global frames); mirror only while live `playing` — `architecture.md` § Playlist |
+| Playlist scrub tip jumps on pointer-up | mirror must not stomp `playhead` from stale local `frame` after `scrubbing` clears |
+| Playlist zebra gate / stripe size wrong | axis = Σ frames (not ms); same `frame_zebra_step` as single-clip |
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
 | Playlist scrub→other clip drops Play | latch `scrub_resume` on Down while `playing` (soft-pause clears it before cross-cut) |
 | Playlist seam hitch / A/V gap | near-EOF `SeamHold` + warm audio release; mute/pause outgoing before release — `skills/media.md` |

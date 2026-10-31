@@ -25,14 +25,14 @@ pub struct VideoPlaylistRef {
     pub looping: RwSignal<bool>,
     pub model: RwSignal<PlaylistModel>,
     pub pos: RwSignal<PlaylistPos>,
-    /// Scrub domain: milliseconds from playlist start ([`PlaylistModel::total_duration_ms`]).
-    pub playhead_ms: RwSignal<u32>,
-    pub duration_ms: RwSignal<u32>,
+    /// Scrub domain: global presentation frame ([`PlaylistModel::total_frame_count`]).
+    pub playhead: RwSignal<u32>,
+    pub frame_count: RwSignal<u32>,
     pub live_clip: RwSignal<u32>,
     pub idle_clip: RwSignal<Option<u32>>,
     /// When true, [`Self::slot_a`] is the live (visible) stage.
     pub live_is_a: RwSignal<bool>,
-    /// Host scrub gesture in flight — mirror Effect must not overwrite `playhead_ms`.
+    /// Host scrub gesture in flight — mirror Effect must not overwrite `playhead`.
     pub scrubbing: RwSignal<bool>,
     /// Playlist-wide volume (both slots). Facade — not per-clip.
     pub volume: RwSignal<f64>,
@@ -62,7 +62,7 @@ pub(crate) struct VideoPlaylistOps {
     pub play: Rc<dyn Fn()>,
     pub pause: Rc<dyn Fn()>,
     pub close: Rc<dyn Fn()>,
-    pub seek_ms: Rc<dyn Fn(u32)>,
+    pub seek_frame: Rc<dyn Fn(u32)>,
     pub seek_pos: Rc<dyn Fn(PlaylistPos)>,
     pub next_frame: Rc<dyn Fn()>,
     pub previous_frame: Rc<dyn Fn()>,
@@ -79,8 +79,8 @@ impl VideoPlaylistRef {
             looping: RwSignal::new(false),
             model: RwSignal::new(PlaylistModel::default()),
             pos: RwSignal::new(PlaylistPos::new(0, 0)),
-            playhead_ms: RwSignal::new(0),
-            duration_ms: RwSignal::new(0),
+            playhead: RwSignal::new(0),
+            frame_count: RwSignal::new(0),
             live_clip: RwSignal::new(0),
             idle_clip: RwSignal::new(None),
             live_is_a: RwSignal::new(true),
@@ -200,10 +200,11 @@ impl VideoPlaylistRef {
         }
     }
 
-    pub fn seek_ms(self, ms: u32) {
+    /// Seek to a global presentation frame on the playlist scrub axis.
+    pub fn seek_frame(self, global_frame: u32) {
         self.ended.set(false);
-        if let Some(seek) = self.op(|o| &o.seek_ms) {
-            seek(ms);
+        if let Some(seek) = self.op(|o| &o.seek_frame) {
+            seek(global_frame);
         }
     }
 
@@ -226,9 +227,9 @@ impl VideoPlaylistRef {
         }
     }
 
-    /// Timeline scrub units (ms). Promotes idle when it already holds the aim clip;
-    /// settle (`Up`) async-seeks if the clip still needs open/rebind.
-    pub(crate) fn scrub_timeline(self, ms: u32, phase: ScrubPhase) {
+    /// Timeline scrub units (global frames). Promotes idle when it already holds
+    /// the aim clip; settle (`Up`) async-seeks if the clip still needs open/rebind.
+    pub(crate) fn scrub_timeline(self, global_frame: u32, phase: ScrubPhase) {
         self.ended.set(false);
         match phase {
             ScrubPhase::Down => {
@@ -241,8 +242,8 @@ impl VideoPlaylistRef {
             ScrubPhase::Move => self.scrubbing.set(true),
             ScrubPhase::Up => self.scrubbing.set(false),
         }
-        self.playhead_ms.set(ms);
-        let Some(aim) = self.model.get_untracked().at_ms(ms) else {
+        self.playhead.set(global_frame);
+        let Some(aim) = self.model.get_untracked().at_global_frame(global_frame) else {
             return;
         };
         self.pos.set(aim);
@@ -322,12 +323,12 @@ impl VideoPlaylistRef {
 
     pub(crate) fn paint_hover_thumb(
         self,
-        ms: u32,
+        global_frame: u32,
         dest: HtmlCanvasElement,
         max_w: u32,
         max_h: u32,
     ) {
-        let Some(pos) = self.model.get_untracked().at_ms(ms) else {
+        let Some(pos) = self.model.get_untracked().at_global_frame(global_frame) else {
             return;
         };
         let Some(video) = self.video_for_clip(pos.clip_index) else {
@@ -339,12 +340,12 @@ impl VideoPlaylistRef {
 
     pub(crate) fn try_paint_hover_thumb(
         self,
-        ms: u32,
+        global_frame: u32,
         dest: HtmlCanvasElement,
         max_w: u32,
         max_h: u32,
     ) -> bool {
-        let Some(pos) = self.model.get_untracked().at_ms(ms) else {
+        let Some(pos) = self.model.get_untracked().at_global_frame(global_frame) else {
             return false;
         };
         let Some(video) = self.video_for_clip(pos.clip_index) else {

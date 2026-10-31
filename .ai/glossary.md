@@ -181,11 +181,11 @@ Position inside a playlist: **clip index** (0-based in the model; **1-based** `[
 
 ### Playlist
 
-Ordered list of media sources reviewed as one **duration-weighted** timeline (Play All). Element: [`<VideoPlaylist>`](#videoplaylist--videoplaylistref). Design: `architecture.md` § Playlist composition; open work: `state.md`.
+Ordered list of media sources reviewed as one **frame-sum** timeline (Play All): scrub/tip/zebra/strips use Σ presentation frames. Element: [`<VideoPlaylist>`](#videoplaylist--videoplaylistref). Design: `architecture.md` § Playlist composition; open work: `state.md`.
 
 ### `<VideoPlaylist>` / VideoPlaylistRef
 
-Dual-slot playlist stage (live + idle `<Video>`) + handle. Probe → `PlaylistModel`; `as_timeline()` uses milliseconds.
+Dual-slot playlist stage (live + idle `<Video>`) + handle. Probe → `PlaylistModel`; `as_timeline()` uses global presentation frames.
 
 ### `<Video>` / VideoRef
 

@@ -8,9 +8,8 @@
 
 ### Handoff
 
-- **HEAD:** playlist dual-present SeamHold + warm audio + shared volume/mute (this commit). Cite: **no equivalent** (playlist local).
-- **Smoke:** Play All cut (`seam hold released warm_audio=true`); volume stable across clips; scrub 1→2→3 OK.
-- **Prior:** `6c24865` alpha.2 thumbs / idle promote.
+- **HEAD:** `0.1.0-alpha.3` — playlist scrub axis = Σ presentation frames (tip/zebra/strips). Cite: **no equivalent** (playlist local).
+- **Prior:** `8911c43` SeamHold / shared volume; `6c24865` alpha.2 thumbs / idle promote.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -20,9 +19,9 @@
 
 ### Playlist
 
-Dual-present seam + playlist-wide volume/mute shipped (with `0.1.0-alpha.2` thumbs). Design: `architecture.md` § Playlist.
+SeamHold + shared volume + frame-sum scrub axis shipped (`0.1.0-alpha.3`). Design: `architecture.md` § Playlist.
 
-**Optional next:** cut markers / clip name in `[i]` (Later).
+**Optional next:** cut markers / clip name in `[i]` (Later). Idle Fetch gray on prefetch bar — parked.
 
 **Out of v1:** compare dual-visible.
 
@@ -34,7 +33,7 @@ Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. 
 
 **Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: `cargo publish` blocked. Keep git `re_mp4` pin until then.
 
-**Hygiene done (still `publish = false`):** `[workspace.package] version = 0.1.0-alpha.2` (members `version.workspace = true`; path deps omit version). README badges → in-repo guides. Demo header = `fpmedia_web_components::VERSION`. Bumps: `architecture.md` § Versions.
+**Hygiene done (still `publish = false`):** `[workspace.package] version = 0.1.0-alpha.3` (members `version.workspace = true`; path deps omit version). README badges → in-repo guides. Demo header = `fpmedia_web_components::VERSION`. Bumps: `architecture.md` § Versions.
 
 1. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
 2. **Ship** — flip `publish`; CONTRIBUTING gates + e2e; lockstep publish order timecode → engine → components; GH Release notes; restore crates.io/docs.rs badges; drop this block from state.

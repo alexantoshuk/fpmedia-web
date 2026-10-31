@@ -35,8 +35,8 @@ pub fn VideoPlaylist(
         looping,
         model,
         pos,
-        playhead_ms,
-        duration_ms,
+        playhead,
+        frame_count,
         live_clip,
         idle_clip,
         live_is_a,
@@ -54,7 +54,7 @@ pub fn VideoPlaylist(
         idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     });
 
-    // Mirror live presentation → playlist pos + ms (only while playing; scrub/seek own aim).
+    // Mirror live presentation → playlist pos + global frame (playing only; scrub/seek own aim).
     Effect::new(move |_| {
         if !ready.get() || playlist.scrubbing.get() {
             return;
@@ -67,8 +67,8 @@ pub fn VideoPlaylist(
         let local = live.frame.get();
         let p = PlaylistPos::new(clip, local);
         pos.set(p);
-        if let Some(ms) = model.get_untracked().ms_at(p) {
-            playhead_ms.set(ms);
+        if let Some(g) = model.get_untracked().global_frame_at(p) {
+            playhead.set(g);
         }
     });
 
@@ -132,8 +132,8 @@ pub fn VideoPlaylist(
             ended.set(false);
             model.set(PlaylistModel::default());
             pos.set(PlaylistPos::new(0, 0));
-            playhead_ms.set(0);
-            duration_ms.set(0);
+            playhead.set(0);
+            frame_count.set(0);
             live_clip.set(0);
             idle_clip.set(None);
             live_is_a.set(true);
@@ -202,10 +202,10 @@ pub fn VideoPlaylist(
                 }
 
                 let built = PlaylistModel::new(clips);
-                let total_ms = built.total_duration_ms();
+                let total_frames = built.total_frame_count();
                 model.set(built);
-                duration_ms.set(total_ms);
-                playhead_ms.set(0);
+                frame_count.set(total_frames);
+                playhead.set(0);
                 pos.set(PlaylistPos::new(0, 0));
                 live_is_a.set(true);
                 live_clip.set(0);
@@ -299,13 +299,13 @@ pub fn VideoPlaylist(
         live.pause();
     }) as Rc<dyn Fn()>;
 
-    let seek_ms_fn = {
+    let seek_frame_fn = {
         let pl = playlist;
-        Rc::new(move |ms: u32| {
+        Rc::new(move |global_frame: u32| {
             if !ready.get_untracked() {
                 return;
             }
-            let Some(aim) = model.get_untracked().at_ms(ms) else {
+            let Some(aim) = model.get_untracked().at_global_frame(global_frame) else {
                 return;
             };
             let epoch = open_gen.get_value();
@@ -403,7 +403,7 @@ pub fn VideoPlaylist(
         play: play_fn,
         pause: pause_fn,
         close: Rc::clone(&close_all),
-        seek_ms: seek_ms_fn,
+        seek_frame: seek_frame_fn,
         seek_pos: seek_pos_fn,
         next_frame: next_frame_fn,
         previous_frame: previous_frame_fn,

@@ -2069,7 +2069,7 @@ fn HoverThumbFrameLabel(video: VideoRef, format: RwSignal<PositionFormat>) -> im
     }
 }
 
-/// Playlist hover unit is ms — show `[i] local` like the position readout.
+/// Playlist hover unit is global frame — show `[i] local` like the position readout.
 #[component]
 fn HoverPlaylistThumbLabel(
     playlist: VideoPlaylistRef,
@@ -2079,10 +2079,10 @@ fn HoverPlaylistThumbLabel(
     view! {
         <div class="wm-thumb-frame" data-testid="scrubber-thumb-frame">
             {move || {
-                let Some(ms) = ctx.frame.get() else {
+                let Some(global) = ctx.frame.get() else {
                     return String::new();
                 };
-                let Some(pos) = playlist.model.get_untracked().at_ms(ms) else {
+                let Some(pos) = playlist.model.get_untracked().at_global_frame(global) else {
                     return String::new();
                 };
                 // Prefer the slot that owns the hover clip when warm.

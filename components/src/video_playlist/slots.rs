@@ -150,8 +150,8 @@ pub(crate) async fn seek_to_pos(
     }
     pl.ended.set(false);
     pl.pos.set(aim);
-    if let Some(ms) = pl.model.get_untracked().ms_at(aim) {
-        pl.playhead_ms.set(ms);
+    if let Some(g) = pl.model.get_untracked().global_frame_at(aim) {
+        pl.playhead.set(g);
     }
 
     if pl.live_clip.get_untracked() != aim.clip_index {
@@ -344,8 +344,8 @@ async fn handoff_seam_hold(pl: VideoPlaylistRef, next_i: u32, epoch: u64) -> Res
     pl.ended.set(false);
     let pos = PlaylistPos::new(next_i, 0);
     pl.pos.set(pos);
-    if let Some(ms) = model.ms_at(pos) {
-        pl.playhead_ms.set(ms);
+    if let Some(g) = model.global_frame_at(pos) {
+        pl.playhead.set(g);
     }
     pl.status
         .set(format!("Playing clip {}/{}", next_i + 1, model.len()));

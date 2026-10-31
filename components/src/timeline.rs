@@ -17,7 +17,7 @@ use crate::video_playlist::PlaylistPos;
 use crate::video_playlist::video_playlist_ref::ScrubPhase;
 
 /// Scrub-domain handle: `playhead` / `frame_count` are discrete timeline units
-/// ([`VideoRef`]: presentation frames; [`VideoPlaylistRef`]: playlist milliseconds).
+/// ([`VideoRef`]: presentation frames; [`VideoPlaylistRef`]: Σ presentation frames).
 #[derive(Clone, Copy)]
 pub struct TimelineRef {
     pub ready: RwSignal<bool>,
@@ -53,12 +53,12 @@ impl TimelineRef {
         }
     }
 
-    /// View onto a mounted [`VideoPlaylistRef`] — units are playlist milliseconds.
+    /// View onto a mounted [`VideoPlaylistRef`] — units are Σ presentation frames.
     pub fn from_playlist(playlist: VideoPlaylistRef) -> Self {
         Self {
             ready: playlist.ready,
-            playhead: playlist.playhead_ms,
-            frame_count: playlist.duration_ms,
+            playhead: playlist.playhead,
+            frame_count: playlist.frame_count,
             inner: TimelineInner::Playlist(playlist),
         }
     }
@@ -71,7 +71,7 @@ impl TimelineRef {
         }
     }
 
-    /// Underlying playlist when this timeline is a [`VideoPlaylistRef`] view (units = ms).
+    /// Underlying playlist when this timeline is a [`VideoPlaylistRef`] view (Σ frames).
     pub fn playlist(self) -> Option<VideoPlaylistRef> {
         match self.inner {
             TimelineInner::Playlist(p) => Some(p),
@@ -109,7 +109,7 @@ impl TimelineRef {
     }
 
     /// Live pipeline ready marks → timeline units (identity for single-clip;
-    /// playlist remaps local FrameId → ms in the live clip window).
+    /// playlist remaps local FrameId → global frame in the live clip window).
     pub fn strip_ready_marks(self, marks: &[ReadyFrameMark]) -> Vec<ReadyFrameMark> {
         match self.inner {
             TimelineInner::Video(_) => marks.to_vec(),
@@ -121,8 +121,10 @@ impl TimelineRef {
                     .filter_map(|m| {
                         let lo_f = u32::try_from(m.frame).ok()?;
                         let hi_f = u32::try_from(m.end).ok()?;
-                        let lo = model.ms_at(PlaylistPos::new(live_clip, lo_f))? as u64;
-                        let hi = model.ms_at(PlaylistPos::new(live_clip, hi_f))? as u64;
+                        let lo =
+                            u64::from(model.global_frame_at(PlaylistPos::new(live_clip, lo_f))?);
+                        let hi =
+                            u64::from(model.global_frame_at(PlaylistPos::new(live_clip, hi_f))?);
                         Some(ReadyFrameMark::run(lo, hi, m.kind))
                     })
                     .collect()
@@ -137,10 +139,10 @@ impl TimelineRef {
             TimelineInner::Playlist(p) => {
                 let live_clip = p.live_clip.get();
                 let model = p.model.get();
-                let total_ms = self.frame_count.get().max(1);
-                let start = model.clip_start_ms(live_clip).unwrap_or(0);
-                let end = model.clip_end_ms(live_clip).unwrap_or(total_ms);
-                fetch_ranges_in_clip_window(ranges, start, end, total_ms)
+                let total = self.frame_count.get().max(1);
+                let start = model.clip_start_frame(live_clip).unwrap_or(0);
+                let end = model.clip_end_frame(live_clip).unwrap_or(total);
+                fetch_ranges_in_clip_window(ranges, start, end, total)
             }
         }
     }
@@ -196,16 +198,16 @@ impl TimelineRef {
 
 fn fetch_ranges_in_clip_window(
     ranges: &[(f32, f32)],
-    clip_start_ms: u32,
-    clip_end_ms: u32,
-    total_ms: u32,
+    clip_start: u32,
+    clip_end: u32,
+    total: u32,
 ) -> Vec<(f32, f32)> {
-    if ranges.is_empty() || total_ms == 0 || clip_end_ms <= clip_start_ms {
+    if ranges.is_empty() || total == 0 || clip_end <= clip_start {
         return Vec::new();
     }
-    let t = f64::from(total_ms);
-    let origin = f64::from(clip_start_ms) / t;
-    let span = f64::from(clip_end_ms.saturating_sub(clip_start_ms)) / t;
+    let t = f64::from(total);
+    let origin = f64::from(clip_start) / t;
+    let span = f64::from(clip_end.saturating_sub(clip_start)) / t;
     ranges
         .iter()
         .map(|&(a, b)| {
@@ -236,7 +238,7 @@ impl VideoRef {
 }
 
 impl VideoPlaylistRef {
-    /// Duration-weighted scrub/hover/strip surface (units = milliseconds).
+    /// Frame-sum scrub/hover/strip surface (units = Σ presentation frames).
     pub fn as_timeline(self) -> TimelineRef {
         TimelineRef::from_playlist(self)
     }
