@@ -8,9 +8,9 @@
 
 ### Handoff
 
-- **HEAD:** playlist host polish — `visibility:hidden` while `data-ready=false` (probe flash, keep height); mirror `playhead_ms` only while playing; `scrub_resume` latch on Down. Cite: **no equivalent** (playlist local). Skill: `Effect::watch(..., false)`.
-- **Smoke:** multi-open no first-frame parade / no height-0 flash; scrub across cut tip stable; Play→scrub other clip→resume Play.
-- **Prior:** seam `play_seam_from_origin` (bd2aaf9).
+- **HEAD:** `<TimelineMeta>` gate on `timeline.ready` — no probe Fetch fill→wipe. Cite: **no equivalent** (playlist probe / strip host).
+- **Prior:** playlist host polish `1185c4a` (visibility probe, mirror while playing, `scrub_resume`); seam `bd2aaf9`.
+- **Smoke:** playlist load — strips stay empty until ready, then fill once; prior host polish smokes.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
 - **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
 
@@ -56,5 +56,5 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).
 - Classify browser codec faults by DOMException `name` (`EncodingError` / `InvalidStateError` / `DataError`) instead of message text in `MediaError::from_codec_message` — behavior change (per-browser wording).
 - Native `FileSource`; no-Range `ReadableStreamSource`; optional `hevc` defaulting.
-- Playlist: clip **name** in `[i]` readout / go-to; cut markers on scrubber; gapless A/V; shared ThumbSink across sources.
+- Playlist: thumbs only on live clip today — progressive/hover across full timeline (or shared `ThumbSink`); clip **name** in `[i]` readout / go-to; cut markers on scrubber; gapless A/V.
 - Compare dual-visible (reuse 2-slot pool); pure `<Audio>` / `AudioPlayer`; thumb Worker; 4K loop residual; reverse playback (if revisited); production player UI.

@@ -81,6 +81,26 @@ pub fn TimelineMeta(
     });
 
     Effect::new(move |_| {
+        let css_w = css_width.get();
+        let dpr = window()
+            .map(|w| w.device_pixel_ratio())
+            .unwrap_or(1.0)
+            .max(1.0);
+        let buf_w = strip_canvas_buffer_width(css_w, dpr);
+        let width = f64::from(buf_w);
+
+        // Playlist probe open→close would paint then wipe Fetch — hold strips until ready.
+        // **no equivalent** (playlist probe / strip host).
+        if !timeline.ready.get() {
+            interest.set_value(None);
+            interest_key.set_value(None);
+            latch.update_value(|l| l.clear());
+            if let Some(canvas) = canvas_ref.get() {
+                let _ = paint_strip_canvas(&canvas, buf_w, &[], &paint_color);
+            }
+            return;
+        }
+
         let Some(key) = timeline.strip_video_key() else {
             interest.set_value(None);
             interest_key.set_value(None);
@@ -110,13 +130,6 @@ pub fn TimelineMeta(
             .unwrap_or(&[]);
         let fetch_ranges = timeline.strip_fetch_ranges(raw_fetch);
 
-        let css_w = css_width.get();
-        let dpr = window()
-            .map(|w| w.device_pixel_ratio())
-            .unwrap_or(1.0)
-            .max(1.0);
-        let buf_w = strip_canvas_buffer_width(css_w, dpr);
-        let width = f64::from(buf_w);
         let Some(canvas) = canvas_ref.get() else {
             return;
         };

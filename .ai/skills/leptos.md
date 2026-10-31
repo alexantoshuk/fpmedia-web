@@ -19,6 +19,7 @@
 | URL open CORS / `/media/` 404 | element needs CORS-ok or same-origin URL; local `/media/` = `public/media/` after `npm run media:fetch` — `architecture.md` Progressive open + `components/README.md` |
 | e2e `openUrl` outside viewport / never ready | `DemoPlayer.openUrl` | demo chrome = `btn-load-url` + `prompt`; off-screen `url-input`/`btn-open-url` are not Playwright-clickable. Empty-URL seed → `openEmptyUrl` |
 | Gray vs green strips lie / blur | `<TimelineMeta>` + float `paint_strip_canvas` on `f/n·w` — UX: `product.md` |
+| Playlist load: gray fills then wipes | `<TimelineMeta>` holds paint until `timeline.ready` (probe open→close) |
 | Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap; mirror only while live `playing` — `architecture.md` § Playlist |
 | Playlist scrub tip jumps on pointer-up | mirror must not stomp `playhead_ms` from stale `frame` after `scrubbing` clears |
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
