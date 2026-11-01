@@ -8,10 +8,9 @@
 
 ### Handoff
 
-- **HEAD:** `0.1.0-alpha.3` — playlist scrub axis = Σ presentation frames (tip/zebra/strips). Cite: **no equivalent** (playlist local).
-- **Prior:** `8911c43` SeamHold / shared volume; `6c24865` alpha.2 thumbs / idle promote.
+- **HEAD:** loop restart fix (engine origin decode prewarm + playlist wrap idle→0); prior `1427293` / `0.1.0-alpha.3`.
 - **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
-- **Parked:** Pause densify pin-holes — accepted strip cosmetics (`product.md`); Later if revisited.
+- **Parked:** Pause densify pin-holes — strip cosmetics (`product.md`); idle Fetch gray on prefetch bar (live-only `strip_video` / Meta lease — intentional defer).
 
 ---
 
@@ -21,7 +20,7 @@
 
 SeamHold + shared volume + frame-sum scrub axis shipped (`0.1.0-alpha.3`). Design: `architecture.md` § Playlist.
 
-**Optional next:** cut markers / clip name in `[i]` (Later). Idle Fetch gray on prefetch bar — parked.
+**Optional next:** cut markers / clip name in `[i]` (Later). Idle Fetch gray on bar — parked (second Meta lease + merge idle `FetchMap` into `idle_clip` window; Fetch only, not Exact/Covered).
 
 **Out of v1:** compare dual-visible.
 

@@ -28,6 +28,7 @@
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
 | Playlist scrub→other clip drops Play | latch `scrub_resume` on Down while `playing` (soft-pause clears it before cross-cut) |
 | Playlist seam hitch / A/V gap | near-EOF `SeamHold` + warm audio release; mute/pause outgoing before release — `skills/media.md` |
+| Playlist loop wrap hitch (last→0; mid cuts OK) | `idle_neighbor(…, looping)` | last+loop → idle preload **0** (not previous); else SeamHold never arms → cold `play_seam_from_origin`. `set_loop(true)` re-preloads. **no equivalent** (playlist local) |
 | Playlist seam volume jump | `VideoPlaylistRef::volume`/`muted` + `apply_gain_to_slots`; demo binds playlist gain, not live slot |
 | Playlist scrub stuck at cut on drag | never remount `<Scrubber>`; Meta re-leases via `strip_video_key` — `architecture.md` § Playlist |
 | Effect side-effect runs on mount | `Effect::watch(deps, handler, false)` — handler skips initial; `Effect::new` runs once after mount |

@@ -42,11 +42,18 @@ pub(crate) async fn wait_ready(
     }
 }
 
-/// Prefer next clip as idle neighbor; else previous.
-pub(crate) fn idle_neighbor(model: &PlaylistModel, live_clip: u32) -> Option<u32> {
-    model
-        .next_clip_index(live_clip)
-        .or_else(|| live_clip.checked_sub(1))
+/// Prefer next clip as idle neighbor; else wrap target 0 when playlist looping,
+/// else previous. Loop wrap must idle-preload clip 0 so near-EOF SeamHold can
+/// arm — previous-as-idle skipped warm/hold and forced cold `play_seam_from_origin`.
+/// **no equivalent** (playlist local).
+pub(crate) fn idle_neighbor(model: &PlaylistModel, live_clip: u32, looping: bool) -> Option<u32> {
+    model.next_clip_index(live_clip).or_else(|| {
+        if looping && model.len() > 1 {
+            Some(0)
+        } else {
+            live_clip.checked_sub(1)
+        }
+    })
 }
 
 pub(crate) async fn ensure_clip_on_idle(
@@ -162,7 +169,11 @@ pub(crate) async fn seek_to_pos(
             }
             swap_live_idle(pl, aim.clip_index);
         }
-        let neighbor = idle_neighbor(&pl.model.get_untracked(), aim.clip_index);
+        let neighbor = idle_neighbor(
+            &pl.model.get_untracked(),
+            aim.clip_index,
+            pl.looping.get_untracked(),
+        );
         preload_idle(pl, neighbor, epoch).await;
     }
 
@@ -323,7 +334,7 @@ async fn handoff_seam_hold(pl: VideoPlaylistRef, next_i: u32, epoch: u64) -> Res
 
     let model = pl.model.get_untracked();
     let live = pl.live_video();
-    let following = idle_neighbor(&model, next_i);
+    let following = idle_neighbor(&model, next_i, pl.looping.get_untracked());
 
     // Silence outgoing before swap so release does not dual-play A+B audio.
     live.set_muted(true);
@@ -421,7 +432,7 @@ pub(crate) async fn advance_after_ended(pl: VideoPlaylistRef, epoch: u64) -> Res
         if handoff_seam_hold(pl, next_i, epoch).await? {
             return Ok(());
         }
-        let following = idle_neighbor(&model, next_i);
+        let following = idle_neighbor(&model, next_i, pl.looping.get_untracked());
         swap_live_idle(pl, next_i);
         pl.seam_warm_for.set_value(None);
         pl.seam_hold_for.set_value(None);

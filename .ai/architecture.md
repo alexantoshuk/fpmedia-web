@@ -94,6 +94,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
 | Seam | Near-EOF (~1 s): idle origin warm + `SeamHold` (PlayIter@0; AAC muted begin→soft-hold). Cut (`remain≤50 ms` or EOF): mute/pause outgoing → promote → warm `release` (no cold PlayPrime/begin). Fallback: EOF → swap → play |
 | Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
+| Idle neighbor | Next clip; on last + playlist **loop** → **0** (wrap SeamHold target); else previous. `idle_neighbor` / `set_loop` re-preload |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
 
 Docs trim / leftover smoke: `state.md` § Playlist.
@@ -218,11 +219,13 @@ flowchart TD
   DRAW --> NEXT["update_next_frame<br/>draw overdue, park first future"]
   HOLD --> NEXT
   NEXT --> RAF
-  DUE -->|"EOF + loop"| LOOP["start_loop_seam<br/>hold clock, iterator at 0"]
+  DUE -->|"EOF + loop"| LOOP["start_loop_seam<br/>stash paint or start_play_iter(0)"]
   LOOP --> RAF
 ```
 
 `PlayPhase` (`Idle` / `Live` / `LoopSeam`) is the session machine; seek / scrub / pause end it (`clear_play_session` → `PlayIter::finish` resets and returns the decoder). Seek / step / Exact stay on `decode_frame` + warm pump (`samplesAtTimestamps`-shaped); Play never reads the presentation queue.
+
+**Loop (local / Remotion-shaped):** MB media-player has no loop. Near-EOF (~1 s) warms origin **bytes** + PreferSoftware **decode stash** (frame 0/+1 canvases) while main PlayIter still owns HW. `LoopSeam` paints stash, seeds `play_next`, resumes clock; main PlayIter catch-up drains under `play_updating`. Miss → await `start_play_iter(0)` under hold (old path). Traps: `skills/media.md`.
 
 While Playing: densify is off (epoch cancel); Exact trail uses farthest-evict trim only — never a full Exact wipe. Continuous Play prioritizes cadence and A/V sync over painting every presentation frame (`product.md` Exact vs Play). Shuttle may drop overdue frames. Prefer mediabunny present + clock patterns; silent clock uses wall time when there is no audible audio graph.
 

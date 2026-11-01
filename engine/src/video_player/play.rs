@@ -9,7 +9,7 @@
 use std::rc::Rc;
 
 use crate::decode::canvas::draw_frame_with_context;
-use crate::decode::webcodecs::PlayIter;
+use crate::decode::webcodecs::{PlayIter, WebCodecsDecoder};
 use crate::error::MediaError;
 use crate::model::play_phase::{PlayPhase, PlayPhaseEvent, reduce as play_phase_reduce};
 use crate::policy::playback::{
@@ -21,7 +21,7 @@ use crate::policy::{
 };
 use crate::types::FrameId;
 
-use super::play_pool::PlayCanvasPool;
+use super::play_pool::{LoopOriginStash, PlayCanvasPool};
 use super::shared::PlayNext;
 use super::{DuePresent, PLAY_EXACT_VRAM_VF_SLACK, PlayTick, VideoPlayer, now_ms};
 
@@ -75,6 +75,7 @@ impl VideoPlayer {
         self.shared.held_media_origin.set(None);
         self.shared.loop_origin_warm_started.set(false);
         self.shared.seam_audio_warm.set(false);
+        self.shared.loop_origin_stash.borrow_mut().take();
         *self.shared.play_driver_error.borrow_mut() = None;
         self.end_play_iter();
     }
@@ -316,8 +317,9 @@ impl VideoPlayer {
     /// EOF while looping: restart the iterator at 0 under a soft-held clock.
     ///
     /// mediabunny: no loop in `examples/media-player` — `startVideoIterator(0)` +
-    /// play. Near-EOF byte prewarm mirrors Remotion `prewarmIteratorForLooping`
-    /// (CanvasSink) so the 2nd lap is not a cold Blob/WASM cache miss.
+    /// play. Near-EOF prewarm mirrors Remotion `prewarmIteratorForLooping`:
+    /// bytes + PreferSoftware origin decode stash; seam presents stash and
+    /// resumes while main PlayIter catch-up drains under `play_updating`.
     fn start_loop_seam(self: &Rc<Self>) {
         if self.shared.play_phase.get() != PlayPhase::Live {
             return;
@@ -336,7 +338,18 @@ impl VideoPlayer {
             if player.shared.play_phase.get() != PlayPhase::LoopSeam {
                 return;
             }
-            let result = player.start_play_iter(0, epoch).await;
+            let _ = player.warm_loop_origin_decode().await;
+            if player.shared.play_phase.get() != PlayPhase::LoopSeam {
+                return;
+            }
+            // Stash hit: paint + seed sync, main catch-up in bg (Remotion swap).
+            // Miss: await `start_play_iter(0)` under the hold (old path).
+            let primed = if let Some(stash) = player.shared.loop_origin_stash.borrow_mut().take() {
+                player.start_loop_seam_with_stash(stash, epoch);
+                Ok(())
+            } else {
+                player.start_play_iter(0, epoch).await
+            };
             if player.shared.play_phase.get() != PlayPhase::LoopSeam {
                 return;
             }
@@ -345,7 +358,7 @@ impl VideoPlayer {
             // Fresh PlayIter at 0 may skip-catch while audio resumes — same grace
             // as PlayPrime / tab return (avoid underrun→audio silence at seam).
             player.arm_underrun_catchup_grace();
-            match result {
+            match primed {
                 Ok(()) => {
                     let t0 = player.state().timestamp.seconds;
                     if let Err(e) = player.resume_media_clock(t0).await
@@ -363,7 +376,108 @@ impl VideoPlayer {
         });
     }
 
-    /// Kick loop-origin byte warm once when media time enters the near-EOF window.
+    /// Remotion swap path: stash already has origin canvases — paint + seed
+    /// `play_next` sync, then spawn main PlayIter catch-up under `play_updating`
+    /// so the seam can resume the clock without awaiting origin decode on main.
+    fn start_loop_seam_with_stash(self: &Rc<Self>, stash: LoopOriginStash, epoch: u64) {
+        self.end_play_iter();
+        self.shared.displayed.borrow_mut().take();
+        self.clear_presentation();
+
+        let LoopOriginStash {
+            pool,
+            first,
+            first_slot,
+            second,
+        } = stash;
+        if let Err(e) = pool.draw(first_slot, &self.shared.canvas, &self.shared.ctx) {
+            *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+            return;
+        }
+        if let Err(e) = self.shared.commit_frame(first) {
+            *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+            return;
+        }
+        self.touch_playhead(first);
+        *self.shared.play_pool.borrow_mut() = Some(pool);
+        if let Some((id, slot)) = second {
+            match self.frame_timestamp_seconds(id) {
+                Ok(ts) => {
+                    *self.shared.play_next.borrow_mut() = Some(PlayNext {
+                        frame: id,
+                        ts,
+                        slot,
+                    });
+                }
+                Err(e) => {
+                    *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+                    return;
+                }
+            }
+        }
+
+        // Block kick_update until catch-up owns `iter.next` exclusively.
+        self.shared.play_updating.set(true);
+        let player = Rc::clone(self);
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = async {
+                let decoder = player.take_decoder(epoch).await?;
+                if !player.is_current(epoch) {
+                    player.put_decoder(decoder);
+                    return Err(MediaError::Cancelled);
+                }
+                let lead = player
+                    .shared
+                    .track
+                    .metadata_ref()
+                    .settle_policy()
+                    .play_index_lead;
+                let iter = PlayIter::start(decoder, player.shared.track.clone(), 0, lead);
+                *player.shared.play_iter.borrow_mut() = Some(iter.clone());
+
+                let first_sample = iter.next().await?;
+                if !player.is_current(epoch) || !player.is_current_iter(&iter) {
+                    return Err(MediaError::Cancelled);
+                }
+                drop(first_sample);
+                if player.shared.play_next.borrow().is_some() {
+                    let second_sample = iter.next().await?;
+                    if !player.is_current(epoch) || !player.is_current_iter(&iter) {
+                        return Err(MediaError::Cancelled);
+                    }
+                    drop(second_sample);
+                } else if let Some((id, video)) = iter.next().await? {
+                    if !player.is_current(epoch) || !player.is_current_iter(&iter) {
+                        return Err(MediaError::Cancelled);
+                    }
+                    let ts = player.frame_timestamp_seconds(id)?;
+                    let slot = player.copy_to_play_pool(id, video.as_web_sys())?;
+                    drop(video);
+                    *player.shared.play_next.borrow_mut() = Some(PlayNext {
+                        frame: id,
+                        ts,
+                        slot,
+                    });
+                }
+                Ok(iter)
+            }
+            .await;
+            player.shared.play_updating.set(false);
+            match result {
+                Ok(iter) => {
+                    if player.is_current_iter(&iter) && player.is_playing() {
+                        player.kick_update_next_frame();
+                    }
+                }
+                Err(e) if e.is_cancelled() => {}
+                Err(e) => {
+                    *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+                }
+            }
+        });
+    }
+
+    /// Kick loop-origin byte + decode prewarm once in the near-EOF window.
     fn maybe_kick_loop_origin_prewarm(self: &Rc<Self>, media_time_secs: f64) {
         if !self.is_looping()
             || self.shared.loop_origin_warm_started.get()
@@ -381,6 +495,7 @@ impl VideoPlayer {
         let player = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
             let _ = player.warm_play_origin_bytes().await;
+            let _ = player.warm_loop_origin_decode().await;
         });
     }
 
@@ -598,6 +713,149 @@ impl VideoPlayer {
             if !self.shared.play_origin_warm.is_busy() {
                 return Ok(());
             }
+        }
+    }
+
+    /// PreferSoftware origin decode into [`Shared::loop_origin_stash`] (Remotion
+    /// second-iterator). Joins [`Shared::play_origin_decode`]. Independent of
+    /// `ScrubCachePolicy` — ephemeral PreferSoftware when scrub slot is Off.
+    async fn warm_loop_origin_decode(&self) -> Result<(), MediaError> {
+        loop {
+            if self.shared.play_origin_decode.request() {
+                let result = self.decode_loop_origin_into_stash().await;
+                let again = self.shared.play_origin_decode.finish();
+                if again {
+                    continue;
+                }
+                return result;
+            }
+            crate::timer::sleep_ms(8).await;
+            if !self.shared.play_origin_decode.is_busy() {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Decode frame 0 (+1 when present) on PreferSoftware while main PlayIter
+    /// still owns HW. **no equivalent** (MB media-player has no loop);
+    /// Remotion `prewarmIteratorForLooping` + `canvasesAheadOfTime`.
+    async fn decode_loop_origin_into_stash(&self) -> Result<(), MediaError> {
+        if self.shared.is_disposed()
+            || !self.is_looping()
+            || !matches!(
+                self.shared.play_phase.get(),
+                PlayPhase::Live | PlayPhase::LoopSeam
+            )
+        {
+            return Ok(());
+        }
+        if self.shared.scrub_densify_blocked.get() || self.shared.densify.is_busy() {
+            return Ok(());
+        }
+        // Already have a stash from this lap — keep it.
+        if self.shared.loop_origin_stash.borrow().is_some() {
+            return Ok(());
+        }
+
+        let meta = self.shared.track.metadata();
+        let track = self.shared.track.clone();
+        let taken = self.shared.scrub_decoder.borrow_mut().take();
+        let decoder = match taken {
+            Some(d) => d,
+            None => match WebCodecsDecoder::create_scrub(&meta).await {
+                Ok(d) => d,
+                Err(MediaError::CodecUnsupported(_)) => {
+                    self.shared.scrub_densify_blocked.set(true);
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            },
+        };
+        if self.shared.is_disposed()
+            || !matches!(
+                self.shared.play_phase.get(),
+                PlayPhase::Live | PlayPhase::LoopSeam
+            )
+        {
+            self.return_loop_prewarm_decoder(decoder);
+            return Ok(());
+        }
+
+        let t0 = now_ms().unwrap_or(0.0);
+        let lead = meta.settle_policy().play_index_lead;
+        let iter = PlayIter::start(decoder, track, 0, lead);
+        let first = match iter.next().await {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(d) = iter.finish() {
+                    self.return_loop_prewarm_decoder(d);
+                }
+                return if e.is_cancelled() { Ok(()) } else { Err(e) };
+            }
+        };
+        let second = match iter.next().await {
+            Ok(v) => v,
+            Err(e) => {
+                drop(first);
+                if let Some(d) = iter.finish() {
+                    self.return_loop_prewarm_decoder(d);
+                }
+                return if e.is_cancelled() { Ok(()) } else { Err(e) };
+            }
+        };
+        let decoder = iter.finish();
+
+        let stash = match first {
+            Some((id0, vf0)) => {
+                let w = self.shared.canvas.width().max(1);
+                let h = self.shared.canvas.height().max(1);
+                let built = {
+                    let second_ref = second.as_ref().map(|(id, vf)| (*id, vf.as_web_sys()));
+                    LoopOriginStash::from_samples(id0, vf0.as_web_sys(), second_ref, w, h)
+                };
+                drop(vf0);
+                drop(second);
+                match built {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        if let Some(d) = decoder {
+                            self.return_loop_prewarm_decoder(d);
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+            None => {
+                drop(second);
+                None
+            }
+        };
+
+        if let Some(d) = decoder {
+            self.return_loop_prewarm_decoder(d);
+        }
+        if self.shared.is_disposed()
+            || !matches!(
+                self.shared.play_phase.get(),
+                PlayPhase::Live | PlayPhase::LoopSeam
+            )
+        {
+            return Ok(());
+        }
+        if let Some(stash) = stash {
+            let ms = now_ms().unwrap_or(t0) - t0;
+            web_sys::console::log_1(
+                &format!("fpmedia-web: loop origin decode prewarm {ms:.0}ms").into(),
+            );
+            *self.shared.loop_origin_stash.borrow_mut() = Some(stash);
+        }
+        Ok(())
+    }
+
+    fn return_loop_prewarm_decoder(&self, mut decoder: WebCodecsDecoder) {
+        let _ = decoder.reset();
+        if !self.shared.is_disposed() && !self.shared.scrub_cache_off() {
+            *self.shared.scrub_decoder.borrow_mut() = Some(decoder);
         }
     }
 

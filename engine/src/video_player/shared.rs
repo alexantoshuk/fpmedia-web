@@ -30,7 +30,7 @@ use crate::residency::ScrubChunkStore;
 use crate::types::{FrameId, Timestamp};
 
 use super::api::PlayerState;
-use super::play_pool::PlayCanvasPool;
+use super::play_pool::{LoopOriginStash, PlayCanvasPool};
 use crate::policy::workload::WorkloadHints;
 
 /// Live VF ahead of the playhead for paused Next hits (not used by Play).
@@ -117,6 +117,11 @@ pub(super) struct Shared {
     /// Origin (frame 0) byte warm — loop prewarm, playlist idle near-EOF, and
     /// PlayPrime at head 0 share one flight so kick + prime do not double-read.
     pub(super) play_origin_warm: SingleFlight,
+    /// PreferSoftware origin decode into [`Self::loop_origin_stash`] (Remotion
+    /// second-iterator shape). Seam joins this flight after byte warm.
+    pub(super) play_origin_decode: SingleFlight,
+    /// Decoded frame 0 (+ optional 1) canvases ready before EOF / LoopSeam.
+    pub(super) loop_origin_stash: RefCell<Option<LoopOriginStash>>,
     /// Playlist `SeamHold` primed AAC via muted start→hold (release = warm resume).
     pub(super) seam_audio_warm: Cell<bool>,
     /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).

@@ -96,3 +96,39 @@ impl PlayCanvasPool {
         self.slots.iter().position(|s| s.frame == Some(frame))
     }
 }
+
+/// Remotion-shaped loop-origin decode stash (second sink → canvases before EOF).
+///
+/// Built on PreferSoftware while the live PlayIter still owns main HW; promoted
+/// into [`PlayCanvasPool`] / stage at [`super::VideoPlayer`] LoopSeam.
+/// **no equivalent** (MB media-player has no loop); Remotion
+/// `prewarmIteratorForLooping` / `makeIteratorOrUsePrewarmed`.
+pub(super) struct LoopOriginStash {
+    pub(super) pool: PlayCanvasPool,
+    pub(super) first: FrameId,
+    pub(super) first_slot: usize,
+    pub(super) second: Option<(FrameId, usize)>,
+}
+
+impl LoopOriginStash {
+    pub(super) fn from_samples(
+        first_id: FrameId,
+        first_vf: &VideoFrame,
+        second: Option<(FrameId, &VideoFrame)>,
+        w: u32,
+        h: u32,
+    ) -> Result<Self, MediaError> {
+        let mut pool = PlayCanvasPool::new()?;
+        let first_slot = pool.copy(first_id, first_vf, w, h)?;
+        let second = match second {
+            Some((id, vf)) => Some((id, pool.copy(id, vf, w, h)?)),
+            None => None,
+        };
+        Ok(Self {
+            pool,
+            first: first_id,
+            first_slot,
+            second,
+        })
+    }
+}

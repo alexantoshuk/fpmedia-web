@@ -103,6 +103,20 @@ impl VideoPlaylistRef {
 
     pub fn set_loop(self, on: bool) {
         self.looping.set(on);
+        // Loop on while live is last clip: idle must become wrap target 0 so
+        // near-EOF SeamHold can arm (do not wait for the next EOF window).
+        if on {
+            let model = self.model.get_untracked();
+            let live = self.live_clip.get_untracked();
+            if let Some(want) = super::slots::idle_neighbor(&model, live, true)
+                && self.idle_clip.get_untracked() != Some(want)
+            {
+                let epoch = self.open_gen.get_value();
+                spawn_local(async move {
+                    preload_idle(self, Some(want), epoch).await;
+                });
+            }
+        }
     }
 
     /// Playlist-wide volume → both slots (live + idle).
@@ -258,7 +272,11 @@ impl VideoPlaylistRef {
             promoted = try_promote_idle(self, aim.clip_index);
             if promoted {
                 // Idle now holds former live — warm the true neighbor (not a lying label).
-                let want = idle_neighbor(&self.model.get_untracked(), aim.clip_index);
+                let want = idle_neighbor(
+                    &self.model.get_untracked(),
+                    aim.clip_index,
+                    self.looping.get_untracked(),
+                );
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
                     preload_idle(self, want, epoch).await;
@@ -290,8 +308,11 @@ impl VideoPlaylistRef {
                 if resume {
                     live.play();
                 }
-                let neighbor =
-                    idle_neighbor(&self.model.get_untracked(), self.live_clip.get_untracked());
+                let neighbor = idle_neighbor(
+                    &self.model.get_untracked(),
+                    self.live_clip.get_untracked(),
+                    self.looping.get_untracked(),
+                );
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
                     preload_idle(self, neighbor, epoch).await;
