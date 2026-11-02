@@ -54,14 +54,18 @@ pub fn VideoPlaylist(
     });
 
     // Mirror live presentation → playlist pos + global frame.
-    // Playing + paused step/seek (live.frame). Not while scrubbing (gesture owns aim).
+    // Playing + paused step/seek. Not while scrubbing (gesture owns aim).
+    // After Up, slot `frame` lags settle — use playhead when it diverges so the
+    // tip does not yank to a stale local then snap back. **no equivalent**.
     Effect::new(move |_| {
         if !ready.get() || playlist.scrubbing.get() {
             return;
         }
         let clip = live_clip.get();
         let live = if live_is_a.get() { slot_a } else { slot_b };
-        let local = live.frame.get();
+        let committed = live.frame.get();
+        let aim = live.playhead.get();
+        let local = if aim != committed { aim } else { committed };
         let p = PlaylistPos::new(clip, local);
         pos.set(p);
         if let Some(g) = model.get_untracked().global_frame_at(p) {

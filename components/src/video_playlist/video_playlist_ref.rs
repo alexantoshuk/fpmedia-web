@@ -288,13 +288,21 @@ impl VideoPlaylistRef {
                     .set(self.live_video().playing.get_untracked());
             }
             ScrubPhase::Move => self.scrubbing.set(true),
-            ScrubPhase::Up => self.scrubbing.set(false),
+            // Clear scrubbing after playhead/pos aim — else mirror can run on a
+            // stale slot `frame` and yank the tip before settle. **no equivalent**.
+            ScrubPhase::Up => {}
         }
         self.playhead.set(global_frame);
         let Some(aim) = self.model.get_untracked().at_global_frame(global_frame) else {
+            if matches!(phase, ScrubPhase::Up) {
+                self.scrubbing.set(false);
+            }
             return;
         };
         self.pos.set(aim);
+        if matches!(phase, ScrubPhase::Up) {
+            self.scrubbing.set(false);
+        }
 
         let mut promoted = false;
         if aim.clip_index != self.live_clip.get_untracked() {
