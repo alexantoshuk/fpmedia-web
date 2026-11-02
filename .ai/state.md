@@ -8,19 +8,27 @@
 
 ### Handoff
 
-- **HEAD:** loop restart fix (engine origin decode prewarm + playlist wrap idle→0); prior `1427293` / `0.1.0-alpha.3`.
-- **Do not land:** `b8206d1` Exact wipe-on-settle (seek Exact-follow ≠ wipe).
-- **Parked:** Pause densify pin-holes — strip cosmetics (`product.md`); idle Fetch gray on prefetch bar (live-only `strip_video` / Meta lease — intentional defer).
+- **HEAD:** playlist seam = origin stash + paint-before-swap; Next/Prev cross-clip via live `frame`; host dual-present SeamHold **removed** (engine `PlayPhase::SeamHold` APIs unused).
+- **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
+- **Parked:** Pause densify pin-holes; idle Fetch gray.
 
 ---
 
 ## Next up
 
+### 1. LoopZone
+
+Single: source FrameIds + engine wall/`LoopSeam`. Playlist: global frames, host wrap; slots `set_loop(false)`. Full-axis loop stays seam last→0. Demo `[`/`]` + mask. UX: `product.md` § Loop zone / `glossary.md` § LoopZone.
+
+### 2. CutWindow (after LoopZone)
+
+Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. Not in the LoopZone pass.
+
 ### Playlist
 
-SeamHold + shared volume + frame-sum scrub axis shipped (`0.1.0-alpha.3`). Design: `architecture.md` § Playlist.
+Shared volume + frame-sum scrub + origin-stash seam shipped (`0.1.0-alpha.3`). Design: `architecture.md` § Playlist.
 
-**Optional next:** cut markers / clip name in `[i]` (Later). Idle Fetch gray on bar — parked (second Meta lease + merge idle `FetchMap` into `idle_clip` window; Fetch only, not Exact/Covered).
+**Optional:** cut markers / clip name in `[i]` (Later). Idle Fetch gray — parked.
 
 **Out of v1:** compare dual-visible.
 

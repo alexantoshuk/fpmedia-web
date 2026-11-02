@@ -2,14 +2,12 @@
 
 use fpmedia_web::timer::sleep_ms;
 use fpmedia_web::{
-    LOOP_ORIGIN_PREWARM_SECS, PLAYLIST_SEAM_HANDOFF_SECS, ScrubCachePolicy, VideoMetadata,
-    should_prewarm_loop_origin,
+    LOOP_ORIGIN_PREWARM_SECS, ScrubCachePolicy, VideoMetadata, should_prewarm_loop_origin,
 };
 use leptos::prelude::*;
-use wasm_bindgen_futures::spawn_local;
 
 use crate::VideoRef;
-use crate::video_playlist::{PlaylistModel, PlaylistPos};
+use crate::video_playlist::PlaylistModel;
 
 use super::video_playlist_ref::VideoPlaylistRef;
 
@@ -43,8 +41,7 @@ pub(crate) async fn wait_ready(
 }
 
 /// Prefer next clip as idle neighbor; else wrap target 0 when playlist looping,
-/// else previous. Loop wrap must idle-preload clip 0 so near-EOF SeamHold can
-/// arm — previous-as-idle skipped warm/hold and forced cold `play_seam_from_origin`.
+/// else previous. Wrap → idle preload 0 so origin stash warms before last→0 seam.
 /// **no equivalent** (playlist local).
 pub(crate) fn idle_neighbor(model: &PlaylistModel, live_clip: u32, looping: bool) -> Option<u32> {
     model.next_clip_index(live_clip).or_else(|| {
@@ -190,12 +187,17 @@ pub(crate) async fn seek_to_pos(
     Ok(())
 }
 
-/// Start live at local 0 after a promote (cold fallback when SeamHold missed).
-/// **no equivalent** (playlist seam local); Play = mediabunny media-player seek→iter→play.
+/// Start live at local 0 after a promote.
+///
+/// PreferSoftware origin stash (near-EOF kick) → PlayPrime sync paint; miss →
+/// cold `start_play_iter`. Avoid `seek_frame(0)` when already at origin — seek
+/// drops the stash. **no equivalent** (playlist local); engine cousin =
+/// `start_loop_seam_with_stash` / Remotion `prewarmIteratorForLooping`.
 async fn play_seam_from_origin(live: &VideoRef) {
     live.ended.set(false);
+    // UI playhead only — do not seek (would `drop_origin_stash`). Idle opens @0.
     if live.playhead.get_untracked() != 0 {
-        live.seek_frame(0);
+        live.playhead.set(0);
     }
     live.warm_play_origin().await;
     live.play();
@@ -255,187 +257,41 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
     }
 }
 
-/// Near-EOF: arm idle `SeamHold` (PlayIter@0, clock held) for dual-present cut.
-/// **no equivalent** (playlist local).
-pub(crate) fn maybe_arm_idle_seam_hold(pl: VideoPlaylistRef) {
-    let live = pl.live_video();
-    if !live.playing.get_untracked() || !live.ready.get_untracked() {
-        return;
-    }
-    let model = pl.model.get_untracked();
-    if model.len() <= 1 {
-        // Single-clip loop keeps seek→play path (cannot SeamHold the playing live).
-        return;
-    }
-    let cur = pl.live_clip.get_untracked();
-    let Some(clip) = model.clip(cur as usize) else {
-        return;
-    };
-    let t = live.timestamp.get_untracked();
-    if !should_prewarm_loop_origin(t, clip.duration_secs, LOOP_ORIGIN_PREWARM_SECS) {
-        return;
-    }
-    let Some(next_i) = seam_next_clip(pl, cur) else {
-        return;
-    };
-    if pl.seam_hold_for.get_value() == Some(next_i) || pl.seam_arming.get_value() {
-        return;
-    }
-    if pl.idle_clip.get_untracked() != Some(next_i) {
-        return;
-    }
-    let idle = pl.idle_video();
-    if !idle.ready.get_untracked() || idle.seam_hold_armed() {
-        if idle.seam_hold_armed() {
-            pl.seam_hold_for.set_value(Some(next_i));
-        }
-        return;
-    }
-
-    pl.seam_arming.set_value(true);
-    // Playlist-wide volume; mute only this idle for silent prime (do not flip `pl.muted`).
-    idle.set_volume(pl.volume.get_untracked());
-    idle.set_muted(true);
-    let epoch = pl.open_gen.get_value();
-    spawn_local(async move {
-        let result = idle.arm_seam_hold().await;
-        if pl.open_gen.get_value() != epoch {
-            pl.seam_arming.set_value(false);
-            return;
-        }
-        pl.seam_arming.set_value(false);
-        match result {
-            Ok(()) => {
-                pl.seam_hold_for.set_value(Some(next_i));
-                pl.apply_gain_to_slots();
-                web_sys::console::log_1(
-                    &format!("fpmedia-web: playlist seam hold ready clip {}", next_i + 1).into(),
-                );
-            }
-            Err(e) => {
-                pl.apply_gain_to_slots();
-                web_sys::console::warn_1(
-                    &format!("fpmedia-web: playlist seam hold failed: {e}").into(),
-                );
-            }
-        }
-    });
-}
-
-/// Promote SeamHold idle → live and resume clock (no cold PlayPrime).
-/// Returns `true` when handoff ran.
-async fn handoff_seam_hold(pl: VideoPlaylistRef, next_i: u32, epoch: u64) -> Result<bool, String> {
-    if pl.open_gen.get_value() != epoch {
-        return Ok(false);
-    }
-    if pl.idle_clip.get_untracked() != Some(next_i) || !pl.idle_video().seam_hold_armed() {
-        return Ok(false);
-    }
-
-    let model = pl.model.get_untracked();
-    let live = pl.live_video();
-    let following = idle_neighbor(&model, next_i, pl.looping.get_untracked());
-
-    // Silence outgoing before swap so release does not dual-play A+B audio.
-    live.set_muted(true);
-    swap_live_idle(pl, next_i);
-    pl.seam_hold_for.set_value(None);
-    pl.seam_warm_for.set_value(None);
-
-    let idle = pl.idle_video();
-    idle.pause();
-    idle.ended.set(false);
-
-    let new_live = pl.live_video();
-    // Playlist-wide gain (not per-slot leftovers from arm mute).
-    pl.apply_gain_to_slots();
-    new_live.ended.set(false);
-    new_live.release_seam_hold().await?;
-
-    pl.ended.set(false);
-    let pos = PlaylistPos::new(next_i, 0);
-    pl.pos.set(pos);
-    if let Some(g) = model.global_frame_at(pos) {
-        pl.playhead.set(g);
-    }
-    pl.status
-        .set(format!("Playing clip {}/{}", next_i + 1, model.len()));
-    preload_idle(pl, following, epoch).await;
-    Ok(true)
-}
-
-/// Early cut when remain ≤ handoff window and idle SeamHold is ready.
-pub(crate) fn maybe_handoff_seam(pl: VideoPlaylistRef) {
-    let live = pl.live_video();
-    if !live.playing.get_untracked() || pl.seam_handoff_inflight.get_value() {
-        return;
-    }
-    let model = pl.model.get_untracked();
-    let cur = pl.live_clip.get_untracked();
-    let Some(clip) = model.clip(cur as usize) else {
-        return;
-    };
-    let Some(next_i) = seam_next_clip(pl, cur) else {
-        return;
-    };
-    if pl.seam_hold_for.get_value() != Some(next_i) && !pl.idle_video().seam_hold_armed() {
-        return;
-    }
-    let t = live.timestamp.get_untracked();
-    let remain = clip.duration_secs - t;
-    if !(remain.is_finite() && (0.0..=PLAYLIST_SEAM_HANDOFF_SECS).contains(&remain)) {
-        return;
-    }
-
-    let epoch = pl.open_gen.get_value();
-    pl.seam_handoff_inflight.set_value(true);
-    spawn_local(async move {
-        let result = handoff_seam_hold(pl, next_i, epoch).await;
-        pl.seam_handoff_inflight.set_value(false);
-        if pl.open_gen.get_value() != epoch {
-            return;
-        }
-        match result {
-            Ok(true) => {}
-            Ok(false) => {}
-            Err(e) => {
-                pl.error.set(Some(e));
-                pl.status.set("Playlist seam handoff failed.".into());
-            }
-        }
-    });
-}
-
-/// After live clip EOF: prefer SeamHold handoff; else cold play_seam; else ended.
-pub(crate) async fn advance_after_ended(pl: VideoPlaylistRef, epoch: u64) -> Result<(), String> {
+/// After live clip EOF: ensure next on idle → paint origin → swap → `play_seam`.
+/// `from_clip` = ended clip (ignore if live already moved).
+pub(crate) async fn advance_after_ended(
+    pl: VideoPlaylistRef,
+    epoch: u64,
+    from_clip: u32,
+) -> Result<(), String> {
     if pl.open_gen.get_value() != epoch {
         return Ok(());
     }
-    // Early handoff may have already promoted — ignore stale Ended on former live.
+    if pl.live_clip.get_untracked() != from_clip {
+        return Ok(());
+    }
     if pl.live_video().playing.get_untracked() && !pl.live_video().ended.get_untracked() {
         return Ok(());
     }
     let model = pl.model.get_untracked();
-    let cur = pl.live_clip.get_untracked();
+    let cur = from_clip;
 
     if let Some(next_i) = seam_next_clip(pl, cur) {
         pl.status.set(format!("Seam → clip {}…", next_i + 1));
-        // Dual-present hit path (armed during near-EOF window).
-        if handoff_seam_hold(pl, next_i, epoch).await? {
-            return Ok(());
-        }
         ensure_clip_on_idle(pl, next_i, epoch).await?;
-        if pl.open_gen.get_value() != epoch {
-            return Ok(());
-        }
-        // Arm may have finished during ensure — try once more.
-        if handoff_seam_hold(pl, next_i, epoch).await? {
+        if pl.open_gen.get_value() != epoch || pl.live_clip.get_untracked() != from_clip {
             return Ok(());
         }
         let following = idle_neighbor(&model, next_i, pl.looping.get_untracked());
+        let idle = pl.idle_video();
+        // Origin on idle stage **before** CSS promote — else flash former-live
+        // last frame (ensure early-return left EOF on wrap / reused slot).
+        idle.prepare_seam_origin().await?;
+        if pl.open_gen.get_value() != epoch || pl.live_clip.get_untracked() != from_clip {
+            return Ok(());
+        }
         swap_live_idle(pl, next_i);
         pl.seam_warm_for.set_value(None);
-        pl.seam_hold_for.set_value(None);
         play_seam_from_origin(&pl.live_video()).await;
         pl.ended.set(false);
         pl.status

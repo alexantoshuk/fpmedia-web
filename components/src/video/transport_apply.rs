@@ -48,16 +48,6 @@ impl TransportHandle {
             inner.model.state = TransportState::Ready;
         }
     }
-
-    /// Playlist seam release: mark Playing without PlayPrime (iter already armed).
-    pub(super) fn force_playing_unless_closed(&self) {
-        let Ok(mut inner) = self.inner.try_borrow_mut() else {
-            return;
-        };
-        if !matches!(inner.model.state, TransportState::Closed) {
-            inner.model.state = TransportState::Playing;
-        }
-    }
 }
 
 pub(super) fn new_transport() -> TransportHandle {

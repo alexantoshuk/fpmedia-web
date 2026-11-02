@@ -21,7 +21,6 @@ use super::op_queue::{HostOp, OpQueue, OpenArgs};
 use super::open_url::resolve_url_source;
 use super::transport_apply::{
     dispatch_transport, enqueue_scrub_dwell_exact, new_transport, note_transport,
-    sync_playing_from_transport,
 };
 use super::{VideoOps, VideoRef};
 use fpmedia_web::timer::{next_animation_frame, now_ms};
@@ -725,12 +724,14 @@ pub fn Video(
                 let Some(p) = ctx.player.borrow().as_ref().cloned() else {
                     return;
                 };
+                // Bytes + PreferSoftware origin stash (playlist seam / loop cousin).
                 let _ = p.warm_play_origin_bytes().await;
+                let _ = p.warm_play_origin_stash().await;
             }) as super::BoxedLocalFut<()>
         }) as super::LocalFutFn<()>
     };
 
-    let arm_seam_hold_fn = {
+    let prepare_seam_origin_fn = {
         let ctx = ctx.clone();
         Rc::new(move || {
             let ctx = ctx.clone();
@@ -738,34 +739,11 @@ pub fn Video(
                 let Some(p) = ctx.player.borrow().as_ref().cloned() else {
                     return Err("no player".into());
                 };
-                p.arm_playlist_seam_hold().await.map_err(|e| e.to_string())
-            }) as super::BoxedLocalFut<Result<(), String>>
-        }) as super::LocalFutFn<Result<(), String>>
-    };
-
-    let release_seam_hold_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            let ctx = ctx.clone();
-            Box::pin(async move {
-                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
-                    return Err("no player".into());
-                };
-                p.release_playlist_seam_hold()
+                p.prepare_playlist_seam_origin()
                     .await
-                    .map_err(|e| e.to_string())?;
-                // Iter already Live — skip PlayPrime; mark transport Playing for rAF.
-                ctx.transport.force_playing_unless_closed();
-                sync_playing_from_transport(&ctx);
-                Ok(())
+                    .map_err(|e| e.to_string())
             }) as super::BoxedLocalFut<Result<(), String>>
         }) as super::LocalFutFn<Result<(), String>>
-    };
-
-    let seam_hold_armed_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || ctx.with_player(|p| p.seam_hold_armed()).unwrap_or(false))
-            as Rc<dyn Fn() -> bool>
     };
 
     let close_fn = {
@@ -799,9 +777,7 @@ pub fn Video(
         set_thumb_policy: set_thumb_policy_fn,
         set_scrub_cache_policy: set_scrub_cache_policy_fn,
         warm_play_origin: warm_play_origin_fn,
-        arm_seam_hold: arm_seam_hold_fn,
-        release_seam_hold: release_seam_hold_fn,
-        seam_hold_armed: seam_hold_armed_fn,
+        prepare_seam_origin: prepare_seam_origin_fn,
     }));
 
     on_cleanup({

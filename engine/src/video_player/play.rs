@@ -75,9 +75,16 @@ impl VideoPlayer {
         self.shared.held_media_origin.set(None);
         self.shared.loop_origin_warm_started.set(false);
         self.shared.seam_audio_warm.set(false);
-        self.shared.loop_origin_stash.borrow_mut().take();
+        // Keep `loop_origin_stash` — playlist idle prewarm must survive pause of
+        // the outgoing clip / soft holds; PlayPrime@0 and LoopSeam consume it.
+        // Seek / open drop via [`Self::drop_origin_stash`].
         *self.shared.play_driver_error.borrow_mut() = None;
         self.end_play_iter();
+    }
+
+    /// Invalidate PreferSoftware origin stash (seek / new aim — not pause).
+    pub(super) fn drop_origin_stash(&self) {
+        self.shared.loop_origin_stash.borrow_mut().take();
     }
 
     /// mediabunny `videoFrameIterator.return()` — decoder back to the slot.
@@ -374,6 +381,51 @@ impl VideoPlayer {
                 }
             }
         });
+    }
+
+    /// Draw stash frame 0 onto the stage **without consuming** the stash.
+    ///
+    /// Playlist: call on idle **before** live/idle CSS swap so the promoted
+    /// slot does not flash the former-live last frame. PlayPrime still consumes
+    /// stash for pool/`play_next`. **no equivalent** (playlist local).
+    pub fn paint_origin_stash_preview(&self) -> bool {
+        let stash = self.shared.loop_origin_stash.borrow();
+        let Some(stash) = stash.as_ref() else {
+            return false;
+        };
+        if stash
+            .pool
+            .draw(stash.first_slot, &self.shared.canvas, &self.shared.ctx)
+            .is_err()
+        {
+            return false;
+        }
+        if self.shared.commit_frame(stash.first).is_err() {
+            return false;
+        }
+        self.touch_playhead(stash.first);
+        true
+    }
+
+    /// Idle playlist slot: warm + put origin on stage before promote.
+    ///
+    /// Hits PreferSoftware stash preview; else Exact@0; else `seek_frame(0)`
+    /// when still on a non-origin frame (wrap: same clip left at EOF).
+    pub async fn prepare_playlist_seam_origin(self: &Rc<Self>) -> Result<(), MediaError> {
+        self.warm_play_origin_bytes().await?;
+        let _ = self.warm_play_origin_stash().await;
+        if self.paint_origin_stash_preview() {
+            return Ok(());
+        }
+        if self.try_present_scrub_exact(0) {
+            let _ = self.shared.commit_frame(0);
+            self.touch_playhead(0);
+            return Ok(());
+        }
+        if self.state().frame != 0 {
+            self.seek_frame(0).await?;
+        }
+        Ok(())
     }
 
     /// Remotion swap path: stash already has origin canvases — paint + seed
@@ -719,7 +771,11 @@ impl VideoPlayer {
     /// PreferSoftware origin decode into [`Shared::loop_origin_stash`] (Remotion
     /// second-iterator). Joins [`Shared::play_origin_decode`]. Independent of
     /// `ScrubCachePolicy` — ephemeral PreferSoftware when scrub slot is Off.
-    async fn warm_loop_origin_decode(&self) -> Result<(), MediaError> {
+    ///
+    /// Loop: Live/LoopSeam while looping. Playlist: Idle slot near-EOF (cold
+    /// `play_seam` hit path). **no equivalent** (playlist local); loop =
+    /// Remotion `prewarmIteratorForLooping`.
+    pub async fn warm_play_origin_stash(&self) -> Result<(), MediaError> {
         loop {
             if self.shared.play_origin_decode.request() {
                 let result = self.decode_loop_origin_into_stash().await;
@@ -736,17 +792,29 @@ impl VideoPlayer {
         }
     }
 
+    async fn warm_loop_origin_decode(&self) -> Result<(), MediaError> {
+        self.warm_play_origin_stash().await
+    }
+
+    /// True while PreferSoftware origin stash warm is allowed.
+    fn origin_stash_warm_allowed(&self) -> bool {
+        if self.shared.is_disposed() {
+            return false;
+        }
+        match self.shared.play_phase.get() {
+            // Single-clip loop seam prewarm / in-seam finish.
+            PlayPhase::Live | PlayPhase::LoopSeam => self.is_looping(),
+            // Playlist idle slot (paused) — dual-present SeamHold stays parked.
+            PlayPhase::Idle => true,
+            PlayPhase::SeamHold => false,
+        }
+    }
+
     /// Decode frame 0 (+1 when present) on PreferSoftware while main PlayIter
-    /// still owns HW. **no equivalent** (MB media-player has no loop);
-    /// Remotion `prewarmIteratorForLooping` + `canvasesAheadOfTime`.
+    /// still owns HW (loop) or on idle playlist slot. **no equivalent** (MB
+    /// media-player has no loop); Remotion `prewarmIteratorForLooping`.
     async fn decode_loop_origin_into_stash(&self) -> Result<(), MediaError> {
-        if self.shared.is_disposed()
-            || !self.is_looping()
-            || !matches!(
-                self.shared.play_phase.get(),
-                PlayPhase::Live | PlayPhase::LoopSeam
-            )
-        {
+        if !self.origin_stash_warm_allowed() {
             return Ok(());
         }
         if self.shared.scrub_densify_blocked.get() || self.shared.densify.is_busy() {
@@ -771,12 +839,7 @@ impl VideoPlayer {
                 Err(e) => return Err(e),
             },
         };
-        if self.shared.is_disposed()
-            || !matches!(
-                self.shared.play_phase.get(),
-                PlayPhase::Live | PlayPhase::LoopSeam
-            )
-        {
+        if !self.origin_stash_warm_allowed() {
             self.return_loop_prewarm_decoder(decoder);
             return Ok(());
         }
@@ -834,18 +897,13 @@ impl VideoPlayer {
         if let Some(d) = decoder {
             self.return_loop_prewarm_decoder(d);
         }
-        if self.shared.is_disposed()
-            || !matches!(
-                self.shared.play_phase.get(),
-                PlayPhase::Live | PlayPhase::LoopSeam
-            )
-        {
+        if !self.origin_stash_warm_allowed() {
             return Ok(());
         }
         if let Some(stash) = stash {
             let ms = now_ms().unwrap_or(t0) - t0;
             web_sys::console::log_1(
-                &format!("fpmedia-web: loop origin decode prewarm {ms:.0}ms").into(),
+                &format!("fpmedia-web: origin decode prewarm {ms:.0}ms").into(),
             );
             *self.shared.loop_origin_stash.borrow_mut() = Some(stash);
         }
@@ -947,7 +1005,11 @@ impl VideoPlayer {
     }
 
     /// PlayPrime: abort densify, warm index + bytes, then `startVideoIterator`.
-    pub async fn prime_playback(&self) -> Result<(), MediaError> {
+    ///
+    /// At origin: PreferSoftware stash hit (playlist idle / loop prewarm) →
+    /// sync paint + bg catch-up like [`Self::start_loop_seam_with_stash`] — no
+    /// await cold decode on the Play click path.
+    pub async fn prime_playback(self: &Rc<Self>) -> Result<(), MediaError> {
         if !self.is_playing() {
             return Ok(());
         }
@@ -970,6 +1032,15 @@ impl VideoPlayer {
         }
         if !self.is_current(epoch) || !self.is_playing() {
             return Err(MediaError::Cancelled);
+        }
+        // Playlist/loop PreferSoftware stash — sync paint (no await origin decode).
+        // Host near-EOF kick fills it; miss → cold `start_play_iter` below.
+        if head == 0
+            && let Some(stash) = self.shared.loop_origin_stash.borrow_mut().take()
+        {
+            web_sys::console::log_1(&"fpmedia-web: PlayPrime origin stash hit".into());
+            self.start_loop_seam_with_stash(stash, epoch);
+            return Ok(());
         }
         match self.start_play_iter(head, epoch).await {
             Ok(()) => Ok(()),

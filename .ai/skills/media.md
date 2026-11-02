@@ -54,7 +54,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Exact 1 px orphan past hole after Pause densify | `evict_exact_orphans_beyond_aim` | farthest-evict every densify tick (not gated on Exact near-gap idle — under-cap soft-drag holes skipped eviction); not on drag `set_playhead` |
 | Loop seam wipe / underrun hold | `start_loop_seam` (`PlayPhase::LoopSeam`) | hold clock → stash paint or `start_play_iter(0)` → resume; keep Covered+Exact |
 | Loop seam cold at origin / mobile restart hitch | `warm_loop_origin_decode` / `start_loop_seam_with_stash` | near-EOF: bytes + PreferSoftware origin stash (`play_origin_decode`); seam paints stash, resumes, main PlayIter drains under `play_updating`. Miss → old await path. MB has no loop — Remotion `prewarmIteratorForLooping` |
-| Playlist cut cold PlayPrime / audio begin gap | `arm_playlist_seam_hold` / `release_playlist_seam_hold` | near-EOF `SeamHold` + muted AAC begin→hold; cut warm `resume_media_clock`; fallback play_seam. **no equivalent** (playlist local) |
+| Playlist cut / join hitch | `prepare_playlist_seam_origin` / PlayPrime stash | idle warm+**paint before swap**; PlayPrime stash catch-up. Miss → Exact@0 / seek 0. **no equivalent** (playlist local) |
 | Pause→Play / scrub→Play no-op | `ScrubRelease{then_play}` / soft-park | host: `skills/leptos.md`; probes gray-first / cold-resume / stress. Resume lag/skip → row below |
 | Sticky error after Ok settle | `host_ops` clear error on Ok | `e2e/player.scrub.sticky-error.spec.ts` |
 | Tab hidden: play dies / densify keeps burning | `yield_scrub_work_for_hidden` | Play+clock continue (MB); scrub densify/gray/thumbs yield; host ~500 ms present. `mediabunny: media-player setInterval(render,500)` |

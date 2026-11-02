@@ -23,6 +23,7 @@ impl VideoPlayer {
         let result = async {
             self.shared.playing.set(false);
             self.clear_play_session();
+            self.drop_origin_stash();
             self.clear_step_ring();
             self.clear_presentation();
             self.aim_scrub_cache(frame);

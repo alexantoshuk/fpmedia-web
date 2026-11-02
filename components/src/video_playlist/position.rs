@@ -25,13 +25,13 @@ impl PlaylistPos {
     }
 }
 
-/// Frames readout: `[2] 10 / 100` (`local / frame_count`).
+/// Frames readout: `[2] 10 / 99` — `local / last` (same as single-clip `last_frame_id`).
 pub fn format_playlist_frames(pos: PlaylistPos, frame_count: u32) -> String {
     format!(
         "[{}] {} / {}",
         pos.display_index(),
         pos.local_frame,
-        frame_count
+        last_frame_id(frame_count)
     )
 }
 
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn format_frames_and_timecode() {
         let pos = PlaylistPos::new(1, 10);
-        assert_eq!(format_playlist_frames(pos, 100), "[2] 10 / 100");
+        assert_eq!(format_playlist_frames(pos, 100), "[2] 10 / 99");
         assert_eq!(format_playlist_goto_frames(pos), "[2] 10");
         let meta = meta_24fps(240);
         let s = format_playlist_timecode(PlaylistPos::new(0, 24), &meta);

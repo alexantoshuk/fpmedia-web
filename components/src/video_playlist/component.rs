@@ -10,10 +10,7 @@ use wasm_bindgen_futures::spawn_local;
 use crate::Video;
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
-use super::slots::{
-    advance_after_ended, maybe_arm_idle_seam_hold, maybe_handoff_seam, maybe_kick_idle_seam_warm,
-    seek_to_pos, wait_ready,
-};
+use super::slots::{advance_after_ended, maybe_kick_idle_seam_warm, seek_to_pos, wait_ready};
 use super::source::PlaylistSource;
 use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};
 
@@ -54,16 +51,14 @@ pub fn VideoPlaylist(
         idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     });
 
-    // Mirror live presentation → playlist pos + global frame (playing only; scrub/seek own aim).
+    // Mirror live presentation → playlist pos + global frame.
+    // Playing + paused step/seek (live.frame). Not while scrubbing (gesture owns aim).
     Effect::new(move |_| {
         if !ready.get() || playlist.scrubbing.get() {
             return;
         }
         let clip = live_clip.get();
         let live = if live_is_a.get() { slot_a } else { slot_b };
-        if !live.playing.get() {
-            return;
-        }
         let local = live.frame.get();
         let p = PlaylistPos::new(clip, local);
         pos.set(p);
@@ -72,7 +67,7 @@ pub fn VideoPlaylist(
         }
     });
 
-    // Clip EOF → advance playlist (swap idle / loop / ended).
+    // Clip EOF → advance playlist (swap → play_seam; origin stash when warmed).
     Effect::new(move |_| {
         if !ready.get() {
             return;
@@ -82,10 +77,11 @@ pub fn VideoPlaylist(
             return;
         }
         live.ended.set(false);
+        let from_clip = live_clip.get_untracked();
         let epoch = open_gen.get_value();
         let pl = playlist;
         spawn_local(async move {
-            if let Err(e) = advance_after_ended(pl, epoch).await {
+            if let Err(e) = advance_after_ended(pl, epoch, from_clip).await {
                 if pl.open_gen.get_value() != epoch {
                     return;
                 }
@@ -95,7 +91,7 @@ pub fn VideoPlaylist(
         });
     });
 
-    // Near-EOF: warm + SeamHold arm; near cut: dual-present handoff.
+    // Near-EOF: byte + PreferSoftware origin stash on idle (PlayPrime stash hit).
     Effect::new(move |_| {
         if !ready.get() {
             return;
@@ -109,8 +105,6 @@ pub fn VideoPlaylist(
         let _ = idle_clip.get();
         let _ = looping.get();
         maybe_kick_idle_seam_warm(playlist);
-        maybe_arm_idle_seam_hold(playlist);
-        maybe_handoff_seam(playlist);
     });
 
     let bump_gen = Rc::new({
@@ -140,9 +134,6 @@ pub fn VideoPlaylist(
             playlist.scrubbing.set(false);
             playlist.scrub_resume.set(false);
             playlist.seam_warm_for.set_value(None);
-            playlist.seam_hold_for.set_value(None);
-            playlist.seam_arming.set_value(false);
-            playlist.seam_handoff_inflight.set_value(false);
             sources.set_value(Vec::new());
             error.set(None);
             status.set("Closed.".into());
@@ -349,15 +340,16 @@ pub fn VideoPlaylist(
             }
             ended.set(false);
             let model = model.get_untracked();
-            let cur = pos.get_untracked();
-            let Some(clip) = model.clip(cur.clip_index as usize) else {
+            let clip_i = pl.live_clip.get_untracked();
+            let local = pl.live_video().frame.get_untracked();
+            let Some(clip) = model.clip(clip_i as usize) else {
                 return;
             };
-            if cur.local_frame < clip.last_frame() {
+            if local < clip.last_frame() {
                 pl.live_video().next_frame();
                 return;
             }
-            if let Some(n) = model.next_clip_index(cur.clip_index) {
+            if let Some(n) = model.next_clip_index(clip_i) {
                 seek_pos(PlaylistPos::new(n, 0));
             } else if looping.get_untracked() {
                 seek_pos(PlaylistPos::new(0, 0));
@@ -374,13 +366,14 @@ pub fn VideoPlaylist(
             }
             ended.set(false);
             let model = model.get_untracked();
-            let cur = pos.get_untracked();
-            if cur.local_frame > 0 {
+            let clip_i = pl.live_clip.get_untracked();
+            let local = pl.live_video().frame.get_untracked();
+            if local > 0 {
                 pl.live_video().previous_frame();
                 return;
             }
-            if cur.clip_index > 0 {
-                let prev = cur.clip_index - 1;
+            if clip_i > 0 {
+                let prev = clip_i - 1;
                 let last = model
                     .clip(prev as usize)
                     .map(|c| c.last_frame())

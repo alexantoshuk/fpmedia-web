@@ -179,6 +179,10 @@ Shared scrub/hover handle in `fpmedia-web-components` (`ready` / `playhead` / `f
 
 Position inside a playlist: **clip index** (0-based in the model; **1-based** `[i]` in UI) + **local** presentation frame or timecode of that clip. Not a single global FrameId / SMPTE across mixed-fps clips. Type + helpers: `fpmedia_web_components::video_playlist`. UX: `product.md` § Playlist position UI.
 
+### LoopZone
+
+Half-open wrap range when `looping` is on. Default = full file (single) or full playlist. Single `<Video>`: source FrameIds. Playlist: scrub **global frames**, may span clips. UX: `product.md` § Loop zone. Open work: `state.md`.
+
 ### Playlist
 
 Ordered list of media sources reviewed as one **frame-sum** timeline (Play All): scrub/tip/zebra/strips use Σ presentation frames. Element: [`<VideoPlaylist>`](#videoplaylist--videoplaylistref). Design: `architecture.md` § Playlist composition; open work: `state.md`.

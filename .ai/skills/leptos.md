@@ -22,13 +22,14 @@
 | Playlist load: gray fills then wipes | `<TimelineMeta>` holds paint until `timeline.ready` (probe open→close) |
 | Playlist thumbs only on live clip | max **2** slot-bound `ThumbSink`s (host policy on both); idle densify off; hover rebinds idle for off-slot clips — not N / not app-wide shared |
 | Scrub 3rd clip shows 1st media | `swap_live_idle`: `idle_clip` = former live only; neighbor via `preload_idle` — never label aspirational clip |
-| Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap (global frames); mirror only while live `playing` — `architecture.md` § Playlist |
+| Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap (global frames); mirror live→pos when not `scrubbing` (paused step OK; scrub owns aim) — `architecture.md` § Playlist |
 | Playlist scrub tip jumps on pointer-up | mirror must not stomp `playhead` from stale local `frame` after `scrubbing` clears |
 | Playlist zebra gate / stripe size wrong | axis = Σ frames (not ms); same `frame_zebra_step` as single-clip |
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
 | Playlist scrub→other clip drops Play | latch `scrub_resume` on Down while `playing` (soft-pause clears it before cross-cut) |
-| Playlist seam hitch / A/V gap | near-EOF `SeamHold` + warm audio release; mute/pause outgoing before release — `skills/media.md` |
-| Playlist loop wrap hitch (last→0; mid cuts OK) | `idle_neighbor(…, looping)` | last+loop → idle preload **0** (not previous); else SeamHold never arms → cold `play_seam_from_origin`. `set_loop(true)` re-preloads. **no equivalent** (playlist local) |
+| Playlist seam hitch / EOF flash→jump to 0 | near-EOF stash; **before swap** `prepare_seam_origin` — `skills/media.md` |
+| Playlist Next/Prev stuck in clip at EOF/0 | step uses live `frame`; mirror live→pos when not scrubbing |
+| Playlist loop wrap hitch (last→0) | `idle_neighbor(…, looping)` → idle preload **0**; `set_loop(true)` re-preloads. **no equivalent** |
 | Playlist seam volume jump | `VideoPlaylistRef::volume`/`muted` + `apply_gain_to_slots`; demo binds playlist gain, not live slot |
 | Playlist scrub stuck at cut on drag | never remount `<Scrubber>`; Meta re-leases via `strip_video_key` — `architecture.md` § Playlist |
 | Effect side-effect runs on mount | `Effect::watch(deps, handler, false)` — handler skips initial; `Effect::new` runs once after mount |

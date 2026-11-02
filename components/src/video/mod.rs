@@ -94,14 +94,10 @@ pub(crate) struct VideoOps {
     pub cancel_hover_thumb: Rc<dyn Fn()>,
     pub set_thumb_policy: Rc<dyn Fn(ThumbPolicy)>,
     pub set_scrub_cache_policy: Rc<dyn Fn(ScrubCachePolicy)>,
-    /// Playlist / loop: frame-0 byte warm future (joins PlayPrime at origin).
+    /// Playlist / loop: frame-0 byte + stash warm (joins PlayPrime at origin).
     pub warm_play_origin: LocalFutFn<()>,
-    /// Playlist dual-present: arm PlayIter@0 under held clock.
-    pub arm_seam_hold: LocalFutFn<Result<(), String>>,
-    /// Playlist cut: release held seam → Live + clock.
-    pub release_seam_hold: LocalFutFn<Result<(), String>>,
-    /// Engine `PlayPhase::SeamHold`.
-    pub seam_hold_armed: Rc<dyn Fn() -> bool>,
+    /// Idle: warm + paint origin on stage before live swap (no stale EOF flash).
+    pub prepare_seam_origin: LocalFutFn<Result<(), String>>,
 }
 
 impl VideoRef {
@@ -381,8 +377,8 @@ impl VideoRef {
         }
     }
 
-    /// Fire-and-forget frame-0 sample/audio warm (playlist near-EOF idle; joins
-    /// PlayPrime at origin via engine `play_origin_warm` SingleFlight).
+    /// Fire-and-forget frame-0 byte + PreferSoftware stash warm (playlist
+    /// near-EOF idle; joins PlayPrime origin stash hit).
     pub fn kick_warm_play_origin(&self) {
         if let Some(make) = self.op(|o| &o.warm_play_origin) {
             let fut = make();
@@ -392,36 +388,20 @@ impl VideoRef {
         }
     }
 
-    /// Await frame-0 byte warm (playlist seam before PlayPrime — hit path cheap).
+    /// Await frame-0 byte + origin stash warm (playlist seam before PlayPrime).
     pub async fn warm_play_origin(&self) {
         if let Some(make) = self.op(|o| &o.warm_play_origin) {
             make().await;
         }
     }
 
-    /// Playlist: prime idle PlayIter@0 with clock held (`SeamHold`).
-    pub async fn arm_seam_hold(&self) -> Result<(), String> {
-        if let Some(make) = self.op(|o| &o.arm_seam_hold) {
+    /// Paint origin on this (idle) slot before playlist promote.
+    pub async fn prepare_seam_origin(&self) -> Result<(), String> {
+        if let Some(make) = self.op(|o| &o.prepare_seam_origin) {
             make().await
         } else {
             Err("Video not mounted".into())
         }
-    }
-
-    /// Playlist cut: release `SeamHold` → playing Live (no cold PlayPrime).
-    pub async fn release_seam_hold(&self) -> Result<(), String> {
-        if let Some(make) = self.op(|o| &o.release_seam_hold) {
-            make().await
-        } else {
-            Err("Video not mounted".into())
-        }
-    }
-
-    /// True while this slot is in engine `SeamHold`.
-    pub fn seam_hold_armed(&self) -> bool {
-        self.op(|o| &o.seam_hold_armed)
-            .map(|f| f())
-            .unwrap_or(false)
     }
 }
 
