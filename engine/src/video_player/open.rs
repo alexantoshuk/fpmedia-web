@@ -167,6 +167,8 @@ impl VideoPlayer {
             frame: Cell::new(0),
             playing: Cell::new(false),
             looping: Cell::new(false),
+            loop_in: Cell::new(0),
+            loop_out: Cell::new(None),
             presentation: RefCell::new(VecDeque::new()),
             displayed: RefCell::new(None),
             step_behind: RefCell::new(VecDeque::new()),

@@ -57,6 +57,9 @@ pub fn Video(
         playing,
         looping,
         ended,
+        frame,
+        playhead,
+        timestamp,
         fps,
         error,
         status,
@@ -135,6 +138,13 @@ pub fn Video(
                         status.set("Ended.".into());
                     }
                     Ok(PlayTick::Presented { did_draw }) => {
+                        // Publish frame/playhead every present — playlist LoopZone
+                        // wall must not wait SYNC_UI_MS (~100ms) or EOF seams first.
+                        let st = p.state();
+                        let engine = st.frame.min(u64::from(u32::MAX)) as u32;
+                        frame.set(engine);
+                        playhead.set(engine);
+                        timestamp.set(st.timestamp.seconds);
                         let now = now_ms();
                         if did_draw
                             && let Some(measured) = fps_meter.borrow_mut().note_present()
@@ -205,6 +215,11 @@ pub fn Video(
                         status.set("Ended.".into());
                     }
                     Ok(PlayTick::Presented { did_draw }) => {
+                        let st = p.state();
+                        let engine = st.frame.min(u64::from(u32::MAX)) as u32;
+                        frame.set(engine);
+                        playhead.set(engine);
+                        timestamp.set(st.timestamp.seconds);
                         let now = now_ms();
                         if did_draw
                             && let Some(measured) = ctx.fps_meter.borrow_mut().note_present()
@@ -637,6 +652,39 @@ pub fn Video(
         }) as Rc<dyn Fn(bool)>
     };
 
+    let pause_hard_no_densify_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            // Leave Playing without SoftPause densify (not PausePressed).
+            note_transport(&ctx, TransportEvent::Ended);
+            ctx.with_player(|p| p.pause_hard_no_densify());
+            ctx.video.playing.set(false);
+            ctx.sync_ui();
+        }) as Rc<dyn Fn()>
+    };
+
+    let set_loop_zone_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |in_frame: u32, out_frame: u32| {
+            ctx.with_player(|p| p.set_loop_zone(u64::from(in_frame), u64::from(out_frame)));
+            let count = video.frame_count.get_untracked();
+            if count == 0 {
+                video.loop_in.set(0);
+                video.loop_out.set(None);
+            } else {
+                let in_f = in_frame.min(count.saturating_sub(1));
+                let out_f = out_frame.min(count).max(in_f.saturating_add(1));
+                video.loop_in.set(in_f);
+                if in_f == 0 && out_f == count {
+                    video.loop_out.set(None);
+                } else {
+                    video.loop_out.set(Some(out_f));
+                }
+            }
+            ctx.sync_ui();
+        }) as Rc<dyn Fn(u32, u32)>
+    };
+
     let set_volume_fn = {
         let ctx = ctx.clone();
         Rc::new(move |v: f64| {
@@ -731,19 +779,19 @@ pub fn Video(
         }) as super::LocalFutFn<()>
     };
 
-    let prepare_seam_origin_fn = {
+    let prepare_seam_at_fn = {
         let ctx = ctx.clone();
-        Rc::new(move || {
+        Rc::new(move |frame: u32| {
             let ctx = ctx.clone();
             Box::pin(async move {
                 let Some(p) = ctx.player.borrow().as_ref().cloned() else {
                     return Err("no player".into());
                 };
-                p.prepare_playlist_seam_origin()
+                p.prepare_playlist_seam_at(u64::from(frame))
                     .await
                     .map_err(|e| e.to_string())
             }) as super::BoxedLocalFut<Result<(), String>>
-        }) as super::LocalFutFn<Result<(), String>>
+        }) as super::LocalFutFnU32<Result<(), String>>
     };
 
     let close_fn = {
@@ -768,6 +816,8 @@ pub fn Video(
         next_frame: step_fn(true),
         previous_frame: step_fn(false),
         set_loop: set_loop_fn,
+        set_loop_zone: set_loop_zone_fn,
+        pause_hard_no_densify: pause_hard_no_densify_fn,
         set_volume: set_volume_fn,
         set_muted: set_muted_fn,
         set_playback_rate: set_playback_rate_fn,
@@ -777,7 +827,7 @@ pub fn Video(
         set_thumb_policy: set_thumb_policy_fn,
         set_scrub_cache_policy: set_scrub_cache_policy_fn,
         warm_play_origin: warm_play_origin_fn,
-        prepare_seam_origin: prepare_seam_origin_fn,
+        prepare_seam_at: prepare_seam_at_fn,
     }));
 
     on_cleanup({

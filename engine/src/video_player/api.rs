@@ -14,7 +14,8 @@ pub struct PlayerState {
     pub frame: FrameId,
     pub timestamp: Timestamp,
     pub playing: bool,
-    /// When true, playback wraps to frame 0 at end (HTML `<video loop>`).
+    /// When true, playback wraps to [`crate::LoopZone::in_frame`] at zone end
+    /// (HTML `<video loop>` + optional LoopZone).
     pub looping: bool,
     pub frame_count: u64,
 }

@@ -81,8 +81,8 @@ pub use model::transport::{
     TransportCmd, TransportEvent, TransportModel, TransportState, reduce as transport_reduce,
 };
 pub use policy::playback::{
-    EofWall, LOOP_ORIGIN_PREWARM_SECS, eof_timeline_end, eof_wall_decision,
-    should_prewarm_loop_origin,
+    EofWall, LOOP_ORIGIN_PREWARM_SECS, LoopZone, eof_timeline_end, eof_wall_decision,
+    loop_zone_wall_end, should_prewarm_loop_origin,
 };
 pub use policy::workload::{
     FRAGMENT_BACKFILL_IDLE_AHEAD, PLAY_THUMB_AIM_DECODE_MIN_MS, WorkloadHints, WorkloadMode,

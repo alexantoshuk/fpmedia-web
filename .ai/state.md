@@ -8,21 +8,18 @@
 
 ### Handoff
 
-- **HEAD:** playlist seam = origin stash + paint-before-swap; Next/Prev cross-clip via live `frame`; host dual-present SeamHold **removed** (engine `PlayPhase::SeamHold` APIs unused).
+- **HEAD:** LoopZone shipped (engine wall/`LoopSeam` at `loop_in`; playlist host wrap = paint-before-swap at `loop_in` + sync `zone_wrapping`; demo `[`/`]` + mask). Playlist clip seam = origin stash + paint-before-swap; host dual-present SeamHold **removed**.
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
 - **Parked:** Pause densify pin-holes; idle Fetch gray.
+- **Unverified:** full-axis loop regression; scrubber mask edge cases.
 
 ---
 
 ## Next up
 
-### 1. LoopZone
+### 1. CutWindow
 
-Single: source FrameIds + engine wall/`LoopSeam`. Playlist: global frames, host wrap; slots `set_loop(false)`. Full-axis loop stays seam last→0. Demo `[`/`]` + mask. UX: `product.md` § Loop zone / `glossary.md` § LoopZone.
-
-### 2. CutWindow (after LoopZone)
-
-Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. Not in the LoopZone pass.
+Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. After LoopZone (shipped — `architecture.md` § LoopZone).
 
 ### Playlist
 

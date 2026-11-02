@@ -29,6 +29,7 @@ use web_sys::HtmlCanvasElement;
 
 type BoxedLocalFut<T> = Pin<Box<dyn Future<Output = T>>>;
 type LocalFutFn<T> = Rc<dyn Fn() -> BoxedLocalFut<T>>;
+type LocalFutFnU32<T> = Rc<dyn Fn(u32) -> BoxedLocalFut<T>>;
 
 /// Cloneable handle to a mounted [`Video`] — like a ref to an HTMLMediaElement.
 #[derive(Clone, Copy)]
@@ -37,6 +38,10 @@ pub struct VideoRef {
     pub ready: RwSignal<bool>,
     pub playing: RwSignal<bool>,
     pub looping: RwSignal<bool>,
+    /// Inclusive LoopZone start (source FrameId). Default 0. See `glossary.md`.
+    pub loop_in: RwSignal<u32>,
+    /// Exclusive LoopZone end; `None` = full `frame_count`.
+    pub loop_out: RwSignal<Option<u32>>,
     /// True after playback stops because the last frame was reached (`loop` off).
     /// Cleared on [`Self::open_blob`], [`Self::close`], seek/scrub/step, and play.
     pub ended: RwSignal<bool>,
@@ -85,6 +90,10 @@ pub(crate) struct VideoOps {
     pub next_frame: Rc<dyn Fn()>,
     pub previous_frame: Rc<dyn Fn()>,
     pub set_loop: Rc<dyn Fn(bool)>,
+    /// Half-open `[in, out)` source frames while looping.
+    pub set_loop_zone: Rc<dyn Fn(u32, u32)>,
+    /// Cold stop without Covered/Exact fill (playlist seam / LoopZone wall).
+    pub pause_hard_no_densify: Rc<dyn Fn()>,
     pub set_volume: Rc<dyn Fn(f64)>,
     pub set_muted: Rc<dyn Fn(bool)>,
     pub set_playback_rate: Rc<dyn Fn(f64)>,
@@ -96,8 +105,8 @@ pub(crate) struct VideoOps {
     pub set_scrub_cache_policy: Rc<dyn Fn(ScrubCachePolicy)>,
     /// Playlist / loop: frame-0 byte + stash warm (joins PlayPrime at origin).
     pub warm_play_origin: LocalFutFn<()>,
-    /// Idle: warm + paint origin on stage before live swap (no stale EOF flash).
-    pub prepare_seam_origin: LocalFutFn<Result<(), String>>,
+    /// Idle: warm + paint `frame` before promote (0 = clip seam; mid = LoopZone in).
+    pub prepare_seam_at: LocalFutFnU32<Result<(), String>>,
 }
 
 impl VideoRef {
@@ -107,6 +116,8 @@ impl VideoRef {
             ready: RwSignal::new(false),
             playing: RwSignal::new(false),
             looping: RwSignal::new(false),
+            loop_in: RwSignal::new(0),
+            loop_out: RwSignal::new(None),
             ended: RwSignal::new(false),
             frame: RwSignal::new(0),
             playhead: RwSignal::new(0),
@@ -304,6 +315,50 @@ impl VideoRef {
         }
     }
 
+    /// Cold stop without densify (playlist LoopZone wall / seam). Not Pause button.
+    pub fn pause_hard_no_densify(&self) {
+        self.playing.set(false);
+        self.ended.set(false);
+        if let Some(pause) = self.op(|o| &o.pause_hard_no_densify) {
+            pause();
+        }
+    }
+
+    /// Resolved half-open LoopZone (`out` follows `frame_count` when unset).
+    pub fn loop_zone(&self) -> (u32, u32) {
+        let count = self.frame_count.get_untracked();
+        let in_f = self.loop_in.get_untracked();
+        let out_f = self.loop_out.get_untracked().unwrap_or(count);
+        if count == 0 {
+            return (0, 0);
+        }
+        let in_f = in_f.min(count.saturating_sub(1));
+        let out_f = out_f.min(count).max(in_f.saturating_add(1));
+        (in_f, out_f)
+    }
+
+    /// Set half-open `[in_frame, out_frame)` while looping. Full file when
+    /// `in_frame == 0` and `out_frame == frame_count` (or `out >= count`).
+    pub fn set_loop_zone(&self, in_frame: u32, out_frame: u32) {
+        let count = self.frame_count.get_untracked();
+        let (in_f, out_f) = if count == 0 {
+            (0, 0)
+        } else {
+            let in_f = in_frame.min(count.saturating_sub(1));
+            let out_f = out_frame.min(count).max(in_f.saturating_add(1));
+            (in_f, out_f)
+        };
+        self.loop_in.set(in_f);
+        if out_f == 0 || (in_f == 0 && out_f == count) {
+            self.loop_out.set(None);
+        } else {
+            self.loop_out.set(Some(out_f));
+        }
+        if let Some(set_zone) = self.op(|o| &o.set_loop_zone) {
+            set_zone(in_f, out_f);
+        }
+    }
+
     pub fn set_volume(&self, volume: f64) {
         let v = volume.clamp(0.0, 1.0);
         self.volume.set(v);
@@ -397,10 +452,25 @@ impl VideoRef {
 
     /// Paint origin on this (idle) slot before playlist promote.
     pub async fn prepare_seam_origin(&self) -> Result<(), String> {
-        if let Some(make) = self.op(|o| &o.prepare_seam_origin) {
-            make().await
+        self.prepare_seam_at(0).await
+    }
+
+    /// Paint `frame` on this (idle) slot before LoopZone / playlist promote.
+    pub async fn prepare_seam_at(&self, frame: u32) -> Result<(), String> {
+        if let Some(make) = self.op(|o| &o.prepare_seam_at) {
+            make(frame).await
         } else {
             Err("Video not mounted".into())
+        }
+    }
+
+    /// Fire-and-forget [`Self::prepare_seam_at`] (near-wall idle warm).
+    pub fn kick_prepare_seam_at(&self, frame: u32) {
+        if let Some(make) = self.op(|o| &o.prepare_seam_at) {
+            let fut = make(frame);
+            spawn_local(async move {
+                let _ = fut.await;
+            });
         }
     }
 }

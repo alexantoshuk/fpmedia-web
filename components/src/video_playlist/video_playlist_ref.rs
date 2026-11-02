@@ -23,6 +23,10 @@ pub struct VideoPlaylistRef {
     pub ended: RwSignal<bool>,
     /// Loop the whole playlist (clips themselves stay non-looping for seam).
     pub looping: RwSignal<bool>,
+    /// Inclusive LoopZone start in **global** frames. Default 0.
+    pub loop_in: RwSignal<u32>,
+    /// Exclusive LoopZone end (global); `None` = full Σ frames.
+    pub loop_out: RwSignal<Option<u32>>,
     pub model: RwSignal<PlaylistModel>,
     pub pos: RwSignal<PlaylistPos>,
     /// Scrub domain: global presentation frame ([`PlaylistModel::total_frame_count`]).
@@ -47,6 +51,8 @@ pub struct VideoPlaylistRef {
     pub(crate) open_gen: StoredValue<u64, LocalStorage>,
     /// Clip index already kicked for near-EOF origin warm this lap (`None` = none).
     pub(crate) seam_warm_for: StoredValue<Option<u32>, LocalStorage>,
+    /// LoopZone wrap in flight — ignore clip-EOF advance (avoids 2nd@0 seam race).
+    pub(crate) zone_wrapping: StoredValue<bool, LocalStorage>,
 }
 
 #[derive(Clone)]
@@ -71,6 +77,8 @@ impl VideoPlaylistRef {
             error: RwSignal::new(None),
             ended: RwSignal::new(false),
             looping: RwSignal::new(false),
+            loop_in: RwSignal::new(0),
+            loop_out: RwSignal::new(None),
             model: RwSignal::new(PlaylistModel::default()),
             pos: RwSignal::new(PlaylistPos::new(0, 0)),
             playhead: RwSignal::new(0),
@@ -89,23 +97,65 @@ impl VideoPlaylistRef {
             sources: StoredValue::new_local(Vec::new()),
             open_gen: StoredValue::new_local(0),
             seam_warm_for: StoredValue::new_local(None),
+            zone_wrapping: StoredValue::new_local(false),
         }
     }
 
     pub fn set_loop(self, on: bool) {
         self.looping.set(on);
-        // Loop on while live is last: idle → wrap target 0 for origin stash warm.
+        // Loop on: idle → wrap / zone-in neighbor for origin stash warm.
         if on {
-            let model = self.model.get_untracked();
-            let live = self.live_clip.get_untracked();
-            if let Some(want) = super::slots::idle_neighbor(&model, live, true)
-                && self.idle_clip.get_untracked() != Some(want)
-            {
-                let epoch = self.open_gen.get_value();
-                spawn_local(async move {
-                    preload_idle(self, Some(want), epoch).await;
-                });
-            }
+            self.repreload_idle_for_loop();
+        }
+    }
+
+    /// Resolved half-open LoopZone in global frames.
+    pub fn loop_zone(self) -> (u32, u32) {
+        let count = self.frame_count.get_untracked();
+        let in_f = self.loop_in.get_untracked();
+        let out_f = self.loop_out.get_untracked().unwrap_or(count);
+        if count == 0 {
+            return (0, 0);
+        }
+        let in_f = in_f.min(count.saturating_sub(1));
+        let out_f = out_f.min(count).max(in_f.saturating_add(1));
+        (in_f, out_f)
+    }
+
+    /// Set half-open `[in, out)` in **global** presentation frames.
+    /// Slots stay `set_loop(false)` — host owns wrap (**no equivalent**).
+    pub fn set_loop_zone(self, in_frame: u32, out_frame: u32) {
+        let count = self.frame_count.get_untracked();
+        if count == 0 {
+            self.loop_in.set(0);
+            self.loop_out.set(None);
+            return;
+        }
+        let in_f = in_frame.min(count.saturating_sub(1));
+        let out_f = out_frame.min(count).max(in_f.saturating_add(1));
+        self.loop_in.set(in_f);
+        if in_f == 0 && out_f == count {
+            self.loop_out.set(None);
+        } else {
+            self.loop_out.set(Some(out_f));
+        }
+        if self.looping.get_untracked() {
+            self.repreload_idle_for_loop();
+        }
+    }
+
+    fn repreload_idle_for_loop(self) {
+        let model = self.model.get_untracked();
+        let live = self.live_clip.get_untracked();
+        let (zone_in, zone_out) = self.loop_zone();
+        let want = super::slots::idle_neighbor_for_zone(&model, live, true, zone_in, zone_out);
+        if let Some(want) = want
+            && self.idle_clip.get_untracked() != Some(want)
+        {
+            let epoch = self.open_gen.get_value();
+            spawn_local(async move {
+                preload_idle(self, Some(want), epoch).await;
+            });
         }
     }
 

@@ -89,6 +89,11 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
                 p.set_volume(volume.get_untracked());
                 p.set_muted(muted.get_untracked());
             }
+            // New clip → full-axis LoopZone; preserve host `looping` intent.
+            ctx.video.loop_in.set(0);
+            ctx.video.loop_out.set(None);
+            p.set_loop(ctx.video.looping.get_untracked());
+            p.set_loop_zone(0, p.state().frame_count);
             let _ = p.relayout();
             *player.borrow_mut() = Some(Rc::clone(&p));
             status.set(OpenPhase::DecodingStart.label());
@@ -276,20 +281,36 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
         .min(u64::from(u32::MAX)) as u32;
     let eng = p.state().frame.min(u64::from(u32::MAX)) as u32;
     let mut ph = playhead.get_untracked().min(indexed_last);
-    // At last frame (EOF or seek-to-end): restart from 0 — loop on or off.
-    // Otherwise PlayPrime arms the clock on the last sample and leaks ~½ s audio
-    // before the EOF wall. mediabunny: examples/media-player/media-player.ts
-    // `play` — `getPlaybackTime() === endTimestamp` → snap to `firstTimestamp`.
-    if p.state().frame_count > 0 && ph >= indexed_last {
+    // At zone/file end (or outside LoopZone while looping): snap to loop-in
+    // (full axis → 0). Otherwise PlayPrime arms the clock on the last sample
+    // and leaks ~½ s audio. mediabunny: media-player `play` at endTimestamp →
+    // firstTimestamp. LoopZone: **no equivalent**.
+    let zone = p.loop_zone();
+    let zone_in = zone.in_frame.min(u64::from(u32::MAX)) as u32;
+    let zone_last = zone
+        .out_frame
+        .saturating_sub(1)
+        .min(u64::from(indexed_last)) as u32;
+    if p.is_looping() {
+        if ph >= zone_last || ph < zone_in {
+            web_sys::console::log_1(&format!("fpmedia-web: play snap → loop_in {zone_in}").into());
+            playhead.set(zone_in);
+            ph = zone_in;
+        }
+    } else if p.state().frame_count > 0 && ph >= indexed_last {
         web_sys::console::log_1(&"fpmedia-web: play at last frame → restart 0".into());
         playhead.set(0);
         ph = 0;
     }
-    if !p.frame_exact_ready(u64::from(ph)) {
+    // Snap only when aim is past the indexed prefix (fMP4 warm hole). Do **not**
+    // use `!frame_exact_ready` — Exact blit is almost always missing after a
+    // cross-clip promote / LoopZone wrap, and snapping to eng=0 replayed clip
+    // origin (2nd@0 flash) before seeking to `range_in`.
+    if ph > indexed_last {
         let safe = eng.min(indexed_last);
         if safe != ph {
             web_sys::console::log_1(
-                &format!("fpmedia-web: play snap cold playhead {ph} → {safe}").into(),
+                &format!("fpmedia-web: play snap unindexed playhead {ph} → {safe}").into(),
             );
             playhead.set(safe);
             ph = safe;

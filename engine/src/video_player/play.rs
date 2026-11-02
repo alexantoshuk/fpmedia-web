@@ -13,7 +13,7 @@ use crate::decode::webcodecs::{PlayIter, WebCodecsDecoder};
 use crate::error::MediaError;
 use crate::model::play_phase::{PlayPhase, PlayPhaseEvent, reduce as play_phase_reduce};
 use crate::policy::playback::{
-    EofWall, LOOP_ORIGIN_PREWARM_SECS, eof_timeline_end, eof_wall_decision,
+    EofWall, LOOP_ORIGIN_PREWARM_SECS, eof_timeline_end, eof_wall_decision, loop_zone_wall_end,
     should_prewarm_loop_origin,
 };
 use crate::policy::{
@@ -340,8 +340,8 @@ impl VideoPlayer {
         let player = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
             let epoch = player.shared.op_epoch.get();
-            // Finish (or start) origin warm under the held clock — hit path is cheap.
-            let _ = player.warm_play_origin_bytes().await;
+            // Finish (or start) loop-in warm under the held clock — hit path is cheap.
+            let _ = player.warm_loop_in_bytes().await;
             if player.shared.play_phase.get() != PlayPhase::LoopSeam {
                 return;
             }
@@ -350,12 +350,15 @@ impl VideoPlayer {
                 return;
             }
             // Stash hit: paint + seed sync, main catch-up in bg (Remotion swap).
-            // Miss: await `start_play_iter(0)` under the hold (old path).
-            let primed = if let Some(stash) = player.shared.loop_origin_stash.borrow_mut().take() {
-                player.start_loop_seam_with_stash(stash, epoch);
-                Ok(())
-            } else {
-                player.start_play_iter(0, epoch).await
+            // Miss: await `start_play_iter(loop_in)` under the hold (old path).
+            let origin = player.shared.loop_zone().in_frame;
+            let stash = player.shared.loop_origin_stash.borrow_mut().take();
+            let primed = match stash {
+                Some(stash) if stash.first == origin => {
+                    player.start_loop_seam_with_stash(stash, epoch);
+                    Ok(())
+                }
+                _ => player.start_play_iter(origin, epoch).await,
             };
             if player.shared.play_phase.get() != PlayPhase::LoopSeam {
                 return;
@@ -412,18 +415,32 @@ impl VideoPlayer {
     /// Hits PreferSoftware stash preview; else Exact@0; else `seek_frame(0)`
     /// when still on a non-origin frame (wrap: same clip left at EOF).
     pub async fn prepare_playlist_seam_origin(self: &Rc<Self>) -> Result<(), MediaError> {
-        self.warm_play_origin_bytes().await?;
-        let _ = self.warm_play_origin_stash().await;
-        if self.paint_origin_stash_preview() {
+        self.prepare_playlist_seam_at(0).await
+    }
+
+    /// Idle playlist slot: warm + paint `frame` before promote (LoopZone
+    /// `loop_in` may be mid-clip). Origin uses PreferSoftware stash; else Exact;
+    /// else `seek_frame`. **no equivalent** (playlist local).
+    pub async fn prepare_playlist_seam_at(
+        self: &Rc<Self>,
+        frame: FrameId,
+    ) -> Result<(), MediaError> {
+        if frame == 0 {
+            self.warm_play_origin_bytes().await?;
+            let _ = self.warm_play_origin_stash().await;
+            if self.paint_origin_stash_preview() {
+                return Ok(());
+            }
+        } else {
+            let _ = self.warm_play_sample_lead(frame, false).await;
+        }
+        if self.try_present_scrub_exact(frame) {
+            let _ = self.shared.commit_frame(frame);
+            self.touch_playhead(frame);
             return Ok(());
         }
-        if self.try_present_scrub_exact(0) {
-            let _ = self.shared.commit_frame(0);
-            self.touch_playhead(0);
-            return Ok(());
-        }
-        if self.state().frame != 0 {
-            self.seek_frame(0).await?;
+        if self.state().frame != frame {
+            self.seek_frame(frame).await?;
         }
         Ok(())
     }
@@ -484,9 +501,12 @@ impl VideoPlayer {
                     .metadata_ref()
                     .settle_policy()
                     .play_index_lead;
-                let iter = PlayIter::start(decoder, player.shared.track.clone(), 0, lead);
+                // Must start at stash origin (`loop_in`), not hard-coded 0 —
+                // else clock resumes at in while iter skip-catches 0→in (accel).
+                let iter = PlayIter::start(decoder, player.shared.track.clone(), first, lead);
                 *player.shared.play_iter.borrow_mut() = Some(iter.clone());
 
+                // Drop samples already painted / seeded from PreferSoftware stash.
                 let first_sample = iter.next().await?;
                 if !player.is_current(epoch) || !player.is_current_iter(&iter) {
                     return Err(MediaError::Cancelled);
@@ -529,7 +549,7 @@ impl VideoPlayer {
         });
     }
 
-    /// Kick loop-origin byte + decode prewarm once in the near-EOF window.
+    /// Kick loop-origin byte + decode prewarm once in the near-zone-end window.
     fn maybe_kick_loop_origin_prewarm(self: &Rc<Self>, media_time_secs: f64) {
         if !self.is_looping()
             || self.shared.loop_origin_warm_started.get()
@@ -537,21 +557,21 @@ impl VideoPlayer {
         {
             return;
         }
-        let Some(last_end) = self.timeline_last_end() else {
+        let Some(wall_end) = self.loop_wall_end() else {
             return;
         };
-        if !should_prewarm_loop_origin(media_time_secs, last_end, LOOP_ORIGIN_PREWARM_SECS) {
+        if !should_prewarm_loop_origin(media_time_secs, wall_end, LOOP_ORIGIN_PREWARM_SECS) {
             return;
         }
         self.shared.loop_origin_warm_started.set(true);
         let player = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = player.warm_play_origin_bytes().await;
+            let _ = player.warm_loop_in_bytes().await;
             let _ = player.warm_loop_origin_decode().await;
         });
     }
 
-    /// Sample-end seconds for the current indexed timeline (EOF wall).
+    /// Sample-end seconds for the current indexed timeline (full-file EOF wall).
     fn timeline_last_end(&self) -> Option<f64> {
         let track = &self.shared.track;
         let index = track.index();
@@ -569,6 +589,41 @@ impl VideoPlayer {
             indexed,
             count,
         ))
+    }
+
+    /// Composition end (seconds) of presentation frame `frame` when indexed.
+    fn sample_end_secs(&self, frame: crate::FrameId) -> Option<f64> {
+        let index = self.shared.track.index();
+        let entry = index.get(frame)?;
+        Some(
+            entry.composition_timestamp().seconds
+                + (entry.duration_ticks as f64 / entry.timescale.max(1) as f64),
+        )
+    }
+
+    /// EOF / LoopZone wall end while playing (zone subset → end of `out - 1`).
+    fn loop_wall_end(&self) -> Option<f64> {
+        let full = self.timeline_last_end()?;
+        if !self.is_looping() {
+            return Some(full);
+        }
+        let count = self.state().frame_count;
+        let zone = self.shared.loop_zone();
+        let out_end = zone
+            .out_frame
+            .checked_sub(1)
+            .and_then(|f| self.sample_end_secs(f));
+        Some(loop_zone_wall_end(zone, count, out_end, full))
+    }
+
+    /// Byte warm for seam restart head (`loop_in`; frame 0 joins origin flight).
+    async fn warm_loop_in_bytes(&self) -> Result<(), MediaError> {
+        let origin = self.shared.loop_zone().in_frame;
+        if origin == 0 {
+            self.warm_play_origin_bytes().await
+        } else {
+            self.warm_play_sample_lead(origin, false).await
+        }
     }
 
     /// Tab hidden or post-visible grace — skip video-underrun → audio silence.
@@ -846,7 +901,9 @@ impl VideoPlayer {
 
         let t0 = now_ms().unwrap_or(0.0);
         let lead = meta.settle_policy().play_index_lead;
-        let iter = PlayIter::start(decoder, track, 0, lead);
+        // LoopZone in-frame (default 0). Playlist idle seam still uses this at 0.
+        let origin = self.shared.loop_zone().in_frame;
+        let iter = PlayIter::start(decoder, track, origin, lead);
         let first = match iter.next().await {
             Ok(v) => v,
             Err(e) => {
@@ -1024,9 +1081,12 @@ impl VideoPlayer {
         }
         let epoch = self.shared.op_epoch.get();
         let head = self.state().frame;
-        // Origin: join playlist/loop near-EOF prewarm. Mid-clip: require Playing.
+        let loop_in = self.shared.loop_zone().in_frame;
+        // Origin / loop-in: join near-EOF prewarm. Mid-clip: require Playing.
         if head == 0 {
             self.warm_play_origin_bytes().await?;
+        } else if head == loop_in {
+            self.warm_loop_in_bytes().await?;
         } else {
             self.warm_play_sample_lead(head, true).await?;
         }
@@ -1035,8 +1095,9 @@ impl VideoPlayer {
         }
         // Playlist/loop PreferSoftware stash — sync paint (no await origin decode).
         // Host near-EOF kick fills it; miss → cold `start_play_iter` below.
-        if head == 0
+        if head == loop_in
             && let Some(stash) = self.shared.loop_origin_stash.borrow_mut().take()
+            && stash.first == loop_in
         {
             web_sys::console::log_1(&"fpmedia-web: PlayPrime origin stash hit".into());
             self.start_loop_seam_with_stash(stash, epoch);
@@ -1162,13 +1223,18 @@ impl VideoPlayer {
 
         // fMP4 warm-open: `frame_count` is provisional (tfra) while the index is
         // still short — never `get(count-1)` until backfill finishes.
-        let Some(last_end) = self.timeline_last_end() else {
+        let Some(wall_end) = self.loop_wall_end() else {
             return Ok(DuePresent::Ended);
         };
+        let zone = self.shared.loop_zone();
+        // Full-axis: drain last nextFrame. Mid LoopZone: wrap now — iterator
+        // still has post-`out` samples so pending would never clear.
+        let drain_pending = !self.is_looping() || zone.is_full(count);
         if let Some(wall) = eof_wall_decision(
-            media_time_secs >= last_end,
+            media_time_secs >= wall_end,
             self.play_pending(),
             self.is_looping(),
+            drain_pending,
         ) {
             match wall {
                 EofWall::DrainRemaining => {}

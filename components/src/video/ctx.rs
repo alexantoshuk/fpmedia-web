@@ -88,7 +88,10 @@ impl HostCtx {
         sync_playing_from_transport(self);
         let p = self.player.borrow().as_ref().cloned();
         if let Some(p) = p {
-            p.pause();
+            // EOF / HardPause / error: no ScheduleDensify — playlist seam was
+            // hitching on Covered/Exact fill between End and next Play.
+            // Pause button → `pause_warm_idle` (densify on).
+            p.pause_hard_no_densify();
         }
         self.fps_meter.borrow_mut().reset();
         v.fps.set(None);
@@ -137,6 +140,8 @@ impl HostCtx {
         v.frame.set(0);
         v.playhead.set(0);
         v.frame_count.set(0);
+        v.loop_in.set(0);
+        v.loop_out.set(None);
         v.timestamp.set(0.0);
         v.has_audio.set(false);
     }

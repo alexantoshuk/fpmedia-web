@@ -138,8 +138,17 @@ impl VideoPlayer {
     }
 
     pub fn pause(&self) {
-        // Cold audio + densify (open / EOF / abort-prime tear-down).
+        // Cold audio + densify (seek prep / open tear-down that wants idle fill).
         self.pause_inner(false, true);
+    }
+
+    /// Cold stop **without** densify — EOF / `stop_playback` / playlist seam.
+    ///
+    /// Hard [`Self::pause`] arms Covered/Exact fill; that hitchs playlist clip
+    /// joins (End → densify → next Play). Pause **button** still uses
+    /// [`Self::pause_warm_idle`]. **no equivalent** (playlist local).
+    pub fn pause_hard_no_densify(&self) {
+        self.pause_inner(false, false);
     }
 
     /// Leave play with soft-held audio — **no densify** (soft-drag under finger).
@@ -253,6 +262,32 @@ impl VideoPlayer {
 
     pub fn is_looping(&self) -> bool {
         self.shared.looping.get()
+    }
+
+    /// Half-open `[in_frame, out_frame)` while looping. Default = full file.
+    ///
+    /// **no equivalent** (loop zone local). Invalidates PreferSoftware origin
+    /// stash when `in_frame` changes so a stale frame-0 stash cannot paint.
+    pub fn set_loop_zone(&self, in_frame: crate::FrameId, out_frame: crate::FrameId) {
+        let count = self.state().frame_count;
+        let zone = crate::LoopZone::normalize(in_frame, out_frame, count);
+        let prev = self.shared.loop_zone();
+        self.shared.loop_in.set(zone.in_frame);
+        // Open end tracks fMP4 growth when the zone is still full-axis.
+        if zone.is_full(count) {
+            self.shared.loop_out.set(None);
+        } else {
+            self.shared.loop_out.set(Some(zone.out_frame));
+        }
+        if prev.in_frame != zone.in_frame {
+            self.shared.loop_origin_stash.borrow_mut().take();
+            self.shared.loop_origin_warm_started.set(false);
+        }
+    }
+
+    /// Resolved loop zone (`out` follows `frame_count` when unset).
+    pub fn loop_zone(&self) -> crate::LoopZone {
+        self.shared.loop_zone()
     }
 
     pub fn is_restarting(&self) -> bool {

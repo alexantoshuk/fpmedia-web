@@ -181,7 +181,7 @@ Position inside a playlist: **clip index** (0-based in the model; **1-based** `[
 
 ### LoopZone
 
-Half-open wrap range when `looping` is on. Default = full file (single) or full playlist. Single `<Video>`: source FrameIds. Playlist: scrub **global frames**, may span clips. UX: `product.md` § Loop zone. Open work: `state.md`.
+Half-open wrap range `[in, out)` when `looping` is on. Default = full file (single) or full playlist. Single `<Video>`: source FrameIds + engine wall/`LoopSeam`. Playlist: scrub **global frames**, host wrap; slots non-looping. API: `VideoRef` / `VideoPlaylistRef` `set_loop_zone` / `loop_zone`. Demo `[`/`]` + mask. UX: `product.md` § Loop zone. Design: `architecture.md` § LoopZone.
 
 ### Playlist
 

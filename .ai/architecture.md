@@ -219,13 +219,23 @@ flowchart TD
   DRAW --> NEXT["update_next_frame<br/>draw overdue, park first future"]
   HOLD --> NEXT
   NEXT --> RAF
-  DUE -->|"EOF + loop"| LOOP["start_loop_seam<br/>stash paint or start_play_iter(0)"]
+  DUE -->|"EOF + loop"| LOOP["start_loop_seam<br/>stash paint or start_play_iter(loop_in)"]
   LOOP --> RAF
 ```
 
 `PlayPhase` (`Idle` / `Live` / `LoopSeam`) is the session machine; seek / scrub / pause end it (`clear_play_session` → `PlayIter::finish` resets and returns the decoder). Seek / step / Exact stay on `decode_frame` + warm pump (`samplesAtTimestamps`-shaped); Play never reads the presentation queue.
 
-**Loop (local / Remotion-shaped):** MB media-player has no loop. Near-EOF (~1 s) warms origin **bytes** + PreferSoftware **decode stash** (frame 0/+1 canvases) while main PlayIter still owns HW. `LoopSeam` paints stash, seeds `play_next`, resumes clock; main PlayIter catch-up drains under `play_updating`. Miss → await `start_play_iter(0)` under hold (old path). Traps: `skills/media.md`.
+**Loop (local / Remotion-shaped):** MB media-player has no loop. Near zone-end (~1 s) warms **loop-in** bytes + PreferSoftware decode stash (`loop_in`/+1) while main PlayIter still owns HW. `LoopSeam` paints stash, seeds `play_next`, resumes clock; main PlayIter catch-up drains under `play_updating`. Miss → await `start_play_iter(loop_in)` under hold. Traps: `skills/media.md`.
+
+**LoopZone (shipped, local):** Half-open `[in, out)` while `looping`. Default = full axis (`in=0`, `out=frame_count` / Σ frames). Vocab: `glossary.md` § LoopZone. UX: `product.md` § Loop zone.
+
+| Surface | Rule |
+| ------- | ---- |
+| Single `<Video>` | Source FrameIds; engine EOF wall at zone end; `LoopSeam` → `loop_in`. API: `set_loop_zone` / `loop_zone`. |
+| Playlist | Global frames; slots `set_loop(false)`; host wrap (`wrap_to_loop_in` / seam) when playhead ≥ `out`. Idle preload favors zone-in clip near wrap. |
+| Full axis | Same as pre-zone last→0 / last-clip→0 seam. |
+| Demo | `[` / `]` set in/out from playhead (same spot toggles reset in→0 / out→full), arm loop if off; scrubber dim outside zone. |
+| Not in this pass | CutWindow (`state.md`). |
 
 While Playing: densify is off (epoch cancel); Exact trail uses farthest-evict trim only — never a full Exact wipe. Continuous Play prioritizes cadence and A/V sync over painting every presentation frame (`product.md` Exact vs Play). Shuttle may drop overdue frames. Prefer mediabunny present + clock patterns; silent clock uses wall time when there is no audible audio graph.
 

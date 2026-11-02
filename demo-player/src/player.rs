@@ -772,6 +772,68 @@ pub fn DemoPlayer() -> impl IntoView {
                 volume_open.set(false);
                 position_open.set(false);
             }
+            "[" => {
+                // LoopZone in = playhead; same spot again → reset in to 0.
+                // Arms loop if off.
+                ev.prevent_default();
+                if pl {
+                    if !playlist.looping.get_untracked() {
+                        playlist.set_loop(true);
+                    }
+                    let ph = playlist.playhead.get_untracked();
+                    let (inn, out) = playlist.loop_zone();
+                    if inn == ph {
+                        playlist.set_loop_zone(0, out);
+                    } else {
+                        playlist.set_loop_zone(ph, out.max(ph.saturating_add(1)));
+                    }
+                } else {
+                    if !video.looping.get_untracked() {
+                        video.set_loop(true);
+                    }
+                    let ph = video.playhead.get_untracked();
+                    let (inn, out) = video.loop_zone();
+                    if inn == ph {
+                        video.set_loop_zone(0, out);
+                    } else {
+                        video.set_loop_zone(ph, out.max(ph.saturating_add(1)));
+                    }
+                }
+            }
+            "]" => {
+                // LoopZone out = playhead + 1; same spot again → reset out to full.
+                // Arms loop if off.
+                ev.prevent_default();
+                if pl {
+                    if !playlist.looping.get_untracked() {
+                        playlist.set_loop(true);
+                    }
+                    let ph = playlist.playhead.get_untracked();
+                    let (inn, out) = playlist.loop_zone();
+                    let want_out = ph.saturating_add(1);
+                    let count = playlist.frame_count.get_untracked();
+                    if out == want_out {
+                        playlist.set_loop_zone(inn, count.max(inn.saturating_add(1)));
+                    } else {
+                        let inn = inn.min(want_out.saturating_sub(1));
+                        playlist.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
+                    }
+                } else {
+                    if !video.looping.get_untracked() {
+                        video.set_loop(true);
+                    }
+                    let ph = video.playhead.get_untracked();
+                    let (inn, out) = video.loop_zone();
+                    let want_out = ph.saturating_add(1);
+                    let count = video.frame_count.get_untracked();
+                    if out == want_out {
+                        video.set_loop_zone(inn, count.max(inn.saturating_add(1)));
+                    } else {
+                        let inn = inn.min(want_out.saturating_sub(1));
+                        video.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
+                    }
+                }
+            }
             _ => {}
         }
     });
@@ -2132,35 +2194,84 @@ fn DemoScrubber(
                     <HoverThumbFrameLabel video=video format=position_format />
                 </HoverThumb>
             </Show>
-            <div class="wm-scrubber-track">
-                <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />
-                <TimelineMeta
-                    kind=TimelineMetaKind::Fetch
-                    class="wm-scrubber-fetched".to_string()
-                    test_id="scrubber-fetched"
-                />
-                <ScrubProgress />
-                <ScrubPlayheadTip />
-            </div>
-            // Keyframes strip (yellow sync ticks) is debug-only — off by default
-            // (distracting). Re-enable:
-            //   <TimelineMeta kind=TimelineMetaKind::Keyframes class="wm-ready-strip is-keyframes".to_string() />
-            // under Covered in the ready row.
-            <div
-                class="wm-scrubber-ready"
-                aria-hidden="true"
-                title="Decode densify: dim=markers (kept on Play), bright=blit ImageBitmap"
+            <LoopZoneFade
+                looping=Signal::derive(move || video.looping.get())
+                loop_in=Signal::derive(move || video.loop_in.get())
+                loop_out=Signal::derive(move || video.loop_out.get())
+                frame_count=Signal::derive(move || video.frame_count.get())
             >
-                <TimelineMeta
-                    kind=TimelineMetaKind::Covered
-                    class="wm-ready-strip is-covered".to_string()
-                />
-                <TimelineMeta
-                    kind=TimelineMetaKind::Exact
-                    class="wm-ready-strip is-exact".to_string()
-                />
-            </div>
+                <div class="wm-scrubber-track">
+                    <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />
+                    <TimelineMeta
+                        kind=TimelineMetaKind::Fetch
+                        class="wm-scrubber-fetched".to_string()
+                        test_id="scrubber-fetched"
+                    />
+                    <ScrubProgress />
+                    <ScrubPlayheadTip />
+                </div>
+                // Keyframes strip (yellow sync ticks) is debug-only — off by default
+                // (distracting). Re-enable:
+                //   <TimelineMeta kind=TimelineMetaKind::Keyframes class="wm-ready-strip is-keyframes".to_string() />
+                // under Covered in the ready row.
+                <div
+                    class="wm-scrubber-ready"
+                    aria-hidden="true"
+                    title="Decode densify: dim=markers (kept on Play), bright=blit ImageBitmap"
+                >
+                    <TimelineMeta
+                        kind=TimelineMetaKind::Covered
+                        class="wm-ready-strip is-covered".to_string()
+                    />
+                    <TimelineMeta
+                        kind=TimelineMetaKind::Exact
+                        class="wm-ready-strip is-exact".to_string()
+                    />
+                </div>
+            </LoopZoneFade>
         </Scrubber>
+    }
+}
+
+/// Fade track+progress+ready outside LoopZone via CSS mask (not a black overlay).
+#[component]
+fn LoopZoneFade(
+    looping: Signal<bool>,
+    loop_in: Signal<u32>,
+    loop_out: Signal<Option<u32>>,
+    frame_count: Signal<u32>,
+    children: Children,
+) -> impl IntoView {
+    let faded = Memo::new(move |_| {
+        if !looping.get() {
+            return false;
+        }
+        let n = frame_count.get();
+        if n == 0 {
+            return false;
+        }
+        let in_f = loop_in.get();
+        let out_f = loop_out.get().unwrap_or(n);
+        !(in_f == 0 && out_f >= n)
+    });
+    let style = Memo::new(move |_| {
+        if !faded.get() {
+            return String::new();
+        }
+        let n = frame_count.get().max(1) as f64;
+        let in_pct = (loop_in.get() as f64 / n * 100.0).clamp(0.0, 100.0);
+        let out_f = loop_out.get().unwrap_or(frame_count.get()) as f64;
+        let out_pct = (out_f / n * 100.0).clamp(0.0, 100.0);
+        format!("--loop-in-pct:{in_pct:.4}%;--loop-out-pct:{out_pct:.4}%;")
+    });
+    view! {
+        <div
+            class="wm-scrubber-body"
+            class:is-loop-faded=move || faded.get()
+            style=move || style.get()
+        >
+            {children()}
+        </div>
     }
 }
 
@@ -2183,30 +2294,37 @@ fn DemoPlaylistScrubber(
                     />
                 </HoverThumb>
             </Show>
-            <div class="wm-scrubber-track">
-                <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />
-                <TimelineMeta
-                    kind=TimelineMetaKind::Fetch
-                    class="wm-scrubber-fetched".to_string()
-                    test_id="scrubber-fetched"
-                />
-                <ScrubProgress />
-                <ScrubPlayheadTip />
-            </div>
-            <div
-                class="wm-scrubber-ready"
-                aria-hidden="true"
-                title="Decode densify: dim=markers (kept on Play), bright=blit ImageBitmap"
+            <LoopZoneFade
+                looping=Signal::derive(move || playlist.looping.get())
+                loop_in=Signal::derive(move || playlist.loop_in.get())
+                loop_out=Signal::derive(move || playlist.loop_out.get())
+                frame_count=Signal::derive(move || playlist.frame_count.get())
             >
-                <TimelineMeta
-                    kind=TimelineMetaKind::Covered
-                    class="wm-ready-strip is-covered".to_string()
-                />
-                <TimelineMeta
-                    kind=TimelineMetaKind::Exact
-                    class="wm-ready-strip is-exact".to_string()
-                />
-            </div>
+                <div class="wm-scrubber-track">
+                    <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />
+                    <TimelineMeta
+                        kind=TimelineMetaKind::Fetch
+                        class="wm-scrubber-fetched".to_string()
+                        test_id="scrubber-fetched"
+                    />
+                    <ScrubProgress />
+                    <ScrubPlayheadTip />
+                </div>
+                <div
+                    class="wm-scrubber-ready"
+                    aria-hidden="true"
+                    title="Decode densify: dim=markers (kept on Play), bright=blit ImageBitmap"
+                >
+                    <TimelineMeta
+                        kind=TimelineMetaKind::Covered
+                        class="wm-ready-strip is-covered".to_string()
+                    />
+                    <TimelineMeta
+                        kind=TimelineMetaKind::Exact
+                        class="wm-ready-strip is-exact".to_string()
+                    />
+                </div>
+            </LoopZoneFade>
         </Scrubber>
     }
 }

@@ -10,7 +10,9 @@ use wasm_bindgen_futures::spawn_local;
 use crate::Video;
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
-use super::slots::{advance_after_ended, maybe_kick_idle_seam_warm, seek_to_pos, wait_ready};
+use super::slots::{
+    advance_after_ended, maybe_kick_idle_seam_warm, seek_to_pos, wait_ready, wrap_to_loop_in,
+};
 use super::source::PlaylistSource;
 use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};
 
@@ -68,6 +70,7 @@ pub fn VideoPlaylist(
     });
 
     // Clip EOF → advance playlist (swap → play_seam; origin stash when warmed).
+    // LoopZone past `out` / zone-ending clip → wrap only (never origin seam).
     Effect::new(move |_| {
         if !ready.get() {
             return;
@@ -80,6 +83,34 @@ pub fn VideoPlaylist(
         let from_clip = live_clip.get_untracked();
         let epoch = open_gen.get_value();
         let pl = playlist;
+        if pl.zone_wrapping.get_value() {
+            return;
+        }
+        let model = pl.model.get_untracked();
+        let (zone_in, zone_out) = pl.loop_zone();
+        let total = model.total_frame_count();
+        let zone_full = zone_in == 0 && zone_out == total;
+        let g = playhead.get_untracked();
+        let zone_ends_here = pl.looping.get_untracked()
+            && !zone_full
+            && (g >= zone_out
+                || model
+                    .clip_end_frame(from_clip)
+                    .is_some_and(|end| zone_out <= end));
+        if zone_ends_here {
+            // Latch before spawn — else advance seam races wrap microtask.
+            pl.zone_wrapping.set_value(true);
+            spawn_local(async move {
+                if let Err(e) = wrap_to_loop_in(pl, epoch).await {
+                    if pl.open_gen.get_value() != epoch {
+                        return;
+                    }
+                    pl.error.set(Some(e));
+                    pl.status.set("LoopZone wrap failed.".into());
+                }
+            });
+            return;
+        }
         spawn_local(async move {
             if let Err(e) = advance_after_ended(pl, epoch, from_clip).await {
                 if pl.open_gen.get_value() != epoch {
@@ -87,6 +118,46 @@ pub fn VideoPlaylist(
                 }
                 pl.error.set(Some(e.clone()));
                 pl.status.set("Playlist seam failed.".into());
+            }
+        });
+    });
+
+    // LoopZone mid-clip wall: host wrap when global playhead reaches `out`
+    // (slots stay non-looping). Latch sync, then paint-before-swap wrap —
+    // do not pause@out (that was the hitch + 2nd@0 race). **no equivalent**.
+    Effect::new(move |_| {
+        if !ready.get() || !looping.get() {
+            return;
+        }
+        let live = if live_is_a.get() { slot_a } else { slot_b };
+        if playlist.scrubbing.get() {
+            return;
+        }
+        if !live.playing.get() && !live.ended.get() {
+            return;
+        }
+        let g = playhead.get();
+        let (zone_in, zone_out) = playlist.loop_zone();
+        let total = frame_count.get_untracked();
+        if zone_out == 0 || (zone_in == 0 && zone_out == total) {
+            return;
+        }
+        if g < zone_out {
+            return;
+        }
+        if playlist.zone_wrapping.get_value() {
+            return;
+        }
+        playlist.zone_wrapping.set_value(true);
+        let epoch = open_gen.get_value();
+        let pl = playlist;
+        spawn_local(async move {
+            if let Err(e) = wrap_to_loop_in(pl, epoch).await {
+                if pl.open_gen.get_value() != epoch {
+                    return;
+                }
+                pl.error.set(Some(e));
+                pl.status.set("LoopZone wrap failed.".into());
             }
         });
     });
@@ -104,6 +175,8 @@ pub fn VideoPlaylist(
         let _ = live_clip.get();
         let _ = idle_clip.get();
         let _ = looping.get();
+        let _ = playlist.loop_in.get();
+        let _ = playlist.loop_out.get();
         maybe_kick_idle_seam_warm(playlist);
     });
 
@@ -128,12 +201,15 @@ pub fn VideoPlaylist(
             pos.set(PlaylistPos::new(0, 0));
             playhead.set(0);
             frame_count.set(0);
+            playlist.loop_in.set(0);
+            playlist.loop_out.set(None);
             live_clip.set(0);
             idle_clip.set(None);
             live_is_a.set(true);
             playlist.scrubbing.set(false);
             playlist.scrub_resume.set(false);
             playlist.seam_warm_for.set_value(None);
+            playlist.zone_wrapping.set_value(false);
             sources.set_value(Vec::new());
             error.set(None);
             status.set("Closed.".into());
@@ -196,6 +272,8 @@ pub fn VideoPlaylist(
                 let total_frames = built.total_frame_count();
                 model.set(built);
                 frame_count.set(total_frames);
+                playlist.loop_in.set(0);
+                playlist.loop_out.set(None);
                 playhead.set(0);
                 pos.set(PlaylistPos::new(0, 0));
                 live_is_a.set(true);
@@ -278,6 +356,19 @@ pub fn VideoPlaylist(
             slot_b
         };
         live.set_loop(false);
+        // Snap into LoopZone before Play while looping.
+        if looping.get_untracked() {
+            let (zone_in, zone_out) = playlist.loop_zone();
+            let g = playhead.get_untracked();
+            if zone_out > zone_in && (g < zone_in || g >= zone_out) {
+                let epoch = open_gen.get_value();
+                let pl = playlist;
+                spawn_local(async move {
+                    let _ = wrap_to_loop_in(pl, epoch).await;
+                });
+                return;
+            }
+        }
         live.play();
     }) as Rc<dyn Fn()>;
 
@@ -346,13 +437,37 @@ pub fn VideoPlaylist(
                 return;
             };
             if local < clip.last_frame() {
+                let next_g = model
+                    .global_frame_at(PlaylistPos::new(clip_i, local.saturating_add(1)))
+                    .unwrap_or(0);
+                let (zone_in, zone_out) = pl.loop_zone();
+                if looping.get_untracked() && zone_out > zone_in && next_g >= zone_out {
+                    let aim = model
+                        .at_global_frame(zone_in)
+                        .unwrap_or(PlaylistPos::new(0, 0));
+                    seek_pos(aim);
+                    return;
+                }
                 pl.live_video().next_frame();
                 return;
             }
             if let Some(n) = model.next_clip_index(clip_i) {
-                seek_pos(PlaylistPos::new(n, 0));
+                let next_start = model.clip_start_frame(n).unwrap_or(0);
+                let (zone_in, zone_out) = pl.loop_zone();
+                if looping.get_untracked() && zone_out > zone_in && next_start >= zone_out {
+                    let aim = model
+                        .at_global_frame(zone_in)
+                        .unwrap_or(PlaylistPos::new(0, 0));
+                    seek_pos(aim);
+                } else {
+                    seek_pos(PlaylistPos::new(n, 0));
+                }
             } else if looping.get_untracked() {
-                seek_pos(PlaylistPos::new(0, 0));
+                let (zone_in, _) = pl.loop_zone();
+                let aim = model
+                    .at_global_frame(zone_in)
+                    .unwrap_or(PlaylistPos::new(0, 0));
+                seek_pos(aim);
             }
         }) as Rc<dyn Fn()>
     };

@@ -271,12 +271,42 @@ body {
   image-rendering: crisp-edges;
 }
 
+/* Track + progress + ready: fade outside LoopZone (mask α, not black paint). */
+.wm-scrubber-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.wm-scrubber-body.is-loop-faded {
+  --loop-outside-alpha: 0.33;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    rgb(0 0 0 / var(--loop-outside-alpha)) 0%,
+    rgb(0 0 0 / var(--loop-outside-alpha)) var(--loop-in-pct),
+    #000 var(--loop-in-pct),
+    #000 var(--loop-out-pct),
+    rgb(0 0 0 / var(--loop-outside-alpha)) var(--loop-out-pct),
+    rgb(0 0 0 / var(--loop-outside-alpha)) 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    rgb(0 0 0 / var(--loop-outside-alpha)) 0%,
+    rgb(0 0 0 / var(--loop-outside-alpha)) var(--loop-in-pct),
+    #000 var(--loop-in-pct),
+    #000 var(--loop-out-pct),
+    rgb(0 0 0 / var(--loop-outside-alpha)) var(--loop-out-pct),
+    rgb(0 0 0 / var(--loop-outside-alpha)) 100%
+  );
+}
+
 .wm-scrubber-progress {
   position: absolute;
   inset: 0 auto 0 0;
   background: #e11d48;
   pointer-events: none;
-  z-index: 1;
+  z-index: 2;
   opacity: 0.55;
 }
 
@@ -286,7 +316,7 @@ body {
   bottom: 0;
   background: #e8e8e8;
   pointer-events: none;
-  z-index: 2;
+  z-index: 3;
 }
 
 .wm-scrubber-ready {
