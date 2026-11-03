@@ -191,7 +191,7 @@ impl VideoPlayer {
             return;
         }
         // Soft-drag: aim only — PreferSoftware densify under the finger starves
-        // pointer/rAF. Pause / hard idle densify via ScheduleDensify + re-kick.
+        // mobile Chrome; drag uses main HW. Pause densify via ScheduleDensify.
         if !densify {
             self.aim_scrub_cache(self.state().frame);
             return;

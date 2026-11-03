@@ -67,18 +67,21 @@ pub struct WebCodecsDecoder {
 impl WebCodecsDecoder {
     /// Main play/seek decoder — knobs from [`VideoMetadata::play_policy`].
     ///
-    /// Always probes `prefer-hardware` when the host supports it (Hd and Uhd).
-    /// Scrub/thumb stay [`HwAccel::PreferSoftware`] via [`Self::create_scrub`].
+    /// Always probes `prefer-hardware` when the host supports it (Hd and Uhd,
+    /// incl. mobile). Densify scrub / thumb / loop stash stay
+    /// [`HwAccel::PreferSoftware`] via [`Self::create_scrub`] — soft-drag /
+    /// settle Exact stay on this main session.
     /// mediabunny: `decoderOptions.hardwareAcceleration` (PR #406).
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
         // `true`: HW-only codecs (HEVC) + prefer HW for main play when available.
         Self::create_with_policy(meta, meta.play_policy(), true).await
     }
 
-    /// Scrub densify decoder — always [`PlayPolicy::hd`] knobs and explicit
-    /// `prefer-software` so the main session keeps the sole HW decoder
-    /// (mediabunny: `src/media-sink.ts` alpha `prefer-software`; dual-HW /
-    /// `Unsupported configuration` when a second decoder steals HW).
+    /// Pause densify / loop-origin stash decoder — always [`PlayPolicy::hd`]
+    /// knobs and explicit `prefer-software` so main keeps the sole HW session
+    /// for Play / soft-drag / settle (mediabunny: `src/media-sink.ts` alpha
+    /// `prefer-software`; dual-HW / `Unsupported configuration` if scrub steals HW).
+    /// Soft-drag does **not** use this path — `drag_key_chase` stays on main.
     pub async fn create_scrub(meta: &VideoMetadata) -> Result<Self, MediaError> {
         // Hd knobs (cap/warm) only — force PreferSoftware even if main prefers HW.
         Self::create_with_policy(meta, PlayPolicy::hd(), false).await
@@ -93,8 +96,8 @@ impl WebCodecsDecoder {
 
     /// `allow_hw` — main play/seek passes `true`: (1) if no-preference
     /// `isConfigSupported` is false, retry `prefer-hardware` (HEVC); (2) if
-    /// soft-ok, still prefer HW when the host supports it. Scrub/thumb pass
-    /// `false` → probe+configure [`HwAccel::PreferSoftware`] only.
+    /// soft-ok, still prefer HW when the host supports it. Densify scrub / thumb
+    /// pass `false` → probe+configure [`HwAccel::PreferSoftware`] only.
     async fn create_with_policy(
         meta: &VideoMetadata,
         policy: PlayPolicy,
@@ -107,8 +110,9 @@ impl WebCodecsDecoder {
         // mediabunny leaves this optional; we set false for VOD scrub+play.
         let optimize_for_latency = false;
 
-        // Scrub/thumb: PreferSoftware only — never no-preference (Chrome may still
-        // grab HW) and never prefer-hardware (dual-HW stall / poison main).
+        // Densify scrub / thumb: PreferSoftware only — never no-preference
+        // (Chrome may still grab HW) and never prefer-hardware (dual-HW stall /
+        // poison main). Soft-drag does not use this path.
         // mediabunny: src/media-sink.ts VideoDecoderWrapper alpha path.
         if !allow_hw {
             let probe = config.to_web_config(optimize_for_latency, HwAccel::PreferSoftware);

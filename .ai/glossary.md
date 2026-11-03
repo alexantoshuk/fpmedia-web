@@ -89,7 +89,7 @@ Pointer down/move on the scrubber: update `drag_aim`, paint interim Exact blit, 
 
 ### Settle
 
-Pointer-up (or equivalent release): host `Settling`, engine `ExactHold`, Exact key→N to the aimed frame. Densify **yields** (defers) so Exact can own the scrub decoder/HW session. **Do not** full-clear Exact blit here.
+Pointer-up (or equivalent release): host `Settling`, engine `ExactHold`, Exact key→N on **main** (`prefer-hardware`) to the aimed frame. Densify **yields** (defers) so the PreferSoftware scrub slot does not race main. **Do not** full-clear Exact blit here.
 
 ### Seek
 
@@ -101,7 +101,7 @@ Next/Prev by one presentation frame. Hits presentation/behind ring or Exact blit
 
 ### ExactHold
 
-Engine mode while settle/seek Exact owns decode — densify must not compete (yield / latch pending).
+Engine mode while settle/seek Exact owns **main** decode — PreferSoftware densify must yield / latch pending (no dual-HW race).
 
 ### PlayPrime / ScrubRelease
 
@@ -109,7 +109,7 @@ Host transport for leaving scrub. **`then_play`:** commit aim (`prepare_play_fro
 
 ### Cold scrub
 
-Scrub/settle while FetchMap + frame index for the aim GOP are not warm yet. Soft settle may commit an indexed aim and defer Exact (`pending_cold_exact`) instead of freezing the tab waiting on bytes.
+Scrub/settle while FetchMap + frame index for the aim GOP are not warm yet. Soft settle may commit an indexed aim and defer Exact (`pending_cold_exact`) instead of freezing the tab waiting on bytes. When warm enough, key chase / Exact still run on **main HW** (not PreferSoftware densify).
 
 ---
 
@@ -119,7 +119,7 @@ Design: `architecture.md` § Predictive densify. Traps: `skills/media.md`.
 
 ### Densify
 
-Background fill of Covered markers + Exact bitmaps around aim on the **scrub** `VideoDecoder` (PreferSoftware), separate from the main play/seek decoder. Predictive: nearest gap to aim first; one GOP per `fill_one_gap`; rAF pacing between GOPs.
+Background fill of Covered markers + Exact bitmaps around aim on the **scrub** `VideoDecoder` (PreferSoftware), Pause/idle only — not soft-drag. Separate from main (Play / drag / settle Exact). Predictive: nearest gap to aim first; one GOP per `fill_one_gap`; rAF pacing between GOPs.
 
 ### fill_one_gap
 
@@ -127,7 +127,7 @@ One densify iteration for a gap’s GOP: (1) range `decode_gop` → stream inges
 
 ### Salvage
 
-For presentation ids still missing Exact after PreferSoftware `decode_gop`: scrub `decode_frame` key→N (mediabunny-shaped **`samplesAtTimestamps`**, vs range **`samples()`** / `decode_gop`).
+For presentation ids still missing Exact after PreferSoftware densify `decode_gop`: PreferSoftware scrub-slot `decode_frame` key→N (not soft-drag / main). Mediabunny-shaped **`samplesAtTimestamps`**, vs range **`samples()`** / `decode_gop`.
 
 ### Soft-ban
 
@@ -135,7 +135,7 @@ Temporarily skip a GOP key in the densify walk after no progress (Exact complete
 
 ### PreferSoftware
 
-WebCodecs `hardwareAcceleration: prefer-software` for scrub and thumb decoders so they do not steal the main HW session. Hint only — under load or weak CPU/I/O, software decode may **omit** frames more often.
+WebCodecs `hardwareAcceleration: prefer-software` for the **Pause densify** scrub slot, ThumbSink, and loop-origin stash — so they do not dual-HW poison **main**. Soft-drag / cold scrub / settle Exact stay on main `prefer-hardware` (incl. mobile). Hint only — under load, software densify may **omit** frames more often.
 
 ### Omit
 
@@ -151,7 +151,7 @@ Farthest-from-aim capped residency for **Exact blit** (and reusable map helpers)
 
 ### Dual decoder (+ thumb)
 
-Main decoder = Play / Exact seek-settle (prefer-hardware when supported). Scrub decoder = densify PreferSoftware (must not dual-HW poison the main session — especially HEVC). When feature `thumbs` is on, a **third** PreferSoftware decoder serves hover only — never the densify scrub slot. Overview: `architecture.md` § Decode flows.
+**Main** (`prefer-hardware`, Hd+Uhd, mobile too) = Play, soft-drag key chase, seek/settle Exact. **Scrub slot** (`prefer-software`) = Pause densify only (must not dual-HW poison main — especially HEVC). Soft-drag does **not** decode on the scrub slot. When feature `thumbs` is on, a **third** PreferSoftware decoder serves hover only — never the densify scrub slot. Overview: `architecture.md` § Decode flows.
 
 ### ThumbSink
 

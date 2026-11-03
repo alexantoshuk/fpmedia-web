@@ -72,11 +72,12 @@ Before **any** write to the repo (code, config, docs, generated assets):
 1. **Describe the plan first** — short: what, where, why (files/symbols if known). Stop there.
 2. **Media changes:** plan must satisfy [Pre-edit gate (media)](#pre-edit-gate-media--hard-stop) (mediabunny cite or explicit no-equivalent).
 3. **`.ai/` / docs changes:** plan must satisfy [Documentation write gate](#documentation-write-gate--hard-stop) (canonical file + no duplicate prose).
-4. **Do not start implementation** until the user explicitly approves **that plan** (e.g. `ok`, `go`, `да`, `approve` on the plan you just stated).
-5. **Not plan approval:** `next`, priority reorder, “разбери”, diagnosis-only, or a bare `go` that meant “show the plan” / “start researching”. If unclear, ask — do not code.
-6. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
-7. **Exception:** only if the user explicitly says to skip approval for that task or session.
-8. **Commits are separate** — edit/`go` approval is **not** commit consent. See [Commits](#commits).
+4. **Docs line (hard):** every plan that changes shipped behaviour / ownership / policy must name `docs:` — canonical slot(s) to update (`architecture.md` § … / `glossary.md` § … / skill triage / `product.md`), **or** `docs: none` + why (pure refactor, typo, probe-only). Omitting the line = incomplete plan — do not implement.
+5. **Do not start implementation** until the user explicitly approves **that plan** (e.g. `ok`, `go`, `да`, `approve` on the plan you just stated).
+6. **Not plan approval:** `next`, priority reorder, “разбери”, diagnosis-only, or a bare `go` that meant “show the plan” / “start researching”. If unclear, ask — do not code.
+7. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
+8. **Exception:** only if the user explicitly says to skip approval for that task or session.
+9. **Commits are separate** — edit/`go` approval is **not** commit consent. See [Commits](#commits).
 
 If the plan changes mid-work (scope creep, different files), stop and re-approve before further edits.
 
@@ -119,8 +120,17 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 
 1. **One home** — the same fact must not appear as prose in two files. Everywhere else: **one-line pointer** (`see product.md § …` / `skills/media.md` triage).
 2. **No essay append** — do not paste a session narrative into a skill “for safety”. Choose the row above; trim or move design upward.
-3. **Disagree → fix canonical** — if two files conflict, edit the home and **delete** the duplicate; do not add a third explanation.
+3. **Disagree → fix canonical** — if two files conflict, edit the home and **delete** the duplicate; do not add a third explanation. Partial updates (skill yes, architecture stale) are the same failure.
 4. **Refuse doc edits** that only grow a skill/architecture without naming the canonical slot (same spirit as media pre-edit cite).
+5. **Same-diff freshness (hard):** if the change ships a new or altered durable design (decode ownership, policy table, ADR, UX invariant, stable term), the **same** diff / commit **must** update that fact’s canonical home and fix or delete contradicting prose elsewhere (including policy comments — see below). **Refuse to commit** code-only when the plan’s `docs:` line named a slot, or when the diff clearly changes shipped design with no matching `.ai/` (or policy-comment) update. “Include `.ai/` later” is not allowed.
+
+### Policy comments (code)
+
+Comments that state **who owns decode**, HW vs PreferSoftware, densify on/off, mediabunny path match, or other shipped policy are part of the truth surface — not decoration.
+
+- Change the behaviour → update those comments in the **same** diff (or delete if obsolete).
+- Do not leave shorthand that contradicts the canonical `.ai/` home (e.g. “scrub = PreferSoftware” when soft-drag is main HW).
+- Probe-only / search debris still goes in [Commits → Before commit (fix)](#before-commit-fix--integrate-dont-bolt-on).
 
 ### One source of truth
 
@@ -130,7 +140,7 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 | Scrub UX / densify / soft-drag / Exact blit (no MB scrub) | `AGENTS.md` § Scrub is local | One-line pointer only — do not invent `mediabunny: … scrub` cites |
 | Approve-before-edit / ask-before-commit | `AGENTS.md` | Do not restate |
 | Fix commit hygiene (integrate, strip debris) | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |
-| Doc write gate / skill budgets | `AGENTS.md` | Do not restate |
+| Doc write gate / skill budgets / same-diff freshness / policy comments | `AGENTS.md` | Do not restate — `CONTRIBUTING.md`: one-line pointer only |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
 | Term definitions (settle, densify, Exact, …) | `glossary.md` | One-line pointer only — do not fork definitions in skills/chat docs |
@@ -168,17 +178,17 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 5. **Not for** — UX invariants (product), design tables/FSMs (architecture), backlog (state), failure recipes (skills). Glossary may **point** at those files; it must not restate their essays.
 6. **Elsewhere** — skills/product/architecture use the term and, if needed, a one-line pointer (`see glossary.md § …`). Do not paste a second full definition.
 
-### After-fix doc update
+### After-fix / after-design doc update
 
-For a skill-worthy fix, the plan or commit must state **one** of:
+Not only “skill-worthy traps”. **Any** shipped behaviour or design change must pick a canonical slot in the plan/`docs:` line and land it in the **same** diff ([Same-diff freshness](#documentation-write-gate--hard-stop)):
 
-- triage row added/updated; and/or gotcha tightened (not a new essay), or
-- durable design → `architecture.md`, or
-- UX decision → `product.md`, or
-- new/changed/retired vocabulary → `glossary.md`, or
-- finished work dropped from `state.md`
+- durable design / ownership / policy table → `architecture.md` (and contradicting comments), and/or
+- UX decision → `product.md`, and/or
+- new/changed/retired vocabulary → `glossary.md`, and/or
+- reusable trap → skill triage row and/or tight gotcha (not a new essay), and/or
+- finished backlog item → drop from `state.md`
 
-Do **not** only “append to `media.md`” without choosing a canonical slot.
+Do **not** only “append to `media.md`” without choosing a canonical slot. Do **not** treat “no new triage symptom” as license to leave architecture/glossary/comments stale.
 
 ### Product / architecture hygiene
 
@@ -193,7 +203,7 @@ Do **not** only “append to `media.md`” without choosing a canonical slot.
 - Handoff claims must not contradict `architecture.md` / skills — if they disagree, fix the canonical home.
 - **Chat handoff (hard):** when the user signals a move to another chat / session (e.g. «переходим в другой чат», «handoff», «new chat»), **refresh `.ai/state.md` before wrapping up** — accurate Handoff + Next up (what landed, what is unverified, what is still open). If skills were touched this session, **trim** obsolete/superseded skill lines in the same wrap-up. Do not leave a stale matrix or “re-verify” that already passed without saying so.
 
-**Before commit / PR push:** follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** (format, Clippy, checks, tests, size, state-with-feature). Include `.ai/` when architecture, player UI, or a skill-worthy fix changed — and keep that `.ai/` diff compliant with the write gate (no duplicate essays).
+**Before commit / PR push:** follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** (format, Clippy, checks, tests, size, state-with-feature). Same-diff freshness is mandatory when design changed — see [Documentation write gate](#documentation-write-gate--hard-stop).
 
 **End of session / chat handoff:** refresh `state.md` (drop finished items; update Handoff); trim skill triage + gotchas if any (do not grow skills “for the log”).
 
@@ -209,7 +219,7 @@ Diagnosis often leaves a working side-path. **Do not commit that shape.** Before
 
 1. **Integrate into the architecture** — reshape the working fix into the existing control flow / policy surface (same layer, named step, mediabunny-shaped path). Do not leave a bolted-on branch that only exists because the search landed there first.
 2. **Strip search debris** — remove superseded branches, dead helpers, and probe-only comments from the same change.
-3. **Docs follow the real design** — if the integrated path is a durable shipped rule, update its one home per [Documentation write gate](#documentation-write-gate--hard-stop) (`architecture.md` for design, skill for traps only).
+3. **Docs + policy comments follow the real design** — same-diff freshness ([Documentation write gate](#documentation-write-gate--hard-stop)): canonical `.ai/` home + contradicting policy comments. Skill triage alone is not enough when decode ownership / ADR / design table changed.
 
 ## Dev commands
 

@@ -98,9 +98,10 @@ pub enum EngineEvent {
     /// Leave play (or reinforce scrub).
     /// - `soft_audio` → Warm + SoftHoldClock (Pause button / scrub-while-play).
     /// - `densify` → [`EngineCmd::ScheduleDensify`] when mode is Scrub.
-    ///   Pause / idle: `densify: true`. Soft-drag: `densify: false` (aim+blit only —
-    ///   PreferSoftware under the finger saturates JS). Hard tear-down: cold audio
-    ///   + densify. While [`EngineMode::ExactHold`], mode stays ExactHold.
+    ///   Pause / idle: `densify: true` (PreferSoftware scrub slot). Soft-drag:
+    ///   `densify: false` (aim+blit + main-HW key chase — PreferSoftware densify
+    ///   under finger saturates mobile Chrome). Hard tear-down: cold audio +
+    ///   densify. While [`EngineMode::ExactHold`], mode stays ExactHold.
     EnterScrub {
         soft_audio: bool,
         densify: bool,

@@ -10,7 +10,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | `codec not supported` / HEVC | `classify_codec` / `create_with_policy` | default build: `hevc` off; with feature: HW retry **main only** |
 | `codec not supported: avc1.640003` (Telegram) | `canonicalize_avc_webcodecs_config` | SPS-first over lying `avcC` level; patch `description[1..4]`. MB header-only — no equiv |
 | Scrub flicker + Play dead (HEVC) | `create_scrub` | densify PreferSoftware; `scrub_densify_blocked` |
-| After scrub: blink / hang + `Unsupported configuration` | `HwAccel` / `from_config` | scrub/thumb PreferSoftware; HW recreate → soft fallback |
+| After scrub: blink / hang + `Unsupported configuration` | `HwAccel` / `from_config` | densify/thumb PreferSoftware; main HW recreate → soft fallback |
 | New clip: Play disabled / audio dies | clip dispose | `Closed`+drop player; `Shared.disposed`; UrlSource orch abort |
 | Open locks until gray full / slow stss | open warm / `defer_avc_sync` | warm lead 96; bg verify + `ensure_key_verified` |
 | Local master ~0.75× (no audio clock) | `PlaybackClock` wall time | No AAC/PCM track → silent clock; Chrome `currentTime` lags under decode load — wall time + muted graph. Probe `e2e/player.play.residual.spec.ts` |
@@ -53,7 +53,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Pause densify burns CPU / Covered grows forever | `covered_aim_band` / `decide_next_gap` | Covered-only hard band = aim±`COVERED_EDGE_MARGIN_FRAMES` (pinholes must not keep `!no_gaps` expansion forever). **no equivalent** (scrub local) |
 | Exact 1 px orphan past hole after Pause densify | `evict_exact_orphans_beyond_aim` | farthest-evict every densify tick (not gated on Exact near-gap idle — under-cap soft-drag holes skipped eviction); not on drag `set_playhead` |
 | Loop seam wipe / underrun hold | `start_loop_seam` (`PlayPhase::LoopSeam`) | hold clock → stash paint or `start_play_iter(loop_in)` → resume; keep Covered+Exact |
-| Loop seam cold at origin / mobile restart hitch | `warm_loop_origin_decode` / `start_loop_seam_with_stash` | near zone-end: bytes + PreferSoftware stash at `loop_in` (`play_origin_decode`); seam paints stash, resumes, main PlayIter drains under `play_updating`. Miss → old await path. MB has no loop — Remotion `prewarmIteratorForLooping` |
+| Loop seam cold at origin / mobile restart hitch | `warm_loop_origin_decode` / `start_loop_seam_with_stash` | near zone-end: bytes + PreferSoftware **stash** (scrub slot) at `loop_in`; seam paints stash, resumes; catch-up / miss → **main HW** `start_play_iter(loop_in)`. MB has no loop — Remotion `prewarmIteratorForLooping` |
 | Mid-file loop ignores zone / wraps to 0 | `LoopZone` / `loop_wall_end` / `set_loop_zone` | wall = end of `out-1`; seam origin = `in`. Full axis still 0. **no equivalent** |
 | `loop_out` ignored — plays past zone | `eof_wall_decision(…, drain_pending)` | mid-zone: `drain_pending=false` (pending stays true with post-`out` samples). Full axis still drains. **no equivalent** |
 | LoopZone in ignored — accel 0→in after seam | `start_loop_seam_with_stash` catch-up | `PlayIter::start` at stash `first` (`loop_in`), not `0`. Clock@in + iter@0 = skip storm. **no equivalent** |
@@ -109,7 +109,7 @@ Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `a
 - **Secure context** → gate before `isConfigSupported` or UI freezes on create.
 - **First packet sanitize** → strip Chromium-hostile AVC NALs; HEVC NAL-order + drop RASL after CRA (`sanitize_*` / `has_hevc_rasl_picture`).
 - **Lifecycle** → feed-ahead over flush; soft sequential next-key on Play; after flush clear warm state; `take_decoder` ~5s wall-clock. All-Intra: never hard-recreate on every key when idle.
-- **Held / PTS** → park `PTS >= target`; prune_floor + cascade through aim; PTS assign = FIFO fed stamps (`inputTimestamps.shift`); main HW prefer Hd+Uhd; scrub/thumb `PreferSoftware`; HW configure fail → PreferSoftware sticky; `optimizeForLatency: false`. `mediabunny: media-sink.ts sampleHandler` / alpha prefer-software.
+- **Held / PTS** → park `PTS >= target`; prune_floor + cascade through aim; PTS assign = FIFO fed stamps (`inputTimestamps.shift`); **main** `prefer-hardware` Hd+Uhd (mobile too) for Play/drag/settle; densify scrub + thumb `PreferSoftware`; HW configure/silent miss → PreferSoftware sticky; `optimizeForLatency: false`. `mediabunny: media-sink.ts sampleHandler` / alpha prefer-software.
 - **Backpressure** → wait on new output/take (not buffered frames as progress); dual-async pump parks at `q==0` for consumer; densify cancel → hard reset, fill task returns.
 - **Closures** → never sync-resolve inside output/dequeue; `spawn_local`. Do not pass bare Promise resolve to rAF/`setTimeout` — use `fpmedia_web::timer` (engine + host).
 - **Op cancel** → `op_epoch`; Cancelled = soft; invalidate uses reset when checked out.
@@ -124,7 +124,7 @@ Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `a
 ### Scrub / thumbs
 
 - Scrub UX is **local** (no MB scrub) — `AGENTS.md` § Scrub is local; model: `architecture.md` § Play / scrub residency.
-- Soft-drag: densify off via `note_scrub_frame` (not `cancel_ops` each move) + chase nearest key (`drag_key_chase`; other-GOP supersede = blit only). Exact = dwell/settle only — Exact-under-finger caused post-stop catch-up. Densify busy → `sleep_ms(0)` continue. Preview neighbor = `scrub_preview_neighbor` / `scrub_dir`. Pause: PreferSoftware densify.
+- Soft-drag: densify off via `note_scrub_frame` (not `cancel_ops` each move) + chase nearest key on **main HW** (`drag_key_chase`; other-GOP supersede = blit only). Exact = dwell/settle on main only — Exact-under-finger caused post-stop catch-up. Densify busy → `sleep_ms(0)` continue. Preview neighbor = `scrub_preview_neighbor` / `scrub_dir`. Pause densify: PreferSoftware scrub slot (never under finger — mobile SW densify was too slow).
 - **Do not wipe Exact to “unstick” seek/settle** → `scrub_preview_frame` reads Exact only; `blit.clear` / full Exact trim on pointer-up or seek prep freezes cold scrub (regressed in `b8206d1`). Keep trail; retarget aim + farthest-evict; fix densify yield / gap pick instead. Do not gate all Exact puts behind Covered-only `fill_exact` such that Exact never rebuilds under the finger.
 - Do not cancel in-flight GOP densify on aim move; do not blit interim; do not wipe markers on settle/Play; do not drop prune salvage “to clean the strip” (re-decodes GOP — `AGENTS.md` Suboptimal).
 - Step: ring → blit → soft goto without abort densify. Pause after Play: refill blit gaps (`next_gap` prefers blit holes). Exact `put` refuses far inserts at cap (no origin/EOF thrash).

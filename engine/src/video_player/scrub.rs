@@ -53,9 +53,10 @@ impl VideoPlayer {
     ///    visited frames still land in dense via `present_and_cache`)
     ///
     /// While [`EngineMode::ExactHold`] (scrub settle / sync seek), densify
-    /// is deferred so exact `goto_frame` owns HW. Drag does **not** enter here —
-    /// PreferSoftware densify under the finger starves pointer/rAF; densify arms
-    /// after settle / hard Pause / step.
+    /// is deferred so Exact `goto_frame` owns **main** HW. Drag does **not**
+    /// enter here — PreferSoftware densify under the finger starves mobile
+    /// Chrome; soft-drag uses main-HW key chase. Densify arms after settle /
+    /// hard Pause / step.
     pub(super) fn enter_scrub_cache_pipeline(&self, focus: FrameId) {
         self.shared.scrub_gesture.set(false);
         self.aim_scrub_cache(focus);
@@ -228,8 +229,8 @@ impl VideoPlayer {
     ///
     /// `prepare_scrub_settle` may have latched hold; if settle is superseded by a
     /// new drag before `scrub_to` clears it, ExactHold would block densify until
-    /// Pause. Densify stays off for the drag (PreferSoftware under finger lags);
-    /// settle / hard Pause re-arms.
+    /// Pause. Densify stays off for the drag (PreferSoftware densify under finger
+    /// lags on mobile); soft-drag uses main HW. Settle / hard Pause re-arms.
     pub fn clear_densify_hold(&self) {
         if !self.shared.engine.get().holds_exact() {
             return;
@@ -240,11 +241,12 @@ impl VideoPlayer {
 
     /// Scrub pointer sample (drag / hold) — aim + direction only.
     ///
-    /// Does **not** kick densify: PreferSoftware fill under the finger saturates
-    /// the JS thread so the bar lags the cursor. Abort any in-flight Pause densify
-    /// for this gesture; settle / hard Pause / step re-arm via
-    /// [`Self::enter_scrub_cache_pipeline`]. Updates [`Shared::drag_aim`] so an
-    /// in-flight soft-drag Exact can chase without `cancel_ops` on every move.
+    /// Does **not** kick densify: PreferSoftware densify under the finger
+    /// saturates mobile Chrome so the bar lags. Soft-drag paints on **main HW**.
+    /// Abort any in-flight Pause densify for this gesture; settle / hard Pause /
+    /// step re-arm via [`Self::enter_scrub_cache_pipeline`]. Updates
+    /// [`Shared::drag_aim`] so an in-flight soft-drag Exact can chase without
+    /// `cancel_ops` on every move.
     pub fn note_scrub_frame(&self, frame: FrameId) {
         self.cancel_hover_thumb();
         self.shared.scrub_gesture.set(true);
@@ -504,8 +506,8 @@ impl VideoPlayer {
         if settle {
             // Densify is armed by the host *after* the drain loop can see a queued
             // PlayPrime — otherwise invalidate + scrub HW kick cause play-after-scrub
-            // lag on long GOPs. Drag never densifies here (PreferSoftware under
-            // finger lags the bar).
+            // lag on long GOPs. Drag never densifies here (PreferSoftware densify
+            // under finger lags the bar on mobile).
             // Do **not** `schedule_scrub_cache_fill` here when Play is pending — host
             // skips `arm_scrub_densify_after_exact` on purpose; Pause restarts fill.
             // Cold soft-settle: kick densify so Exact/`pending_cold_exact` can resolve
@@ -769,7 +771,8 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                 || !shared.track.metadata_ref().scrub_policy().densify
                 || shared.scrub_densify_blocked.get()
                 // Drag owns the pointer — PreferSoftware densify under finger
-                // both lags the bar and steals Pause/settle progress.
+                // lags mobile Chrome and steals Pause/settle progress; soft-drag
+                // stays on main HW.
                 || shared.scrub_gesture.get()
             {
                 return Ok(());

@@ -652,8 +652,9 @@ impl ScrubPolicy {
 /// Coded-size class for play knobs. Scrub stays on [`ScrubPolicy`] (GOP).
 ///
 /// Product: smooth 1× play is primary; scrub is secondary. **Hd must keep the
-/// historical Full-HD defaults** (`PRESENTATION_QUEUE_CAP` / warm-ahead = 4,
-/// no `prefer-hardware`) so FHD play+scrub stay unchanged.
+/// historical Full-HD queue/warm defaults** (`PRESENTATION_QUEUE_CAP` / warm-ahead
+/// = 4) so FHD knobs stay unchanged. Main still probes `prefer-hardware` via
+/// `WebCodecsDecoder::create` (Hd `prefer_hardware` field is documentation only).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResolutionClass {
     /// height &lt; [`UHD_MIN_HEIGHT`] — current Full-HD / below behaviour.
@@ -679,10 +680,11 @@ pub const PLAY_WARM_AHEAD_UHD: usize = 8;
 /// Continuous Play does **not** read these — it uses the mediabunny iterator
 /// (`MAX_QUEUE_SIZE = 4`, 2-canvas pool; `decode::webcodecs::PlayIter`).
 /// Local invention for Uhd ring/warm (mediabunny has no resolution profile).
-/// `prefer_hardware` documents Uhd intent; **main** decoder always probes HW
-/// when allowed (`WebCodecsDecoder::create`). Scrub/thumb keep
-/// [`PlayPolicy::hd`] + PreferSoftware (mediabunny `decoderOptions.hardwareAcceleration`,
-/// PR #406 — dual HW stalls).
+/// `prefer_hardware` documents Uhd intent only; **main** always probes HW via
+/// `WebCodecsDecoder::create` (Hd+Uhd, mobile too). Pause densify / thumb use
+/// [`PlayPolicy::hd`] knobs + PreferSoftware (`create_scrub`) so they never
+/// dual-HW poison main (mediabunny `decoderOptions.hardwareAcceleration`, PR #406).
+/// Soft-drag / settle Exact stay on main HW — not this PreferSoftware slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayPolicy {
     pub class: ResolutionClass,
@@ -690,13 +692,13 @@ pub struct PlayPolicy {
     pub presentation_cap: usize,
     /// Seek/step packet-pump warm frames past the consumer target.
     pub decode_warm_ahead: usize,
-    /// Uhd documents HW intent; scrub densify uses [`Self::hd`] + PreferSoftware.
-    /// Main play probes HW via `create` regardless of Hd/Uhd.
+    /// Uhd documents HW intent. Does **not** gate main — `create` always probes HW.
+    /// Densify scrub/thumb still force PreferSoftware via `create_scrub`.
     pub prefer_hardware: bool,
 }
 
 impl PlayPolicy {
-    /// Historical Full-HD queue/warm defaults — scrub/thumb knobs (never steal HW).
+    /// Historical Full-HD queue/warm defaults — also densify/thumb knobs (PreferSoftware).
     pub fn hd() -> Self {
         Self {
             class: ResolutionClass::Hd,

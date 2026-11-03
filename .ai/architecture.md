@@ -69,7 +69,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | `leptos-use` for browser helpers | Observers/events/rAF in UI crates; media crate stays free of Leptos |
 | Adapt mediabunny ideas in Rust | Required reference; port patterns, never depend on the TS package (`AGENTS.md`). MB = sinks + examples; our `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` are Leptos adapters over `VideoPlayer`, not MB UI ports |
 | Progressive open via `MediaSource` | Ranged reads; parse `moov` (+ `moof` for single-file fMP4); keep `re_mp4` for sample tables. Do **not** `array_buffer()` the whole file into WASM. |
-| Dual decoder + scrub / play caches | Dual `VideoDecoder` so background fill does not steal playback. Design: [Play / scrub residency](#play--scrub-residency). Traps: `skills/media.md`. |
+| Dual decoder + scrub / play caches | Dual `VideoDecoder`: main HW for Play/drag/settle; PreferSoftware scrub slot for Pause densify only. Design: [Play / scrub residency](#play--scrub-residency). Traps: `skills/media.md`. |
 | ThumbSink + optional hover (`thumbs`) | **Shipped:** `ThumbSink` = mediabunny-shaped `CanvasSink` product (`get` / `at_frames`, `FrameId`, sized `ImageBitmap` + `ThumbCache`). Usable without `VideoPlayer`. Feature default on; runtime `ThumbPolicy`; player leases one PreferSoftware decoder. Host hover: `<HoverThumb>` (`product.md`). Not a TS API clone — see [Decode flows](#decode-flows) |
 | Audio in engine, not `VideoRef` | Demux + `AudioDecoder` + `AudioContext` + WSOLA in `fpmedia_web::audio`. `VideoPlayer` orchestrates A+V; `VideoRef` = volume/mute API. `audio/` has no canvas dependency. |
 | Component API like HTML media | Elements: open/play/seek/rate/volume + `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `fpmedia_web_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
@@ -92,7 +92,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Demo open | **Shipped:** multi-file picker + `;`-separated URLs → playlist; 1 source → `<Video>`; `[i]` position/go-to. Host CSS hides `.fpvideo-playlist-slot.is-idle` |
 | Strip / tip domain | One owner: `TimelineRef` (playlist units = **global frames**). Gesture / tip / hover / zebra / `<TimelineMeta>` all use it. `strip_video()` → live slot; ready/fetch remapped via `strip_ready_marks` / `strip_fetch_ranges`. Meta re-leases on `strip_video_key` change — **never** remount `<Scrubber>` on live swap. Mirror live→`playhead`/`pos` when not `scrubbing` (Play + paused step/seek; scrub gesture owns aim) |
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
-| Seam | Near-EOF PreferSoftware **origin stash** on idle → paint origin before swap → PlayPrime stash hit + bg catch-up (loop `start_loop_seam_with_stash` cousin). Miss → cold `start_play_iter`. |
+| Seam | Near-EOF PreferSoftware **origin stash** (scrub slot) on idle → paint origin before swap → PlayPrime stash hit + bg catch-up on **main HW** (loop `start_loop_seam_with_stash` cousin). Miss → cold `start_play_iter` on main. |
 | Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
 | Idle neighbor | Next clip; on last + playlist **loop** → **0** (wrap origin-stash target); else previous. `idle_neighbor` / `set_loop` re-preload |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
@@ -149,7 +149,7 @@ Do **not** wire probes to Downloads / third-party hosts. In skills prefer meta (
 
 ## Play / scrub residency
 
-Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). UX strip colors: `product.md`. Vocabulary: `glossary.md`.
+Dual `VideoDecoder`: **main** = Play / seek / soft-drag / settle Exact (`prefer-hardware`, incl. mobile); **scrub slot** = Pause densify only (`prefer-software` — must not dual-HW poison main). Soft-drag never runs densify under the finger (mobile SW densify was too slow). UX strip colors: `product.md`. Vocabulary: `glossary.md`.
 
 | Store | Role |
 | ----- | ---- |
@@ -162,7 +162,7 @@ Dual `VideoDecoder`: main = play/seek; scrub = densify (never steals main HW). U
 
 Runtime gates (host intent, re-applied on every open): `ThumbPolicy` (thumb sink) and **`ScrubCachePolicy`** — `Off` closes the scrub decoder, clears Covered + Exact, refuses densify / gray fill / scrub ingest; seek/step/Play stay on main. Demo: Scrubber toggle → `ScrubCachePolicy`.
 
-**Modes (summary):** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify`. Soft-drag → densify off under finger + interim Exact blit + main-HW nearest-key chase (Exact = dwell/settle; PreferSoftware densify under finger saturates mobile). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Covered keeps densify/Exact trail for the clip (no marker LRU); Exact eviction = farthest from aim on blit `AimWindow` only. Pause densify fills Exact first; Covered-only densify is hard-bounded to aim±`COVERED_EDGE_MARGIN_FRAMES` (300; store stays uncapped for the trail; pinholes must not walk EOF). Not Exact cap / not GOP soft-drag margins. `mediabunny:` CanvasSink pool idea — no still-encode store.
+**Modes (summary):** Play → densify off (epoch cancel). Hard Pause / settle / step → densify on when `ScrubPolicy::densify` (PreferSoftware scrub slot). Soft-drag → densify off under finger + interim Exact blit + **main-HW** nearest-key chase (Exact = dwell/settle on main after densify yield). One entry: `VideoPlayer::enter_scrub_cache_pipeline`. In-flight GOP densify is not cancelled on aim move (drag aborts fill for the gesture). Covered keeps densify/Exact trail for the clip (no marker LRU); Exact eviction = farthest from aim on blit `AimWindow` only. Pause densify fills Exact first; Covered-only densify is hard-bounded to aim±`COVERED_EDGE_MARGIN_FRAMES` (300; store stays uncapped for the trail; pinholes must not walk EOF). Not Exact cap / not GOP soft-drag margins. `mediabunny:` CanvasSink pool idea — no still-encode store.
 
 ### Decode flows
 
@@ -172,10 +172,12 @@ Shipped control flow (not backlog). Terms: `glossary.md`. Phase × mode table: [
 
 ```mermaid
 flowchart LR
-  subgraph main["Main VideoDecoder<br/>prefer-hardware"]
+  subgraph main["Main VideoDecoder<br/>prefer-hardware · Play / drag / settle"]
     PQ["Play: PlayIter + nextFrame pool<br/>Paused: step rings"]
+    DRAG["Soft-drag: nearest-key chase"]
+    SETTLE["Seek / settle ExactHold key→N"]
   end
-  subgraph scrub["Scrub VideoDecoder<br/>PreferSoftware"]
+  subgraph scrub["Scrub VideoDecoder<br/>PreferSoftware · Pause densify only"]
     DEN["Densify fill_one_gap"]
     EX["ScrubBlitLru Exact"]
     CV["ScrubChunkStore Covered"]
@@ -195,13 +197,14 @@ flowchart LR
   CLK --> MT["VideoPlayer::media_time"]
   MT -.->|"Play present_due"| PQ
   PQ --> CANVAS["Stage canvas"]
-  EX -->|"soft-drag preview<br/>or Pause present"| CANVAS
-  SEEK["Seek / settle ExactHold<br/>key→N on main or scrub"] --> CANVAS
+  DRAG --> CANVAS
+  SETTLE --> CANVAS
+  EX -->|"soft-drag interim blit<br/>or Pause present"| CANVAS
   TC --> HOVER["HoverThumb canvas<br/>not stage / not strips"]
   SRC -.->|"no player"| TS
 ```
 
-Play paints `PlayIter` samples from the **main** decoder (checked out for the whole session), paced by **`media_time()`** from the engine media clock (audio-driven when a track exists — including muted/silent graphs; see [Audio + media clock](#audio--media-clock)). Soft-drag: interim Exact blit + coalesced Exact on **main** (densify aborted). Settle / seek Exact key→N yields densify (`ExactHold`) so PreferSoftware densify does not dual-HW race the main path. Pause idle runs densify on the scrub decoder into Exact + Covered. Hosts never open `AudioContext` as their own clock.
+Play paints `PlayIter` samples from the **main** decoder (checked out for the whole session), paced by **`media_time()`** from the engine media clock (audio-driven when a track exists — including muted/silent graphs; see [Audio + media clock](#audio--media-clock)). Soft-drag / cold scrub / settle Exact: **main HW** (densify aborted / yielded — PreferSoftware under the finger was too slow on mobile Chrome). Pause idle densify fills Exact + Covered on the **scrub** PreferSoftware slot. Hosts never open `AudioContext` as their own clock.
 
 **ThumbSink** (optional `thumbs`): mediabunny `CanvasSink`-shaped product — `ThumbSink::new(track, opts)` → `get` / `at_frames` / sync peek; sized `ImageBitmap` + `ThumbCache` residency (not MB ring `poolSize`; default caps 256/256). **Does not require** `VideoPlayer`. Hover is a client: player leases one PreferSoftware decoder, Exact→thumb bridge, workload gates; host `<HoverThumb>` paints its **own** canvas. UX: Play and Pause only — **not** while scrubbing; must not drive densify or Fetch/Covered/Exact strips (`product.md`). Never reuse the densify scrub decoder for thumbs. Play: cache + Exact bridge only (no generation). Pause progressive: duration-based coarse sync grid (~3 s, clamp 8–32, ≤`max_thumbs/4`) then farthest-key densify; each thumb stores progressive **rank** (0=coarse … Exact non-key=`u16::MAX`); at cap evict highest rank first so the timeline grid stays even. Hover uses the same rank helper. Progressive stops when no candidate can admit without dropping a coarser rank. Host `(hover: none)` → `ThumbPolicy::Off`. **no equivalent** (filmstrip local); decode `mediabunny: src/media-sink.ts CanvasSink` / `canvasesAtTimestamps`. Traps: `skills/media.md`.
 
@@ -225,7 +228,7 @@ flowchart TD
 
 `PlayPhase` (`Idle` / `Live` / `LoopSeam`) is the session machine; seek / scrub / pause end it (`clear_play_session` → `PlayIter::finish` resets and returns the decoder). Seek / step / Exact stay on `decode_frame` + warm pump (`samplesAtTimestamps`-shaped); Play never reads the presentation queue.
 
-**Loop (local / Remotion-shaped):** MB media-player has no loop. Near zone-end (~1 s) warms **loop-in** bytes + PreferSoftware decode stash (`loop_in`/+1) while main PlayIter still owns HW. `LoopSeam` paints stash, seeds `play_next`, resumes clock; main PlayIter catch-up drains under `play_updating`. Miss → await `start_play_iter(loop_in)` under hold. Traps: `skills/media.md`.
+**Loop (local / Remotion-shaped):** MB media-player has no loop. Near zone-end (~1 s) warms **loop-in** bytes + PreferSoftware **origin stash** on the scrub slot (`loop_in`/+1) while main PlayIter still owns HW. `LoopSeam` paints stash, seeds `play_next`, resumes clock; main PlayIter catch-up drains under `play_updating`. Miss → await `start_play_iter(loop_in)` on **main HW** under hold. Traps: `skills/media.md`.
 
 **LoopZone (shipped, local):** Half-open `[in, out)` while `looping`. Default = full axis (`in=0`, `out=frame_count` / Σ frames). Vocab: `glossary.md` § LoopZone. UX: `product.md` § Loop zone.
 
@@ -270,7 +273,7 @@ flowchart TD
   PP --> PRIME["PlayPrime → start_play_iter"]
 ```
 
-Soft-drag must not run PreferSoftware densify under the finger; picture updates via main-HW **key** chase on `drag_aim` (Exact = dwell/settle only — traps: `skills/media.md`). Soft-drag **and** hover-thumb interim paint pick neighbors with **floor when moving forward / ceil when backward** (`scrub_preview_neighbor` + `scrub_dir` / `hover_dir`) so Exact/aim refine does not jump opposite the gesture. Settle must not wipe Exact blit (soft-drag trail). Densify soft-ban stops infinite re-decode; residual pin-holes on constrained machines are accepted strip cosmetics (`product.md`). Scrub-while-play release skips Exact.
+Soft-drag must not run densify under the finger (PreferSoftware densify saturates mobile Chrome); picture updates via **main-HW key** chase on `drag_aim` (Exact = dwell/settle on main only — traps: `skills/media.md`). Soft-drag **and** hover-thumb interim paint pick neighbors with **floor when moving forward / ceil when backward** (`scrub_preview_neighbor` + `scrub_dir` / `hover_dir`) so Exact/aim refine does not jump opposite the gesture. Settle must not wipe Exact blit (soft-drag trail). Densify soft-ban stops infinite re-decode; residual pin-holes on constrained machines are accepted strip cosmetics (`product.md`). Scrub-while-play release skips Exact.
 
 ### Scrub phases
 
@@ -281,7 +284,7 @@ Host gesture × engine (FSM homes: `fpmedia_web::transport`, `fpmedia_web::engin
 | Play | `Playing` | `Play` | off | `PlayIter` `nextFrame` | play / rAF |
 | Soft-drag | `Scrubbing` | `Scrub` (+ soft audio hold) | off under finger | interim Exact blit + main-HW **key** chase (Exact = dwell/settle) | `VideoRef::scrub_pointer_down/move` → `note_scrub_frame` / `scrub_to(settle=false)` |
 | Pause / idle scrub | `Ready` (paused) | `Scrub` | on if `ScrubPolicy::densify` | densify → blit + markers | `enter_scrub_cache_pipeline` |
-| Settle | `Settling` | `ExactHold` | deferred (yield) | Exact key→N | paused `ScrubRelease` only — **do not** full-clear Exact blit (see `skills/media.md` soft-drag frozen) |
+| Settle | `Settling` | `ExactHold` | deferred (yield) | Exact key→N on **main HW** | paused `ScrubRelease` only — **do not** full-clear Exact blit (see `skills/media.md` soft-drag frozen) |
 | Resume | `PlayPriming` → `Playing` | → `Play` | off | PlayIter draws aim (no Exact / no audio prewarm) | `ScrubRelease { then_play }` → `prepare_play_from_scrub` → PlayPrime |
 
 Traps: `skills/media.md`. Host playhead / `scrub_pointer_*`: `skills/leptos.md`.
@@ -309,9 +312,11 @@ Local invention (no mediabunny CanvasSink densify equivalent). Unit of work = on
 | `Hd` (&lt; 2160) | 4 / 4 |
 | `Uhd` (≥ 2160) | 10 / 8 |
 
-**Main play** always probes `prefer-hardware` when supported (`WebCodecsDecoder::create` `allow_hw=true`) — Hd and Uhd. **Scrub/thumb** always `PlayPolicy::hd()` + explicit `prefer-software` (sole HW session on main; `no-preference` can still grab HW). `optimizeForLatency` = false for VOD.
+**Main** (`WebCodecsDecoder::create` `allow_hw=true`) always probes `prefer-hardware` when supported — Hd and Uhd, **desktop and mobile**. Owns Play, soft-drag key chase, seek/settle Exact. **`PlayPolicy::prefer_hardware`** documents Uhd intent only — it does **not** gate main HW (Hd field may be `false`; create still probes HW).
 
-**`ScrubPolicy`** (from `GopProfile`): `densify` / `blit_mib` / edge margins (`scrub_cache_mib` = legacy meter only; Covered uncapped). Soft-drag: interim blit + main-HW nearest-key chase (Exact = dwell/settle — Exact-under-finger caught up after stop). Pause densify PreferSoftware when `densify` on; All-Intra `densify` off (1-frame GOP fill wastes CPU).
+**Scrub densify / thumb** (`create_scrub` / `create_thumb`): always `PlayPolicy::hd()` knobs + explicit `prefer-software` so densify never dual-HW poisons main (`no-preference` can still grab HW). Soft-drag does **not** use this slot. `optimizeForLatency` = false for VOD.
+
+**`ScrubPolicy`** (from `GopProfile`): `densify` / `blit_mib` / edge margins (`scrub_cache_mib` = legacy meter only; Covered uncapped). Soft-drag: interim blit + main-HW nearest-key chase (Exact = dwell/settle on main). Pause densify PreferSoftware when `densify` on; All-Intra `densify` off (1-frame GOP fill wastes CPU).
 
 **`SettlePolicy`** (clip-invariant defaults): densify yield `250+250 ms`, `gop_sample_lead` 8…24, index warm leads (`play_index_lead` also feeds the Play iterator). Soft-cold / poison are named recovery helpers, not policy fields. Do not retune Settle when changing Play Uhd or Scrub MiB.
 

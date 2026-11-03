@@ -105,9 +105,10 @@ pub(super) fn compute_max_queue_size(decoded_sample_queue_size: u32) -> u32 {
 
 /// WebCodecs `hardwareAcceleration` hint.
 ///
-/// Scrub/thumb use [`Self::PreferSoftware`] so they never steal the main HW
-/// session (`no-preference` can still pick HW under load → Chrome
-/// `Unsupported configuration` on main recreate).
+/// Densify scrub / thumb / loop stash use [`Self::PreferSoftware`] so they
+/// never steal main HW (`no-preference` can still pick HW under load → Chrome
+/// `Unsupported configuration` on main recreate). Main Play / soft-drag /
+/// settle use prefer-hardware when supported (incl. mobile).
 /// mediabunny: `src/media-sink.ts` VideoDecoderWrapper alpha path
 /// `hardwareAcceleration: 'prefer-software'`; default docs leave
 /// `'no-preference'`.
@@ -240,7 +241,8 @@ pub(super) struct DecoderCore {
     pub(super) decoder: VideoDecoder,
     pub(super) config: DecoderConfig,
     pub(super) optimize_for_latency: bool,
-    /// HW hint last used on configure (main may PreferHardware; scrub/thumb PreferSoftware).
+    /// HW hint last used on configure (main PreferHardware; densify scrub /
+    /// thumb PreferSoftware).
     pub(super) hw_accel: HwAccel,
     /// Pump warm frames past consumer target
     /// ([`crate::policy::PlayPolicy::decode_warm_ahead`]).
