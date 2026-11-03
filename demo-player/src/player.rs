@@ -291,6 +291,159 @@ fn demo_set_muted(
     }
 }
 
+fn demo_pause(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
+    if use_playlist.get_untracked() {
+        playlist.pause();
+    } else {
+        video.pause();
+    }
+}
+
+fn demo_play(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
+    if use_playlist.get_untracked() {
+        playlist.play();
+    } else {
+        video.play();
+    }
+}
+
+fn demo_toggle_play(
+    video: VideoRef,
+    playlist: VideoPlaylistRef,
+    use_playlist: RwSignal<bool>,
+    playing: bool,
+) {
+    if playing {
+        demo_pause(video, playlist, use_playlist);
+    } else {
+        demo_play(video, playlist, use_playlist);
+    }
+}
+
+/// Pause if playing, then step −1 (bar / overflow / ←).
+fn demo_previous_frame(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
+    let pl = use_playlist.get_untracked();
+    let playing = if pl {
+        if playlist.live_is_a.get_untracked() {
+            playlist.slot_a.playing.get_untracked()
+        } else {
+            playlist.slot_b.playing.get_untracked()
+        }
+    } else {
+        video.playing.get_untracked()
+    };
+    if playing {
+        demo_pause(video, playlist, use_playlist);
+    } else if pl {
+        playlist.previous_frame();
+    } else {
+        video.previous_frame();
+    }
+}
+
+/// Pause if playing, then step +1 (bar / overflow / →).
+fn demo_next_frame(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
+    let pl = use_playlist.get_untracked();
+    let playing = if pl {
+        if playlist.live_is_a.get_untracked() {
+            playlist.slot_a.playing.get_untracked()
+        } else {
+            playlist.slot_b.playing.get_untracked()
+        }
+    } else {
+        video.playing.get_untracked()
+    };
+    if playing {
+        demo_pause(video, playlist, use_playlist);
+    } else if pl {
+        playlist.next_frame();
+    } else {
+        video.next_frame();
+    }
+}
+
+fn demo_set_loop(
+    video: VideoRef,
+    playlist: VideoPlaylistRef,
+    use_playlist: RwSignal<bool>,
+    on: bool,
+) {
+    if use_playlist.get_untracked() {
+        playlist.set_loop(on);
+    } else {
+        video.set_loop(on);
+    }
+}
+
+fn demo_toggle_loop(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
+    let on = if use_playlist.get_untracked() {
+        !playlist.looping.get_untracked()
+    } else {
+        !video.looping.get_untracked()
+    };
+    demo_set_loop(video, playlist, use_playlist, on);
+}
+
+/// LoopZone in = playhead; same spot again → reset in to 0. Arms loop if off (`[` / menu).
+fn demo_mark_loop_in(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
+    if use_playlist.get_untracked() {
+        if !playlist.looping.get_untracked() {
+            playlist.set_loop(true);
+        }
+        let ph = playlist.playhead.get_untracked();
+        let (inn, out) = playlist.loop_zone();
+        if inn == ph {
+            playlist.set_loop_zone(0, out);
+        } else {
+            playlist.set_loop_zone(ph, out.max(ph.saturating_add(1)));
+        }
+    } else {
+        if !video.looping.get_untracked() {
+            video.set_loop(true);
+        }
+        let ph = video.playhead.get_untracked();
+        let (inn, out) = video.loop_zone();
+        if inn == ph {
+            video.set_loop_zone(0, out);
+        } else {
+            video.set_loop_zone(ph, out.max(ph.saturating_add(1)));
+        }
+    }
+}
+
+/// LoopZone out = playhead + 1; same spot again → reset out to full. Arms loop if off (`]` / menu).
+fn demo_mark_loop_out(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
+    if use_playlist.get_untracked() {
+        if !playlist.looping.get_untracked() {
+            playlist.set_loop(true);
+        }
+        let ph = playlist.playhead.get_untracked();
+        let (inn, out) = playlist.loop_zone();
+        let want_out = ph.saturating_add(1);
+        let count = playlist.frame_count.get_untracked();
+        if out == want_out {
+            playlist.set_loop_zone(inn, count.max(inn.saturating_add(1)));
+        } else {
+            let inn = inn.min(want_out.saturating_sub(1));
+            playlist.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
+        }
+    } else {
+        if !video.looping.get_untracked() {
+            video.set_loop(true);
+        }
+        let ph = video.playhead.get_untracked();
+        let (inn, out) = video.loop_zone();
+        let want_out = ph.saturating_add(1);
+        let count = video.frame_count.get_untracked();
+        if out == want_out {
+            video.set_loop_zone(inn, count.max(inn.saturating_add(1)));
+        } else {
+            let inn = inn.min(want_out.saturating_sub(1));
+            video.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
+        }
+    }
+}
+
 fn demo_meta_line(video: &VideoRef, clip_name: Option<String>) -> String {
     let mut s = String::new();
     if let Some(name) = clip_name {
@@ -528,16 +681,18 @@ pub fn DemoPlayer() -> impl IntoView {
     // Laptops with a touchscreen usually stay `(hover: hover)` via trackpad/mouse.
     let no_hover = use_media_query("(hover: none)");
     let debug_on = RwSignal::new(false);
-    // Rate / volume / position popovers.
+    // Rate / volume / position / settings popovers.
     let rate_open = RwSignal::new(false);
     let volume_open = RwSignal::new(false);
     let position_open = RwSignal::new(false);
+    let settings_open = RwSignal::new(false);
     let position_format = RwSignal::new(PositionFormat::Frames);
     // Keep V volume pop open while dragging past the panel.
     let volume_sliding = RwSignal::new(false);
     let rate_root = NodeRef::<Div>::new();
     let volume_root = NodeRef::<Div>::new();
     let position_root = NodeRef::<Div>::new();
+    let settings_root = NodeRef::<Div>::new();
     // File name or URL string from last open (clip line under the toolbar).
     let clip_label = RwSignal::new(None::<String>);
     let url_input = NodeRef::<Input>::new();
@@ -677,62 +832,27 @@ pub fn DemoPlayer() -> impl IntoView {
         if !media_ready.get_untracked() {
             return;
         }
-        let pl = use_playlist.get_untracked();
         let active = demo_active_video(video, playlist, use_playlist);
         let playing = media_playing.get_untracked();
         match ev.key().as_str() {
             "ArrowLeft" => {
                 ev.prevent_default();
-                if playing {
-                    if pl {
-                        playlist.pause();
-                    } else {
-                        video.pause();
-                    }
-                } else if pl {
-                    playlist.previous_frame();
-                } else {
-                    video.previous_frame();
-                }
+                demo_previous_frame(video, playlist, use_playlist);
             }
             "ArrowRight" => {
                 ev.prevent_default();
-                if playing {
-                    if pl {
-                        playlist.pause();
-                    } else {
-                        video.pause();
-                    }
-                } else if pl {
-                    playlist.next_frame();
-                } else {
-                    video.next_frame();
-                }
+                demo_next_frame(video, playlist, use_playlist);
             }
             " " | "Spacebar" => {
                 ev.prevent_default();
-                if playing {
-                    if pl {
-                        playlist.pause();
-                    } else {
-                        video.pause();
-                    }
-                } else if pl {
-                    playlist.play();
-                } else {
-                    video.play();
-                }
+                demo_toggle_play(video, playlist, use_playlist, playing);
             }
             "l" | "L" => {
                 ev.prevent_default();
                 let next = jkl_step(active.playback_rate.get_untracked(), 1);
                 active.set_playback_rate(next);
                 if !playing {
-                    if pl {
-                        playlist.play();
-                    } else {
-                        video.play();
-                    }
+                    demo_play(video, playlist, use_playlist);
                 }
             }
             "j" | "J" => {
@@ -740,11 +860,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 let next = jkl_step(active.playback_rate.get_untracked(), -1);
                 active.set_playback_rate(next);
                 if !playing {
-                    if pl {
-                        playlist.play();
-                    } else {
-                        video.play();
-                    }
+                    demo_play(video, playlist, use_playlist);
                 }
             }
             "k" | "K" => {
@@ -752,87 +868,26 @@ pub fn DemoPlayer() -> impl IntoView {
                 // Pause *before* snapping to 1× — `set_playback_rate(1)` while
                 // playing spawns audio; doing that then pause leaves music on.
                 if playing {
-                    if pl {
-                        playlist.pause();
-                    } else {
-                        video.pause();
-                    }
+                    demo_pause(video, playlist, use_playlist);
                     active.set_playback_rate(1.0);
                 } else {
                     active.set_playback_rate(1.0);
-                    if pl {
-                        playlist.play();
-                    } else {
-                        video.play();
-                    }
+                    demo_play(video, playlist, use_playlist);
                 }
             }
             "Escape" => {
                 rate_open.set(false);
                 volume_open.set(false);
                 position_open.set(false);
+                settings_open.set(false);
             }
             "[" => {
-                // LoopZone in = playhead; same spot again → reset in to 0.
-                // Arms loop if off.
                 ev.prevent_default();
-                if pl {
-                    if !playlist.looping.get_untracked() {
-                        playlist.set_loop(true);
-                    }
-                    let ph = playlist.playhead.get_untracked();
-                    let (inn, out) = playlist.loop_zone();
-                    if inn == ph {
-                        playlist.set_loop_zone(0, out);
-                    } else {
-                        playlist.set_loop_zone(ph, out.max(ph.saturating_add(1)));
-                    }
-                } else {
-                    if !video.looping.get_untracked() {
-                        video.set_loop(true);
-                    }
-                    let ph = video.playhead.get_untracked();
-                    let (inn, out) = video.loop_zone();
-                    if inn == ph {
-                        video.set_loop_zone(0, out);
-                    } else {
-                        video.set_loop_zone(ph, out.max(ph.saturating_add(1)));
-                    }
-                }
+                demo_mark_loop_in(video, playlist, use_playlist);
             }
             "]" => {
-                // LoopZone out = playhead + 1; same spot again → reset out to full.
-                // Arms loop if off.
                 ev.prevent_default();
-                if pl {
-                    if !playlist.looping.get_untracked() {
-                        playlist.set_loop(true);
-                    }
-                    let ph = playlist.playhead.get_untracked();
-                    let (inn, out) = playlist.loop_zone();
-                    let want_out = ph.saturating_add(1);
-                    let count = playlist.frame_count.get_untracked();
-                    if out == want_out {
-                        playlist.set_loop_zone(inn, count.max(inn.saturating_add(1)));
-                    } else {
-                        let inn = inn.min(want_out.saturating_sub(1));
-                        playlist.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
-                    }
-                } else {
-                    if !video.looping.get_untracked() {
-                        video.set_loop(true);
-                    }
-                    let ph = video.playhead.get_untracked();
-                    let (inn, out) = video.loop_zone();
-                    let want_out = ph.saturating_add(1);
-                    let count = video.frame_count.get_untracked();
-                    if out == want_out {
-                        video.set_loop_zone(inn, count.max(inn.saturating_add(1)));
-                    } else {
-                        let inn = inn.min(want_out.saturating_sub(1));
-                        video.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
-                    }
-                }
+                demo_mark_loop_out(video, playlist, use_playlist);
             }
             _ => {}
         }
@@ -847,6 +902,9 @@ pub fn DemoPlayer() -> impl IntoView {
     let _position_outside = on_click_outside(position_root, move |_| {
         // Menu only — Go to edit keeps `open=false` and must not be cancelled here.
         position_open.set(false);
+    });
+    let _settings_outside = on_click_outside(settings_root, move |_| {
+        settings_open.set(false);
     });
 
     // Text buttons: filled bg, no border. Icon buttons: icon-only (no chrome).
@@ -1088,17 +1146,12 @@ pub fn DemoPlayer() -> impl IntoView {
                                 if media_playing.get() { "Pause" } else { "Play" }
                             }
                             on:click=move |_| {
-                                if media_playing.get_untracked() {
-                                    if use_playlist.get_untracked() {
-                                        playlist.pause();
-                                    } else {
-                                        video.pause();
-                                    }
-                                } else if use_playlist.get_untracked() {
-                                    playlist.play();
-                                } else {
-                                    video.play();
-                                }
+                                demo_toggle_play(
+                                    video,
+                                    playlist,
+                                    use_playlist,
+                                    media_playing.get_untracked(),
+                                );
                             }
                         >
                             <icon::Play class="wm-icon wm-icon-play"/>
@@ -1123,12 +1176,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 if media_looping.get() { "Loop on" } else { "Loop off" }
                             }
                             on:click=move |_| {
-                                let next = !media_looping.get_untracked();
-                                if use_playlist.get_untracked() {
-                                    playlist.set_loop(next);
-                                } else {
-                                    video.set_loop(next);
-                                }
+                                demo_toggle_loop(video, playlist, use_playlist);
                             }
                         >
                             <icon::Loop class="wm-icon wm-icon-loop"/>
@@ -1141,17 +1189,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             prop:aria-label="Previous frame"
                             prop:title="Previous frame"
                             on:click=move |_| {
-                                if media_playing.get_untracked() {
-                                    if use_playlist.get_untracked() {
-                                        playlist.pause();
-                                    } else {
-                                        video.pause();
-                                    }
-                                } else if use_playlist.get_untracked() {
-                                    playlist.previous_frame();
-                                } else {
-                                    video.previous_frame();
-                                }
+                                demo_previous_frame(video, playlist, use_playlist);
                             }
                         >
                             <icon::NextFrame class="wm-icon wm-icon-prev -scale-x-100"/>
@@ -1164,17 +1202,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             prop:aria-label="Next frame"
                             prop:title="Next frame"
                             on:click=move |_| {
-                                if media_playing.get_untracked() {
-                                    if use_playlist.get_untracked() {
-                                        playlist.pause();
-                                    } else {
-                                        video.pause();
-                                    }
-                                } else if use_playlist.get_untracked() {
-                                    playlist.next_frame();
-                                } else {
-                                    video.next_frame();
-                                }
+                                demo_next_frame(video, playlist, use_playlist);
                             }
                         >
                             <icon::NextFrame class="wm-icon wm-icon-next"/>
@@ -1190,6 +1218,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 root=position_root
                                 rate_open=rate_open
                                 volume_open=volume_open
+                                settings_open=settings_open
                             />
                         </div>
                         <div class="wm-controls-side flex shrink-0 flex-nowrap items-center justify-end gap-1">
@@ -1252,6 +1281,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                     if no_hover.get_untracked() && !volume_open.get_untracked() {
                                         volume_open.set(true);
                                         rate_open.set(false);
+                                        settings_open.set(false);
                                         return;
                                     }
                                     let vol = if use_playlist.get_untracked() {
@@ -1320,6 +1350,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                     rate_open.set(next);
                                     if next {
                                         volume_open.set(false);
+                                        settings_open.set(false);
                                     }
                                 }
                                 on:dblclick=move |ev| {
@@ -1343,88 +1374,101 @@ pub fn DemoPlayer() -> impl IntoView {
                                 role="dialog"
                                 aria-label="Playback rate"
                             >
-                                <div class="wm-rate-track">
-                                    <input
-                                        type="range"
-                                        class="wm-rate-input"
-                                        data-testid="playback-rate-input"
-                                        min="0.25"
-                                        max="1.75"
-                                        step="0.05"
-                                        prop:value=move || {
-                                            let r = demo_active_video(video, playlist, use_playlist)
-                                                .playback_rate
-                                                .get();
-                                            if r < 0.0 {
-                                                "0.25".to_string()
-                                            } else {
-                                                r.min(1.75).to_string()
-                                            }
-                                        }
-                                        prop:disabled=move || !media_ready.get()
-                                        on:input=move |ev| {
-                                            let Some(input) = event_target::<HtmlInputElement>(&ev)
-                                            else {
-                                                return;
-                                            };
-                                            if let Ok(v) = input.value().parse::<f64>() {
-                                                demo_active_video(video, playlist, use_playlist)
-                                                    .set_playback_rate(v);
-                                            }
-                                        }
-                                    />
-                                    <div class="wm-rate-ticks" aria-hidden="true">
-                                        <div class="wm-rate-ticks-rail">
-                                            {RATE_TICKS
-                                                .into_iter()
-                                                .map(|t| {
-                                                    let left = rate_tick_left_pct(t);
-                                                    view! {
-                                                        <button
-                                                            type="button"
-                                                            class=move || {
-                                                                let r = demo_active_video(
-                                                                    video,
-                                                                    playlist,
-                                                                    use_playlist,
-                                                                )
-                                                                .playback_rate
-                                                                .get()
-                                                                .clamp(
-                                                                    RATE_SLIDER_MIN,
-                                                                    RATE_SLIDER_MAX,
-                                                                );
-                                                                if (r - t).abs() < 0.026 {
-                                                                    "wm-rate-tick is-active"
-                                                                } else {
-                                                                    "wm-rate-tick"
-                                                                }
-                                                            }
-                                                            style:left=left
-                                                            prop:disabled=move || !media_ready.get()
-                                                            prop:title=format!(
-                                                                "{}×",
-                                                                format_rate_tick(t)
-                                                            )
-                                                            on:click=move |ev| {
-                                                                ev.stop_propagation();
-                                                                demo_active_video(
-                                                                    video,
-                                                                    playlist,
-                                                                    use_playlist,
-                                                                )
-                                                                .set_playback_rate(t);
-                                                            }
-                                                        >
-                                                            <span class="wm-rate-tick-mark"></span>
-                                                            <span class="wm-rate-tick-label">
-                                                                {format_rate_tick(t)}
-                                                            </span>
-                                                        </button>
-                                                    }
-                                                })
-                                                .collect_view()}
+                                <PlaybackRateTrack
+                                    video=video
+                                    playlist=playlist
+                                    use_playlist=use_playlist
+                                    media_ready=media_ready
+                                    input_testid="playback-rate-input"
+                                />
+                            </div>
+                        </div>
+                        <div
+                            class=move || {
+                                let open = if settings_open.get() { " is-open" } else { "" };
+                                format!("wm-settings relative shrink-0{open}")
+                            }
+                            node_ref=settings_root
+                            data-testid="settings"
+                        >
+                            <button
+                                type="button"
+                                class=move || {
+                                    if settings_open.get() {
+                                        btn_icon_on.to_string()
+                                    } else {
+                                        btn_icon.to_string()
+                                    }
+                                }
+                                data-testid="btn-settings"
+                                prop:disabled=move || !media_ready.get()
+                                prop:aria-expanded=move || settings_open.get()
+                                prop:aria-haspopup="menu"
+                                prop:aria-label="More controls"
+                                prop:title="More controls"
+                                on:click=move |_| {
+                                    let next = !settings_open.get_untracked();
+                                    settings_open.set(next);
+                                    if next {
+                                        rate_open.set(false);
+                                        volume_open.set(false);
+                                        position_open.set(false);
+                                    }
+                                }
+                            >
+                                <icon::Settings class="wm-icon"/>
+                            </button>
+                            <div
+                                class="wm-settings-menu"
+                                role="menu"
+                                aria-label="More controls"
+                                data-testid="settings-menu"
+                            >
+                                <button
+                                    type="button"
+                                    class="wm-settings-item"
+                                    role="menuitem"
+                                    data-testid="btn-loop-in"
+                                    prop:disabled=move || !media_ready.get()
+                                    on:click=move |_| {
+                                        demo_mark_loop_in(video, playlist, use_playlist);
+                                        settings_open.set(false);
+                                    }
+                                >
+                                    "Set Loop In"
+                                    <span class="wm-settings-kbd">"["</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="wm-settings-item"
+                                    role="menuitem"
+                                    data-testid="btn-loop-out"
+                                    prop:disabled=move || !media_ready.get()
+                                    on:click=move |_| {
+                                        demo_mark_loop_out(video, playlist, use_playlist);
+                                        settings_open.set(false);
+                                    }
+                                >
+                                    "Set Loop Out"
+                                    <span class="wm-settings-kbd">"]"</span>
+                                </button>
+                                <div
+                                    class="wm-settings-overflow flex flex-col gap-0.5 @4xl:hidden"
+                                    role="group"
+                                    aria-label="Playback rate"
+                                >
+                                    <div class="wm-settings-menu-sep"></div>
+                                    <div class="wm-settings-rate px-2 pb-1 pt-0.5">
+                                        <div class="mb-1 text-[11px] text-zinc-400">
+                                            "Playback rate"
                                         </div>
+                                        <PlaybackRateTrack
+                                            video=video
+                                            playlist=playlist
+                                            use_playlist=use_playlist
+                                            media_ready=media_ready
+                                            input_testid="playback-rate-input-menu"
+                                        />
                                     </div>
                                 </div>
                             </div>
@@ -1828,6 +1872,7 @@ fn PositionDisplay(
     root: NodeRef<Div>,
     rate_open: RwSignal<bool>,
     volume_open: RwSignal<bool>,
+    settings_open: RwSignal<bool>,
 ) -> impl IntoView {
     let editing = RwSignal::new(false);
     let draft = RwSignal::new(String::new());
@@ -1918,6 +1963,7 @@ fn PositionDisplay(
         }
         rate_open.set(false);
         volume_open.set(false);
+        settings_open.set(false);
         // Edit first, then close menu — never clear editing on menu close.
         editing.set(true);
         open.set(false);
@@ -2004,6 +2050,7 @@ fn PositionDisplay(
                                 if next {
                                     rate_open.set(false);
                                     volume_open.set(false);
+                                    settings_open.set(false);
                                 }
                             }
                         >
@@ -2331,6 +2378,87 @@ fn DemoPlaylistScrubber(
 
 fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> Option<T> {
     ev.target()?.dyn_into::<T>().ok()
+}
+
+/// Shared rate slider + tick marks (bar pop + settings overflow).
+#[component]
+fn PlaybackRateTrack(
+    video: VideoRef,
+    playlist: VideoPlaylistRef,
+    use_playlist: RwSignal<bool>,
+    media_ready: Memo<bool>,
+    #[prop(into)] input_testid: String,
+) -> impl IntoView {
+    view! {
+        <div class="wm-rate-track">
+            <input
+                type="range"
+                class="wm-rate-input"
+                attr:data-testid=input_testid
+                min="0.25"
+                max="1.75"
+                step="0.05"
+                prop:value=move || {
+                    let r = demo_active_video(video, playlist, use_playlist)
+                        .playback_rate
+                        .get();
+                    if r < 0.0 {
+                        "0.25".to_string()
+                    } else {
+                        r.min(1.75).to_string()
+                    }
+                }
+                prop:disabled=move || !media_ready.get()
+                on:input=move |ev| {
+                    let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                        return;
+                    };
+                    if let Ok(v) = input.value().parse::<f64>() {
+                        demo_active_video(video, playlist, use_playlist).set_playback_rate(v);
+                    }
+                }
+            />
+            <div class="wm-rate-ticks" aria-hidden="true">
+                <div class="wm-rate-ticks-rail">
+                    {RATE_TICKS
+                        .into_iter()
+                        .map(|t| {
+                            let left = rate_tick_left_pct(t);
+                            view! {
+                                <button
+                                    type="button"
+                                    class=move || {
+                                        let r = demo_active_video(video, playlist, use_playlist)
+                                            .playback_rate
+                                            .get()
+                                            .clamp(RATE_SLIDER_MIN, RATE_SLIDER_MAX);
+                                        if (r - t).abs() < 0.026 {
+                                            "wm-rate-tick is-active"
+                                        } else {
+                                            "wm-rate-tick"
+                                        }
+                                    }
+                                    style:left=left
+                                    prop:disabled=move || !media_ready.get()
+                                    prop:title=format!("{}×", format_rate_tick(t))
+                                    on:click=move |ev| {
+                                        ev.stop_propagation();
+                                        demo_active_video(video, playlist, use_playlist)
+                                            .set_playback_rate(t);
+                                    }
+                                >
+                                    <span class="wm-rate-tick-mark"></span>
+                                    <span class="wm-rate-tick-label">
+                                        {format_rate_tick(t)}
+                                    </span>
+                                </button>
+                            }
+                        })
+                        .collect_view()}
+                </div>
+            </div>
+        </div>
+    }
 }
 
 /// Vertical volume range popover input.

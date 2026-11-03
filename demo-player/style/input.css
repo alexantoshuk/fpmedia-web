@@ -78,6 +78,22 @@ body {
   @apply text-zinc-400 hover:text-zinc-100;
 }
 
+@utility wm-settings-menu {
+  @apply wm-pop right-0 bottom-[calc(100%+0.35rem)] left-auto hidden min-w-52 flex-col gap-0.5 p-1.5;
+}
+
+@utility wm-settings-item {
+  @apply flex w-full cursor-pointer items-center justify-between gap-3 rounded-md border-0 bg-transparent px-2.5 py-1.5 text-left text-[13px]/tight text-zinc-100 hover:bg-zinc-700/55 disabled:cursor-default disabled:opacity-45;
+}
+
+@utility wm-settings-kbd {
+  @apply font-mono text-[11px] text-zinc-500;
+}
+
+@utility wm-settings-menu-sep {
+  @apply mx-1.5 my-1 h-px bg-zinc-700;
+}
+
 /* ── Fullscreen chrome (structural — keep custom) ─────────────────────── */
 
 .wm-player:fullscreen {
@@ -570,6 +586,16 @@ body {
 /* Position menu open + muted `/` / last (state not expressible as one utility). */
 .wm-position.is-open .wm-position-menu {
   @apply flex;
+}
+
+.wm-settings.is-open .wm-settings-menu {
+  @apply flex;
+}
+
+/* Rate track inside settings overflow — fit the menu, not the bar pop width. */
+.wm-settings-rate .wm-rate-track {
+  width: 100%;
+  min-width: 12rem;
 }
 
 .wm-position-slash,
