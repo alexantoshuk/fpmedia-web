@@ -12,7 +12,7 @@
 - **Stash:** `stash@{0}` = densify-free `clear_pending` after `EndExact` — optional (cut Exact flash).
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset; `39d20a4` BeginExact-before-yield / `BeginExact { rearm: densify }`.
 - **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
-- **Unverified:** long scrub-outside stress; cut densify flash after optional stash.
+- **Unverified:** cut densify flash after optional stash.
 
 ---
 

@@ -480,6 +480,8 @@ pub fn VideoPlaylist(
         }) as Rc<dyn Fn(PlaylistPos)>
     };
 
+    // Next/Prev/seek/scrub ignore LoopZone (Play + wall only). Same as `<Video>`
+    // step — zone is not a navigation clamp. **no equivalent**.
     let next_frame_fn = {
         let pl = playlist;
         let seek_pos = Rc::clone(&seek_pos_fn);
@@ -495,37 +497,13 @@ pub fn VideoPlaylist(
                 return;
             };
             if local < clip.last_frame() {
-                let next_g = model
-                    .global_frame_at(PlaylistPos::new(clip_i, local.saturating_add(1)))
-                    .unwrap_or(0);
-                let (zone_in, zone_out) = pl.loop_zone();
-                if looping.get_untracked() && zone_out > zone_in && next_g >= zone_out {
-                    let aim = model
-                        .at_global_frame(zone_in)
-                        .unwrap_or(PlaylistPos::new(0, 0));
-                    seek_pos(aim);
-                    return;
-                }
                 pl.live_video().next_frame();
                 return;
             }
             if let Some(n) = model.next_clip_index(clip_i) {
-                let next_start = model.clip_start_frame(n).unwrap_or(0);
-                let (zone_in, zone_out) = pl.loop_zone();
-                if looping.get_untracked() && zone_out > zone_in && next_start >= zone_out {
-                    let aim = model
-                        .at_global_frame(zone_in)
-                        .unwrap_or(PlaylistPos::new(0, 0));
-                    seek_pos(aim);
-                } else {
-                    seek_pos(PlaylistPos::new(n, 0));
-                }
+                seek_pos(PlaylistPos::new(n, 0));
             } else if looping.get_untracked() {
-                let (zone_in, _) = pl.loop_zone();
-                let aim = model
-                    .at_global_frame(zone_in)
-                    .unwrap_or(PlaylistPos::new(0, 0));
-                seek_pos(aim);
+                seek_pos(PlaylistPos::new(0, 0));
             }
         }) as Rc<dyn Fn()>
     };

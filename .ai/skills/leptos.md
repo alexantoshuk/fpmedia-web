@@ -38,7 +38,7 @@
 | Playlist Host small LoopZone: stop right after wrap PlayPrime ok | near-wall `kick_prepare` warm overlaps wrap; late `seek_frame_with` clears play session. `prepare_playlist_seam_at` `begin_op` before warm. Log: `prepare_playlist_seam cancelled`. **no equivalent** |
 | Playlist Host small LoopZone: pause icon + frozen progress after wrap | never `kick_warm` / Mid prepare on Playing live (`on_idle` only) — post-wrap still inside 1s prewarm → live prepare kills session; facade `playing` stays. **no equivalent** |
 | Playlist Host: video past loop / scrubber frozen during wrap (mobile) | `stop_live_for_host_seam` before idle prepare — mirror gated + live still Playing → canvas overruns while tip stuck; facade stays playing. **no equivalent** |
-| Playlist scrub-while-play outside LoopZone stops | `release_scrub_outside_to_loop_in`: same-clip `scrub_pointer_up(loop_in)` **+ `play`** (slot `then_play` often false after promote); cross-clip pause → wrap, on cancel/`!try_begin` → `seek_to_pos`+play. Never `pointer_up(outside)`+wrap. **no equivalent** |
+| Playlist Next/scrub clamped to LoopZone | Nav ignores zone: Next = step/clip/`0@0` if looping; scrub Up resumes at aim (no snap to `loop_in`). Play + wall only. **no equivalent** |
 | Playlist clip join hitch + Covered/Exact storm | `stop_playback` → `pause_hard_no_densify` (not `pause` densify). Pause button still `pause_warm_idle`. **no equivalent** |
 | LoopZone 2-clip: pause@out → 2nd@0 → green → in | `try_begin_seam` before spawn; paint-before-swap `prepare_seam_at(loop_in)` (not pause+cold `seek_to_pos`); Host wall → wrap. **no equivalent** |
 | Playlist seam volume jump | `VideoPlaylistRef::volume`/`muted` + `apply_gain_to_slots`; demo binds playlist gain, not live slot |

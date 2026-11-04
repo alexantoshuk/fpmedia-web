@@ -239,6 +239,7 @@ flowchart TD
 | ------- | ---- |
 | Single `<Video>` | Source FrameIds; engine EOF wall at zone end; `LoopSeam` → `loop_in`. API: `set_loop_zone` / `loop_zone`. |
 | Playlist | Global frames. **`LoopOwner::Engine`** (zone ⊆ live, incl. full-axis one file) → Video `LoopSeam`. **`LoopOwner::Host`** → `promote_idle_at` / `wrap_to_loop_in` under **`SeamPhase`**. Derive owner — do not read slot `Video.looping`. |
+| Navigation | Seek / goto / Next / Prev / scrub **ignore** the zone (full axis). LoopZone only Play + wall wrap. |
 | Full axis | Same as pre-zone last→0 / last-clip→0 seam. |
 | Demo | `[` / `]` set in/out from playhead (same spot toggles reset in→0 / out→full), arm loop if off; scrubber dim outside zone. |
 | Not in this pass | CutWindow (`state.md`). |
