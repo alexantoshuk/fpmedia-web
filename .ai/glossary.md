@@ -181,7 +181,15 @@ Position inside a playlist: **clip index** (0-based in the model; **1-based** `[
 
 ### LoopZone
 
-Half-open wrap range `[in, out)` when `looping` is on. Default = full file (single) or full playlist. Single `<Video>`: source FrameIds + engine wall/`LoopSeam`. Playlist: scrub **global frames**, host wrap; slots non-looping. API: `VideoRef` / `VideoPlaylistRef` `set_loop_zone` / `loop_zone`. Demo `[`/`]` + mask. UX: `product.md` § Loop zone. Design: `architecture.md` § LoopZone.
+Half-open wrap range `[in, out)` when `looping` is on. Default = full file (single) or full playlist. Single `<Video>`: source FrameIds + engine wall/`LoopSeam`. Playlist: scrub **global frames**; wrap owner is [`LoopOwner`](#loopowner). API: `VideoRef` / `VideoPlaylistRef` `set_loop_zone` / `loop_zone`. Demo `[`/`]` + mask. UX: `product.md` § Loop zone. Design: `architecture.md` § LoopZone.
+
+### LoopOwner
+
+Playlist: who arms LoopZone wrap for the current global zone vs live clip — `Off` / `Engine` (zone ⊆ live → engine `LoopSeam`) / `Host` (cross-clip wall → `wrap_to_loop_in` / `promote_idle_at`). Derived from geometry + playlist `looping`; never by reading slot `Video.looping`. Design: `architecture.md` § State machines / Playlist.
+
+### SeamPhase
+
+Playlist host seam latch: `Idle` / `Preparing` / `Swapping` / `Playing` (`RwSignal` so EOF Effect re-runs when Idle). Cut promote and LoopZone wrap share it so dual wrap is unrepresentable. Design: `architecture.md` § State machines.
 
 ### Playlist
 

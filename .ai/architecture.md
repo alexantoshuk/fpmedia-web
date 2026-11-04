@@ -92,7 +92,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Demo open | **Shipped:** multi-file picker + `;`-separated URLs → playlist; 1 source → `<Video>`; `[i]` position/go-to. Host CSS hides `.fpvideo-playlist-slot.is-idle` |
 | Strip / tip domain | One owner: `TimelineRef` (playlist units = **global frames**). Gesture / tip / hover / zebra / `<TimelineMeta>` all use it. `strip_video()` → live slot; ready/fetch remapped via `strip_ready_marks` / `strip_fetch_ranges`. Meta re-leases on `strip_video_key` change — **never** remount `<Scrubber>` on live swap. Mirror live→`playhead`/`pos` when not `scrubbing` (Play + paused step/seek; scrub gesture owns aim) |
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
-| Seam | **Reuse Video** for any zone ⊆ live clip (range or full-axis one file) via `sync_live_loop_from_playlist` → engine `LoopSeam`. **Playlist-only:** clip cut / cross-clip wrap → `promote_idle_at` (`prepare_seam_at` → swap → Play; `@0` + origin stash). `prepare_playlist_seam_at` uses densify-free seek (no Pause fill between End and next Play). |
+| Seam | **`LoopOwner`:** zone ⊆ live → `Engine` (`sync_live_loop_from_playlist` → `LoopSeam`); else `Host` → `promote_idle_at` / `wrap_to_loop_in`. Host cut/wrap latched by **`SeamPhase`** (not a bool). Densify-free seam paint via `seek_frame_with(..., false)`. |
 | Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
 | Idle neighbor | Next clip; on last + playlist **loop** → **0** (wrap origin-stash target); else previous. `idle_neighbor` / `set_loop` re-preload |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
@@ -121,6 +121,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | Media clock | `fpmedia_web::clock_state` |
 | Play session | `fpmedia_web::PlayPhase` (`Idle` / `Live` / `LoopSeam`) |
 | rAF restart | `fpmedia_web::session` (`restarting`) |
+| Playlist host | `LoopOwner` `{ Off, Engine, Host }` + `SeamPhase` (`Idle` / `Preparing` / `Swapping` / `Playing`) in `components` `video_playlist` — derive owner from zone⊆live; never probe slot `Video.looping` |
 
 **Success bar:** a new race is fixed by a transition or coalesce row, not another flag. Failure modes: skills.
 
@@ -235,7 +236,7 @@ flowchart TD
 | Surface | Rule |
 | ------- | ---- |
 | Single `<Video>` | Source FrameIds; engine EOF wall at zone end; `LoopSeam` → `loop_in`. API: `set_loop_zone` / `loop_zone`. |
-| Playlist | Global frames. **Zone ⊆ live clip** (incl. full-axis single file) → Video engine `LoopSeam` (`sync_live_loop_from_playlist`). **Cross-clip / multi-clip** → host `promote_idle_at` (`advance_after_ended` / `wrap_to_loop_in`) — one path for cut and loop-in; no mirror-skip / latch pause. |
+| Playlist | Global frames. **`LoopOwner::Engine`** (zone ⊆ live, incl. full-axis one file) → Video `LoopSeam`. **`LoopOwner::Host`** → `promote_idle_at` / `wrap_to_loop_in` under **`SeamPhase`**. Derive owner — do not read slot `Video.looping`. |
 | Full axis | Same as pre-zone last→0 / last-clip→0 seam. |
 | Demo | `[` / `]` set in/out from playhead (same spot toggles reset in→0 / out→full), arm loop if off; scrubber dim outside zone. |
 | Not in this pass | CutWindow (`state.md`). |

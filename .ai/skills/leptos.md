@@ -30,9 +30,11 @@
 | Playlist seam densify lag (cut / wrap / range host) | `swap_live_idle` + policy On (no densify arm); seam `prepare_seam_at` → densify-free seek — `skills/media.md` |
 | Playlist Next/Prev stuck in clip at EOF/0 | step uses live `frame`; mirror live→pos when not scrubbing |
 | Playlist loop wrap hitch (last→0) | `idle_neighbor(…, looping)` → idle preload **0**; `set_loop(true)` re-preloads. **no equivalent** |
-| Playlist LoopZone mid-clip past out / same-clip HF flash | intra → `sync_live_loop_from_playlist` + engine; host wrap iff `!live_engine_owns_loop` (`2c19b70` cut). **no equivalent** |
+| Playlist LoopZone mid-clip past out / same-clip HF flash | `LoopOwner::Engine` → sync + engine LoopSeam; `Host` → `wrap_to_loop_in` under `SeamPhase`. **no equivalent** |
+| Playlist Host: stop at clip join / Play → playlist@0 | clear `ended` only after `try_begin_seam`; Play at zone/clip end → wrap or promote+play (Host `looping=false` must not hit PlayPrime snap→0). Wall = `g >= zone_out-1` **on live clip only**. Never `advance` early-return on sticky `playing` after Effect cleared `ended`. **no equivalent** |
+| Playlist scrub-while-play outside LoopZone stops | `release_scrub_outside_to_loop_in`: same-clip `scrub_pointer_up(loop_in)` **+ `play`** (slot `then_play` often false after promote); cross-clip pause → wrap, on cancel/`!try_begin` → `seek_to_pos`+play. Never `pointer_up(outside)`+wrap. **no equivalent** |
 | Playlist clip join hitch + Covered/Exact storm | `stop_playback` → `pause_hard_no_densify` (not `pause` densify). Pause button still `pause_warm_idle`. **no equivalent** |
-| LoopZone 2-clip: pause@out → 2nd@0 → green → in | sync `zone_wrapping` before spawn; paint-before-swap `prepare_seam_at(loop_in)` (not pause+cold `seek_to_pos`); EOF past out → wrap only. **no equivalent** |
+| LoopZone 2-clip: pause@out → 2nd@0 → green → in | `try_begin_seam` before spawn; paint-before-swap `prepare_seam_at(loop_in)` (not pause+cold `seek_to_pos`); Host wall → wrap. **no equivalent** |
 | Playlist seam volume jump | `VideoPlaylistRef::volume`/`muted` + `apply_gain_to_slots`; demo binds playlist gain, not live slot |
 | Playlist scrub stuck at cut on drag | never remount `<Scrubber>`; Meta re-leases via `strip_video_key` — `architecture.md` § Playlist |
 | Effect side-effect runs on mount | `Effect::watch(deps, handler, false)` — handler skips initial; `Effect::new` runs once after mount |

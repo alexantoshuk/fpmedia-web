@@ -10,9 +10,10 @@ use wasm_bindgen_futures::spawn_local;
 use crate::Video;
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
+use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, try_begin_seam};
 use super::slots::{
-    advance_after_ended, live_engine_owns_loop, maybe_kick_idle_seam_warm, seek_to_pos,
-    sync_live_loop_from_playlist, wait_ready, wrap_to_loop_in,
+    advance_after_ended, maybe_kick_idle_seam_warm, seek_to_pos, sync_live_loop_from_playlist,
+    wait_ready, wrap_to_loop_in,
 };
 use super::source::PlaylistSource;
 use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};
@@ -74,39 +75,48 @@ pub fn VideoPlaylist(
         }
     });
 
-    // Clip EOF → advance playlist (swap → play_seam; origin stash when warmed).
-    // LoopZone past `out` / zone-ending clip → wrap only (never origin seam).
+    // Host seam dispatch: mid-wall wrap (LoopOwner::Host) or clip-EOF advance.
+    // Intra-clip zone → engine `LoopSeam` (owner Engine). One Effect — SeamPhase
+    // makes dual wrap unrepresentable. **no equivalent**.
     Effect::new(move |_| {
-        if !ready.get() {
+        // Track phase so Idle-after-busy re-runs while slot `ended` is still set.
+        let _ = playlist.seam_phase.get();
+        if !ready.get() || playlist.scrubbing.get() || seam_busy(playlist) {
             return;
         }
         let live = if live_is_a.get() { slot_a } else { slot_b };
-        if !live.ended.get() {
-            return;
-        }
-        live.ended.set(false);
-        let from_clip = live_clip.get_untracked();
-        let epoch = open_gen.get_value();
-        let pl = playlist;
-        if pl.zone_wrapping.get_value() {
-            return;
-        }
-        let model = pl.model.get_untracked();
-        let (zone_in, zone_out) = pl.loop_zone();
-        let total = model.total_frame_count();
+        let _ = live_clip.get();
+        let _ = playlist.loop_in.get();
+        let _ = playlist.loop_out.get();
+        let owner = loop_owner(playlist);
+        let g = playhead.get();
+        let (zone_in, zone_out) = playlist.loop_zone();
+        let total = frame_count.get_untracked();
         let zone_full = zone_in == 0 && zone_out == total;
-        let g = playhead.get_untracked();
-        // Engine LoopSeam owns intra-clip zone walls — do not host-wrap on `ended`.
-        let zone_ends_here = pl.looping.get_untracked()
+
+        // Host LoopZone wall on last in-zone frame (parity with engine `out-1`),
+        // only when that wall lies on the **live** clip — else clip-EOF advance
+        // owns the join (spanning zone must not wrap at an earlier cut).
+        let zone_last = zone_out.saturating_sub(1);
+        let wall_on_live = playlist
+            .model
+            .get_untracked()
+            .at_global_frame(zone_last)
+            .is_some_and(|p| p.clip_index == live_clip.get_untracked());
+        let host_wall = matches!(owner, LoopOwner::Host)
+            && looping.get()
             && !zone_full
-            && !live_engine_owns_loop(pl)
-            && (g >= zone_out
-                || model
-                    .clip_end_frame(from_clip)
-                    .is_some_and(|end| zone_out <= end));
-        if zone_ends_here {
-            // Latch before spawn — else advance seam races wrap microtask.
-            pl.zone_wrapping.set_value(true);
+            && zone_out > zone_in
+            && wall_on_live
+            && g >= zone_last
+            && live.playing.get()
+            && !live.ended.get();
+        if host_wall {
+            if !try_begin_seam(playlist) {
+                return;
+            }
+            let epoch = open_gen.get_value();
+            let pl = playlist;
             spawn_local(async move {
                 if let Err(e) = wrap_to_loop_in(pl, epoch).await {
                     if pl.open_gen.get_value() != epoch {
@@ -118,6 +128,19 @@ pub fn VideoPlaylist(
             });
             return;
         }
+
+        if !live.ended.get() {
+            return;
+        }
+        // Latch seam before clearing `ended` — else a busy SeamPhase drops the
+        // EOF forever (stop at clip join; next Play snaps Host slot → 0).
+        let from_clip = live_clip.get_untracked();
+        if !try_begin_seam(playlist) {
+            return;
+        }
+        live.ended.set(false);
+        let epoch = open_gen.get_value();
+        let pl = playlist;
         spawn_local(async move {
             if let Err(e) = advance_after_ended(pl, epoch, from_clip).await {
                 if pl.open_gen.get_value() != epoch {
@@ -125,50 +148,6 @@ pub fn VideoPlaylist(
                 }
                 pl.error.set(Some(e.clone()));
                 pl.status.set("Playlist seam failed.".into());
-            }
-        });
-    });
-
-    // LoopZone wall when engine does **not** own the live slot (zone spans
-    // clips). Intra-clip → engine `LoopSeam`. Host path = `2c19b70` cut wrap
-    // (no pause@out latch — that hitch). **no equivalent**.
-    Effect::new(move |_| {
-        if !ready.get() || !looping.get() {
-            return;
-        }
-        let live = if live_is_a.get() { slot_a } else { slot_b };
-        let _ = live.looping.get();
-        if live_engine_owns_loop(playlist) {
-            return;
-        }
-        if playlist.scrubbing.get() {
-            return;
-        }
-        if !live.playing.get() && !live.ended.get() {
-            return;
-        }
-        let g = playhead.get();
-        let (zone_in, zone_out) = playlist.loop_zone();
-        let total = frame_count.get_untracked();
-        if zone_out == 0 || (zone_in == 0 && zone_out == total) {
-            return;
-        }
-        if g < zone_out {
-            return;
-        }
-        if playlist.zone_wrapping.get_value() {
-            return;
-        }
-        playlist.zone_wrapping.set_value(true);
-        let epoch = open_gen.get_value();
-        let pl = playlist;
-        spawn_local(async move {
-            if let Err(e) = wrap_to_loop_in(pl, epoch).await {
-                if pl.open_gen.get_value() != epoch {
-                    return;
-                }
-                pl.error.set(Some(e));
-                pl.status.set("LoopZone wrap failed.".into());
             }
         });
     });
@@ -220,7 +199,7 @@ pub fn VideoPlaylist(
             playlist.scrubbing.set(false);
             playlist.scrub_resume.set(false);
             playlist.seam_warm_for.set_value(None);
-            playlist.zone_wrapping.set_value(false);
+            end_seam(playlist);
             sources.set_value(Vec::new());
             error.set(None);
             status.set("Closed.".into());
@@ -366,13 +345,54 @@ pub fn VideoPlaylist(
             slot_b
         };
         sync_live_loop_from_playlist(playlist);
-        // Outside zone: intra → engine/Video play snap; cross-clip → host wrap.
+        // Host keeps slot `looping=false` — bare `live.play()` at clip/zone end
+        // snaps PlayPrime → local 0 (ignores playlist LoopZone). Route wrap /
+        // promote instead. **no equivalent**.
         if looping.get_untracked() {
             let (zone_in, zone_out) = playlist.loop_zone();
             let g = playhead.get_untracked();
-            if zone_out > zone_in && (g < zone_in || g >= zone_out) {
-                if live_engine_owns_loop(playlist) {
-                    live.play();
+            let zone_last = zone_out.saturating_sub(1);
+            let outside_or_zone_end = zone_out > zone_in && (g < zone_in || g >= zone_last);
+            let clip_frames = live.frame_count.get_untracked();
+            let at_clip_last =
+                clip_frames > 0 && live.playhead.get_untracked() >= clip_frames.saturating_sub(1);
+            if outside_or_zone_end {
+                match loop_owner(playlist) {
+                    LoopOwner::Engine => {
+                        live.play();
+                        return;
+                    }
+                    LoopOwner::Host => {
+                        if !try_begin_seam(playlist) {
+                            return;
+                        }
+                        let epoch = open_gen.get_value();
+                        let pl = playlist;
+                        spawn_local(async move {
+                            let _ = wrap_to_loop_in(pl, epoch).await;
+                        });
+                        return;
+                    }
+                    LoopOwner::Off => {}
+                }
+            } else if at_clip_last && matches!(loop_owner(playlist), LoopOwner::Host) {
+                // Still inside zone but clip EOF — promote next (not snap → 0).
+                let cur = live_clip.get_untracked();
+                let model = playlist.model.get_untracked();
+                if let Some(next) = model.next_clip_index(cur) {
+                    let next_start = model.clip_start_frame(next).unwrap_or(0);
+                    if next_start < zone_out {
+                        let epoch = open_gen.get_value();
+                        let pl = playlist;
+                        let aim = PlaylistPos::new(next, 0);
+                        spawn_local(async move {
+                            let _ = seek_to_pos(pl, aim, epoch, true).await;
+                        });
+                        return;
+                    }
+                }
+                // No next in zone → wrap to loop_in.
+                if !try_begin_seam(playlist) {
                     return;
                 }
                 let epoch = open_gen.get_value();

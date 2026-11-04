@@ -8,11 +8,11 @@
 
 ### Handoff
 
-- **HEAD:** P0 densify enable/arm — `ScrubCachePolicy` = capability only; `seek_frame_with(..., densify)`; seam densify-free; TEMP `enable_scrub_cache_without_densify` gone.
+- **HEAD:** P1 LoopOwner + SeamPhase; Host LoopZone join EOF + scrub-outside → `loop_in` (no cancel race).
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
 - **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
-- **Unverified:** multi-clip zone wrap spanning clips; playlist cut/wrap after P0 (no TEMP path).
-- **Next chat (primary):** §2 P1 LoopOwner + SeamPhase — before CutWindow.
+- **Unverified:** long scrub-outside stress on multi-clip Host zone.
+- **Next chat (primary):** §2 P2 promote policy + LoopSeam port map — before CutWindow.
 
 ---
 
@@ -24,12 +24,10 @@ Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. 
 
 ### 2. State / densify / playlist-loop refactor
 
-Goal: races fixed by **transitions**, not TEMP APIs / bool latches. P0 enable/arm shipped (policy ≠ densify; seam `seek_frame_with(..., false)`). DoD: `architecture.md` § State machines gains a **Playlist host** row; no new `enable_*_without_*` helpers.
+Goal: races fixed by **transitions**, not TEMP APIs / bool latches. P0 enable/arm + P1 LoopOwner/SeamPhase shipped. DoD: no new `enable_*_without_*` helpers; P2–P3 below.
 
 | Priority | Problem (today) | Target |
 | -------- | ---------------- | ------ |
-| P1 | Playlist loop ownership = scattered `sync_live_loop` + `live_engine_owns_loop` (reads `Video.looping`) + gated Effects | Derived **LoopOwner** `{ Engine, Host }` from zone⊆live / cross-clip; single place arms `set_loop` / host wall |
-| P1 | Host wrap entry = `zone_wrapping` bool + EOF Effect + mid-wall Effect + `advance_after_ended` branches | Playlist **SeamPhase** (or host reduce): `Idle` / `Preparing` / `Swapping` / `Playing` — illegal dual wrap unrepresentable |
 | P2 | Cut `@0` and wrap@`loop_in` share `promote_idle_at` but lead/stash depth still forked (`warm_play_origin` vs mid) | One promote policy table (local frame → warm/stash/play); deeper stash = parked residual only |
 | P2 | `PlayPhase::LoopSeam` (single Video) vs host promote (playlist) — cousin paths, easy to diverge | Document port map; share stash/warm primitives; host stays slot-swap only |
 | P3 | `pause_hard_no_densify` / `pause_warm` / `EnterScrub{densify}` / policy Off clear — densify intent in many doors | Densify arm/clear only via engine_mode cmds; host calls events not side-door aborts |

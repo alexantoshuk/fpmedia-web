@@ -8,7 +8,10 @@ use web_sys::HtmlCanvasElement;
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
-use super::slots::{ensure_clip_on_idle, idle_neighbor, preload_idle, try_promote_idle};
+use super::loop_seam::try_begin_seam;
+use super::slots::{
+    ensure_clip_on_idle, idle_neighbor, preload_idle, try_promote_idle, wrap_to_loop_in,
+};
 use super::source::PlaylistSource;
 use wasm_bindgen_futures::spawn_local;
 
@@ -51,8 +54,8 @@ pub struct VideoPlaylistRef {
     pub(crate) open_gen: StoredValue<u64, LocalStorage>,
     /// Clip index already kicked for near-EOF origin warm this lap (`None` = none).
     pub(crate) seam_warm_for: StoredValue<Option<u32>, LocalStorage>,
-    /// LoopZone wrap in flight — ignore clip-EOF advance (avoids 2nd@0 seam race).
-    pub(crate) zone_wrapping: StoredValue<bool, LocalStorage>,
+    /// Host cut/wrap seam phase — RwSignal so EOF Effect re-runs when Idle.
+    pub(crate) seam_phase: RwSignal<super::loop_seam::SeamPhase>,
 }
 
 #[derive(Clone)]
@@ -97,7 +100,7 @@ impl VideoPlaylistRef {
             sources: StoredValue::new_local(Vec::new()),
             open_gen: StoredValue::new_local(0),
             seam_warm_for: StoredValue::new_local(None),
-            zone_wrapping: StoredValue::new_local(false),
+            seam_phase: RwSignal::new(super::loop_seam::SeamPhase::Idle),
         }
     }
 
@@ -339,6 +342,27 @@ impl VideoPlaylistRef {
             }
         }
 
+        if matches!(phase, ScrubPhase::Up)
+            && self.scrub_resume.get_untracked()
+            && self.scrub_resume_outside_loop_zone()
+        {
+            // Do **not** `scrub_pointer_up(outside)` — ScrubRelease{then_play}
+            // primes Play at the pre-`loop_in` aim and races `wrap_to_loop_in`
+            // → flaky resume + `cancelled`. **no equivalent**.
+            self.scrub_resume.set(false);
+            self.release_scrub_outside_to_loop_in(aim);
+            let neighbor = idle_neighbor(
+                &self.model.get_untracked(),
+                self.live_clip.get_untracked(),
+                self.looping.get_untracked(),
+            );
+            let epoch = self.open_gen.get_value();
+            spawn_local(async move {
+                preload_idle(self, neighbor, epoch).await;
+            });
+            return;
+        }
+
         if aim.clip_index == self.live_clip.get_untracked() {
             let live = self.live_video();
             match phase {
@@ -386,6 +410,72 @@ impl VideoPlaylistRef {
                 self.seek_pos(aim);
             }
         }
+    }
+
+    fn scrub_resume_outside_loop_zone(self) -> bool {
+        if !self.looping.get_untracked() {
+            return false;
+        }
+        let (zone_in, zone_out) = self.loop_zone();
+        let g = self.playhead.get_untracked();
+        zone_out > zone_in && (g < zone_in || g >= zone_out)
+    }
+
+    /// Scrub-while-play release outside LoopZone → Play at `loop_in` only.
+    /// Same-clip: `scrub_pointer_up(loop_in)` + `play` (slot `then_play` may be
+    /// false after cross-clip promote mid-drag). Cross-clip: leave Scrubbing,
+    /// then wrap / `seek_to_pos`+play — never stop on cancel. **no equivalent**.
+    fn release_scrub_outside_to_loop_in(self, scrub_aim: PlaylistPos) {
+        let (zone_in, _) = self.loop_zone();
+        let model = self.model.get_untracked();
+        let Some(aim_in) = model.at_global_frame(zone_in) else {
+            let live = self.live_video();
+            live.scrub_pointer_up(scrub_aim.local_frame);
+            live.play();
+            return;
+        };
+        if let Some(g) = model.global_frame_at(aim_in) {
+            self.playhead.set(g);
+        }
+        self.pos.set(aim_in);
+        let live = self.live_video();
+        if self.live_clip.get_untracked() == aim_in.clip_index {
+            live.scrub_pointer_up(aim_in.local_frame);
+            // Playlist owned resume — do not rely on transport `resume` alone.
+            live.play();
+            return;
+        }
+        // Leave Scrubbing without PlayPrime@outside (PausePressed → HardPause).
+        live.pause();
+        let epoch = self.open_gen.get_value();
+        spawn_local(async move {
+            if try_begin_seam(self) {
+                match wrap_to_loop_in(self, epoch).await {
+                    Ok(()) => return,
+                    Err(e) if e.contains("cancel") => {
+                        // Pause/OpQueue bump — fall through to seek+play.
+                    }
+                    Err(e) => {
+                        if self.open_gen.get_value() != epoch {
+                            return;
+                        }
+                        self.error.set(Some(e));
+                        self.status.set("LoopZone wrap failed.".into());
+                        return;
+                    }
+                }
+            }
+            if self.open_gen.get_value() != epoch {
+                return;
+            }
+            if let Err(e) = super::slots::seek_to_pos(self, aim_in, epoch, true).await {
+                if self.open_gen.get_value() != epoch || e.contains("cancel") {
+                    return;
+                }
+                self.error.set(Some(e));
+                self.status.set("LoopZone seek failed.".into());
+            }
+        });
     }
 
     pub(crate) fn paint_hover_thumb(
