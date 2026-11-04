@@ -422,18 +422,44 @@ impl VideoPlayer {
     /// `loop_in` may be mid-clip). Origin uses PreferSoftware stash; else Exact;
     /// else densify-free `seek_frame_with` so promote → Play does not wait on
     /// Covered/Exact fill. **no equivalent** (playlist local).
+    ///
+    /// `begin_op` before warm so a near-wall `kick_prepare_seam_at` cannot finish
+    /// `seek_frame_with` after wrap/Play (small Host LoopZone: warm overlaps wall
+    /// → late seek clears the play session). **no equivalent**.
     pub async fn prepare_playlist_seam_at(
         self: &Rc<Self>,
         frame: FrameId,
     ) -> Result<(), MediaError> {
+        let epoch = self.begin_op();
         if frame == 0 {
             self.warm_play_origin_bytes().await?;
+            if !self.is_current(epoch) {
+                web_sys::console::log_1(
+                    &"fpmedia-web: prepare_playlist_seam cancelled (origin bytes)".into(),
+                );
+                return Err(MediaError::Cancelled);
+            }
             let _ = self.warm_play_origin_stash().await;
+            if !self.is_current(epoch) {
+                web_sys::console::log_1(
+                    &"fpmedia-web: prepare_playlist_seam cancelled (origin stash)".into(),
+                );
+                return Err(MediaError::Cancelled);
+            }
             if self.paint_origin_stash_preview() {
                 return Ok(());
             }
         } else {
             let _ = self.warm_play_sample_lead(frame, false).await;
+            if !self.is_current(epoch) {
+                web_sys::console::log_1(
+                    &"fpmedia-web: prepare_playlist_seam cancelled (sample lead)".into(),
+                );
+                return Err(MediaError::Cancelled);
+            }
+        }
+        if !self.is_current(epoch) {
+            return Err(MediaError::Cancelled);
         }
         if self.try_present_scrub_exact(frame) {
             let _ = self.shared.commit_frame(frame);
@@ -441,6 +467,8 @@ impl VideoPlayer {
             return Ok(());
         }
         if self.state().frame != frame {
+            // Nested `begin_op` — this prepare's epoch ends; kick flights already
+            // dead from the start-of-prepare bump (or this seek bump).
             self.seek_frame_with(frame, false).await?;
         }
         Ok(())

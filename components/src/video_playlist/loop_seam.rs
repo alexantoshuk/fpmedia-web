@@ -7,6 +7,15 @@ use leptos::prelude::*;
 
 use super::video_playlist_ref::VideoPlaylistRef;
 
+/// Host LoopZone seam diagnosis — leave false unless debugging wrap/promote.
+pub(crate) const LOOP_SEAM_TRACE: bool = false;
+
+pub(crate) fn seam_trace(msg: &str) {
+    if LOOP_SEAM_TRACE {
+        web_sys::console::log_1(&format!("fpmedia playlist seam: {msg}").into());
+    }
+}
+
 /// Who arms LoopZone wrap for the current playlist zone vs live clip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LoopOwner {
@@ -87,5 +96,12 @@ pub(crate) fn ensure_seam_preparing(pl: VideoPlaylistRef) -> bool {
 }
 
 pub(crate) fn end_seam(pl: VideoPlaylistRef) {
+    let g = pl.playhead.get_untracked();
+    let (_, zone_out) = pl.loop_zone();
+    let zone_last = zone_out.saturating_sub(1);
+    seam_trace(&format!(
+        "end_seam was={:?} playhead={g} zone_last={zone_last}",
+        seam_phase(pl)
+    ));
     set_seam_phase(pl, SeamPhase::Idle);
 }

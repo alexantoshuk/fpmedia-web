@@ -10,9 +10,23 @@ use crate::VideoRef;
 use crate::video_playlist::PlaylistModel;
 
 use super::loop_seam::{
-    LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, set_seam_phase,
+    LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, seam_trace,
+    set_seam_phase,
 };
 use super::video_playlist_ref::VideoPlaylistRef;
+
+/// Snap playlist global aim to `zone_in` so wall cannot re-fire on stale `g`.
+fn reassert_zone_in_playhead(pl: VideoPlaylistRef) {
+    let (zone_in, _) = pl.loop_zone();
+    let model = pl.model.get_untracked();
+    let Some(aim) = model.at_global_frame(zone_in) else {
+        return;
+    };
+    pl.pos.set(aim);
+    if let Some(g) = model.global_frame_at(aim) {
+        pl.playhead.set(g);
+    }
+}
 
 pub(crate) const PROBE_TIMEOUT_MS: f64 = 120_000.0;
 pub(crate) const PROBE_POLL_MS: i32 = 32;
@@ -289,7 +303,10 @@ impl PromoteLead {
     }
 
     /// Idle (or same-clip) paint before swap / wrap play.
+    /// Engine `prepare_playlist_seam_at` `begin_op`s first — cancels in-flight
+    /// near-wall `kick_prepare` before warm/seek (small-zone late-seek stop).
     async fn prepare(self, video: VideoRef) -> Result<(), String> {
+        seam_trace(&format!("prepare lead={self:?} local={}", self.local()));
         video.prepare_seam_at(self.local()).await
     }
 
@@ -301,6 +318,28 @@ impl PromoteLead {
             Self::Mid { local } => video.kick_prepare_seam_at(local),
         }
     }
+}
+
+/// Stop the live slot without clearing playlist play intent (facade `playing`).
+/// Host wall must not keep Play while idle `prepare` runs — overrun past
+/// `zone_last` with mirror gated → video past loop, scrubber frozen (mobile).
+/// **no equivalent** (playlist host).
+fn stop_live_for_host_seam(pl: VideoPlaylistRef) {
+    let live = pl.live_video();
+    if live.playing.get_untracked() || live.ended.get_untracked() {
+        seam_trace("stop live before prepare");
+        live.pause_hard_no_densify();
+    }
+}
+
+/// After a cancelled seam that already stopped live: resume if facade still wants Play.
+fn resume_live_if_playlist_playing(pl: VideoPlaylistRef) {
+    if !pl.playing.get_untracked() {
+        return;
+    }
+    let live = pl.live_video();
+    live.ended.set(false);
+    live.play();
 }
 
 /// Paint `local` on idle → swap → Play. Shared by clip cut (`Origin`) and
@@ -323,15 +362,22 @@ async fn promote_idle_at(
     if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
         return Ok(());
     }
+    // Stop live **before** idle prepare (not only at swap) — Host wall overrun.
+    stop_live_for_host_seam(pl);
     lead.prepare(pl.idle_video()).await?;
     if pl.open_gen.get_value() != epoch {
+        // New open supersedes — do not resume stale slot.
         return Ok(());
     }
     if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
+        resume_live_if_playlist_playing(pl);
         return Ok(());
     }
-    // Pause outgoing only at swap — policy On does not arm densify (imminent Play).
+    // swap_live_idle also hard-stops outgoing if still marked playing.
     // Keep playlist `playing` intent true across hard-stop → PlayPrime gap.
+    seam_trace(&format!(
+        "promote swap→play clip={clip_index} local={local} lead={lead:?}"
+    ));
     set_seam_phase(pl, SeamPhase::Swapping);
     swap_live_idle(pl, clip_index);
     pl.seam_warm_for.set_value(None);
@@ -416,18 +462,23 @@ fn seam_warm_schedule(pl: VideoPlaylistRef) -> Option<SeamWarmTarget> {
             .clip_start_secs(cur as usize)
             .map(|s| s + t)
             .unwrap_or(t);
+        // Only when wrap aim is on idle — never Mid/Origin prepare on Playing
+        // live (seek/`begin_op` freezes chrome; small Host zones re-enter the
+        // 1s prewarm window immediately after wrap). Same-clip Host paints at
+        // wall in `wrap_to_loop_in`. **no equivalent**.
         if wall_t.is_some_and(|w| should_prewarm_loop_origin(cur_t, w, LOOP_ORIGIN_PREWARM_SECS))
             && let Some(aim) = model.at_global_frame(zone_in)
+            && aim.clip_index != cur
         {
             return Some(SeamWarmTarget {
                 clip_index: aim.clip_index,
                 lead: PromoteLead::for_local(aim.local_frame),
-                on_idle: aim.clip_index != cur,
+                on_idle: true,
             });
         }
     }
 
-    // 2–3. Near live clip EOF — cut promote or same-clip Host wrap.
+    // 2. Near live clip EOF — cut promote / next-in-zone (idle only).
     if !should_prewarm_loop_origin(t, clip.duration_secs, LOOP_ORIGIN_PREWARM_SECS) {
         return None;
     }
@@ -447,18 +498,8 @@ fn seam_warm_schedule(pl: VideoPlaylistRef) -> Option<SeamWarmTarget> {
             on_idle: true,
         });
     }
-    if matches!(owner, LoopOwner::Host) && model.len() == 1 {
-        let local = if zone_full {
-            0
-        } else {
-            zone_in.min(clip.last_frame())
-        };
-        return Some(SeamWarmTarget {
-            clip_index: cur,
-            lead: PromoteLead::for_local(local),
-            on_idle: false,
-        });
-    }
+    // Single-clip Host wrap: engine LoopSeam when zone ⊆ clip; else prepare at
+    // wall — no live kick_prepare while Playing.
     None
 }
 
@@ -482,20 +523,24 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
     if pl.seam_warm_for.get_value() == Some(target.clip_index) {
         return;
     }
-    if target.on_idle {
-        if pl.idle_clip.get_untracked() != Some(target.clip_index) {
-            return;
-        }
-        let idle = pl.idle_video();
-        if !idle.ready.get_untracked() {
-            return;
-        }
-        pl.seam_warm_for.set_value(Some(target.clip_index));
-        target.lead.kick_warm(idle);
-    } else {
-        pl.seam_warm_for.set_value(Some(target.clip_index));
-        target.lead.kick_warm(live);
+    // Idle only — live `kick_prepare` while Playing clears the play session
+    // (Host small LoopZone: pause icon, frozen progress). **no equivalent**.
+    if !target.on_idle {
+        seam_trace(&format!(
+            "warm skip live clip={} lead={:?}",
+            target.clip_index, target.lead
+        ));
+        return;
     }
+    if pl.idle_clip.get_untracked() != Some(target.clip_index) {
+        return;
+    }
+    let idle = pl.idle_video();
+    if !idle.ready.get_untracked() {
+        return;
+    }
+    pl.seam_warm_for.set_value(Some(target.clip_index));
+    target.lead.kick_warm(idle);
 }
 
 /// Host LoopZone wrap → `promote_idle_at` at `zone_in` (or same-clip paint).
@@ -507,13 +552,24 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         return Ok(());
     }
     if !ensure_seam_preparing(pl) {
+        // Another seam owns Swapping/Playing — do not steal / silent-stop.
+        seam_trace("wrap skip ensure_seam_preparing");
         return Ok(());
     }
+    // Freeze live immediately so Play cannot overrun `zone_last` during prepare
+    // (mirror gated → scrubber stuck while canvas runs past the loop).
+    stop_live_for_host_seam(pl);
+    let (zone_in_log, _) = pl.loop_zone();
+    seam_trace(&format!(
+        "wrap enter epoch={epoch} zone_in={zone_in_log} live_clip={}",
+        pl.live_clip.get_untracked()
+    ));
     let result = async {
         let (zone_in, zone_out) = pl.loop_zone();
         let model = pl.model.get_untracked();
         let Some(aim) = model.at_global_frame(zone_in) else {
-            return Ok(());
+            resume_live_if_playlist_playing(pl);
+            return Err("LoopZone in out of range".into());
         };
         pl.status.set(format!("LoopZone → frame {zone_in}…"));
         pl.seam_warm_for.set_value(None);
@@ -527,6 +583,7 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         // `sync_live_loop_from_playlist` — never leave `set_loop(false)` here
         // (that re-broke intra-clip sharing from `aa8ac99` / `2c19b70`).
         if pl.live_clip.get_untracked() == aim.clip_index {
+            seam_trace(&format!("wrap same-clip prepare local={}", aim.local_frame));
             let lead = PromoteLead::for_local(aim.local_frame);
             let live = pl.live_video();
             live.ended.set(false);
@@ -542,6 +599,10 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
             return Ok(());
         }
 
+        seam_trace(&format!(
+            "wrap promote clip={} local={}",
+            aim.clip_index, aim.local_frame
+        ));
         promote_idle_at(pl, epoch, aim.clip_index, aim.local_frame, None).await?;
         if pl.open_gen.get_value() != epoch {
             return Ok(());
@@ -557,6 +618,14 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         Ok(())
     }
     .await;
+    // Belt: mirror was gated during busy; re-snap before Idle so wall cannot
+    // re-fire on a stale g >= zone_last while PlayPrime is still queued.
+    reassert_zone_in_playhead(pl);
+    seam_trace(&format!(
+        "wrap done ok={} playhead={}",
+        result.is_ok(),
+        pl.playhead.get_untracked()
+    ));
     end_seam(pl);
     result
 }

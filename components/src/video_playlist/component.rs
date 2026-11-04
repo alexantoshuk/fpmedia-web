@@ -10,7 +10,7 @@ use wasm_bindgen_futures::spawn_local;
 use crate::Video;
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
-use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, try_begin_seam};
+use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, seam_trace, try_begin_seam};
 use super::slots::{
     advance_after_ended, maybe_kick_idle_seam_warm, seek_to_pos, sync_live_loop_from_playlist,
     wait_ready, wrap_to_loop_in,
@@ -57,8 +57,10 @@ pub fn VideoPlaylist(
 
     // Mirror live presentation → playlist pos + global frame.
     // Playing + paused step/seek. Not while scrubbing (gesture owns aim).
-    // After Up, slot `frame` lags settle — use playhead when it diverges so the
-    // tip does not yank to a stale local then snap back. **no equivalent**.
+    // Not while seam_busy — wrap owns global aim (else mirror fights zone_in
+    // snap → wall re-wrap / dual tip). After Up, slot `frame` lags settle —
+    // use playhead when it diverges so the tip does not yank to a stale local
+    // then snap back. **no equivalent**.
     Effect::new(move |_| {
         if !ready.get() || playlist.scrubbing.get() {
             return;
@@ -69,6 +71,18 @@ pub fn VideoPlaylist(
         let aim = live.playhead.get();
         let local = if aim != committed { aim } else { committed };
         let p = PlaylistPos::new(clip, local);
+        if seam_busy(playlist) {
+            if let Some(would) = model.get_untracked().global_frame_at(p) {
+                let cur = playhead.get_untracked();
+                let (zone_in, _) = playlist.loop_zone();
+                if would != cur {
+                    seam_trace(&format!(
+                        "mirror blocked busy cur={cur} would={would} zone_in={zone_in}"
+                    ));
+                }
+            }
+            return;
+        }
         pos.set(p);
         if let Some(g) = model.get_untracked().global_frame_at(p) {
             playhead.set(g);
@@ -112,6 +126,11 @@ pub fn VideoPlaylist(
             && live.playing.get()
             && !live.ended.get();
         if host_wall {
+            seam_trace(&format!(
+                "wall fire g={g} zone_last={zone_last} live_clip={} phase={:?}",
+                live_clip.get_untracked(),
+                playlist.seam_phase.get_untracked()
+            ));
             if !try_begin_seam(playlist) {
                 return;
             }

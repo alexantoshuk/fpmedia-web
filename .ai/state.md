@@ -8,20 +8,15 @@
 
 ### Handoff
 
-- **HEAD:** residual densify via `PreExact { rearm }` → densify yield → `BeginExact` (AbortDensify rearm **always true**) + `ScrubCacheOff`. Prior: §2 P3b.
+- **HEAD:** Host multi-clip LoopZone seam races fixed (mirror/`seam_busy`, prepare epoch, warm idle-only, stop live before prepare). Prior: residual densify `9caad63`.
+- **Stash:** `stash@{0}` = densify-free `clear_pending` after `EndExact` — optional (cut Exact flash).
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset; `39d20a4` BeginExact-before-yield / `BeginExact { rearm: densify }`.
 - **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
-- **LoopZone stop (playlist):** intermittent; **only when LoopZone spans ≥2 clips** (`LoopOwner::Host`). Device/speed dependent. Separate from residual densify. Suspect `promote_idle_at` / `wrap_to_loop_in` / wall Effect.
-- **Unverified:** long scrub-outside stress on multi-clip Host zone; cut@0 / wrap hitch after dropping post-swap warm.
-- **Next chat (primary):** Host multi-clip LoopZone intermittent stop (A).
+- **Unverified:** long scrub-outside stress; cut densify flash after optional stash.
 
 ---
 
 ## Next up
-
-### 1. Playlist LoopZone intermittent stop (Host, multi-clip zone)
-
-Stops mid-zone or at seam; not first wrap; laptop > mobile; zone must span ≥2 clips (`LoopOwner::Host` — not Engine `LoopSeam`). Probes / logs before fix: `wrap_to_loop_in` / `promote_idle_at` / wall Effect.
 
 ### Playlist
 
