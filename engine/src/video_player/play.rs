@@ -420,7 +420,8 @@ impl VideoPlayer {
 
     /// Idle playlist slot: warm + paint `frame` before promote (LoopZone
     /// `loop_in` may be mid-clip). Origin uses PreferSoftware stash; else Exact;
-    /// else `seek_frame`. **no equivalent** (playlist local).
+    /// else `seek_frame`. Seek's Pause densify is aborted (no rearm) so promote →
+    /// Play does not wait on Covered/Exact fill. **no equivalent** (playlist local).
     pub async fn prepare_playlist_seam_at(
         self: &Rc<Self>,
         frame: FrameId,
@@ -441,6 +442,10 @@ impl VideoPlayer {
         }
         if self.state().frame != frame {
             self.seek_frame(frame).await?;
+            // `seek_frame` arms Pause densify — kill it before CSS promote / PlayPrime
+            // (was: densify on live after swap, then loop with catch-up accel).
+            self.abort_scrub_fill(false);
+            self.await_scrub_densify_yield(false).await;
         }
         Ok(())
     }

@@ -57,7 +57,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Mid-file loop ignores zone / wraps to 0 | `LoopZone` / `loop_wall_end` / `set_loop_zone` | wall = end of `out-1`; seam origin = `in`. Full axis still 0. **no equivalent** |
 | `loop_out` ignored — plays past zone | `eof_wall_decision(…, drain_pending)` | mid-zone: `drain_pending=false` (pending stays true with post-`out` samples). Full axis still drains. **no equivalent** |
 | LoopZone in ignored — accel 0→in after seam | `start_loop_seam_with_stash` catch-up | `PlayIter::start` at stash `first` (`loop_in`), not `0`. Clock@in + iter@0 = skip storm. **no equivalent** |
-| Playlist cut / join hitch | `prepare_playlist_seam_origin` / PlayPrime stash | idle warm+**paint before swap**; PlayPrime stash catch-up. Miss → Exact@0 / seek 0. **no equivalent** (playlist local) |
+| Playlist cut / join hitch / densify then loop | `prepare_playlist_seam_at` | idle warm+paint before swap; after cold `seek_frame` **abort densify** (no rearm) before promote — else PlayPrime awaits fill + catch-up accel. **no equivalent** |
 | Pause→Play / scrub→Play no-op | `ScrubRelease{then_play}` / soft-park | host: `skills/leptos.md`; probes gray-first / cold-resume / stress. Resume lag/skip → row below |
 | Sticky error after Ok settle | `host_ops` clear error on Ok | `e2e/player.scrub.sticky-error.spec.ts` |
 | Tab hidden: play dies / densify keeps burning | `yield_scrub_work_for_hidden` | Play+clock continue (MB); scrub densify/gray/thumbs yield; host ~500 ms present. `mediabunny: media-player setInterval(render,500)` |

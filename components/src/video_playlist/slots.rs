@@ -110,10 +110,11 @@ pub(crate) async fn ensure_clip_on_idle(
 }
 
 /// Map playlist global LoopZone onto the live slot when the zone lies entirely
-/// inside that clip — same engine `LoopSeam` path as single `<Video>`.
+/// inside that clip — reuse `<Video>` engine `LoopSeam` (range or full-axis).
 ///
-/// Multi-clip / cross-clip zones keep `live.set_loop(false)`; host owns wrap.
-/// Idle never engine-loops. **no equivalent** (playlist mapping local).
+/// Cross-clip / multi-clip zones keep `live.set_loop(false)`; playlist host
+/// owns wrap via [`promote_idle_at`]. Idle never engine-loops.
+/// **no equivalent** (playlist mapping local).
 pub(crate) fn sync_live_loop_from_playlist(pl: VideoPlaylistRef) {
     let live = pl.live_video();
     let idle = pl.idle_video();
@@ -266,20 +267,44 @@ pub(crate) async fn seek_to_pos(
     Ok(())
 }
 
-/// Start live at local 0 after a promote.
-///
-/// PreferSoftware origin stash (near-EOF kick) → PlayPrime sync paint; miss →
-/// cold `start_play_iter`. Avoid `seek_frame(0)` when already at origin — seek
-/// drops the stash. **no equivalent** (playlist local); engine cousin =
-/// `start_loop_seam_with_stash` / Remotion `prewarmIteratorForLooping`.
-async fn play_seam_from_origin(live: &VideoRef) {
-    live.ended.set(false);
-    // UI playhead only — do not seek (would `drop_origin_stash`). Idle opens @0.
-    if live.playhead.get_untracked() != 0 {
-        live.playhead.set(0);
+/// Paint `local_frame` on idle → swap → Play. Shared by clip cut (`local=0`) and
+/// cross-clip LoopZone wrap (`local` = zone-in). `local==0` warms PreferSoftware
+/// origin stash before play (do not `seek(0)` — drops stash). `expect_live`:
+/// abort if live moved (EOF seam race). **no equivalent** (playlist host).
+async fn promote_idle_at(
+    pl: VideoPlaylistRef,
+    epoch: u64,
+    clip_index: u32,
+    local_frame: u32,
+    expect_live: Option<u32>,
+) -> Result<(), String> {
+    ensure_clip_on_idle(pl, clip_index, epoch).await?;
+    if pl.open_gen.get_value() != epoch {
+        return Ok(());
     }
-    live.warm_play_origin().await;
+    if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
+        return Ok(());
+    }
+    pl.idle_video().prepare_seam_at(local_frame).await?;
+    if pl.open_gen.get_value() != epoch {
+        return Ok(());
+    }
+    if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
+        return Ok(());
+    }
+    // Pause outgoing only at swap — no cold pause@out waiting for seek.
+    swap_live_idle(pl, clip_index);
+    pl.seam_warm_for.set_value(None);
+    let live = pl.live_video();
+    live.ended.set(false);
+    if live.playhead.get_untracked() != local_frame {
+        live.playhead.set(local_frame);
+    }
+    if local_frame == 0 {
+        live.warm_play_origin().await;
+    }
     live.play();
+    Ok(())
 }
 
 /// Next clip index for Play All seam. LoopZone: only advance while next starts
@@ -409,11 +434,10 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
     }
 }
 
-/// Host LoopZone wrap → paint `zone_in` on idle → swap → Play.
-/// Same shape as clip seam (`prepare_seam` before promote). Used when engine
-/// does not own the live slot (cross-clip / multi-clip zone). Intra-clip →
-/// `sync_live_loop_from_playlist` + engine `LoopSeam` instead.
-/// **no equivalent** (playlist local). Shape matches `2c19b70` cut path.
+/// Host LoopZone wrap → `promote_idle_at` at `zone_in` (or same-clip paint).
+/// Used when engine does not own the live slot (cross-clip / multi-clip zone).
+/// Intra-clip → `sync_live_loop_from_playlist` + engine `LoopSeam` instead.
+/// **no equivalent** (playlist local).
 pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<(), String> {
     if pl.open_gen.get_value() != epoch {
         pl.zone_wrapping.set_value(false);
@@ -450,21 +474,10 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
             return Ok(());
         }
 
-        ensure_clip_on_idle(pl, aim.clip_index, epoch).await?;
+        promote_idle_at(pl, epoch, aim.clip_index, aim.local_frame, None).await?;
         if pl.open_gen.get_value() != epoch {
             return Ok(());
         }
-        let idle = pl.idle_video();
-        idle.prepare_seam_at(aim.local_frame).await?;
-        if pl.open_gen.get_value() != epoch {
-            return Ok(());
-        }
-        // Pause outgoing only at swap — no cold pause@out waiting for seek.
-        swap_live_idle(pl, aim.clip_index);
-        let live = pl.live_video();
-        live.ended.set(false);
-        live.playhead.set(aim.local_frame);
-        live.play();
         let neighbor = idle_neighbor_for_zone(
             &model,
             aim.clip_index,
@@ -480,8 +493,8 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
     result
 }
 
-/// After live clip EOF: ensure next on idle → paint origin → swap → `play_seam`.
-/// `from_clip` = ended clip (ignore if live already moved).
+/// After live clip EOF: promote next via [`promote_idle_at`] (origin) or
+/// [`wrap_to_loop_in`]. `from_clip` = ended clip (ignore if live already moved).
 pub(crate) async fn advance_after_ended(
     pl: VideoPlaylistRef,
     epoch: u64,
@@ -515,11 +528,7 @@ pub(crate) async fn advance_after_ended(
 
     if let Some(next_i) = seam_next_clip(pl, cur) {
         pl.status.set(format!("Seam → clip {}…", next_i + 1));
-        ensure_clip_on_idle(pl, next_i, epoch).await?;
-        if pl.open_gen.get_value() != epoch || pl.live_clip.get_untracked() != from_clip {
-            return Ok(());
-        }
-        // Zone wrap to mid-clip in → seek+play (not frame-0 origin seam).
+        // Zone wrap to mid-clip in → not frame-0 origin seam.
         if pl.looping.get_untracked()
             && !zone_full
             && let Some(aim) = model.at_global_frame(zone_in)
@@ -528,6 +537,13 @@ pub(crate) async fn advance_after_ended(
         {
             return wrap_to_loop_in(pl, epoch).await;
         }
+        promote_idle_at(pl, epoch, next_i, 0, Some(from_clip)).await?;
+        if pl.open_gen.get_value() != epoch || pl.live_clip.get_untracked() != next_i {
+            return Ok(());
+        }
+        pl.ended.set(false);
+        pl.status
+            .set(format!("Playing clip {}/{}", next_i + 1, model.len()));
         let following = idle_neighbor_for_zone(
             &model,
             next_i,
@@ -535,19 +551,6 @@ pub(crate) async fn advance_after_ended(
             zone_in,
             zone_out,
         );
-        let idle = pl.idle_video();
-        // Origin on idle stage **before** CSS promote — else flash former-live
-        // last frame (ensure early-return left EOF on wrap / reused slot).
-        idle.prepare_seam_origin().await?;
-        if pl.open_gen.get_value() != epoch || pl.live_clip.get_untracked() != from_clip {
-            return Ok(());
-        }
-        swap_live_idle(pl, next_i);
-        pl.seam_warm_for.set_value(None);
-        play_seam_from_origin(&pl.live_video()).await;
-        pl.ended.set(false);
-        pl.status
-            .set(format!("Playing clip {}/{}", next_i + 1, model.len()));
         preload_idle(pl, following, epoch).await;
         return Ok(());
     }

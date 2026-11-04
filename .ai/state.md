@@ -8,10 +8,10 @@
 
 ### Handoff
 
-- **HEAD:** LoopZone; playlist **intra-live** → `sync_live_loop_from_playlist` / engine `LoopSeam`; **cross-clip** → host wrap as `2c19b70` (same-clip + cut OK).
+- **HEAD:** `0.1.0-alpha.4` — LoopZone; zone ⊆ live → Video `LoopSeam`; cross-clip → `promote_idle_at`; seam seek densify aborted.
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
-- **Parked:** Pause densify pin-holes; idle Fetch gray; seam lead unify / deeper stash.
-- **Unverified:** multi-clip zone wrap spanning clips; full-axis loop.
+- **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
+- **Unverified:** multi-clip zone wrap spanning clips.
 
 ---
 
@@ -23,7 +23,7 @@ Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. 
 
 ### Playlist
 
-Shared volume + frame-sum scrub + origin-stash seam shipped (`0.1.0-alpha.3`). Design: `architecture.md` § Playlist.
+Shared volume + frame-sum scrub + origin-stash seam shipped (`0.1.0-alpha.4`). Design: `architecture.md` § Playlist.
 
 **Optional:** cut markers / clip name in `[i]` (Later). Idle Fetch gray — parked.
 
@@ -37,7 +37,7 @@ Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. 
 
 **Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: `cargo publish` blocked. Keep git `re_mp4` pin until then.
 
-**Hygiene done (still `publish = false`):** `[workspace.package] version = 0.1.0-alpha.3` (members `version.workspace = true`; path deps omit version). README badges → in-repo guides. Demo header = `fpmedia_web_components::VERSION`. Bumps: `architecture.md` § Versions.
+**Hygiene done (still `publish = false`):** `[workspace.package] version = 0.1.0-alpha.4` (members `version.workspace = true`; path deps omit version). README badges → in-repo guides. Demo header = `fpmedia_web_components::VERSION`. Bumps: `architecture.md` § Versions.
 
 1. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
 2. **Ship** — flip `publish`; CONTRIBUTING gates + e2e; lockstep publish order timecode → engine → components; GH Release notes; restore crates.io/docs.rs badges; drop this block from state.
