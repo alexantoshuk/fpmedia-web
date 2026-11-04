@@ -8,10 +8,10 @@
 
 ### Handoff
 
-- **HEAD:** LoopZone shipped (engine wall/`LoopSeam` at `loop_in`; playlist host wrap = paint-before-swap at `loop_in` + sync `zone_wrapping`; demo `[`/`]` + mask). Playlist clip seam = origin stash + paint-before-swap; host dual-present SeamHold **removed**.
+- **HEAD:** LoopZone; playlist **intra-live** → `sync_live_loop_from_playlist` / engine `LoopSeam`; **cross-clip** → host wrap as `2c19b70` (same-clip + cut OK).
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
-- **Parked:** Pause densify pin-holes; idle Fetch gray.
-- **Unverified:** full-axis loop regression; scrubber mask edge cases.
+- **Parked:** Pause densify pin-holes; idle Fetch gray; seam lead unify / deeper stash.
+- **Unverified:** multi-clip zone wrap spanning clips; full-axis loop.
 
 ---
 

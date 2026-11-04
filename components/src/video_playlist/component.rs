@@ -11,7 +11,8 @@ use crate::Video;
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
 use super::slots::{
-    advance_after_ended, maybe_kick_idle_seam_warm, seek_to_pos, wait_ready, wrap_to_loop_in,
+    advance_after_ended, live_engine_owns_loop, maybe_kick_idle_seam_warm, seek_to_pos,
+    sync_live_loop_from_playlist, wait_ready, wrap_to_loop_in,
 };
 use super::source::PlaylistSource;
 use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};
@@ -95,8 +96,10 @@ pub fn VideoPlaylist(
         let total = model.total_frame_count();
         let zone_full = zone_in == 0 && zone_out == total;
         let g = playhead.get_untracked();
+        // Engine LoopSeam owns intra-clip zone walls — do not host-wrap on `ended`.
         let zone_ends_here = pl.looping.get_untracked()
             && !zone_full
+            && !live_engine_owns_loop(pl)
             && (g >= zone_out
                 || model
                     .clip_end_frame(from_clip)
@@ -126,14 +129,18 @@ pub fn VideoPlaylist(
         });
     });
 
-    // LoopZone mid-clip wall: host wrap when global playhead reaches `out`
-    // (slots stay non-looping). Latch sync, then paint-before-swap wrap —
-    // do not pause@out (that was the hitch + 2nd@0 race). **no equivalent**.
+    // LoopZone wall when engine does **not** own the live slot (zone spans
+    // clips). Intra-clip → engine `LoopSeam`. Host path = `2c19b70` cut wrap
+    // (no pause@out latch — that hitch). **no equivalent**.
     Effect::new(move |_| {
         if !ready.get() || !looping.get() {
             return;
         }
         let live = if live_is_a.get() { slot_a } else { slot_b };
+        let _ = live.looping.get();
+        if live_engine_owns_loop(playlist) {
+            return;
+        }
         if playlist.scrubbing.get() {
             return;
         }
@@ -293,14 +300,12 @@ pub fn VideoPlaylist(
 
                 status.set("Opening live clip…".into());
                 list[0].open_on(slot_a);
-                slot_a.set_loop(false);
                 slot_a.set_scrub_cache_policy(ScrubCachePolicy::On);
                 // ThumbPolicy: host Effect applies to both slots (do not force idle Off).
 
                 if list.len() > 1 {
                     status.set("Opening idle clip…".into());
                     list[1].open_on(slot_b);
-                    slot_b.set_loop(false);
                     slot_b.set_scrub_cache_policy(ScrubCachePolicy::Off);
                 }
 
@@ -314,6 +319,7 @@ pub fn VideoPlaylist(
                         ready.set(true);
                         ended.set(false);
                         playlist.apply_gain_to_slots();
+                        sync_live_loop_from_playlist(playlist);
                         status.set(format!("Playlist ready · {} clip(s).", list.len()));
                         error.set(None);
                     }
@@ -359,12 +365,16 @@ pub fn VideoPlaylist(
         } else {
             slot_b
         };
-        live.set_loop(false);
-        // Snap into LoopZone before Play while looping.
+        sync_live_loop_from_playlist(playlist);
+        // Outside zone: intra → engine/Video play snap; cross-clip → host wrap.
         if looping.get_untracked() {
             let (zone_in, zone_out) = playlist.loop_zone();
             let g = playhead.get_untracked();
             if zone_out > zone_in && (g < zone_in || g >= zone_out) {
+                if live_engine_owns_loop(playlist) {
+                    live.play();
+                    return;
+                }
                 let epoch = open_gen.get_value();
                 let pl = playlist;
                 spawn_local(async move {

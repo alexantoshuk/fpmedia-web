@@ -30,7 +30,7 @@
 | Playlist seam hitch / EOF flash→jump to 0 | near-EOF stash; **before swap** `prepare_seam_origin` — `skills/media.md` |
 | Playlist Next/Prev stuck in clip at EOF/0 | step uses live `frame`; mirror live→pos when not scrubbing |
 | Playlist loop wrap hitch (last→0) | `idle_neighbor(…, looping)` → idle preload **0**; `set_loop(true)` re-preloads. **no equivalent** |
-| Playlist LoopZone mid-clip keeps playing past out | host Effect → `wrap_to_loop_in`; slots `set_loop(false)`. **no equivalent** |
+| Playlist LoopZone mid-clip past out / same-clip HF flash | intra → `sync_live_loop_from_playlist` + engine; host wrap iff `!live_engine_owns_loop` (`2c19b70` cut). **no equivalent** |
 | Playlist clip join hitch + Covered/Exact storm | `stop_playback` → `pause_hard_no_densify` (not `pause` densify). Pause button still `pause_warm_idle`. **no equivalent** |
 | LoopZone 2-clip: pause@out → 2nd@0 → green → in | sync `zone_wrapping` before spawn; paint-before-swap `prepare_seam_at(loop_in)` (not pause+cold `seek_to_pos`); EOF past out → wrap only. **no equivalent** |
 | Playlist seam volume jump | `VideoPlaylistRef::volume`/`muted` + `apply_gain_to_slots`; demo binds playlist gain, not live slot |

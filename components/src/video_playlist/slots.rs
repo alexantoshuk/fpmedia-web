@@ -109,6 +109,49 @@ pub(crate) async fn ensure_clip_on_idle(
     Ok(())
 }
 
+/// Map playlist global LoopZone onto the live slot when the zone lies entirely
+/// inside that clip — same engine `LoopSeam` path as single `<Video>`.
+///
+/// Multi-clip / cross-clip zones keep `live.set_loop(false)`; host owns wrap.
+/// Idle never engine-loops. **no equivalent** (playlist mapping local).
+pub(crate) fn sync_live_loop_from_playlist(pl: VideoPlaylistRef) {
+    let live = pl.live_video();
+    let idle = pl.idle_video();
+    idle.set_loop(false);
+
+    if !pl.looping.get_untracked() {
+        live.set_loop(false);
+        return;
+    }
+
+    let model = pl.model.get_untracked();
+    let live_i = pl.live_clip.get_untracked();
+    let (zone_in, zone_out) = pl.loop_zone();
+    let Some(clip_start) = model.clip_start_frame(live_i) else {
+        live.set_loop(false);
+        return;
+    };
+    let Some(clip_end) = model.clip_end_frame(live_i) else {
+        live.set_loop(false);
+        return;
+    };
+
+    // Half-open global `[zone_in, zone_out)` ⊆ live clip `[clip_start, clip_end)`.
+    if zone_in >= clip_start && zone_out <= clip_end && zone_out > zone_in {
+        let local_in = zone_in - clip_start;
+        let local_out = zone_out - clip_start;
+        live.set_loop_zone(local_in, local_out);
+        live.set_loop(true);
+    } else {
+        live.set_loop(false);
+    }
+}
+
+/// True when live slot owns LoopZone via engine (`sync_live_loop_from_playlist`).
+pub(crate) fn live_engine_owns_loop(pl: VideoPlaylistRef) -> bool {
+    pl.live_video().looping.get_untracked()
+}
+
 /// Flip live/idle slots. `idle_clip` becomes the clip that **physically** moved
 /// to idle (former live) — never an aspirational neighbor (that lied and made
 /// scrub promote the wrong media). Caller [`preload_idle`]s the desired neighbor.
@@ -124,13 +167,12 @@ pub(crate) fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32) {
     pl.live_clip.set(new_live_clip);
     pl.idle_clip.set(Some(former_live));
     let live = pl.live_video();
-    live.set_loop(false);
     live.set_scrub_cache_policy(ScrubCachePolicy::On);
     live.ended.set(false);
     let idle = pl.idle_video();
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
-    idle.set_loop(false);
     idle.ended.set(false);
+    sync_live_loop_from_playlist(pl);
     pl.apply_gain_to_slots();
 }
 
@@ -210,8 +252,8 @@ pub(crate) async fn seek_to_pos(
     if pl.open_gen.get_value() != epoch {
         return Ok(());
     }
+    sync_live_loop_from_playlist(pl);
     let live = pl.live_video();
-    live.set_loop(false);
     live.ended.set(false);
     // Slot playhead is local — PlayPrime reads it (playlist global ≠ slot).
     // Without this, promote@0 + play() starts at clip origin then seeks (flash /
@@ -353,7 +395,8 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
         return;
     }
 
-    if looping && model.len() == 1 {
+    // Same-clip engine loop: PreferSoftware prewarm is `maybe_kick_loop_origin_prewarm`.
+    if looping && model.len() == 1 && !live_engine_owns_loop(pl) {
         if pl.seam_warm_for.get_value() == Some(cur) {
             return;
         }
@@ -367,8 +410,10 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
 }
 
 /// Host LoopZone wrap → paint `zone_in` on idle → swap → Play.
-/// Same shape as clip seam (`prepare_seam` before promote). Slots stay
-/// non-looping. **no equivalent** (playlist local).
+/// Same shape as clip seam (`prepare_seam` before promote). Used when engine
+/// does not own the live slot (cross-clip / multi-clip zone). Intra-clip →
+/// `sync_live_loop_from_playlist` + engine `LoopSeam` instead.
+/// **no equivalent** (playlist local). Shape matches `2c19b70` cut path.
 pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<(), String> {
     if pl.open_gen.get_value() != epoch {
         pl.zone_wrapping.set_value(false);
@@ -389,16 +434,18 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         }
         pl.pos.set(aim);
 
-        // Same-clip wrap: paint on live, then play (no slot flip).
+        // Same-clip wrap (fallback): paint + play. Prefer engine LoopSeam via
+        // `sync_live_loop_from_playlist` — never leave `set_loop(false)` here
+        // (that re-broke intra-clip sharing from `aa8ac99` / `2c19b70`).
         if pl.live_clip.get_untracked() == aim.clip_index {
             let live = pl.live_video();
-            live.set_loop(false);
             live.ended.set(false);
             live.prepare_seam_at(aim.local_frame).await?;
             if pl.open_gen.get_value() != epoch {
                 return Ok(());
             }
             live.playhead.set(aim.local_frame);
+            sync_live_loop_from_playlist(pl);
             live.play();
             return Ok(());
         }
@@ -458,9 +505,8 @@ pub(crate) async fn advance_after_ended(
     let total = model.total_frame_count();
     let zone_full = zone_in == 0 && zone_out == total;
 
-    // LoopZone ends inside this clip (or at its end): EOF must wrap to `in`,
-    // never seam to the next clip origin (was: flash 2nd-clip@0 then jump to in).
-    if pl.looping.get_untracked() && !zone_full {
+    // LoopZone ends inside this clip: host wrap only if engine does not own it.
+    if pl.looping.get_untracked() && !zone_full && !live_engine_owns_loop(pl) {
         let clip_end = model.clip_end_frame(cur).unwrap_or(0);
         if zone_out <= clip_end {
             return wrap_to_loop_in(pl, epoch).await;

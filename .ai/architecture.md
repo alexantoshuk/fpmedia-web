@@ -235,7 +235,7 @@ flowchart TD
 | Surface | Rule |
 | ------- | ---- |
 | Single `<Video>` | Source FrameIds; engine EOF wall at zone end; `LoopSeam` → `loop_in`. API: `set_loop_zone` / `loop_zone`. |
-| Playlist | Global frames; slots `set_loop(false)`; host wrap (`wrap_to_loop_in` / seam) when playhead ≥ `out`. Idle preload favors zone-in clip near wrap. |
+| Playlist | Global frames. **Intra-live zone** → `sync_live_loop_from_playlist` → live `set_loop` + `set_loop_zone` (same engine `LoopSeam` as Video; host wall Effects gated). **Cross-clip cut / multi-clip zone** → host `wrap_to_loop_in` / `advance_after_ended` as in `2c19b70` — do not add mirror-skip / latch pause that freezes scrub. |
 | Full axis | Same as pre-zone last→0 / last-clip→0 seam. |
 | Demo | `[` / `]` set in/out from playhead (same spot toggles reset in→0 / out→full), arm loop if off; scrubber dim outside zone. |
 | Not in this pass | CutWindow (`state.md`). |

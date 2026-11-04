@@ -103,6 +103,8 @@ impl VideoPlaylistRef {
 
     pub fn set_loop(self, on: bool) {
         self.looping.set(on);
+        // Intra-clip zone → engine LoopSeam on live; else host wrap.
+        super::slots::sync_live_loop_from_playlist(self);
         // Loop on: idle → wrap / zone-in neighbor for origin stash warm.
         if on {
             self.repreload_idle_for_loop();
@@ -123,12 +125,13 @@ impl VideoPlaylistRef {
     }
 
     /// Set half-open `[in, out)` in **global** presentation frames.
-    /// Slots stay `set_loop(false)` — host owns wrap (**no equivalent**).
+    /// Intra-live zone → map onto live slot engine loop; cross-clip → host wrap.
     pub fn set_loop_zone(self, in_frame: u32, out_frame: u32) {
         let count = self.frame_count.get_untracked();
         if count == 0 {
             self.loop_in.set(0);
             self.loop_out.set(None);
+            super::slots::sync_live_loop_from_playlist(self);
             return;
         }
         let in_f = in_frame.min(count.saturating_sub(1));
@@ -139,6 +142,7 @@ impl VideoPlaylistRef {
         } else {
             self.loop_out.set(Some(out_f));
         }
+        super::slots::sync_live_loop_from_playlist(self);
         if self.looping.get_untracked() {
             self.repreload_idle_for_loop();
         }
