@@ -20,10 +20,10 @@ impl VideoPlayer {
     /// (playlist seam → Play). **no equivalent** (scrub / playlist local).
     pub async fn seek_frame_with(&self, frame: FrameId, densify: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
-        // Exact VF — abort densify and hold so scrub HW cannot starve the cascade.
-        // Densify blit is for scrub/step warm hits; seek always decodes VF.
-        // When densify will re-arm: abort with rearm hint before yield.
-        self.abort_scrub_fill(densify);
+        // Exact VF — PreExact(abort) → yield → BeginExact (ExactHold + rearm true).
+        // Same order/rearm as side-door `abort_scrub_fill(densify)` then BeginExact.
+        // Seam densify=false only on PreExact. Densify blit = scrub/step warm hits.
+        self.apply_engine_event(EngineEvent::PreExact { rearm: densify });
         self.await_scrub_densify_yield(densify).await;
         self.apply_engine_event(EngineEvent::BeginExact);
         self.apply_session_event(crate::SessionEvent::BeginRestart);

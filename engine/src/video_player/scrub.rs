@@ -296,8 +296,8 @@ impl VideoPlayer {
         let epoch = self.begin_op();
         let densify_yield_ms = if settle {
             // Host may already have called [`Self::prepare_scrub_settle`]; reinforce.
-            // Abort before yield so densify can drain; BeginExact rearms AbortDensify.
-            self.abort_scrub_fill(true);
+            // PreExact → yield → BeginExact (densify drains before ExactHold).
+            self.apply_engine_event(EngineEvent::PreExact { rearm: true });
             let yield_t0 = now_ms().unwrap_or(0.0);
             self.await_scrub_densify_yield(true).await;
             let yield_ms = now_ms().unwrap_or(yield_t0) - yield_t0;
@@ -630,9 +630,10 @@ impl VideoPlayer {
             return;
         }
         if matches!(policy, ScrubCachePolicy::Off) {
+            // AbortDensify via reduce; then drop decoder + clear Covered/Exact.
             // Checked-out densify sees the epoch bump and drops the decoder
             // on return (`return_scrub_decoder`) — never close mid-`decode()`.
-            self.abort_scrub_fill(false);
+            self.apply_engine_event(EngineEvent::ScrubCacheOff);
             drop(self.shared.scrub_decoder.borrow_mut().take());
             if let Ok(mut cache) = self.shared.scrub_chunks.try_borrow_mut() {
                 cache.clear();

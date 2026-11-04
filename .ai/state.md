@@ -8,31 +8,20 @@
 
 ### Handoff
 
-- **HEAD:** §2 P3b pause densify via `EnterScrub` AbortDensify (+ P3a schedule / P2 PromoteLead / facade `playing`).
-- **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
+- **HEAD:** residual densify via `PreExact { rearm }` → densify yield → `BeginExact` (AbortDensify rearm **always true**) + `ScrubCacheOff`. Prior: §2 P3b.
+- **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset; `39d20a4` BeginExact-before-yield / `BeginExact { rearm: densify }`.
 - **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
+- **LoopZone stop (playlist):** intermittent; **only when LoopZone spans ≥2 clips** (`LoopOwner::Host`). Device/speed dependent. Separate from residual densify. Suspect `promote_idle_at` / `wrap_to_loop_in` / wall Effect.
 - **Unverified:** long scrub-outside stress on multi-clip Host zone; cut@0 / wrap hitch after dropping post-swap warm.
-- **Next chat (primary):** CutWindow (or residual densify doors: seek pre-abort / policy Off).
+- **Next chat (primary):** Host multi-clip LoopZone intermittent stop (A).
 
 ---
 
 ## Next up
 
-### 1. CutWindow
+### 1. Playlist LoopZone intermittent stop (Host, multi-clip zone)
 
-Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. Prefer after §2 (host seam machine), else seams grow more flag soup. After LoopZone (shipped — `architecture.md` § LoopZone).
-
-### 2. State / densify / playlist-loop refactor
-
-Goal: races fixed by **transitions**, not TEMP APIs / bool latches. P0–P3b pause path shipped. DoD: no new `enable_*_without_*` helpers.
-
-| Priority | Problem (today) | Target |
-| -------- | ---------------- | ------ |
-| Residual | `seek_frame_with` still pre-`abort_scrub_fill` before `BeginExact`; `ScrubCachePolicy::Off` aborts outside reduce | Route seek/policy Off densify clear through engine_mode cmds only |
-
-**Out of this refactor:** CutWindow product; compare dual-visible; densify pin-hole cosmetics; publish.
-
-**Cite:** `no equivalent` for playlist host machine; densify enable/arm local (scrub is local — AGENTS). Engine LoopSeam stays Remotion-shaped (`skills/media.md`).
+Stops mid-zone or at seam; not first wrap; laptop > mobile; zone must span ≥2 clips (`LoopOwner::Host` — not Engine `LoopSeam`). Probes / logs before fix: `wrap_to_loop_in` / `promote_idle_at` / wall Effect.
 
 ### Playlist
 
@@ -67,6 +56,7 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 
 ## Later
 
+- **CutWindow** — half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut. After LoopZone (shipped — `architecture.md` § LoopZone). Prefer after host seam machine (§2), else seams grow more flag soup. Not current priority.
 - Optional: harden Pause densify pin-holes on slow PreferSoftware (salvage + skip-bridge `put_chunk`; no Exact wipe) — only if strip cosmetics stop being acceptable (`product.md`).
 - Revisit seek Exact follow **without** wiping Exact on settle (densify yield / unbanned walk only — prove scrub still paints).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).

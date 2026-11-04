@@ -109,7 +109,14 @@ pub enum EngineEvent {
         /// Caller left Play this turn (`pause_inner` was_playing).
         from_play: bool,
     },
-    /// Settle / sync seek — densify waits.
+    /// Abort densify **without** ExactHold — seek/settle yield prelude.
+    /// Order: `PreExact` → densify yield → [`Self::BeginExact`]. Seam densify-free
+    /// abort is only here (`rearm: false`); BeginExact always rearms true.
+    /// **no equivalent** (scrub local).
+    PreExact {
+        rearm: bool,
+    },
+    /// Settle / sync seek — densify waits. Always `AbortDensify { rearm: true }`.
     BeginExact,
     /// Clear exact hold → Scrub. `densify` rearms fill when the caller is ready
     /// (seek after Exact); drag supersede / scrub_to finally use `false` so the
@@ -119,6 +126,10 @@ pub enum EngineEvent {
     },
     /// Open / EOF / abort-prime — clear Warm.
     HardStopAudio,
+    /// Runtime scrub-cache capability Off — abort densify, leave mode alone.
+    /// Teardown (drop decoder / clear Covered+Exact) stays at the call site.
+    /// **no equivalent** (scrub local).
+    ScrubCacheOff,
 }
 
 /// Side effects for [`crate::VideoPlayer`] to apply.
@@ -173,6 +184,8 @@ pub fn reduce(model: EngineModel, event: EngineEvent) -> (EngineModel, Vec<Engin
             (EngineModel { mode, audio }, cmds)
         }
 
+        E::PreExact { rearm } => (model, vec![C::AbortDensify { rearm }]),
+
         E::BeginExact => (
             EngineModel {
                 mode: M::ExactHold,
@@ -205,6 +218,8 @@ pub fn reduce(model: EngineModel, event: EngineEvent) -> (EngineModel, Vec<Engin
             },
             vec![C::HardStopClock],
         ),
+
+        E::ScrubCacheOff => (model, vec![C::AbortDensify { rearm: false }]),
     }
 }
 
@@ -342,11 +357,34 @@ mod tests {
     }
 
     #[test]
+    fn pre_exact_aborts_keeps_mode() {
+        let m = EngineModel {
+            mode: EngineMode::Play,
+            audio: AudioResume::Warm,
+        };
+        let (next, cmds) = reduce(m, EngineEvent::PreExact { rearm: false });
+        assert_eq!(next, m);
+        assert!(!next.holds_exact());
+        assert_eq!(cmds, vec![EngineCmd::AbortDensify { rearm: false }]);
+    }
+
+    #[test]
     fn begin_exact_defers_densify() {
         let (next, cmds) = reduce(EngineModel::new(), EngineEvent::BeginExact);
         assert!(next.holds_exact());
         assert!(!next.allows_densify());
         assert_eq!(cmds, vec![EngineCmd::AbortDensify { rearm: true }]);
+    }
+
+    #[test]
+    fn scrub_cache_off_aborts_keeps_mode() {
+        let m = EngineModel {
+            mode: EngineMode::Scrub,
+            audio: AudioResume::Warm,
+        };
+        let (next, cmds) = reduce(m, EngineEvent::ScrubCacheOff);
+        assert_eq!(next, m);
+        assert_eq!(cmds, vec![EngineCmd::AbortDensify { rearm: false }]);
     }
 
     #[test]

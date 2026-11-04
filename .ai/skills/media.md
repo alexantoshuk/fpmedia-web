@@ -34,7 +34,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Hold scrub then release jumps | `ScrubDwellExact` / `arm_scrub_dwell` | Exact hit under finger → present now; miss → ~100 ms stillness Exact while finger down. Move resets dwell; release often cache-hit. **no equivalent** (scrub local) |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
-| Scrub UI off but scrub decoder / densify still alive | `set_scrub_cache_policy` / `scrub_cache_off` | gate densify + gray + `ingest_scrub_bitmap_only`; checked-out decoder dropped in `return_scrub_decoder`, never closed mid-`decode()`. Host re-applies in `run_open` before `seek_frame(0)` |
+| Scrub UI off but scrub decoder / densify still alive | `set_scrub_cache_policy` / `ScrubCacheOff` | Off → `EngineEvent::ScrubCacheOff` (`AbortDensify`) then drop decoder + clear Covered/Exact; gate densify + gray + ingest. Host re-applies in `run_open` before `seek_frame(0)`. **no equivalent** |
 | Hover Exact never after dwell (key stuck) | `may_start_hover_aim_decode` / `<HoverThumb>` | Pause Exact refine free after host 150 ms; do **not** global 800 ms floor without reschedule. Skip only `painted==aim`. Play: no aim |
 | Thumb cache dense in one place, empty elsewhere | `ThumbCache` rank eviction / `thumb_progressive_rank` | rank 0=coarse … Exact=`MAX`; at cap drop highest rank first (not LRU). Hover+Pause same rank helper |
 | Need thumbs without player / filmstrip API | `ThumbSink::get` / `at_frames` | product surface (`product.md`); not `frames_at_timestamps` (full-res stub) |
@@ -58,7 +58,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Mid-file loop ignores zone / wraps to 0 | `LoopZone` / `loop_wall_end` / `set_loop_zone` | wall = end of `out-1`; seam origin = `in`. Full axis still 0. **no equivalent** |
 | `loop_out` ignored — plays past zone | `eof_wall_decision(…, drain_pending)` | mid-zone: `drain_pending=false` (pending stays true with post-`out` samples). Full axis still drains. **no equivalent** |
 | LoopZone in ignored — accel 0→in after seam | `start_loop_seam_with_stash` catch-up | `PlayIter::start` at stash `first` (`loop_in`), not `0`. Clock@in + iter@0 = skip storm. **no equivalent** |
-| Playlist cut / wrap densify lag before Play | `set_scrub_cache_policy` / `seek_frame_with` | Policy On = capability only (never arms densify). Seam paint = `seek_frame_with(..., false)` — no arm/abort pair. **no equivalent** |
+| Playlist cut / wrap densify lag before Play | `set_scrub_cache_policy` / `seek_frame_with` | Policy On = capability only (never arms densify). Seam = `seek_frame_with(..., false)` → `PreExact { rearm:false }` → yield → `BeginExact` (AbortDensify rearm true). **no equivalent** |
 | Pause→Play / scrub→Play no-op | `ScrubRelease{then_play}` / soft-park | host: `skills/leptos.md`; probes gray-first / cold-resume / stress. Resume lag/skip → row below |
 | Sticky error after Ok settle | `host_ops` clear error on Ok | `e2e/player.scrub.sticky-error.spec.ts` |
 | Tab hidden: play dies / densify keeps burning | `yield_scrub_work_for_hidden` | Play+clock continue (MB); scrub densify/gray/thumbs yield; host ~500 ms present. `mediabunny: media-player setInterval(render,500)` |
