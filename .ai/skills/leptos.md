@@ -28,6 +28,7 @@
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
 | Playlist scrub→other clip drops Play | latch `scrub_resume` on Down while `playing` (soft-pause clears it before cross-cut) |
 | Playlist seam densify lag (cut / wrap / range host) | `swap_live_idle` + policy On (no densify arm); seam `prepare_seam_at` → densify-free seek — `skills/media.md` |
+| Playlist cut@0 double warm / Origin vs Mid fork | `PromoteLead` in `slots` — one prepare/kick table; no post-swap `warm_play_origin`. Port map: `architecture.md` § LoopSeam vs host promote. **no equivalent** |
 | Playlist Next/Prev stuck in clip at EOF/0 | step uses live `frame`; mirror live→pos when not scrubbing |
 | Playlist loop wrap hitch (last→0) | `idle_neighbor(…, looping)` → idle preload **0**; `set_loop(true)` re-preloads. **no equivalent** |
 | Playlist LoopZone mid-clip past out / same-clip HF flash | `LoopOwner::Engine` → sync + engine LoopSeam; `Host` → `wrap_to_loop_in` under `SeamPhase`. **no equivalent** |

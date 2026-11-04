@@ -8,11 +8,11 @@
 
 ### Handoff
 
-- **HEAD:** P1 LoopOwner + SeamPhase; Host LoopZone join EOF + scrub-outside → `loop_in` (no cancel race).
+- **HEAD:** §2 P2 `PromoteLead` + LoopSeam↔host port map; facade `playing` (no Play icon flash at joins).
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
 - **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
-- **Unverified:** long scrub-outside stress on multi-clip Host zone.
-- **Next chat (primary):** §2 P2 promote policy + LoopSeam port map — before CutWindow.
+- **Unverified:** long scrub-outside stress on multi-clip Host zone; cut@0 / wrap hitch after dropping post-swap warm.
+- **Next chat (primary):** §2 P3 densify doors / prewarm schedule — before CutWindow.
 
 ---
 
@@ -24,14 +24,12 @@ Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. 
 
 ### 2. State / densify / playlist-loop refactor
 
-Goal: races fixed by **transitions**, not TEMP APIs / bool latches. P0 enable/arm + P1 LoopOwner/SeamPhase shipped. DoD: no new `enable_*_without_*` helpers; P2–P3 below.
+Goal: races fixed by **transitions**, not TEMP APIs / bool latches. P0–P2 shipped (`PromoteLead` + port map). DoD: no new `enable_*_without_*` helpers; P3 below.
 
 | Priority | Problem (today) | Target |
 | -------- | ---------------- | ------ |
-| P2 | Cut `@0` and wrap@`loop_in` share `promote_idle_at` but lead/stash depth still forked (`warm_play_origin` vs mid) | One promote policy table (local frame → warm/stash/play); deeper stash = parked residual only |
-| P2 | `PlayPhase::LoopSeam` (single Video) vs host promote (playlist) — cousin paths, easy to diverge | Document port map; share stash/warm primitives; host stays slot-swap only |
 | P3 | `pause_hard_no_densify` / `pause_warm` / `EnterScrub{densify}` / policy Off clear — densify intent in many doors | Densify arm/clear only via engine_mode cmds; host calls events not side-door aborts |
-| P3 | `maybe_kick_idle_seam_warm` branches (`zone_full`, engine owns, mid-in) | Prewarm schedule from LoopOwner + SeamPhase, not ad-hoc ifs |
+| P3 | `maybe_kick_idle_seam_warm` still gated by ad-hoc zone/owner ifs (lead kind is unified) | Prewarm *schedule* from LoopOwner + SeamPhase, not ad-hoc ifs |
 
 **Out of this refactor:** CutWindow product; compare dual-visible; densify pin-hole cosmetics; publish.
 

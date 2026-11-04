@@ -260,10 +260,53 @@ pub(crate) async fn seek_to_pos(
     Ok(())
 }
 
-/// Paint `local_frame` on idle → swap → Play. Shared by clip cut (`local=0`) and
-/// cross-clip LoopZone wrap (`local` = zone-in). `local==0` warms PreferSoftware
-/// origin stash before play (do not `seek(0)` — drops stash). `expect_live`:
-/// abort if live moved (EOF seam race). **no equivalent** (playlist host).
+/// Host promote lead for a local aim. One table for [`promote_idle_at`] +
+/// [`maybe_kick_idle_seam_warm`] — no `if local==0` fork at call sites.
+/// Deeper PreferSoftware stash = parked (`state.md`). **no equivalent**.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PromoteLead {
+    /// Frame 0 — PreferSoftware origin stash (`prepare_playlist_seam_at(0)` /
+    /// near-EOF `kick_warm_play_origin`).
+    Origin,
+    /// Mid-clip (LoopZone `loop_in`) — densify-free `prepare_seam_at(n)`.
+    Mid { local: u32 },
+}
+
+impl PromoteLead {
+    fn for_local(local: u32) -> Self {
+        if local == 0 {
+            Self::Origin
+        } else {
+            Self::Mid { local }
+        }
+    }
+
+    fn local(self) -> u32 {
+        match self {
+            Self::Origin => 0,
+            Self::Mid { local } => local,
+        }
+    }
+
+    /// Idle (or same-clip) paint before swap / wrap play.
+    async fn prepare(self, video: VideoRef) -> Result<(), String> {
+        video.prepare_seam_at(self.local()).await
+    }
+
+    /// Near-wall fire-and-forget. Origin uses the PlayPrime-join warm path;
+    /// mid uses full prepare (lead + Exact/seek paint).
+    fn kick_warm(self, video: VideoRef) {
+        match self {
+            Self::Origin => video.kick_warm_play_origin(),
+            Self::Mid { local } => video.kick_prepare_seam_at(local),
+        }
+    }
+}
+
+/// Paint `local` on idle → swap → Play. Shared by clip cut (`Origin`) and
+/// cross-clip LoopZone wrap (`Mid`). Prepare already warms/paints — no post-swap
+/// `warm_play_origin` (was a cut@0 double warm). `expect_live`: abort if live
+/// moved (EOF seam race). **no equivalent** (playlist host).
 async fn promote_idle_at(
     pl: VideoPlaylistRef,
     epoch: u64,
@@ -271,6 +314,8 @@ async fn promote_idle_at(
     local_frame: u32,
     expect_live: Option<u32>,
 ) -> Result<(), String> {
+    let lead = PromoteLead::for_local(local_frame);
+    let local = lead.local();
     ensure_clip_on_idle(pl, clip_index, epoch).await?;
     if pl.open_gen.get_value() != epoch {
         return Ok(());
@@ -278,7 +323,7 @@ async fn promote_idle_at(
     if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
         return Ok(());
     }
-    pl.idle_video().prepare_seam_at(local_frame).await?;
+    lead.prepare(pl.idle_video()).await?;
     if pl.open_gen.get_value() != epoch {
         return Ok(());
     }
@@ -292,11 +337,8 @@ async fn promote_idle_at(
     pl.seam_warm_for.set_value(None);
     let live = pl.live_video();
     live.ended.set(false);
-    if live.playhead.get_untracked() != local_frame {
-        live.playhead.set(local_frame);
-    }
-    if local_frame == 0 {
-        live.warm_play_origin().await;
+    if live.playhead.get_untracked() != local {
+        live.playhead.set(local);
     }
     set_seam_phase(pl, SeamPhase::Playing);
     pl.playing.set(true);
@@ -382,7 +424,7 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
                 return;
             }
             pl.seam_warm_for.set_value(Some(aim.clip_index));
-            idle.kick_prepare_seam_at(aim.local_frame);
+            PromoteLead::for_local(aim.local_frame).kick_warm(idle);
             return;
         }
     }
@@ -402,18 +444,18 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
         if !idle.ready.get_untracked() {
             return;
         }
-        // Zone wrap target mid-clip → warm `loop_in`, not origin.
-        if looping
+        // Zone wrap → lead at `loop_in` local; else cut@0 Origin.
+        let local = if looping
             && !zone_full
             && let Some(aim) = model.at_global_frame(zone_in)
             && aim.clip_index == next_i
         {
-            pl.seam_warm_for.set_value(Some(next_i));
-            idle.kick_prepare_seam_at(aim.local_frame);
-            return;
-        }
+            aim.local_frame
+        } else {
+            0
+        };
         pl.seam_warm_for.set_value(Some(next_i));
-        idle.kick_warm_play_origin();
+        PromoteLead::for_local(local).kick_warm(idle);
         return;
     }
 
@@ -423,11 +465,12 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
             return;
         }
         pl.seam_warm_for.set_value(Some(cur));
-        if !zone_full {
-            live.kick_prepare_seam_at(zone_in.min(clip.last_frame()));
+        let local = if zone_full {
+            0
         } else {
-            live.kick_warm_play_origin();
-        }
+            zone_in.min(clip.last_frame())
+        };
+        PromoteLead::for_local(local).kick_warm(live);
     }
 }
 
@@ -460,13 +503,14 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         // `sync_live_loop_from_playlist` — never leave `set_loop(false)` here
         // (that re-broke intra-clip sharing from `aa8ac99` / `2c19b70`).
         if pl.live_clip.get_untracked() == aim.clip_index {
+            let lead = PromoteLead::for_local(aim.local_frame);
             let live = pl.live_video();
             live.ended.set(false);
-            live.prepare_seam_at(aim.local_frame).await?;
+            lead.prepare(live).await?;
             if pl.open_gen.get_value() != epoch {
                 return Ok(());
             }
-            live.playhead.set(aim.local_frame);
+            live.playhead.set(lead.local());
             sync_live_loop_from_playlist(pl);
             set_seam_phase(pl, SeamPhase::Playing);
             pl.playing.set(true);
