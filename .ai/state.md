@@ -11,6 +11,7 @@
 - **HEAD:** `0.1.0-alpha.4` — LoopZone; zone ⊆ live → Video `LoopSeam`; cross-clip → `promote_idle_at`; seam seek densify aborted.
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
 - **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
+- **Next chat:** `ScrubCachePolicy` enable vs arm densify (drop TEMP `enable_scrub_cache_without_densify` / `swap_live_idle(..., false)`).
 - **Unverified:** multi-clip zone wrap spanning clips.
 
 ---

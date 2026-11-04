@@ -764,6 +764,15 @@ pub fn Video(
         }) as Rc<dyn Fn(fpmedia_web::ScrubCachePolicy)>
     };
 
+    let enable_scrub_cache_without_densify_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            ctx.scrub_cache_policy
+                .set(fpmedia_web::ScrubCachePolicy::On);
+            ctx.with_player(|p| p.enable_scrub_cache_without_densify());
+        }) as Rc<dyn Fn()>
+    };
+
     let warm_play_origin_fn = {
         let ctx = ctx.clone();
         Rc::new(move || {
@@ -828,6 +837,7 @@ pub fn Video(
         set_scrub_cache_policy: set_scrub_cache_policy_fn,
         warm_play_origin: warm_play_origin_fn,
         prepare_seam_at: prepare_seam_at_fn,
+        enable_scrub_cache_without_densify: enable_scrub_cache_without_densify_fn,
     }));
 
     on_cleanup({

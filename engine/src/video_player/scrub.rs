@@ -622,8 +622,18 @@ impl VideoPlayer {
     }
 
     /// Runtime scrub-cache gate. `Off` closes the scrub decoder and drops
-    /// Covered + Exact; `On` re-arms the Pause pipeline (decoder recreated lazily).
+    /// Covered + Exact; `On` optionally re-arms Pause densify when paused.
     pub fn set_scrub_cache_policy(&self, policy: ScrubCachePolicy) {
+        self.set_scrub_cache_policy_inner(policy, true);
+    }
+
+    /// Enable scrub cache **without** starting densify (playlist promote → Play).
+    /// TEMP until enable-vs-arm refactor. **no equivalent**.
+    pub fn enable_scrub_cache_without_densify(&self) {
+        self.set_scrub_cache_policy_inner(ScrubCachePolicy::On, false);
+    }
+
+    fn set_scrub_cache_policy_inner(&self, policy: ScrubCachePolicy, arm_densify_if_paused: bool) {
         if self.shared.scrub_cache_policy.replace(policy) == policy {
             return;
         }
@@ -641,7 +651,7 @@ impl VideoPlayer {
                 }
             }
             ScrubCachePolicy::On => {
-                if !self.is_playing() {
+                if arm_densify_if_paused && !self.is_playing() {
                     self.enter_scrub_cache_pipeline(self.state().frame);
                 }
             }
