@@ -24,6 +24,9 @@ pub struct VideoPlaylistRef {
     pub error: RwSignal<Option<String>>,
     /// Playlist-level end (last clip EOF, loop off) — not a single-clip `VideoRef::ended`.
     pub ended: RwSignal<bool>,
+    /// Playlist play intent (UI). Stays true across Host seam `pause_hard` /
+    /// slot EOF — do **not** mirror live `VideoRef::playing` (gap → Play icon flash).
+    pub playing: RwSignal<bool>,
     /// Loop the whole playlist (clips themselves stay non-looping for seam).
     pub looping: RwSignal<bool>,
     /// Inclusive LoopZone start in **global** frames. Default 0.
@@ -79,6 +82,7 @@ impl VideoPlaylistRef {
             status: RwSignal::new(String::from("Load a playlist to begin.")),
             error: RwSignal::new(None),
             ended: RwSignal::new(false),
+            playing: RwSignal::new(false),
             looping: RwSignal::new(false),
             loop_in: RwSignal::new(0),
             loop_out: RwSignal::new(None),
@@ -238,12 +242,14 @@ impl VideoPlaylistRef {
 
     pub fn play(self) {
         self.ended.set(false);
+        self.playing.set(true);
         if let Some(play) = self.op(|o| &o.play) {
             play();
         }
     }
 
     pub fn pause(self) {
+        self.playing.set(false);
         if let Some(pause) = self.op(|o| &o.pause) {
             pause();
         }
@@ -289,10 +295,10 @@ impl VideoPlaylistRef {
         match phase {
             ScrubPhase::Down => {
                 self.scrubbing.set(true);
-                // Before soft-pause / cross-clip hard-pause clears UI `playing`.
+                // Latch playlist intent (not slot `playing` — soft-pause / seam
+                // hard-stop clear the slot while facade stays true).
                 // Per-slot `then_play` does not survive promote — playlist owns resume.
-                self.scrub_resume
-                    .set(self.live_video().playing.get_untracked());
+                self.scrub_resume.set(self.playing.get_untracked());
             }
             ScrubPhase::Move => self.scrubbing.set(true),
             // Clear scrubbing after playhead/pos aim — else mirror can run on a
@@ -376,6 +382,7 @@ impl VideoPlaylistRef {
                 let resume = self.scrub_resume.get_untracked();
                 self.scrub_resume.set(false);
                 if resume {
+                    self.playing.set(true);
                     live.play();
                 }
                 let neighbor = idle_neighbor(
@@ -396,6 +403,7 @@ impl VideoPlaylistRef {
             let resume = self.scrub_resume.get_untracked();
             self.scrub_resume.set(false);
             if resume {
+                self.playing.set(true);
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
                     if let Err(e) = super::slots::seek_to_pos(self, aim, epoch, true).await {
@@ -429,6 +437,7 @@ impl VideoPlaylistRef {
         let (zone_in, _) = self.loop_zone();
         let model = self.model.get_untracked();
         let Some(aim_in) = model.at_global_frame(zone_in) else {
+            self.playing.set(true);
             let live = self.live_video();
             live.scrub_pointer_up(scrub_aim.local_frame);
             live.play();
@@ -439,6 +448,7 @@ impl VideoPlaylistRef {
         }
         self.pos.set(aim_in);
         let live = self.live_video();
+        self.playing.set(true);
         if self.live_clip.get_untracked() == aim_in.clip_index {
             live.scrub_pointer_up(aim_in.local_frame);
             // Playlist owned resume — do not rely on transport `resume` alone.
@@ -459,6 +469,7 @@ impl VideoPlaylistRef {
                         if self.open_gen.get_value() != epoch {
                             return;
                         }
+                        self.playing.set(false);
                         self.error.set(Some(e));
                         self.status.set("LoopZone wrap failed.".into());
                         return;
@@ -472,6 +483,7 @@ impl VideoPlaylistRef {
                 if self.open_gen.get_value() != epoch || e.contains("cancel") {
                     return;
                 }
+                self.playing.set(false);
                 self.error.set(Some(e));
                 self.status.set("LoopZone seek failed.".into());
             }

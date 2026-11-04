@@ -254,6 +254,7 @@ pub(crate) async fn seek_to_pos(
     live.playhead.set(aim.local_frame);
     live.seek_frame(aim.local_frame);
     if then_play {
+        pl.playing.set(true);
         live.play();
     }
     Ok(())
@@ -285,6 +286,7 @@ async fn promote_idle_at(
         return Ok(());
     }
     // Pause outgoing only at swap — policy On does not arm densify (imminent Play).
+    // Keep playlist `playing` intent true across hard-stop → PlayPrime gap.
     set_seam_phase(pl, SeamPhase::Swapping);
     swap_live_idle(pl, clip_index);
     pl.seam_warm_for.set_value(None);
@@ -297,6 +299,7 @@ async fn promote_idle_at(
         live.warm_play_origin().await;
     }
     set_seam_phase(pl, SeamPhase::Playing);
+    pl.playing.set(true);
     live.play();
     Ok(())
 }
@@ -466,6 +469,7 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
             live.playhead.set(aim.local_frame);
             sync_live_loop_from_playlist(pl);
             set_seam_phase(pl, SeamPhase::Playing);
+            pl.playing.set(true);
             live.play();
             return Ok(());
         }
@@ -564,6 +568,7 @@ pub(crate) async fn advance_after_ended(
         }
 
         pl.ended.set(true);
+        pl.playing.set(false);
         pl.status.set("Ended.".into());
         Ok(())
     }

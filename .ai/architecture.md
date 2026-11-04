@@ -91,8 +91,8 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Playlist model + host | **Shipped:** `video_playlist` — model/`[i]`; `<VideoPlaylist>` / `VideoPlaylistRef` (2 slots, probe, play seam, seek/scrub/step rebind, frame-domain `TimelineRef`) |
 | Demo open | **Shipped:** multi-file picker + `;`-separated URLs → playlist; 1 source → `<Video>`; `[i]` position/go-to. Host CSS hides `.fpvideo-playlist-slot.is-idle` |
 | Strip / tip domain | One owner: `TimelineRef` (playlist units = **global frames**). Gesture / tip / hover / zebra / `<TimelineMeta>` all use it. `strip_video()` → live slot; ready/fetch remapped via `strip_ready_marks` / `strip_fetch_ranges`. Meta re-leases on `strip_video_key` change — **never** remount `<Scrubber>` on live swap. Mirror live→`playhead`/`pos` when not `scrubbing` (Play + paused step/seek; scrub gesture owns aim) |
-| Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
-| Seam | **`LoopOwner`:** zone ⊆ live → `Engine` (`sync_live_loop_from_playlist` → `LoopSeam`); else `Host` → `promote_idle_at` / `wrap_to_loop_in`. Host cut/wrap latched by **`SeamPhase`** (not a bool). Densify-free seam paint via `seek_frame_with(..., false)`. |
+| Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute** + **`playing` intent**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
+| Seam | **`LoopOwner`:** zone ⊆ live → `Engine` (`sync_live_loop_from_playlist` → `LoopSeam`); else `Host` → `promote_idle_at` / `wrap_to_loop_in`. Host cut/wrap latched by **`SeamPhase`** (not a bool). Densify-free seam paint via `seek_frame_with(..., false)`. Playlist `playing` stays true across slot `pause_hard` / EOF until pause, terminal end, or seam error — do not mirror live `VideoRef::playing` for chrome. |
 | Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
 | Idle neighbor | Next clip; on last + playlist **loop** → **0** (wrap origin-stash target); else previous. `idle_neighbor` / `set_loop` re-preload |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
@@ -121,7 +121,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | Media clock | `fpmedia_web::clock_state` |
 | Play session | `fpmedia_web::PlayPhase` (`Idle` / `Live` / `LoopSeam`) |
 | rAF restart | `fpmedia_web::session` (`restarting`) |
-| Playlist host | `LoopOwner` `{ Off, Engine, Host }` + `SeamPhase` (`Idle` / `Preparing` / `Swapping` / `Playing`) in `components` `video_playlist` — derive owner from zone⊆live; never probe slot `Video.looping` |
+| Playlist host | `LoopOwner` `{ Off, Engine, Host }` + `SeamPhase` (`Idle` / `Preparing` / `Swapping` / `Playing`) + facade `playing` intent in `components` `video_playlist` — derive owner from zone⊆live; never probe slot `Video.looping` / slot `playing` for chrome |
 
 **Success bar:** a new race is fixed by a transition or coalesce row, not another flag. Failure modes: skills.
 

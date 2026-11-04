@@ -197,7 +197,7 @@ Ordered list of media sources reviewed as one **frame-sum** timeline (Play All):
 
 ### `<VideoPlaylist>` / VideoPlaylistRef
 
-Dual-slot playlist stage (live + idle `<Video>`) + handle. Probe → `PlaylistModel`; `as_timeline()` uses global presentation frames.
+Dual-slot playlist stage (live + idle `<Video>`) + handle. Probe → `PlaylistModel`; `as_timeline()` uses global presentation frames. Facade signals include playlist-wide `volume` / `muted` / **`playing`** (play intent across Host seams — not live-slot `VideoRef::playing`). Design: `architecture.md` § Playlist composition.
 
 ### `<Video>` / VideoRef
 

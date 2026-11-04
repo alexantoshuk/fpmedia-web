@@ -122,6 +122,7 @@ pub fn VideoPlaylist(
                     if pl.open_gen.get_value() != epoch {
                         return;
                     }
+                    pl.playing.set(false);
                     pl.error.set(Some(e));
                     pl.status.set("LoopZone wrap failed.".into());
                 }
@@ -146,6 +147,7 @@ pub fn VideoPlaylist(
                 if pl.open_gen.get_value() != epoch {
                     return;
                 }
+                pl.playing.set(false);
                 pl.error.set(Some(e.clone()));
                 pl.status.set("Playlist seam failed.".into());
             }
@@ -187,6 +189,7 @@ pub fn VideoPlaylist(
             ready.set(false);
             busy.set(false);
             ended.set(false);
+            playlist.playing.set(false);
             model.set(PlaylistModel::default());
             pos.set(PlaylistPos::new(0, 0));
             playhead.set(0);
@@ -339,6 +342,7 @@ pub fn VideoPlaylist(
 
     let play_fn = Rc::new(move || {
         ended.set(false);
+        playlist.playing.set(true);
         let live = if live_is_a.get_untracked() {
             slot_a
         } else {
@@ -407,6 +411,7 @@ pub fn VideoPlaylist(
     }) as Rc<dyn Fn()>;
 
     let pause_fn = Rc::new(move || {
+        playlist.playing.set(false);
         let live = if live_is_a.get_untracked() {
             slot_a
         } else {

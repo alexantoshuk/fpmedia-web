@@ -324,11 +324,7 @@ fn demo_toggle_play(
 fn demo_previous_frame(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
     let pl = use_playlist.get_untracked();
     let playing = if pl {
-        if playlist.live_is_a.get_untracked() {
-            playlist.slot_a.playing.get_untracked()
-        } else {
-            playlist.slot_b.playing.get_untracked()
-        }
+        playlist.playing.get_untracked()
     } else {
         video.playing.get_untracked()
     };
@@ -345,11 +341,7 @@ fn demo_previous_frame(video: VideoRef, playlist: VideoPlaylistRef, use_playlist
 fn demo_next_frame(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
     let pl = use_playlist.get_untracked();
     let playing = if pl {
-        if playlist.live_is_a.get_untracked() {
-            playlist.slot_a.playing.get_untracked()
-        } else {
-            playlist.slot_b.playing.get_untracked()
-        }
+        playlist.playing.get_untracked()
     } else {
         video.playing.get_untracked()
     };
@@ -711,11 +703,8 @@ pub fn DemoPlayer() -> impl IntoView {
     });
     let media_playing = Memo::new(move |_| {
         if use_playlist.get() {
-            if playlist.live_is_a.get() {
-                playlist.slot_a.playing.get()
-            } else {
-                playlist.slot_b.playing.get()
-            }
+            // Facade intent — not live slot (Host seam hard-stop gap flashes Play).
+            playlist.playing.get()
         } else {
             video.playing.get()
         }
