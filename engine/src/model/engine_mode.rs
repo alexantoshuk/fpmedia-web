@@ -97,14 +97,17 @@ pub enum EngineEvent {
     EnterPlay,
     /// Leave play (or reinforce scrub).
     /// - `soft_audio` → Warm + SoftHoldClock (Pause button / scrub-while-play).
-    /// - `densify` → [`EngineCmd::ScheduleDensify`] when mode is Scrub.
-    ///   Pause / idle: `densify: true` (PreferSoftware scrub slot). Soft-drag:
-    ///   `densify: false` (aim+blit + main-HW key chase — PreferSoftware densify
-    ///   under finger saturates mobile Chrome). Hard tear-down: cold audio +
-    ///   densify. While [`EngineMode::ExactHold`], mode stays ExactHold.
+    /// - [`EngineCmd::AbortDensify`] when `from_play` or `!densify` (`rearm` = `densify`).
+    ///   Skip abort when already paused + `densify` (UI step `pause()` must not
+    ///   bump scrub epoch mid-fill).
+    /// - `densify` → also [`EngineCmd::ScheduleDensify`] when mode is Scrub.
+    ///   Pause / idle: `densify: true`. Soft-drag: `densify: false`. While
+    ///   [`EngineMode::ExactHold`], mode stays ExactHold.
     EnterScrub {
         soft_audio: bool,
         densify: bool,
+        /// Caller left Play this turn (`pause_inner` was_playing).
+        from_play: bool,
     },
     /// Settle / sync seek — densify waits.
     BeginExact,
@@ -146,6 +149,7 @@ pub fn reduce(model: EngineModel, event: EngineEvent) -> (EngineModel, Vec<Engin
         E::EnterScrub {
             soft_audio,
             densify,
+            from_play,
         } => {
             let mode = if model.mode == M::ExactHold {
                 M::ExactHold
@@ -158,6 +162,10 @@ pub fn reduce(model: EngineModel, event: EngineEvent) -> (EngineModel, Vec<Engin
                 cmds.push(C::SoftHoldClock);
             } else {
                 cmds.push(C::HardStopClock);
+            }
+            // Densify abort only via cmd (not pause_inner `abort_scrub_fill`).
+            if from_play || !densify {
+                cmds.push(C::AbortDensify { rearm: densify });
             }
             if densify && mode == M::Scrub {
                 cmds.push(C::ScheduleDensify);
@@ -225,12 +233,19 @@ mod tests {
             EngineEvent::EnterScrub {
                 soft_audio: true,
                 densify: false,
+                from_play: true,
             },
         );
         assert_eq!(next.mode, EngineMode::Scrub);
         assert!(next.warm_audio());
         assert!(next.allows_densify());
-        assert_eq!(cmds, vec![EngineCmd::SoftHoldClock]);
+        assert_eq!(
+            cmds,
+            vec![
+                EngineCmd::SoftHoldClock,
+                EngineCmd::AbortDensify { rearm: false },
+            ]
+        );
     }
 
     #[test]
@@ -243,13 +258,18 @@ mod tests {
             EngineEvent::EnterScrub {
                 soft_audio: true,
                 densify: true,
+                from_play: true,
             },
         );
         assert_eq!(next.mode, EngineMode::Scrub);
         assert!(next.warm_audio());
         assert_eq!(
             cmds,
-            vec![EngineCmd::SoftHoldClock, EngineCmd::ScheduleDensify]
+            vec![
+                EngineCmd::SoftHoldClock,
+                EngineCmd::AbortDensify { rearm: true },
+                EngineCmd::ScheduleDensify,
+            ]
         );
     }
 
@@ -263,13 +283,35 @@ mod tests {
             EngineEvent::EnterScrub {
                 soft_audio: false,
                 densify: true,
+                from_play: true,
             },
         );
         assert_eq!(next.mode, EngineMode::Scrub);
         assert!(!next.warm_audio());
         assert_eq!(
             cmds,
-            vec![EngineCmd::HardStopClock, EngineCmd::ScheduleDensify]
+            vec![
+                EngineCmd::HardStopClock,
+                EngineCmd::AbortDensify { rearm: true },
+                EngineCmd::ScheduleDensify,
+            ]
+        );
+    }
+
+    #[test]
+    fn pause_while_paused_densify_does_not_abort() {
+        let (next, cmds) = reduce(
+            EngineModel::new(),
+            EngineEvent::EnterScrub {
+                soft_audio: true,
+                densify: true,
+                from_play: false,
+            },
+        );
+        assert_eq!(next.mode, EngineMode::Scrub);
+        assert_eq!(
+            cmds,
+            vec![EngineCmd::SoftHoldClock, EngineCmd::ScheduleDensify]
         );
     }
 
@@ -284,12 +326,19 @@ mod tests {
             EngineEvent::EnterScrub {
                 soft_audio: true,
                 densify: false,
+                from_play: false,
             },
         );
         assert!(next.holds_exact());
         assert!(next.warm_audio());
         assert!(!next.allows_densify());
-        assert_eq!(cmds, vec![EngineCmd::SoftHoldClock]);
+        assert_eq!(
+            cmds,
+            vec![
+                EngineCmd::SoftHoldClock,
+                EngineCmd::AbortDensify { rearm: false },
+            ]
+        );
     }
 
     #[test]

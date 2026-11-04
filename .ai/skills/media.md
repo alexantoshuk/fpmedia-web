@@ -24,6 +24,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
 | Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim + interim blit + key chase; `EnterScrub{soft, densify:false}`; host ~50 ms throttle; `apply_engine_event` runs cmds |
 | Pause strips don't grow / no hole-fill | `pause_warm_idle` | Pause button: `SoftPause{densify:true}` — not `pause_for_scrub` (drag-only) |
+| Pause densify dies after step / double-abort | `EnterScrub{from_play}` | AbortDensify only when `from_play \|\| !densify`; `pause_inner` cancel_ops only — no side-door fill abort. **no equivalent** |
 | Soft-drag / cold scrub canvas frozen (no frame change) | `scrub_preview_frame` / `scrub_to` | interim Exact blit — **never** full Exact wipe (`b8206d1`). Drag: main-HW key chase when warm; Exact = dwell/settle; cold/busy → blit only. **no equivalent** (scrub local) |
 | Soft-drag catch-up after finger stop / rare updates | `drag_key_chase` / `scrub_to` drag | drag = nearest **key** only (not Exact); Exact = dwell/settle. No `cancel_ops` per move. **no equivalent** (scrub local) |
 | Soft-drag mobile skips keyframes (desktop OK) | `drag_key_chase` / `scrub_drag_key_advances` | superseded GOP still paints key if it advances `scrub_dir` (mobile HW loses race); not Exact catch-up. **no equivalent** (scrub local) |

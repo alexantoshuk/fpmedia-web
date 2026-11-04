@@ -8,11 +8,11 @@
 
 ### Handoff
 
-- **HEAD:** §2 P3a `seam_warm_schedule` (+ P2 `PromoteLead` / facade `playing`).
+- **HEAD:** §2 P3b pause densify via `EnterScrub` AbortDensify (+ P3a schedule / P2 PromoteLead / facade `playing`).
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
 - **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
 - **Unverified:** long scrub-outside stress on multi-clip Host zone; cut@0 / wrap hitch after dropping post-swap warm.
-- **Next chat (primary):** §2 P3b densify doors via engine_mode only — before CutWindow.
+- **Next chat (primary):** CutWindow (or residual densify doors: seek pre-abort / policy Off).
 
 ---
 
@@ -24,11 +24,11 @@ Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. 
 
 ### 2. State / densify / playlist-loop refactor
 
-Goal: races fixed by **transitions**, not TEMP APIs / bool latches. P0–P3a shipped (`PromoteLead` + `seam_warm_schedule`). DoD: no new `enable_*_without_*` helpers; P3b below.
+Goal: races fixed by **transitions**, not TEMP APIs / bool latches. P0–P3b pause path shipped. DoD: no new `enable_*_without_*` helpers.
 
 | Priority | Problem (today) | Target |
 | -------- | ---------------- | ------ |
-| P3b | `pause_hard_no_densify` / `pause_warm` / `EnterScrub{densify}` / policy Off clear — densify intent in many doors | Densify arm/clear only via engine_mode cmds; host calls events not side-door aborts |
+| Residual | `seek_frame_with` still pre-`abort_scrub_fill` before `BeginExact`; `ScrubCachePolicy::Off` aborts outside reduce | Route seek/policy Off densify clear through engine_mode cmds only |
 
 **Out of this refactor:** CutWindow product; compare dual-visible; densify pin-hole cosmetics; publish.
 

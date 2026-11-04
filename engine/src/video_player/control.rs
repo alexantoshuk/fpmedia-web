@@ -166,11 +166,13 @@ impl VideoPlayer {
     }
 
     pub(super) fn pause_inner(&self, soft_audio: bool, densify: bool) {
-        // Leaving play: cancel decode + scrub fill epoch (pending latch restarts fill).
+        // Leaving play: bump decode epoch; densify abort/arm only via
+        // `EnterScrub` → `AbortDensify` / `ScheduleDensify` (no side-door fill abort).
         // Already paused: do not bump scrub_epoch (UI steps call pause every time).
         let was_playing = self.shared.playing.get();
         if was_playing {
-            self.cancel_ops_and_scrub_fill();
+            self.cancel_ops();
+            self.clear_scrub_direction();
         }
         // Flip playing before ScheduleDensify — `schedule_scrub_cache_fill` refuses
         // while playing. Clock cmds still gated by `was_playing`.
@@ -180,6 +182,7 @@ impl VideoPlayer {
             EngineEvent::EnterScrub {
                 soft_audio,
                 densify,
+                from_play: was_playing,
             },
             was_playing,
         );

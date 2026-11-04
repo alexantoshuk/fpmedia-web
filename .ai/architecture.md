@@ -115,7 +115,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | ------ | ------- |
 | Host transport | `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*` |
 | OpQueue | `fpmedia_web::HostOp` / `apply_enqueue` (in place); epochs preserved on survivors |
-| Engine mode | `fpmedia_web::engine_mode` (`Play` / `Scrub` / `ExactHold` + `AudioResume`) |
+| Engine mode | `fpmedia_web::engine_mode` (`Play` / `Scrub` / `ExactHold` + `AudioResume`). Densify abort/arm on pause via `EnterScrub` → `AbortDensify` / `ScheduleDensify` (`from_play` / `!densify`); not `pause_inner` side-door `abort_scrub_fill`. Residual: seek pre-abort, policy Off — `state.md` |
 | Decoder slot | `fpmedia_web::decoder_slot` (`Idle` / `CheckedOut` + `reset_pending`) |
 | WorkloadMode | `fpmedia_web::workload` (Play > Seek > Open > Bg) |
 | Byte IO | `ReadOrchestrator` + `UrlSource` / `BlobSource` stream workers |
