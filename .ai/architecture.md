@@ -94,6 +94,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute** + **`playing` intent**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
 | Seam | **`LoopOwner`:** zone ⊆ live → `Engine` (`sync_live_loop_from_playlist` → `LoopSeam`); else `Host` → `promote_idle_at` / `wrap_to_loop_in`. Host cut/wrap latched by **`SeamPhase`** (not a bool). Densify-free seam paint via `seek_frame_with(..., false)`. Playlist `playing` stays true across slot `pause_hard` / EOF until pause, terminal end, or seam error — do not mirror live `VideoRef::playing` for chrome. |
 | Host promote policy | **`PromoteLead`** (`Origin` @0 / `Mid` @`loop_in`): one table for idle `prepare` + near-wall `kick_warm`. Prepare paints on idle → swap → Play; **no** post-swap `warm_play_origin` (cut@0 was a double warm). Deeper PreferSoftware stash = parked. Port map vs Video `LoopSeam`: [below](#loopseam-vs-host-promote). |
+| Host prewarm schedule | **`seam_warm_schedule`**: `LoopOwner` + zone + media time → `SeamWarmTarget` (`PromoteLead` + idle/live). Kick only when `SeamPhase::Idle` and owner ≠ `Engine` (engine `maybe_kick_loop_origin`). Priority: Host zone wall → near clip-EOF next/`loop_in` → same-clip Host live. |
 | Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
 | Idle neighbor | Next clip; on last + playlist **loop** → **0** (wrap origin-stash target); else previous. `idle_neighbor` / `set_loop` re-preload |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
@@ -248,7 +249,7 @@ Shared warm/stash primitives on `VideoPlayer`; host owns **slot swap only** (no 
 
 | Step | Single `<Video>` `LoopSeam` | Playlist Host promote |
 | ---- | --------------------------- | --------------------- |
-| Near-wall warm | `maybe_kick_loop_origin` → bytes + PreferSoftware stash @`loop_in` | `PromoteLead::kick_warm` on idle (`Origin` → `kick_warm_play_origin`; `Mid` → `kick_prepare_seam_at`) |
+| Near-wall warm | `maybe_kick_loop_origin` → bytes + PreferSoftware stash @`loop_in` | `seam_warm_schedule` → `PromoteLead::kick_warm` (idle or same-clip live); skip when `LoopOwner::Engine` |
 | Paint seam | `start_loop_seam_with_stash` (or cold `start_play_iter`) | Idle `PromoteLead::prepare` → `prepare_playlist_seam_at` |
 | Session / clock | Hold → resume **same** `VideoPlayer` | Outgoing `pause_hard_no_densify` → new live PlayPrime |
 | Slot | Same stage | `swap_live_idle` then Play |

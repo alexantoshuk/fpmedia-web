@@ -379,26 +379,32 @@ fn seam_next_clip(pl: VideoPlaylistRef, cur: u32) -> Option<u32> {
     None
 }
 
-/// Near-EOF / near LoopZone wall: warm idle wrap target (origin or `loop_in`).
+/// Prewarm kick target from [`seam_warm_schedule`].
+#[derive(Clone, Copy, Debug)]
+struct SeamWarmTarget {
+    clip_index: u32,
+    lead: PromoteLead,
+    /// `true` → idle slot must already hold `clip_index`; `false` → live (same-clip Host).
+    on_idle: bool,
+}
+
+/// When to near-wall warm: `LoopOwner` + zone geometry + media time → lead.
+/// `SeamPhase` busy / Engine loop warm are gated in [`maybe_kick_idle_seam_warm`].
 /// Shape: Remotion `prewarmIteratorForLooping` — **no equivalent** (playlist local).
-pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
+fn seam_warm_schedule(pl: VideoPlaylistRef) -> Option<SeamWarmTarget> {
     let live = pl.live_video();
-    if !live.playing.get_untracked() || !live.ready.get_untracked() {
-        return;
-    }
     let model = pl.model.get_untracked();
     let cur = pl.live_clip.get_untracked();
-    let Some(clip) = model.clip(cur as usize) else {
-        return;
-    };
+    let clip = model.clip(cur as usize)?;
     let t = live.timestamp.get_untracked();
     let (zone_in, zone_out) = pl.loop_zone();
     let total = model.total_frame_count();
     let zone_full = zone_in == 0 && zone_out == total;
     let looping = pl.looping.get_untracked();
+    let owner = loop_owner(pl);
 
-    // Mid LoopZone wall: warm idle at `zone_in` (may be mid-clip) before host wrap.
-    if looping && !zone_full {
+    // 1. Host LoopZone wall — global time to `zone_out` (idle neighbor or same-clip live).
+    if matches!(owner, LoopOwner::Host) && looping && !zone_full {
         let wall_t = model
             .at_global_frame(zone_out.saturating_sub(1))
             .and_then(|p| {
@@ -413,38 +419,19 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
         if wall_t.is_some_and(|w| should_prewarm_loop_origin(cur_t, w, LOOP_ORIGIN_PREWARM_SECS))
             && let Some(aim) = model.at_global_frame(zone_in)
         {
-            if pl.seam_warm_for.get_value() == Some(aim.clip_index) {
-                return;
-            }
-            if pl.idle_clip.get_untracked() != Some(aim.clip_index) {
-                return;
-            }
-            let idle = pl.idle_video();
-            if !idle.ready.get_untracked() {
-                return;
-            }
-            pl.seam_warm_for.set_value(Some(aim.clip_index));
-            PromoteLead::for_local(aim.local_frame).kick_warm(idle);
-            return;
+            return Some(SeamWarmTarget {
+                clip_index: aim.clip_index,
+                lead: PromoteLead::for_local(aim.local_frame),
+                on_idle: aim.clip_index != cur,
+            });
         }
     }
 
+    // 2–3. Near live clip EOF — cut promote or same-clip Host wrap.
     if !should_prewarm_loop_origin(t, clip.duration_secs, LOOP_ORIGIN_PREWARM_SECS) {
-        return;
+        return None;
     }
-
     if let Some(next_i) = seam_next_clip(pl, cur) {
-        if pl.seam_warm_for.get_value() == Some(next_i) {
-            return;
-        }
-        if pl.idle_clip.get_untracked() != Some(next_i) {
-            return;
-        }
-        let idle = pl.idle_video();
-        if !idle.ready.get_untracked() {
-            return;
-        }
-        // Zone wrap → lead at `loop_in` local; else cut@0 Origin.
         let local = if looping
             && !zone_full
             && let Some(aim) = model.at_global_frame(zone_in)
@@ -454,23 +441,60 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
         } else {
             0
         };
-        pl.seam_warm_for.set_value(Some(next_i));
-        PromoteLead::for_local(local).kick_warm(idle);
-        return;
+        return Some(SeamWarmTarget {
+            clip_index: next_i,
+            lead: PromoteLead::for_local(local),
+            on_idle: true,
+        });
     }
-
-    // Same-clip host loop: PreferSoftware prewarm (engine path uses maybe_kick_loop_origin).
-    if looping && model.len() == 1 && matches!(loop_owner(pl), LoopOwner::Host) {
-        if pl.seam_warm_for.get_value() == Some(cur) {
-            return;
-        }
-        pl.seam_warm_for.set_value(Some(cur));
+    if matches!(owner, LoopOwner::Host) && model.len() == 1 {
         let local = if zone_full {
             0
         } else {
             zone_in.min(clip.last_frame())
         };
-        PromoteLead::for_local(local).kick_warm(live);
+        return Some(SeamWarmTarget {
+            clip_index: cur,
+            lead: PromoteLead::for_local(local),
+            on_idle: false,
+        });
+    }
+    None
+}
+
+/// Near-EOF / near LoopZone wall: apply [`seam_warm_schedule`] → [`PromoteLead::kick_warm`].
+/// **no equivalent** (playlist local).
+pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
+    if seam_busy(pl) {
+        return;
+    }
+    let live = pl.live_video();
+    if !live.playing.get_untracked() || !live.ready.get_untracked() {
+        return;
+    }
+    // Engine owns intra-clip LoopSeam warm (`maybe_kick_loop_origin` on the slot).
+    if matches!(loop_owner(pl), LoopOwner::Engine) {
+        return;
+    }
+    let Some(target) = seam_warm_schedule(pl) else {
+        return;
+    };
+    if pl.seam_warm_for.get_value() == Some(target.clip_index) {
+        return;
+    }
+    if target.on_idle {
+        if pl.idle_clip.get_untracked() != Some(target.clip_index) {
+            return;
+        }
+        let idle = pl.idle_video();
+        if !idle.ready.get_untracked() {
+            return;
+        }
+        pl.seam_warm_for.set_value(Some(target.clip_index));
+        target.lead.kick_warm(idle);
+    } else {
+        pl.seam_warm_for.set_value(Some(target.clip_index));
+        target.lead.kick_warm(live);
     }
 }
 
