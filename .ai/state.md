@@ -8,11 +8,11 @@
 
 ### Handoff
 
-- **HEAD:** `0.1.0-alpha.4` — LoopZone; zone ⊆ live → Video `LoopSeam`; cross-clip → `promote_idle_at`; seam seek densify aborted.
+- **HEAD:** P0 densify enable/arm — `ScrubCachePolicy` = capability only; `seek_frame_with(..., densify)`; seam densify-free; TEMP `enable_scrub_cache_without_densify` gone.
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset — do not restore as-is.
 - **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
-- **Next chat:** `ScrubCachePolicy` enable vs arm densify (drop TEMP `enable_scrub_cache_without_densify` / `swap_live_idle(..., false)`).
-- **Unverified:** multi-clip zone wrap spanning clips.
+- **Unverified:** multi-clip zone wrap spanning clips; playlist cut/wrap after P0 (no TEMP path).
+- **Next chat (primary):** §2 P1 LoopOwner + SeamPhase — before CutWindow.
 
 ---
 
@@ -20,7 +20,24 @@
 
 ### 1. CutWindow
 
-Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. After LoopZone (shipped — `architecture.md` § LoopZone).
+Half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut — Later. Prefer after §2 (host seam machine), else seams grow more flag soup. After LoopZone (shipped — `architecture.md` § LoopZone).
+
+### 2. State / densify / playlist-loop refactor
+
+Goal: races fixed by **transitions**, not TEMP APIs / bool latches. P0 enable/arm shipped (policy ≠ densify; seam `seek_frame_with(..., false)`). DoD: `architecture.md` § State machines gains a **Playlist host** row; no new `enable_*_without_*` helpers.
+
+| Priority | Problem (today) | Target |
+| -------- | ---------------- | ------ |
+| P1 | Playlist loop ownership = scattered `sync_live_loop` + `live_engine_owns_loop` (reads `Video.looping`) + gated Effects | Derived **LoopOwner** `{ Engine, Host }` from zone⊆live / cross-clip; single place arms `set_loop` / host wall |
+| P1 | Host wrap entry = `zone_wrapping` bool + EOF Effect + mid-wall Effect + `advance_after_ended` branches | Playlist **SeamPhase** (or host reduce): `Idle` / `Preparing` / `Swapping` / `Playing` — illegal dual wrap unrepresentable |
+| P2 | Cut `@0` and wrap@`loop_in` share `promote_idle_at` but lead/stash depth still forked (`warm_play_origin` vs mid) | One promote policy table (local frame → warm/stash/play); deeper stash = parked residual only |
+| P2 | `PlayPhase::LoopSeam` (single Video) vs host promote (playlist) — cousin paths, easy to diverge | Document port map; share stash/warm primitives; host stays slot-swap only |
+| P3 | `pause_hard_no_densify` / `pause_warm` / `EnterScrub{densify}` / policy Off clear — densify intent in many doors | Densify arm/clear only via engine_mode cmds; host calls events not side-door aborts |
+| P3 | `maybe_kick_idle_seam_warm` branches (`zone_full`, engine owns, mid-in) | Prewarm schedule from LoopOwner + SeamPhase, not ad-hoc ifs |
+
+**Out of this refactor:** CutWindow product; compare dual-visible; densify pin-hole cosmetics; publish.
+
+**Cite:** `no equivalent` for playlist host machine; densify enable/arm local (scrub is local — AGENTS). Engine LoopSeam stays Remotion-shaped (`skills/media.md`).
 
 ### Playlist
 

@@ -107,8 +107,6 @@ pub(crate) struct VideoOps {
     pub warm_play_origin: LocalFutFn<()>,
     /// Idle: warm + paint `frame` before promote (0 = clip seam; mid = LoopZone in).
     pub prepare_seam_at: LocalFutFnU32<Result<(), String>>,
-    /// TEMP: `ScrubCachePolicy::On` without Pause densify (playlist promote → Play).
-    pub enable_scrub_cache_without_densify: Rc<dyn Fn()>,
 }
 
 impl VideoRef {
@@ -323,13 +321,6 @@ impl VideoRef {
         self.ended.set(false);
         if let Some(pause) = self.op(|o| &o.pause_hard_no_densify) {
             pause();
-        }
-    }
-
-    /// TEMP: enable scrub cache without arming Pause densify (promote → Play).
-    pub fn enable_scrub_cache_without_densify(&self) {
-        if let Some(enable) = self.op(|o| &o.enable_scrub_cache_without_densify) {
-            enable();
         }
     }
 

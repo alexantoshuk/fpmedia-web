@@ -11,13 +11,20 @@ use super::scrub_cold::{exact_scrub_ready, soft_cold_scrub_settle, warm_scrub_go
 use super::scrub_gap::gop_sample_lead;
 
 impl VideoPlayer {
+    /// Exact seek to `frame`, then arm Pause densify (UI seek / open / step).
     pub async fn seek_frame(&self, frame: FrameId) -> Result<(), MediaError> {
+        self.seek_frame_with(frame, true).await
+    }
+
+    /// Exact seek to `frame`. `densify: false` paints without arming Pause fill
+    /// (playlist seam → Play). **no equivalent** (scrub / playlist local).
+    pub async fn seek_frame_with(&self, frame: FrameId, densify: bool) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         // Exact VF — abort densify and hold so scrub HW cannot starve the cascade.
         // Densify blit is for scrub/step warm hits; seek always decodes VF.
-        // Abort before yield; BeginExact → AbortDensify { rearm: true } again.
-        self.abort_scrub_fill(true);
-        self.await_scrub_densify_yield(true).await;
+        // When densify will re-arm: abort with rearm hint before yield.
+        self.abort_scrub_fill(densify);
+        self.await_scrub_densify_yield(densify).await;
         self.apply_engine_event(EngineEvent::BeginExact);
         self.apply_session_event(crate::SessionEvent::BeginRestart);
         let result = async {
@@ -112,14 +119,16 @@ impl VideoPlayer {
         // Clear ExactHold without ScheduleDensify — densify aim may be
         // `pending_cold_exact`, not `state().frame` (soft-committed prefix).
         self.apply_engine_event(EngineEvent::EndExact { densify: false });
-        // Prefer pending cold aim so densify walks toward the Seek target, not the
-        // soft-committed prefix (was: arm at eng while aim≪far → eng never catches).
-        let densify_aim = self
-            .shared
-            .pending_cold_exact
-            .get()
-            .unwrap_or_else(|| self.state().frame);
-        self.arm_scrub_densify_after_exact(densify_aim);
+        if densify {
+            // Prefer pending cold aim so densify walks toward the Seek target, not the
+            // soft-committed prefix (was: arm at eng while aim≪far → eng never catches).
+            let densify_aim = self
+                .shared
+                .pending_cold_exact
+                .get()
+                .unwrap_or_else(|| self.state().frame);
+            self.arm_scrub_densify_after_exact(densify_aim);
+        }
         Ok(())
     }
 

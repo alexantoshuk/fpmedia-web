@@ -27,7 +27,7 @@
 | Playlist zebra gate / stripe size wrong | axis = Σ frames (not ms); same `frame_zebra_step` as single-clip |
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
 | Playlist scrub→other clip drops Play | latch `scrub_resume` on Down while `playing` (soft-pause clears it before cross-cut) |
-| Playlist seam densify lag (cut / wrap / range host) | `swap_live_idle(..., false)` → `enable_scrub_cache_without_densify` — **TEMP**; enable/arm next chat. `skills/media.md` |
+| Playlist seam densify lag (cut / wrap / range host) | `swap_live_idle` + policy On (no densify arm); seam `prepare_seam_at` → densify-free seek — `skills/media.md` |
 | Playlist Next/Prev stuck in clip at EOF/0 | step uses live `frame`; mirror live→pos when not scrubbing |
 | Playlist loop wrap hitch (last→0) | `idle_neighbor(…, looping)` → idle preload **0**; `set_loop(true)` re-preloads. **no equivalent** |
 | Playlist LoopZone mid-clip past out / same-clip HF flash | intra → `sync_live_loop_from_playlist` + engine; host wrap iff `!live_engine_owns_loop` (`2c19b70` cut). **no equivalent** |

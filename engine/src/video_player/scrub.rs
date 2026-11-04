@@ -621,39 +621,24 @@ impl VideoPlayer {
         crate::scrub_preview_choice_with_dir(target, key, cached, dir)
     }
 
-    /// Runtime scrub-cache gate. `Off` closes the scrub decoder and drops
-    /// Covered + Exact; `On` optionally re-arms Pause densify when paused.
+    /// Runtime scrub-cache **capability** gate. `Off` closes the scrub decoder and
+    /// drops Covered + Exact; `On` allows densify / gray / ingest — does **not**
+    /// start densify (arm via `EnterScrub{densify}` / pause / settle / seek).
+    /// **no equivalent** (scrub local).
     pub fn set_scrub_cache_policy(&self, policy: ScrubCachePolicy) {
-        self.set_scrub_cache_policy_inner(policy, true);
-    }
-
-    /// Enable scrub cache **without** starting densify (playlist promote → Play).
-    /// TEMP until enable-vs-arm refactor. **no equivalent**.
-    pub fn enable_scrub_cache_without_densify(&self) {
-        self.set_scrub_cache_policy_inner(ScrubCachePolicy::On, false);
-    }
-
-    fn set_scrub_cache_policy_inner(&self, policy: ScrubCachePolicy, arm_densify_if_paused: bool) {
         if self.shared.scrub_cache_policy.replace(policy) == policy {
             return;
         }
-        match policy {
-            ScrubCachePolicy::Off => {
-                // Checked-out densify sees the epoch bump and drops the decoder
-                // on return (`return_scrub_decoder`) — never close mid-`decode()`.
-                self.abort_scrub_fill(false);
-                drop(self.shared.scrub_decoder.borrow_mut().take());
-                if let Ok(mut cache) = self.shared.scrub_chunks.try_borrow_mut() {
-                    cache.clear();
-                }
-                if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
-                    blit.clear();
-                }
+        if matches!(policy, ScrubCachePolicy::Off) {
+            // Checked-out densify sees the epoch bump and drops the decoder
+            // on return (`return_scrub_decoder`) — never close mid-`decode()`.
+            self.abort_scrub_fill(false);
+            drop(self.shared.scrub_decoder.borrow_mut().take());
+            if let Ok(mut cache) = self.shared.scrub_chunks.try_borrow_mut() {
+                cache.clear();
             }
-            ScrubCachePolicy::On => {
-                if arm_densify_if_paused && !self.is_playing() {
-                    self.enter_scrub_cache_pipeline(self.state().frame);
-                }
+            if let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() {
+                blit.clear();
             }
         }
     }

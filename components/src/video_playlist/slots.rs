@@ -157,10 +157,9 @@ pub(crate) fn live_engine_owns_loop(pl: VideoPlaylistRef) -> bool {
 /// to idle (former live) — never an aspirational neighbor (that lied and made
 /// scrub promote the wrong media). Caller [`preload_idle`]s the desired neighbor.
 ///
-/// `arm_live_densify`: scrub/seek promote wants Pause densify on the new live;
-/// seam Play (`promote_idle_at`) must pass **false** — Off→On densify before
-/// PlayPrime is the mobile hitch (TEMP until enable-vs-arm refactor).
-pub(crate) fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32, arm_live_densify: bool) {
+/// Policy On = scrub-cache **capability** only (does not arm densify). Pause fill
+/// comes from seek / EnterScrub / pause doors; seam Play never arms. **no equivalent**.
+pub(crate) fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32) {
     // Stop outgoing before flip — else hidden slot keeps Playing and can EOF /
     // densify while the new live seeks (LoopZone wrap flash).
     let outgoing = pl.live_video();
@@ -172,11 +171,7 @@ pub(crate) fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32, arm_live_
     pl.live_clip.set(new_live_clip);
     pl.idle_clip.set(Some(former_live));
     let live = pl.live_video();
-    if arm_live_densify {
-        live.set_scrub_cache_policy(ScrubCachePolicy::On);
-    } else {
-        live.enable_scrub_cache_without_densify();
-    }
+    live.set_scrub_cache_policy(ScrubCachePolicy::On);
     live.ended.set(false);
     let idle = pl.idle_video();
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
@@ -193,7 +188,7 @@ pub(crate) fn try_promote_idle(pl: VideoPlaylistRef, clip_index: u32) -> bool {
     if pl.idle_clip.get_untracked() != Some(clip_index) || !pl.idle_video().ready.get_untracked() {
         return false;
     }
-    swap_live_idle(pl, clip_index, true);
+    swap_live_idle(pl, clip_index);
     true
 }
 
@@ -246,8 +241,7 @@ pub(crate) async fn seek_to_pos(
             if pl.open_gen.get_value() != epoch {
                 return Ok(());
             }
-            // then_play → no densify arm (same hitch as cut/wrap promote).
-            swap_live_idle(pl, aim.clip_index, !then_play);
+            swap_live_idle(pl, aim.clip_index);
         }
         let neighbor = idle_neighbor_for_zone(
             &pl.model.get_untracked(),
@@ -301,8 +295,8 @@ async fn promote_idle_at(
     if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
         return Ok(());
     }
-    // Pause outgoing only at swap — no densify arm (imminent Play).
-    swap_live_idle(pl, clip_index, false);
+    // Pause outgoing only at swap — policy On does not arm densify (imminent Play).
+    swap_live_idle(pl, clip_index);
     pl.seam_warm_for.set_value(None);
     let live = pl.live_video();
     live.ended.set(false);
