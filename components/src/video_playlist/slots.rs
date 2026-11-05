@@ -12,7 +12,7 @@ use crate::video_playlist::PlaylistModel;
 use super::host_zone::is_soft_seam_cancel;
 use super::loop_seam::{
     LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, seam_trace,
-    set_seam_phase,
+    set_seam_phase, try_begin_seam,
 };
 use super::video_playlist_ref::VideoPlaylistRef;
 
@@ -648,6 +648,22 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
     ));
     end_seam(pl);
     result
+}
+
+/// Begin Host LoopZone wrap (PlayPressed / wall Effect / scrub Up after preempt).
+/// When seam busy: keep facade Play so Effect can retry — do not sticky-error.
+pub(crate) fn start_host_wrap(pl: VideoPlaylistRef, seam_already_busy: bool) {
+    if seam_already_busy || !try_begin_seam(pl) {
+        pl.playing.set(true);
+        return;
+    }
+    pl.playing.set(true);
+    let epoch = pl.open_gen.get_value();
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(e) = wrap_to_loop_in(pl, epoch).await {
+            note_host_seam_err(pl, epoch, e, "LoopZone wrap failed.");
+        }
+    });
 }
 
 /// Host seam / wrap failed after live was already stopped — clear facade Play.

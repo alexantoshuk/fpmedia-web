@@ -1,7 +1,7 @@
 //! Playlist host scrub/seam decisions — sync plan, UI runs cmds.
 //!
-//! Slice A: scrub-while-play Up. Further events (PlayPressed, wall Effect) land
-//! here later. Design: `.ai/architecture.md` § Playlist host reduce.
+//! Slice A: scrub-while-play Up. Slice B: PlayPressed / wall Effect Host outside.
+//! Design: `.ai/architecture.md` § Playlist host reduce.
 //! **no equivalent** (playlist local).
 
 use super::host_zone::{HostZoneOwner, host_play_outside_zone};
@@ -65,6 +65,64 @@ pub(crate) fn plan_scrub_up(ctx: ScrubUpCtx) -> ScrubUpPlan {
         ScrubUpPlan::CrossClipSeek {
             then_play: ctx.resume,
         }
+    }
+}
+
+/// Play / wall: is global aim outside the Host LoopZone?
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) struct HostOutsideCtx {
+    pub owner: HostZoneOwner,
+    pub looping: bool,
+    pub zone_in: u32,
+    pub zone_out: u32,
+    pub total_frames: u32,
+    pub global: u32,
+    pub seam_busy: bool,
+    /// Effect past-out: only when `zone_last` lies on the **live** clip (clip-EOF
+    /// advance owns the join otherwise). PlayPressed uses `false` (full axis check).
+    pub past_out_needs_wall_on_live: bool,
+    pub wall_on_live: bool,
+}
+
+/// Host outside while wanting Play → wrap; Engine outside → slot play; else none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) enum HostOutsidePlan {
+    /// Begin seam + `wrap_to_loop_in` (or keep facade Play if busy).
+    HostWrap { seam_already_busy: bool },
+    /// Zone ⊆ live — engine `LoopSeam` / PlayPrime owns the wall.
+    EngineSlotPlay,
+    /// Not an outside-Play wall case (fall through to clip-EOF / bare play).
+    NotOutside,
+}
+
+/// Shared law for PlayPressed outside + wall Effect Host wrap.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn plan_host_outside(ctx: HostOutsideCtx) -> HostOutsidePlan {
+    if !ctx.looping || ctx.zone_out <= ctx.zone_in {
+        return HostOutsidePlan::NotOutside;
+    }
+    // Full axis — not Host outside-wrap (same as `host_play_outside_zone`).
+    if ctx.zone_in == 0 && ctx.zone_out == ctx.total_frames {
+        return HostOutsidePlan::NotOutside;
+    }
+    let zone_last = ctx.zone_out.saturating_sub(1);
+    let before_in = ctx.global < ctx.zone_in;
+    let past_out = if ctx.past_out_needs_wall_on_live {
+        ctx.wall_on_live && ctx.global >= zone_last
+    } else {
+        ctx.global >= zone_last
+    };
+    if !(before_in || past_out) {
+        return HostOutsidePlan::NotOutside;
+    }
+    match ctx.owner {
+        HostZoneOwner::Host => HostOutsidePlan::HostWrap {
+            seam_already_busy: ctx.seam_busy,
+        },
+        HostZoneOwner::Engine => HostOutsidePlan::EngineSlotPlay,
+        HostZoneOwner::Off => HostOutsidePlan::NotOutside,
     }
 }
 
@@ -138,6 +196,65 @@ mod tests {
         assert_eq!(
             plan_scrub_up(ctx),
             ScrubUpPlan::LiveSettle { then_play: true }
+        );
+    }
+
+    fn outside_ctx(global: u32, wall_on_live: bool, need_wall: bool) -> HostOutsideCtx {
+        HostOutsideCtx {
+            owner: HostZoneOwner::Host,
+            looping: true,
+            zone_in: 100,
+            zone_out: 500,
+            total_frames: 1000,
+            global,
+            seam_busy: false,
+            past_out_needs_wall_on_live: need_wall,
+            wall_on_live,
+        }
+    }
+
+    #[test]
+    fn play_pressed_outside_host_wraps_engine_plays() {
+        assert_eq!(
+            plan_host_outside(outside_ctx(50, false, false)),
+            HostOutsidePlan::HostWrap {
+                seam_already_busy: false
+            }
+        );
+        assert_eq!(
+            plan_host_outside(outside_ctx(499, false, false)),
+            HostOutsidePlan::HostWrap {
+                seam_already_busy: false
+            }
+        );
+        let mut eng = outside_ctx(50, false, false);
+        eng.owner = HostZoneOwner::Engine;
+        assert_eq!(plan_host_outside(eng), HostOutsidePlan::EngineSlotPlay);
+        assert_eq!(
+            plan_host_outside(outside_ctx(250, false, false)),
+            HostOutsidePlan::NotOutside
+        );
+    }
+
+    #[test]
+    fn wall_effect_past_out_requires_wall_on_live() {
+        // Past out but zone_last not on live → Effect must not Host-wrap (EOF advance).
+        assert_eq!(
+            plan_host_outside(outside_ctx(499, false, true)),
+            HostOutsidePlan::NotOutside
+        );
+        assert_eq!(
+            plan_host_outside(outside_ctx(499, true, true)),
+            HostOutsidePlan::HostWrap {
+                seam_already_busy: false
+            }
+        );
+        // Before-in never needs wall_on_live.
+        assert_eq!(
+            plan_host_outside(outside_ctx(50, false, true)),
+            HostOutsidePlan::HostWrap {
+                seam_already_busy: false
+            }
         );
     }
 }

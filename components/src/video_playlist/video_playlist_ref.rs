@@ -9,11 +9,10 @@ use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
 use super::host_zone::HostZoneOwner;
-use super::loop_seam::{loop_owner, seam_busy, try_begin_seam};
+use super::loop_seam::{loop_owner, seam_busy};
 use super::playlist_reduce::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
 use super::slots::{
-    ensure_clip_on_idle, idle_neighbor, note_host_seam_err, preload_idle, try_promote_idle,
-    wrap_to_loop_in,
+    ensure_clip_on_idle, idle_neighbor, preload_idle, start_host_wrap, try_promote_idle,
 };
 use super::source::PlaylistSource;
 use wasm_bindgen_futures::spawn_local;
@@ -423,7 +422,9 @@ impl VideoPlaylistRef {
         });
         match plan {
             ScrubUpPlan::HostWrap { seam_already_busy } => {
-                self.run_host_wrap_after_scrub(seam_already_busy);
+                // Leave Scrubbing without Exact@outside, then shared Host wrap.
+                self.live_video().pause();
+                start_host_wrap(self, seam_already_busy);
             }
             ScrubUpPlan::LiveSettle { then_play } => {
                 let live = self.live_video();
@@ -462,24 +463,6 @@ impl VideoPlaylistRef {
                 }
             }
         }
-    }
-
-    /// Leave scrub without Exact@outside, then Host wrap to `loop_in`.
-    fn run_host_wrap_after_scrub(self, seam_already_busy: bool) {
-        // Scrubbing → PausePressed → Ready + HardPause (clears settle race).
-        self.live_video().pause();
-        if seam_already_busy || !try_begin_seam(self) {
-            // Seam already in flight — keep facade Play; wall Effect re-enters.
-            self.playing.set(true);
-            return;
-        }
-        self.playing.set(true);
-        let epoch = self.open_gen.get_value();
-        spawn_local(async move {
-            if let Err(e) = wrap_to_loop_in(self, epoch).await {
-                note_host_seam_err(self, epoch, e, "LoopZone wrap failed.");
-            }
-        });
     }
 
     pub(crate) fn paint_hover_thumb(
