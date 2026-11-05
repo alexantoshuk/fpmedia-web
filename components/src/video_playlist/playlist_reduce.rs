@@ -1,10 +1,11 @@
 //! Playlist host scrub/seam decisions — sync plan, UI runs cmds.
 //!
 //! Slice A: scrub-while-play Up. Slice B: PlayPressed / wall Effect Host outside.
+//! Slice C: WrapDone soft/hard coalesce.
 //! Design: `.ai/architecture.md` § Playlist host reduce.
 //! **no equivalent** (playlist local).
 
-use super::host_zone::{HostZoneOwner, host_play_outside_zone};
+use super::host_zone::{HostZoneOwner, host_play_outside_zone, is_soft_seam_cancel};
 
 /// Inputs for scrub pointer-up (global aim already committed on the facade).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +124,33 @@ pub(crate) fn plan_host_outside(ctx: HostOutsideCtx) -> HostOutsidePlan {
         },
         HostZoneOwner::Engine => HostOutsidePlan::EngineSlotPlay,
         HostZoneOwner::Off => HostOutsidePlan::NotOutside,
+    }
+}
+
+/// After Host wrap / seam async returns — soft cancel vs sticky hard fail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) enum WrapDonePlan {
+    /// Wrap / seam succeeded — no facade error path.
+    Ok,
+    /// Soft supersede: resume live if facade still wants Play; no sticky error.
+    ResumeLiveKeepPlay,
+    /// Hard failure — clear facade Play + surface error (caller has the string).
+    HardFail,
+    /// `open_gen` mismatch — ignore.
+    Ignore,
+}
+
+/// One law for wrap/seam Err after live was already stopped.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn plan_wrap_done(result: Result<(), &str>, epoch_ok: bool) -> WrapDonePlan {
+    if !epoch_ok {
+        return WrapDonePlan::Ignore;
+    }
+    match result {
+        Ok(()) => WrapDonePlan::Ok,
+        Err(e) if is_soft_seam_cancel(e) => WrapDonePlan::ResumeLiveKeepPlay,
+        Err(_) => WrapDonePlan::HardFail,
     }
 }
 
@@ -256,5 +284,27 @@ mod tests {
                 seam_already_busy: false
             }
         );
+    }
+
+    #[test]
+    fn wrap_done_soft_hard_epoch() {
+        assert_eq!(plan_wrap_done(Ok(()), true), WrapDonePlan::Ok);
+        assert_eq!(
+            plan_wrap_done(Err("operation cancelled"), true),
+            WrapDonePlan::ResumeLiveKeepPlay
+        );
+        assert_eq!(
+            plan_wrap_done(Err("cancelled"), true),
+            WrapDonePlan::ResumeLiveKeepPlay
+        );
+        assert_eq!(
+            plan_wrap_done(Err("LoopZone in out of range"), true),
+            WrapDonePlan::HardFail
+        );
+        assert_eq!(
+            plan_wrap_done(Err("operation cancelled"), false),
+            WrapDonePlan::Ignore
+        );
+        assert_eq!(plan_wrap_done(Ok(()), false), WrapDonePlan::Ignore);
     }
 }

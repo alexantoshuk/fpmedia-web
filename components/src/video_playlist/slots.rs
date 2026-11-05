@@ -14,6 +14,7 @@ use super::loop_seam::{
     LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, seam_trace,
     set_seam_phase, try_begin_seam,
 };
+use super::playlist_reduce::{WrapDonePlan, plan_wrap_done};
 use super::video_playlist_ref::VideoPlaylistRef;
 
 /// Snap playlist global aim to `zone_in` so wall cannot re-fire on stale `g`.
@@ -627,17 +628,8 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         Ok(())
     }
     .await;
-    // Soft cancel after stop_live: do not sticky-error (regression: surfacing
-    // Cancelled). Resume live if facade still wants Play so wall Effect can
-    // re-enter; hard errors stay Err for `note_host_seam_err`.
-    let result: Result<(), String> = match result {
-        Err(e) if is_soft_seam_cancel(&e) && pl.open_gen.get_value() == epoch => {
-            seam_trace("wrap soft-cancel → Ok + resume");
-            resume_live_if_playlist_playing(pl);
-            Ok(())
-        }
-        other => other,
-    };
+    // Soft vs hard classified by [`plan_wrap_done`] at the call boundary — do
+    // not swallow Cancelled here (regression: sticky UI error vs silent Ok).
     // Belt: mirror was gated during busy; re-snap before Idle so wall cannot
     // re-fire on a stale g >= zone_last while PlayPrime is still queued.
     reassert_zone_in_playhead(pl);
@@ -660,25 +652,44 @@ pub(crate) fn start_host_wrap(pl: VideoPlaylistRef, seam_already_busy: bool) {
     pl.playing.set(true);
     let epoch = pl.open_gen.get_value();
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) = wrap_to_loop_in(pl, epoch).await {
-            note_host_seam_err(pl, epoch, e, "LoopZone wrap failed.");
-        }
+        let result = wrap_to_loop_in(pl, epoch).await;
+        run_wrap_done(pl, epoch, result, "LoopZone wrap failed.");
     });
 }
 
-/// Host seam / wrap failed after live was already stopped — clear facade Play.
-/// Soft cancel is not a failure (see [`is_soft_seam_cancel`]).
+/// Apply [`plan_wrap_done`] after Host wrap / seam async (soft ≠ sticky error).
+pub(crate) fn run_wrap_done(
+    pl: VideoPlaylistRef,
+    epoch: u64,
+    result: Result<(), String>,
+    status: &str,
+) {
+    let epoch_ok = pl.open_gen.get_value() == epoch;
+    let plan = match &result {
+        Ok(()) => plan_wrap_done(Ok(()), epoch_ok),
+        Err(e) => plan_wrap_done(Err(e.as_str()), epoch_ok),
+    };
+    match plan {
+        WrapDonePlan::Ok | WrapDonePlan::Ignore => {}
+        WrapDonePlan::ResumeLiveKeepPlay => {
+            seam_trace("wrap_done soft-cancel → resume");
+            resume_live_if_playlist_playing(pl);
+        }
+        WrapDonePlan::HardFail => {
+            let Err(err) = result else {
+                return;
+            };
+            seam_trace(&format!("wrap_done hard: {err}"));
+            pl.playing.set(false);
+            pl.error.set(Some(err));
+            pl.status.set(status.into());
+        }
+    }
+}
+
+/// Host seam / wrap failed after live was already stopped — [`run_wrap_done`].
 pub(crate) fn note_host_seam_err(pl: VideoPlaylistRef, epoch: u64, err: String, status: &str) {
-    if pl.open_gen.get_value() != epoch {
-        return;
-    }
-    if is_soft_seam_cancel(&err) {
-        seam_trace(&format!("note_host_seam_err ignore soft: {err}"));
-        return;
-    }
-    pl.playing.set(false);
-    pl.error.set(Some(err));
-    pl.status.set(status.into());
+    run_wrap_done(pl, epoch, Err(err), status);
 }
 
 /// After live clip EOF: promote next via [`promote_idle_at`] (origin) or
