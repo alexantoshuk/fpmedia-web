@@ -1333,7 +1333,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             class=move || {
                                 // Next tier after step buttons (`@3xl`): rate needs `@4xl` (~896px).
                                 let open = if rate_open.get() { " is-open" } else { "" };
-                                format!("wm-rate shrink-0 hidden @4xl:block{open}")
+                                format!("wm-rate relative shrink-0 hidden @4xl:block{open}")
                             }
                             node_ref=rate_root
                             data-testid="playback-rate"
@@ -1472,9 +1472,6 @@ pub fn DemoPlayer() -> impl IntoView {
                                 >
                                     <div class="wm-settings-menu-sep"></div>
                                     <div class="wm-settings-rate px-2 pb-1 pt-0.5">
-                                        <div class="mb-1 text-[11px] text-zinc-400">
-                                            "Playback rate"
-                                        </div>
                                         <PlaybackRateTrack
                                             video=video
                                             playlist=playlist
@@ -2417,7 +2414,7 @@ fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> Option<T> {
     ev.target()?.dyn_into::<T>().ok()
 }
 
-/// Shared rate slider + tick marks (bar pop + settings overflow).
+/// Shared rate heading + slider + ticks (bar pop + settings overflow).
 #[component]
 fn PlaybackRateTrack(
     video: VideoRef,
@@ -2427,71 +2424,74 @@ fn PlaybackRateTrack(
     #[prop(into)] input_testid: String,
 ) -> impl IntoView {
     view! {
-        <div class="wm-rate-track">
-            <input
-                type="range"
-                class="wm-rate-input"
-                attr:data-testid=input_testid
-                min="0.25"
-                max="1.75"
-                step="0.05"
-                prop:value=move || {
-                    let r = demo_active_video(video, playlist, use_playlist)
-                        .playback_rate
-                        .get();
-                    if r < 0.0 {
-                        "0.25".to_string()
-                    } else {
-                        r.min(1.75).to_string()
+        <div class="wm-rate-panel">
+            <div class="wm-rate-heading">"Playback rate"</div>
+            <div class="wm-rate-track">
+                <input
+                    type="range"
+                    class="wm-rate-input"
+                    attr:data-testid=input_testid
+                    min="0.25"
+                    max="1.75"
+                    step="0.05"
+                    prop:value=move || {
+                        let r = demo_active_video(video, playlist, use_playlist)
+                            .playback_rate
+                            .get();
+                        if r < 0.0 {
+                            "0.25".to_string()
+                        } else {
+                            r.min(1.75).to_string()
+                        }
                     }
-                }
-                prop:disabled=move || !media_ready.get()
-                on:input=move |ev| {
-                    let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                        return;
-                    };
-                    if let Ok(v) = input.value().parse::<f64>() {
-                        demo_active_video(video, playlist, use_playlist).set_playback_rate(v);
+                    prop:disabled=move || !media_ready.get()
+                    on:input=move |ev| {
+                        let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                            return;
+                        };
+                        if let Ok(v) = input.value().parse::<f64>() {
+                            demo_active_video(video, playlist, use_playlist).set_playback_rate(v);
+                        }
                     }
-                }
-            />
-            <div class="wm-rate-ticks" aria-hidden="true">
-                <div class="wm-rate-ticks-rail">
-                    {RATE_TICKS
-                        .into_iter()
-                        .map(|t| {
-                            let left = rate_tick_left_pct(t);
-                            view! {
-                                <button
-                                    type="button"
-                                    class=move || {
-                                        let r = demo_active_video(video, playlist, use_playlist)
-                                            .playback_rate
-                                            .get()
-                                            .clamp(RATE_SLIDER_MIN, RATE_SLIDER_MAX);
-                                        if (r - t).abs() < 0.026 {
-                                            "wm-rate-tick is-active"
-                                        } else {
-                                            "wm-rate-tick"
+                />
+                <div class="wm-rate-ticks" aria-hidden="true">
+                    <div class="wm-rate-ticks-rail">
+                        {RATE_TICKS
+                            .into_iter()
+                            .map(|t| {
+                                let left = rate_tick_left_pct(t);
+                                view! {
+                                    <button
+                                        type="button"
+                                        class=move || {
+                                            let r = demo_active_video(video, playlist, use_playlist)
+                                                .playback_rate
+                                                .get()
+                                                .clamp(RATE_SLIDER_MIN, RATE_SLIDER_MAX);
+                                            if (r - t).abs() < 0.026 {
+                                                "wm-rate-tick is-active"
+                                            } else {
+                                                "wm-rate-tick"
+                                            }
                                         }
-                                    }
-                                    style:left=left
-                                    prop:disabled=move || !media_ready.get()
-                                    prop:title=format!("{}×", format_rate_tick(t))
-                                    on:click=move |ev| {
-                                        ev.stop_propagation();
-                                        demo_active_video(video, playlist, use_playlist)
-                                            .set_playback_rate(t);
-                                    }
-                                >
-                                    <span class="wm-rate-tick-mark"></span>
-                                    <span class="wm-rate-tick-label">
-                                        {format_rate_tick(t)}
-                                    </span>
-                                </button>
-                            }
-                        })
-                        .collect_view()}
+                                        style:left=left
+                                        prop:disabled=move || !media_ready.get()
+                                        prop:title=format!("{}×", format_rate_tick(t))
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            demo_active_video(video, playlist, use_playlist)
+                                                .set_playback_rate(t);
+                                        }
+                                    >
+                                        <span class="wm-rate-tick-mark"></span>
+                                        <span class="wm-rate-tick-label">
+                                            {format_rate_tick(t)}
+                                        </span>
+                                    </button>
+                                }
+                            })
+                            .collect_view()}
+                    </div>
                 </div>
             </div>
         </div>
@@ -2515,6 +2515,14 @@ fn VolumeRangeInput(
             min="0"
             max="1"
             step="0.05"
+            style:--wm-volume-pct=move || {
+                let pct = if demo_muted(video, playlist, use_playlist) {
+                    0.0
+                } else {
+                    demo_volume(video, playlist, use_playlist).clamp(0.0, 1.0) * 100.0
+                };
+                format!("{pct}%")
+            }
             prop:value=move || {
                 // Mute parks the thumb at 0 without clearing stored volume;
                 // unmute restores playlist/single `volume`.

@@ -8,6 +8,8 @@
   --wm-accent: #34d399;
   --wm-panel: #18181b;
   --wm-border: #3f3f46;
+  /* Gap above control-bar triggers — rate / volume / settings / position share this. */
+  --wm-pop-gap: 0.35rem;
 }
 
 body {
@@ -66,7 +68,7 @@ body {
 }
 
 @utility wm-position-menu {
-  @apply wm-pop bottom-[calc(100%+0.35rem)] left-1/2 hidden min-w-40 -translate-x-1/2 flex-col gap-0.5 p-1.5;
+  @apply wm-pop bottom-[calc(100%+var(--wm-pop-gap))] left-1/2 hidden min-w-40 -translate-x-1/2 flex-col gap-0.5 p-1.5;
 }
 
 @utility wm-position-item {
@@ -90,7 +92,7 @@ body {
 }
 
 @utility wm-settings-menu {
-  @apply wm-pop right-0 bottom-[calc(100%+0.35rem)] left-auto hidden min-w-52 flex-col gap-0.5 p-1.5;
+  @apply wm-pop right-0 bottom-[calc(100%+var(--wm-pop-gap))] left-auto hidden min-w-52 flex-col gap-0.5 p-1.5;
 }
 
 @utility wm-settings-item {
@@ -430,13 +432,18 @@ body {
   font-size: 0;
 }
 
-/* Rate popover — anchored to `.wm-controls`. */
+/* Rate popover — anchored to `.wm-rate` (same gap as settings / position / volume). */
 .wm-rate-pop {
-  @apply wm-pop right-1 bottom-[calc(100%-0.75rem+0.4rem)] left-auto hidden px-3.5 pt-2.5 pb-1.5;
+  @apply wm-pop right-0 bottom-[calc(100%+var(--wm-pop-gap))] left-auto hidden px-3.5 pt-2.5 pb-1.5;
 }
 
 .wm-rate.is-open .wm-rate-pop {
   @apply block;
+}
+
+/* Shared by bar pop + settings overflow (`PlaybackRateTrack`). */
+.wm-rate-heading {
+  @apply mb-1 text-[11px] text-zinc-400;
 }
 
 .wm-rate-track {
@@ -553,10 +560,9 @@ body {
   background: var(--wm-ink);
 }
 
-/* Vertical volume popover — `::before` hit-bridge keeps :hover. */
+/* Vertical volume popover — `::before` hit-bridge keeps :hover across `--wm-pop-gap`. */
 .wm-volume-slider-v {
-  --wm-volume-v-gap: 0.4rem;
-  @apply wm-pop bottom-[calc(100%+var(--wm-volume-v-gap))] left-1/2 flex -translate-x-1/2 items-center justify-center px-2.5 py-2 opacity-0 invisible pointer-events-none transition-[opacity,visibility] duration-100;
+  @apply wm-pop bottom-[calc(100%+var(--wm-pop-gap))] left-1/2 flex -translate-x-1/2 items-center justify-center px-2.5 py-2 opacity-0 invisible pointer-events-none transition-[opacity,visibility] duration-100;
 }
 
 .wm-volume-slider-v::before {
@@ -565,7 +571,7 @@ body {
   left: 0;
   right: 0;
   top: 100%;
-  height: var(--wm-volume-v-gap);
+  height: var(--wm-pop-gap);
 }
 
 /* No V pop while Mute is disabled (!ready / no audio). */
@@ -577,15 +583,83 @@ body {
 }
 
 .wm-volume-slider-v .wm-volume-input {
-  width: 1.25rem;
+  /* Width = thumb so the hit-box centers on the knob (track is thinner). */
+  width: var(--wm-volume-thumb);
   height: 5.5rem;
   writing-mode: vertical-lr;
   direction: rtl;
 }
 
+/*
+ * Shared custom volume (Chrome + Firefox): ~Chrome-accent thickness, mint fill,
+ * no native outline. `--wm-volume-pct` from the input for WebKit fill.
+ */
 .wm-volume-input {
-  accent-color: var(--wm-accent);
+  --wm-volume-track: 6px;
+  --wm-volume-thumb: 14px;
+  --wm-volume-pct: 0%;
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+  border: 0;
+  background: transparent;
   cursor: pointer;
+}
+
+.wm-volume-input::-webkit-slider-runnable-track {
+  width: var(--wm-volume-track);
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(
+    to top,
+    var(--wm-accent) 0%,
+    var(--wm-accent) var(--wm-volume-pct),
+    #3f3f46 var(--wm-volume-pct),
+    #3f3f46 100%
+  );
+}
+
+.wm-volume-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  width: var(--wm-volume-thumb);
+  height: var(--wm-volume-thumb);
+  /* (6−14)/2 = −4 — Chrome centers with this; Firefox still needs −1px below. */
+  margin-left: calc((var(--wm-volume-track) - var(--wm-volume-thumb)) / 2);
+  border: 0;
+  border-radius: 50%;
+  background: var(--wm-accent);
+  cursor: pointer;
+}
+
+.wm-volume-input::-moz-range-track {
+  width: var(--wm-volume-track);
+  border: 0;
+  border-radius: 999px;
+  background: #3f3f46;
+}
+
+.wm-volume-input::-moz-range-progress {
+  width: var(--wm-volume-track);
+  border: 0;
+  border-radius: 999px;
+  background: var(--wm-accent);
+}
+
+.wm-volume-input::-moz-range-thumb {
+  box-sizing: border-box;
+  width: var(--wm-volume-thumb);
+  height: var(--wm-volume-thumb);
+  margin-left: calc((var(--wm-volume-track) - var(--wm-volume-thumb)) / 2 - 1px);
+  border: 0;
+  border-radius: 50%;
+  background: var(--wm-accent);
+  cursor: pointer;
+}
+
+.wm-volume-input::-moz-focus-outer {
+  border: 0;
 }
 
 .wm-volume-input:disabled,
