@@ -5,7 +5,7 @@
 
 mod host_zone;
 mod model;
-mod playlist_reduce;
+mod plan;
 mod position;
 
 #[cfg(target_arch = "wasm32")]

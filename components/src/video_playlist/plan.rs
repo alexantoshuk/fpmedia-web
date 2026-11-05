@@ -1,8 +1,9 @@
-//! Playlist host scrub/seam decisions — sync plan, UI runs cmds.
+//! Playlist host scrub/seam decisions — pure `plan_*`, UI runs cmds.
 //!
 //! Slice A: scrub-while-play Up. Slice B: PlayPressed / wall Effect Host outside.
 //! Slice C: WrapDone soft/hard coalesce. Slice D: Next/Prev step / Goto.
-//! Design: `.ai/architecture.md` § Playlist host reduce.
+//! Slice E: clip-EOF advance (`plan_advance_ended` / `plan_seam_next_clip`).
+//! Design: `.ai/architecture.md` § Playlist host plans.
 //! **no equivalent** (playlist local).
 
 use super::host_zone::{HostZoneOwner, host_play_outside_zone, is_soft_seam_cancel};
@@ -231,6 +232,95 @@ pub(crate) fn plan_step(ctx: StepCtx) -> StepPlan {
     }
 }
 
+/// Inputs for Play-All / LoopZone next-clip pick after clip EOF (or warm schedule).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) struct SeamNextCtx {
+    pub cur: u32,
+    pub next_clip: Option<u32>,
+    pub next_start: u32,
+    /// Clip owning `zone_in` (if any).
+    pub zone_in_clip: Option<u32>,
+    pub looping: bool,
+    pub zone_full: bool,
+    pub zone_out: u32,
+    pub clip_count: u32,
+}
+
+/// Which clip to promote after EOF — `None` → wrap or terminal (caller decides).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn plan_seam_next_clip(ctx: SeamNextCtx) -> Option<u32> {
+    if let Some(next) = ctx.next_clip {
+        if !ctx.looping || ctx.zone_full || ctx.next_start < ctx.zone_out {
+            return Some(next);
+        }
+        // Next would leave the zone — wrap to zone-in clip (if different).
+        return ctx.zone_in_clip.filter(|&c| c != ctx.cur);
+    }
+    if ctx.looping && ctx.clip_count > 1 {
+        return ctx.zone_in_clip.or(Some(0));
+    }
+    None
+}
+
+/// Inputs for clip-EOF advance after `try_begin_seam` (live still `from_clip`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) struct AdvanceEndedCtx {
+    pub live_still_from_clip: bool,
+    pub owner: HostZoneOwner,
+    pub zone_full: bool,
+    pub zone_out: u32,
+    /// Exclusive global end of `from_clip` (`clip_end_frame`).
+    pub clip_end: u32,
+    /// `(clip_index, local_frame)` at `zone_in`, if resolvable.
+    pub zone_in_aim: Option<(u32, u32)>,
+    pub seam_next: Option<u32>,
+    pub looping: bool,
+}
+
+/// What `advance_after_ended` must run (wrap / promote@0 / terminal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) enum AdvanceEndedPlan {
+    /// Live already moved — drop.
+    Noop,
+    /// Host `wrap_to_loop_in`.
+    Wrap,
+    /// `promote_idle_at` at clip local 0.
+    Promote { clip_index: u32 },
+    /// Last clip, loop off — facade Ended.
+    TerminalEnd,
+}
+
+/// Shared law for clip-EOF seam. Does not latch `SeamPhase` (Effect owns that).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn plan_advance_ended(ctx: AdvanceEndedCtx) -> AdvanceEndedPlan {
+    if !ctx.live_still_from_clip {
+        return AdvanceEndedPlan::Noop;
+    }
+    // LoopZone ends inside this clip: host wrap only when Host owns the wall.
+    if matches!(ctx.owner, HostZoneOwner::Host) && !ctx.zone_full && ctx.zone_out <= ctx.clip_end {
+        return AdvanceEndedPlan::Wrap;
+    }
+    if let Some(next_i) = ctx.seam_next {
+        // Zone wrap to mid-clip in → not frame-0 origin seam.
+        if matches!(ctx.owner, HostZoneOwner::Host)
+            && !ctx.zone_full
+            && let Some((aim_clip, aim_local)) = ctx.zone_in_aim
+            && aim_clip == next_i
+            && aim_local > 0
+        {
+            return AdvanceEndedPlan::Wrap;
+        }
+        return AdvanceEndedPlan::Promote { clip_index: next_i };
+    }
+    if ctx.looping {
+        return AdvanceEndedPlan::Wrap;
+    }
+    AdvanceEndedPlan::TerminalEnd
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +544,132 @@ mod tests {
         assert_eq!(
             plan_step(step_prev(0, 0, 2, false, 0)),
             StepPlan::ClearPlayIntent
+        );
+    }
+
+    #[test]
+    fn seam_next_in_zone_vs_wrap_to_in_clip() {
+        // Sequential next inside zone.
+        assert_eq!(
+            plan_seam_next_clip(SeamNextCtx {
+                cur: 0,
+                next_clip: Some(1),
+                next_start: 100,
+                zone_in_clip: Some(0),
+                looping: true,
+                zone_full: false,
+                zone_out: 500,
+                clip_count: 3,
+            }),
+            Some(1)
+        );
+        // Next starts at/after zone_out → zone_in clip if different.
+        assert_eq!(
+            plan_seam_next_clip(SeamNextCtx {
+                cur: 0,
+                next_clip: Some(1),
+                next_start: 500,
+                zone_in_clip: Some(2),
+                looping: true,
+                zone_full: false,
+                zone_out: 500,
+                clip_count: 3,
+            }),
+            Some(2)
+        );
+        // Last clip + looping multi → zone_in (or 0).
+        assert_eq!(
+            plan_seam_next_clip(SeamNextCtx {
+                cur: 1,
+                next_clip: None,
+                next_start: 0,
+                zone_in_clip: Some(0),
+                looping: true,
+                zone_full: true,
+                zone_out: 1000,
+                clip_count: 2,
+            }),
+            Some(0)
+        );
+        assert_eq!(
+            plan_seam_next_clip(SeamNextCtx {
+                cur: 1,
+                next_clip: None,
+                next_start: 0,
+                zone_in_clip: None,
+                looping: false,
+                zone_full: true,
+                zone_out: 1000,
+                clip_count: 2,
+            }),
+            None
+        );
+    }
+
+    fn advance_host(seam_next: Option<u32>, zone_out: u32, clip_end: u32) -> AdvanceEndedCtx {
+        AdvanceEndedCtx {
+            live_still_from_clip: true,
+            owner: HostZoneOwner::Host,
+            zone_full: false,
+            zone_out,
+            clip_end,
+            zone_in_aim: Some((0, 10)),
+            seam_next,
+            looping: true,
+        }
+    }
+
+    #[test]
+    fn advance_ended_wrap_promote_terminal() {
+        assert_eq!(
+            plan_advance_ended(AdvanceEndedCtx {
+                live_still_from_clip: false,
+                ..advance_host(Some(1), 500, 200)
+            }),
+            AdvanceEndedPlan::Noop
+        );
+        // Zone wall inside this clip → Wrap.
+        assert_eq!(
+            plan_advance_ended(advance_host(Some(1), 150, 200)),
+            AdvanceEndedPlan::Wrap
+        );
+        // Promote next @0.
+        assert_eq!(
+            plan_advance_ended(AdvanceEndedCtx {
+                zone_in_aim: Some((0, 0)),
+                ..advance_host(Some(1), 500, 200)
+            }),
+            AdvanceEndedPlan::Promote { clip_index: 1 }
+        );
+        // Next is mid zone_in → Wrap.
+        assert_eq!(
+            plan_advance_ended(AdvanceEndedCtx {
+                seam_next: Some(0),
+                zone_in_aim: Some((0, 10)),
+                ..advance_host(Some(0), 500, 200)
+            }),
+            AdvanceEndedPlan::Wrap
+        );
+        assert_eq!(
+            plan_advance_ended(AdvanceEndedCtx {
+                seam_next: None,
+                looping: true,
+                ..advance_host(None, 500, 200)
+            }),
+            AdvanceEndedPlan::Wrap
+        );
+        assert_eq!(
+            plan_advance_ended(AdvanceEndedCtx {
+                seam_next: None,
+                looping: false,
+                owner: HostZoneOwner::Host,
+                zone_full: true,
+                live_still_from_clip: true,
+                zone_out: 1000,
+                clip_end: 1000,
+                zone_in_aim: None,
+            }),
+            AdvanceEndedPlan::TerminalEnd
         );
     }
 }

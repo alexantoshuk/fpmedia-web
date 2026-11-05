@@ -12,7 +12,7 @@ use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
 use super::host_zone::HostZoneOwner;
 use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, seam_trace, try_begin_seam};
-use super::playlist_reduce::{
+use super::plan::{
     HostOutsideCtx, HostOutsidePlan, StepCtx, StepDir, StepPlan, plan_host_outside, plan_step,
 };
 use super::slots::{

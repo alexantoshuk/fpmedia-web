@@ -10,7 +10,7 @@ use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
 use super::host_zone::HostZoneOwner;
 use super::loop_seam::{loop_owner, seam_busy};
-use super::playlist_reduce::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
+use super::plan::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
 use super::slots::{
     ensure_clip_on_idle, idle_neighbor, preload_idle, start_host_wrap, try_promote_idle,
 };

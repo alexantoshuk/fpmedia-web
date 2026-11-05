@@ -9,12 +9,15 @@ use leptos::prelude::*;
 use crate::VideoRef;
 use crate::video_playlist::PlaylistModel;
 
-use super::host_zone::is_soft_seam_cancel;
+use super::host_zone::{HostZoneOwner, is_soft_seam_cancel};
 use super::loop_seam::{
     LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, seam_trace,
     set_seam_phase, try_begin_seam,
 };
-use super::playlist_reduce::{WrapDonePlan, plan_wrap_done};
+use super::plan::{
+    AdvanceEndedCtx, AdvanceEndedPlan, SeamNextCtx, WrapDonePlan, plan_advance_ended,
+    plan_seam_next_clip, plan_wrap_done,
+};
 use super::video_playlist_ref::VideoPlaylistRef;
 
 /// Snap playlist global aim to `zone_in` so wall cannot re-fire on stale `g`.
@@ -402,37 +405,28 @@ async fn promote_idle_at(
     Ok(())
 }
 
-/// Next clip index for Play All seam. LoopZone: only advance while next starts
-/// before `zone_out`; else wrap clip owning `zone_in` (or `None` → same-clip host
-/// wrap). Full axis + looping → 0 when past last.
+/// Next clip index for Play All seam — [`plan_seam_next_clip`].
 fn seam_next_clip(pl: VideoPlaylistRef, cur: u32) -> Option<u32> {
     let model = pl.model.get_untracked();
     let looping = pl.looping.get_untracked();
     let (zone_in, zone_out) = pl.loop_zone();
     let total = model.total_frame_count();
     let zone_full = zone_in == 0 && zone_out == total;
-
-    if let Some(next) = model.next_clip_index(cur) {
-        let next_start = model.clip_start_frame(next).unwrap_or(0);
-        if !looping || zone_full || next_start < zone_out {
-            return Some(next);
-        }
-        // Next would leave the zone — wrap to zone-in clip (if different).
-        return model.at_global_frame(zone_in).and_then(|p| {
-            if p.clip_index != cur {
-                Some(p.clip_index)
-            } else {
-                None
-            }
-        });
-    }
-    if looping && model.len() > 1 {
-        return model
-            .at_global_frame(zone_in)
-            .map(|p| p.clip_index)
-            .or(Some(0));
-    }
-    None
+    let next_clip = model.next_clip_index(cur);
+    let next_start = next_clip
+        .and_then(|n| model.clip_start_frame(n))
+        .unwrap_or(0);
+    let zone_in_clip = model.at_global_frame(zone_in).map(|p| p.clip_index);
+    plan_seam_next_clip(SeamNextCtx {
+        cur,
+        next_clip,
+        next_start,
+        zone_in_clip,
+        looping,
+        zone_full,
+        zone_out,
+        clip_count: model.len() as u32,
+    })
 }
 
 /// Prewarm kick target from [`seam_warm_schedule`].
@@ -692,8 +686,9 @@ pub(crate) fn note_host_seam_err(pl: VideoPlaylistRef, epoch: u64, err: String, 
     run_wrap_done(pl, epoch, Err(err), status);
 }
 
-/// After live clip EOF: promote next via [`promote_idle_at`] (origin) or
-/// [`wrap_to_loop_in`]. `from_clip` = ended clip (ignore if live already moved).
+/// After live clip EOF: [`plan_advance_ended`] → promote / wrap / terminal.
+/// `from_clip` = ended clip (ignore if live already moved).
+/// Do **not** bail on sticky `playing` after Effect cleared `ended` — **no equivalent**.
 pub(crate) async fn advance_after_ended(
     pl: VideoPlaylistRef,
     epoch: u64,
@@ -707,69 +702,55 @@ pub(crate) async fn advance_after_ended(
         return Ok(());
     }
     let result = async {
-        if pl.live_clip.get_untracked() != from_clip {
-            return Ok(());
-        }
-        // Do **not** bail on `playing && !ended` — Effect already cleared slot
-        // `ended` before spawn; a sticky `playing` would end_seam and lose EOF
-        // (stop at clip join until manual Play). **no equivalent**.
         let model = pl.model.get_untracked();
-        let cur = from_clip;
         let (zone_in, zone_out) = pl.loop_zone();
         let total = model.total_frame_count();
         let zone_full = zone_in == 0 && zone_out == total;
-        let owner = loop_owner(pl);
-
-        // LoopZone ends inside this clip: host wrap only when Host owns the wall.
-        if matches!(owner, LoopOwner::Host) && !zone_full {
-            let clip_end = model.clip_end_frame(cur).unwrap_or(0);
-            if zone_out <= clip_end {
-                return wrap_to_loop_in(pl, epoch).await;
+        let zone_in_aim = model
+            .at_global_frame(zone_in)
+            .map(|p| (p.clip_index, p.local_frame));
+        let plan = plan_advance_ended(AdvanceEndedCtx {
+            live_still_from_clip: pl.live_clip.get_untracked() == from_clip,
+            owner: HostZoneOwner::from(loop_owner(pl)),
+            zone_full,
+            zone_out,
+            clip_end: model.clip_end_frame(from_clip).unwrap_or(0),
+            zone_in_aim,
+            seam_next: seam_next_clip(pl, from_clip),
+            looping: pl.looping.get_untracked(),
+        });
+        match plan {
+            AdvanceEndedPlan::Noop => Ok(()),
+            AdvanceEndedPlan::Wrap => wrap_to_loop_in(pl, epoch).await,
+            AdvanceEndedPlan::Promote { clip_index: next_i } => {
+                pl.status.set(format!("Seam → clip {}…", next_i + 1));
+                promote_idle_at(pl, epoch, next_i, 0, Some(from_clip)).await?;
+                if pl.open_gen.get_value() != epoch {
+                    return Ok(());
+                }
+                if pl.live_clip.get_untracked() != next_i {
+                    return Err(format!("seam promote did not land on clip {}", next_i + 1));
+                }
+                pl.ended.set(false);
+                pl.status
+                    .set(format!("Playing clip {}/{}", next_i + 1, model.len()));
+                let following = idle_neighbor_for_zone(
+                    &model,
+                    next_i,
+                    pl.looping.get_untracked(),
+                    zone_in,
+                    zone_out,
+                );
+                preload_idle(pl, following, epoch).await;
+                Ok(())
+            }
+            AdvanceEndedPlan::TerminalEnd => {
+                pl.ended.set(true);
+                pl.playing.set(false);
+                pl.status.set("Ended.".into());
+                Ok(())
             }
         }
-
-        if let Some(next_i) = seam_next_clip(pl, cur) {
-            pl.status.set(format!("Seam → clip {}…", next_i + 1));
-            // Zone wrap to mid-clip in → not frame-0 origin seam.
-            if matches!(owner, LoopOwner::Host)
-                && !zone_full
-                && let Some(aim) = model.at_global_frame(zone_in)
-                && aim.clip_index == next_i
-                && aim.local_frame > 0
-            {
-                return wrap_to_loop_in(pl, epoch).await;
-            }
-            promote_idle_at(pl, epoch, next_i, 0, Some(from_clip)).await?;
-            if pl.open_gen.get_value() != epoch {
-                return Ok(());
-            }
-            if pl.live_clip.get_untracked() != next_i {
-                // expect_live abort / race — surface so we do not silently sit on EOF.
-                return Err(format!("seam promote did not land on clip {}", next_i + 1));
-            }
-            pl.ended.set(false);
-            pl.status
-                .set(format!("Playing clip {}/{}", next_i + 1, model.len()));
-            let following = idle_neighbor_for_zone(
-                &model,
-                next_i,
-                pl.looping.get_untracked(),
-                zone_in,
-                zone_out,
-            );
-            preload_idle(pl, following, epoch).await;
-            return Ok(());
-        }
-
-        if pl.looping.get_untracked() {
-            // Same-clip / zone wrap (no sequential next inside zone).
-            return wrap_to_loop_in(pl, epoch).await;
-        }
-
-        pl.ended.set(true);
-        pl.playing.set(false);
-        pl.status.set("Ended.".into());
-        Ok(())
     }
     .await;
     // Nested wrap_to_loop_in already ended the seam; only clear if still busy.
