@@ -1900,7 +1900,7 @@ fn PositionDisplay(
             if let Some(aim) =
                 parse_playlist_goto(&raw, cur, |i| playlist_meta_for_clip(playlist, i))
             {
-                playlist.seek_pos(aim);
+                playlist.goto_pos(aim);
             }
             return;
         }
@@ -1909,12 +1909,12 @@ fn PositionDisplay(
         }
         let Some(meta) = video.metadata.get_untracked() else {
             if let Ok(v) = raw.trim().parse::<u32>() {
-                video.seek_frame(v);
+                video.goto_frame(v);
             }
             return;
         };
         if let Some(frame) = parse_position(&meta, &raw) {
-            video.seek_frame(frame);
+            video.goto_frame(frame);
         }
     };
 

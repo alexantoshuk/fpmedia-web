@@ -108,26 +108,28 @@ pub fn VideoPlaylist(
         let total = frame_count.get_untracked();
         let zone_full = zone_in == 0 && zone_out == total;
 
-        // Host LoopZone wall on last in-zone frame (parity with engine `out-1`),
-        // only when that wall lies on the **live** clip — else clip-EOF advance
-        // owns the join (spanning zone must not wrap at an earlier cut).
+        // Host LoopZone outside while Playing → wrap (parity with `play_fn` /
+        // Engine PlayPrime snap). Past-out only when `zone_last` is on **live**
+        // — else clip-EOF advance owns the join. Before-in: any live clip.
+        // Goto / paused scrub do not hit this (`playing` false). **no equivalent**.
         let zone_last = zone_out.saturating_sub(1);
         let wall_on_live = playlist
             .model
             .get_untracked()
             .at_global_frame(zone_last)
             .is_some_and(|p| p.clip_index == live_clip.get_untracked());
-        let host_wall = matches!(owner, LoopOwner::Host)
+        let before_in = zone_out > zone_in && g < zone_in;
+        let past_out = wall_on_live && g >= zone_last;
+        let host_outside_play = matches!(owner, LoopOwner::Host)
             && looping.get()
             && !zone_full
             && zone_out > zone_in
-            && wall_on_live
-            && g >= zone_last
+            && (before_in || past_out)
             && live.playing.get()
             && !live.ended.get();
-        if host_wall {
+        if host_outside_play {
             seam_trace(&format!(
-                "wall fire g={g} zone_last={zone_last} live_clip={} phase={:?}",
+                "outside-play fire g={g} zone_in={zone_in} zone_last={zone_last} live_clip={} phase={:?}",
                 live_clip.get_untracked(),
                 playlist.seam_phase.get_untracked()
             ));
@@ -439,6 +441,7 @@ pub fn VideoPlaylist(
         live.pause();
     }) as Rc<dyn Fn()>;
 
+    // Internal relocate ops — no facade stop. User chrome uses `goto_*` on the ref.
     let seek_frame_fn = {
         let pl = playlist;
         Rc::new(move |global_frame: u32| {
@@ -480,11 +483,11 @@ pub fn VideoPlaylist(
         }) as Rc<dyn Fn(PlaylistPos)>
     };
 
-    // Next/Prev/seek/scrub ignore LoopZone (Play + wall only). Same as `<Video>`
-    // step — zone is not a navigation clamp. **no equivalent**.
+    // Goto/Next/Prev/paused scrub ignore LoopZone; scrub-while-play resume is
+    // Play (outside → loop_in). Zone is not a nav clamp. **no equivalent**.
+    // Next/Prev: stop facade via `goto_pos` (cross-clip) or clear intent (step).
     let next_frame_fn = {
         let pl = playlist;
-        let seek_pos = Rc::clone(&seek_pos_fn);
         Rc::new(move || {
             if !ready.get_untracked() {
                 return;
@@ -497,20 +500,24 @@ pub fn VideoPlaylist(
                 return;
             };
             if local < clip.last_frame() {
+                pl.playing.set(false);
+                pl.scrub_resume.set(false);
                 pl.live_video().next_frame();
                 return;
             }
             if let Some(n) = model.next_clip_index(clip_i) {
-                seek_pos(PlaylistPos::new(n, 0));
+                pl.goto_pos(PlaylistPos::new(n, 0));
             } else if looping.get_untracked() {
-                seek_pos(PlaylistPos::new(0, 0));
+                pl.goto_pos(PlaylistPos::new(0, 0));
+            } else {
+                pl.playing.set(false);
+                pl.scrub_resume.set(false);
             }
         }) as Rc<dyn Fn()>
     };
 
     let previous_frame_fn = {
         let pl = playlist;
-        let seek_pos = Rc::clone(&seek_pos_fn);
         Rc::new(move || {
             if !ready.get_untracked() {
                 return;
@@ -520,6 +527,8 @@ pub fn VideoPlaylist(
             let clip_i = pl.live_clip.get_untracked();
             let local = pl.live_video().frame.get_untracked();
             if local > 0 {
+                pl.playing.set(false);
+                pl.scrub_resume.set(false);
                 pl.live_video().previous_frame();
                 return;
             }
@@ -529,14 +538,17 @@ pub fn VideoPlaylist(
                     .clip(prev as usize)
                     .map(|c| c.last_frame())
                     .unwrap_or(0);
-                seek_pos(PlaylistPos::new(prev, last));
+                pl.goto_pos(PlaylistPos::new(prev, last));
             } else if looping.get_untracked() {
                 let last_i = model.len().saturating_sub(1) as u32;
                 let last = model
                     .clip(last_i as usize)
                     .map(|c| c.last_frame())
                     .unwrap_or(0);
-                seek_pos(PlaylistPos::new(last_i, last));
+                pl.goto_pos(PlaylistPos::new(last_i, last));
+            } else {
+                pl.playing.set(false);
+                pl.scrub_resume.set(false);
             }
         }) as Rc<dyn Fn()>
     };

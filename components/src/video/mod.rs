@@ -220,11 +220,17 @@ impl VideoRef {
         }
     }
 
+    /// Internal relocate (transport seek). Prefer [`Self::goto_frame`] for UI chrome.
     pub fn seek_frame(&self, frame: u32) {
         let frame = self.aim(frame);
         if let Some(seek) = self.op(|o| &o.seek_frame) {
             seek(frame);
         }
+    }
+
+    /// User goto: aim FrameId, stop Play, ignore LoopZone. See `glossary.md` § Goto.
+    pub fn goto_frame(&self, frame: u32) {
+        self.seek_frame(frame);
     }
 
     /// Fast scrub preview — snap to the nearest keyframe at or before `frame`.

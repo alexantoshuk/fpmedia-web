@@ -258,7 +258,7 @@ impl VideoPlaylistRef {
         }
     }
 
-    /// Seek to a global presentation frame on the playlist scrub axis.
+    /// Internal relocate on the global scrub axis. Prefer [`Self::goto_frame`] for UI.
     pub fn seek_frame(self, global_frame: u32) {
         self.ended.set(false);
         if let Some(seek) = self.op(|o| &o.seek_frame) {
@@ -266,11 +266,26 @@ impl VideoPlaylistRef {
         }
     }
 
+    /// Internal relocate to a clip-local pos. Prefer [`Self::goto_pos`] for UI.
     pub fn seek_pos(self, pos: PlaylistPos) {
         self.ended.set(false);
         if let Some(seek) = self.op(|o| &o.seek_pos) {
             seek(pos);
         }
+    }
+
+    /// User goto (global frame): stop Play intent, ignore LoopZone. `glossary.md` § Goto.
+    pub fn goto_frame(self, global_frame: u32) {
+        self.playing.set(false);
+        self.scrub_resume.set(false);
+        self.seek_frame(global_frame);
+    }
+
+    /// User goto (clip + local): stop Play intent, ignore LoopZone. `glossary.md` § Goto.
+    pub fn goto_pos(self, pos: PlaylistPos) {
+        self.playing.set(false);
+        self.scrub_resume.set(false);
+        self.seek_pos(pos);
     }
 
     pub fn next_frame(self) {
@@ -345,8 +360,8 @@ impl VideoPlaylistRef {
             }
         }
 
-        // Scrub/seek/step ignore LoopZone — resume at aim even outside; Play
-        // wall wrap is separate. **no equivalent**.
+        // Paused scrub ignores LoopZone (aim as released). Scrub-while-play
+        // resume → playlist `play()` (Host outside → wrap). **no equivalent**.
         if aim.clip_index == self.live_clip.get_untracked() {
             let live = self.live_video();
             match phase {
@@ -360,8 +375,8 @@ impl VideoPlaylistRef {
                 let resume = self.scrub_resume.get_untracked();
                 self.scrub_resume.set(false);
                 if resume {
-                    self.playing.set(true);
-                    live.play();
+                    // Host-aware Play path — not bare slot `play()` (skips wrap).
+                    self.play();
                 }
                 let neighbor = idle_neighbor(
                     &self.model.get_untracked(),
@@ -376,12 +391,11 @@ impl VideoPlaylistRef {
             return;
         }
 
-        // Aim clip not live yet — settle via seek (open/swap).
+        // Aim clip not live yet — settle via internal seek (open/swap).
         if matches!(phase, ScrubPhase::Up) {
             let resume = self.scrub_resume.get_untracked();
             self.scrub_resume.set(false);
             if resume {
-                self.playing.set(true);
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
                     if let Err(e) = super::slots::seek_to_pos(self, aim, epoch, true).await {

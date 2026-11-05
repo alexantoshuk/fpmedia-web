@@ -221,8 +221,8 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     pl.apply_gain_to_slots();
 }
 
-/// Make `aim.clip_index` live (swap or open), then seek to `aim.local_frame`.
-/// `then_play`: after seek, start Play (cross-clip scrub resume — playlist local).
+/// Make `aim.clip_index` live (swap or open), then internal-seek to `aim.local_frame`.
+/// `then_play`: after seek, playlist `play()` (Host outside LoopZone → wrap).
 pub(crate) async fn seek_to_pos(
     pl: VideoPlaylistRef,
     aim: crate::video_playlist::PlaylistPos,
@@ -268,8 +268,8 @@ pub(crate) async fn seek_to_pos(
     live.playhead.set(aim.local_frame);
     live.seek_frame(aim.local_frame);
     if then_play {
-        pl.playing.set(true);
-        live.play();
+        // Playlist Play path (Host outside LoopZone → wrap). Not bare slot play.
+        pl.play();
     }
     Ok(())
 }

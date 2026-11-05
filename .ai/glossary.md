@@ -91,13 +91,17 @@ Pointer down/move on the scrubber: update `drag_aim`, paint interim Exact blit, 
 
 Pointer-up (or equivalent release): host `Settling`, engine `ExactHold`, Exact key→N on **main** (`prefer-hardware`) to the aimed frame. Densify **yields** (defers) so the PreferSoftware scrub slot does not race main. **Do not** full-clear Exact blit here.
 
+### Goto
+
+User-facing position command: demo position field / chrome. Element API: `VideoRef::goto_frame`, `VideoPlaylistRef::goto_frame` / `goto_pos`. Stops Play (playlist also clears `scrub_resume`); does **not** clamp to LoopZone. Distinct from internal [`Seek`](#seek). UX: `product.md` § Loop zone / Playlist position UI.
+
 ### Seek
 
-Explicit goto FrameId — same Exact cascade family as settle. Cold/fMP4 paths may warm index + GOP bytes first.
+Internal relocate primitive (`seek_frame` / `seek_pos` / `seek_to_pos` / PlayPrime sync / seam paint). Same Exact cascade family as settle when Exact is required. Cold/fMP4 may warm index + GOP bytes first. **Not** a UX synonym for [`Goto`](#goto) — hosts use `goto_*` for chrome; do not write “seek” in LoopZone/nav behavior prose.
 
 ### Step
 
-Next/Prev by one presentation frame. Hits presentation/behind ring or Exact blit when resident; otherwise Exact decode. Should not abort useful densify unnecessarily.
+Next/Prev by one presentation frame (user nav; stops Play; ignores LoopZone). Hits presentation/behind ring or Exact blit when resident; otherwise Exact decode. Should not abort useful densify unnecessarily.
 
 ### ExactHold
 
@@ -181,7 +185,7 @@ Position inside a playlist: **clip index** (0-based in the model; **1-based** `[
 
 ### LoopZone
 
-Half-open wrap range `[in, out)` when `looping` is on. Default = full file (single) or full playlist. Single `<Video>`: source FrameIds + engine wall/`LoopSeam`. Playlist: scrub **global frames**; wrap owner is [`LoopOwner`](#loopowner). Seek / goto / Next / Prev / scrub ignore the zone — Play + wall only. API: `VideoRef` / `VideoPlaylistRef` `set_loop_zone` / `loop_zone`. Demo `[`/`]` + mask. UX: `product.md` § Loop zone. Design: `architecture.md` § LoopZone.
+Half-open wrap range `[in, out)` when `looping` is on. Default = full file (single) or full playlist. Single `<Video>`: source FrameIds + engine wall/`LoopSeam`. Playlist: scrub **global frames**; wrap owner is [`LoopOwner`](#loopowner). **Goto** / Next / Prev / paused scrub ignore the zone; scrub-while-play resume is Play (outside → `loop_in`); only Play + wall wrap. API: `VideoRef` / `VideoPlaylistRef` `set_loop_zone` / `loop_zone`. Demo `[`/`]` + mask. UX: `product.md` § Loop zone. Design: `architecture.md` § LoopZone.
 
 ### LoopOwner
 

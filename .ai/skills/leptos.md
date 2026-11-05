@@ -38,11 +38,13 @@
 | Playlist Host small LoopZone: stop right after wrap PlayPrime ok | near-wall `kick_prepare` warm overlaps wrap; late `seek_frame_with` clears play session. `prepare_playlist_seam_at` `begin_op` before warm. Log: `prepare_playlist_seam cancelled`. **no equivalent** |
 | Playlist Host small LoopZone: pause icon + frozen progress after wrap | never `kick_warm` / Mid prepare on Playing live (`on_idle` only) — post-wrap still inside 1s prewarm → live prepare kills session; facade `playing` stays. **no equivalent** |
 | Playlist Host: video past loop / scrubber frozen during wrap (mobile) | `stop_live_for_host_seam` before idle prepare — mirror gated + live still Playing → canvas overruns while tip stuck; facade stays playing. **no equivalent** |
-| Playlist Next/scrub clamped to LoopZone | Nav ignores zone: Next = step/clip/`0@0` if looping; scrub Up resumes at aim (no snap to `loop_in`). Play + wall only. **no equivalent** |
+| Playlist Next/goto/scrub clamped to LoopZone | Goto/Next/Prev/paused scrub ignore zone; scrub-while-play resume = Play (outside → `loop_in`). Do not write “seek” for this nav rule — `glossary.md` § Goto vs Seek. **no equivalent** |
+| Playlist Host LoopZone: scrub-left before `in` keeps aim | Host wall Effect must wrap on `g < zone_in` **or** `g ≥ zone_last` while Playing (parity with `play_fn`); scrub resume → playlist `play()` not bare slot `play()`. Right-past-out already wrapped; Engine PlayPrime snaps both edges. **no equivalent** |
 | Playlist clip join hitch + Covered/Exact storm | `stop_playback` → `pause_hard_no_densify` (not `pause` densify). Pause button still `pause_warm_idle`. **no equivalent** |
 | LoopZone 2-clip: pause@out → 2nd@0 → green → in | `try_begin_seam` before spawn; paint-before-swap `prepare_seam_at(loop_in)` (not pause+cold `seek_to_pos`); Host wall → wrap. **no equivalent** |
 | Playlist seam volume jump | `VideoPlaylistRef::volume`/`muted` + `apply_gain_to_slots`; demo binds playlist gain, not live slot |
 | Playlist Play↔Pause icon flash at clip join / wrap | Facade `VideoPlaylistRef::playing` (intent); demo `media_playing` — not live slot. Slot EOF/`pause_hard` clears slot only. Clear facade on pause / terminal end / seam error. **no equivalent** |
+| Playlist goto/Next/Prev: Pause icon while stopped | Host chrome → `goto_frame`/`goto_pos` (clears facade `playing` + `scrub_resume`); Next/Prev same. Internal `seek_*` does not stop intent. **no equivalent** |
 | Playlist scrub stuck at cut on drag | never remount `<Scrubber>`; Meta re-leases via `strip_video_key` — `architecture.md` § Playlist |
 | Effect side-effect runs on mount | `Effect::watch(deps, handler, false)` — handler skips initial; `Effect::new` runs once after mount |
 | Zebra / tip / strip drift | continuous `f/n` (float canvas + tip `calc`); no CSS gradient tiles / integer tip snap |
