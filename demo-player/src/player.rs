@@ -436,6 +436,17 @@ fn demo_mark_loop_out(video: VideoRef, playlist: VideoPlaylistRef, use_playlist:
     }
 }
 
+/// LoopZone → full axis (`[0, frame_count)`). Does not change loop on/off (settings menu).
+fn demo_reset_loop_zone(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
+    if use_playlist.get_untracked() {
+        let count = playlist.frame_count.get_untracked();
+        playlist.set_loop_zone(0, count);
+    } else {
+        let count = video.frame_count.get_untracked();
+        video.set_loop_zone(0, count);
+    }
+}
+
 fn demo_meta_line(video: &VideoRef, clip_name: Option<String>) -> String {
     let mut s = String::new();
     if let Some(name) = clip_name {
@@ -1440,6 +1451,19 @@ pub fn DemoPlayer() -> impl IntoView {
                                 >
                                     "Set Loop Out"
                                     <span class="wm-settings-kbd">"]"</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="wm-settings-item"
+                                    role="menuitem"
+                                    data-testid="btn-loop-zone-reset"
+                                    prop:disabled=move || !media_ready.get()
+                                    on:click=move |_| {
+                                        demo_reset_loop_zone(video, playlist, use_playlist);
+                                        settings_open.set(false);
+                                    }
+                                >
+                                    "Reset Loop Zone"
                                 </button>
                                 <div
                                     class="wm-settings-overflow flex flex-col gap-0.5 @4xl:hidden"
