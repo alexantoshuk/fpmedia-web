@@ -9,6 +9,7 @@ use leptos::prelude::*;
 use crate::VideoRef;
 use crate::video_playlist::PlaylistModel;
 
+use super::host_zone::is_soft_seam_cancel;
 use super::loop_seam::{
     LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, seam_trace,
     set_seam_phase,
@@ -307,7 +308,15 @@ impl PromoteLead {
     /// near-wall `kick_prepare` before warm/seek (small-zone late-seek stop).
     async fn prepare(self, video: VideoRef) -> Result<(), String> {
         seam_trace(&format!("prepare lead={self:?} local={}", self.local()));
-        video.prepare_seam_at(self.local()).await
+        match video.prepare_seam_at(self.local()).await {
+            Ok(()) => Ok(()),
+            // Near-wall kick / scrub settle can supersede once — retry once.
+            Err(e) if is_soft_seam_cancel(&e) => {
+                seam_trace("prepare soft-cancel retry");
+                video.prepare_seam_at(self.local()).await
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Near-wall fire-and-forget. Origin uses the PlayPrime-join warm path;
@@ -564,7 +573,7 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         "wrap enter epoch={epoch} zone_in={zone_in_log} live_clip={}",
         pl.live_clip.get_untracked()
     ));
-    let result = async {
+    let result: Result<(), String> = async {
         let (zone_in, zone_out) = pl.loop_zone();
         let model = pl.model.get_untracked();
         let Some(aim) = model.at_global_frame(zone_in) else {
@@ -618,6 +627,17 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         Ok(())
     }
     .await;
+    // Soft cancel after stop_live: do not sticky-error (regression: surfacing
+    // Cancelled). Resume live if facade still wants Play so wall Effect can
+    // re-enter; hard errors stay Err for `note_host_seam_err`.
+    let result: Result<(), String> = match result {
+        Err(e) if is_soft_seam_cancel(&e) && pl.open_gen.get_value() == epoch => {
+            seam_trace("wrap soft-cancel → Ok + resume");
+            resume_live_if_playlist_playing(pl);
+            Ok(())
+        }
+        other => other,
+    };
     // Belt: mirror was gated during busy; re-snap before Idle so wall cannot
     // re-fire on a stale g >= zone_last while PlayPrime is still queued.
     reassert_zone_in_playhead(pl);
@@ -628,6 +648,21 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
     ));
     end_seam(pl);
     result
+}
+
+/// Host seam / wrap failed after live was already stopped — clear facade Play.
+/// Soft cancel is not a failure (see [`is_soft_seam_cancel`]).
+pub(crate) fn note_host_seam_err(pl: VideoPlaylistRef, epoch: u64, err: String, status: &str) {
+    if pl.open_gen.get_value() != epoch {
+        return;
+    }
+    if is_soft_seam_cancel(&err) {
+        seam_trace(&format!("note_host_seam_err ignore soft: {err}"));
+        return;
+    }
+    pl.playing.set(false);
+    pl.error.set(Some(err));
+    pl.status.set(status.into());
 }
 
 /// After live clip EOF: promote next via [`promote_idle_at`] (origin) or

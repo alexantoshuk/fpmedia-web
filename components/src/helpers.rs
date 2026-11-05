@@ -169,7 +169,13 @@ fn parse_timecode_loose(s: &str, nominal_fps: u32) -> Option<u64> {
     if m > 59 || sec > 59 || f >= nom {
         return None;
     }
-    Some(((h * 60 + m) * 60 + sec) * nom + f)
+    // checked — absurd hour strings must not panic in debug wasm.
+    h.checked_mul(60)?
+        .checked_add(m)?
+        .checked_mul(60)?
+        .checked_add(sec)?
+        .checked_mul(nom)?
+        .checked_add(f)
 }
 
 /// Parse a Go-to string as a presentation frame: bare integer, else SMPTE TC.
@@ -232,6 +238,17 @@ mod tests {
         assert_eq!(parse_position(&meta, "999"), Some(239));
         assert_eq!(parse_position(&meta, "00:00:01:00"), Some(24));
         assert_eq!(parse_position(&meta, ""), None);
+    }
+
+    #[test]
+    fn parse_position_rejects_overflowing_timecode() {
+        let meta = meta_24fps(240);
+        // Huge hours → checked math → None (no debug panic).
+        assert_eq!(parse_position(&meta, "999999999999999999:00:00:00"), None);
+        assert_eq!(
+            parse_timecode_loose("999999999999999999:00:00:00", 24),
+            None
+        );
     }
 
     #[test]

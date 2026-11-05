@@ -105,3 +105,15 @@ pub(crate) fn end_seam(pl: VideoPlaylistRef) {
     ));
     set_seam_phase(pl, SeamPhase::Idle);
 }
+
+pub(crate) use super::host_zone::{HostZoneOwner, host_play_outside_zone};
+
+impl From<LoopOwner> for HostZoneOwner {
+    fn from(o: LoopOwner) -> Self {
+        match o {
+            LoopOwner::Off => HostZoneOwner::Off,
+            LoopOwner::Engine => HostZoneOwner::Engine,
+            LoopOwner::Host => HostZoneOwner::Host,
+        }
+    }
+}

@@ -3,6 +3,7 @@
 //! UX: `.ai/product.md` § Playlist. Design: `.ai/architecture.md` § Playlist composition.
 //! Vocab: `.ai/glossary.md` § PlaylistPos.
 
+mod host_zone;
 mod model;
 mod position;
 

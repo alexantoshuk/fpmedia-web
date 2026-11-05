@@ -12,8 +12,8 @@ use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
 use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, seam_trace, try_begin_seam};
 use super::slots::{
-    advance_after_ended, maybe_kick_idle_seam_warm, seek_to_pos, sync_live_loop_from_playlist,
-    wait_ready, wrap_to_loop_in,
+    advance_after_ended, maybe_kick_idle_seam_warm, note_host_seam_err, seek_to_pos,
+    sync_live_loop_from_playlist, wait_ready, wrap_to_loop_in,
 };
 use super::source::PlaylistSource;
 use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};
@@ -140,12 +140,7 @@ pub fn VideoPlaylist(
             let pl = playlist;
             spawn_local(async move {
                 if let Err(e) = wrap_to_loop_in(pl, epoch).await {
-                    if pl.open_gen.get_value() != epoch {
-                        return;
-                    }
-                    pl.playing.set(false);
-                    pl.error.set(Some(e));
-                    pl.status.set("LoopZone wrap failed.".into());
+                    note_host_seam_err(pl, epoch, e, "LoopZone wrap failed.");
                 }
             });
             return;
@@ -165,12 +160,7 @@ pub fn VideoPlaylist(
         let pl = playlist;
         spawn_local(async move {
             if let Err(e) = advance_after_ended(pl, epoch, from_clip).await {
-                if pl.open_gen.get_value() != epoch {
-                    return;
-                }
-                pl.playing.set(false);
-                pl.error.set(Some(e.clone()));
-                pl.status.set("Playlist seam failed.".into());
+                note_host_seam_err(pl, epoch, e, "Playlist seam failed.");
             }
         });
     });
@@ -394,7 +384,9 @@ pub fn VideoPlaylist(
                         let epoch = open_gen.get_value();
                         let pl = playlist;
                         spawn_local(async move {
-                            let _ = wrap_to_loop_in(pl, epoch).await;
+                            if let Err(e) = wrap_to_loop_in(pl, epoch).await {
+                                note_host_seam_err(pl, epoch, e, "LoopZone wrap failed.");
+                            }
                         });
                         return;
                     }
@@ -411,7 +403,9 @@ pub fn VideoPlaylist(
                         let pl = playlist;
                         let aim = PlaylistPos::new(next, 0);
                         spawn_local(async move {
-                            let _ = seek_to_pos(pl, aim, epoch, true).await;
+                            if let Err(e) = seek_to_pos(pl, aim, epoch, true).await {
+                                note_host_seam_err(pl, epoch, e, "Playlist seam failed.");
+                            }
                         });
                         return;
                     }
@@ -423,7 +417,9 @@ pub fn VideoPlaylist(
                 let epoch = open_gen.get_value();
                 let pl = playlist;
                 spawn_local(async move {
-                    let _ = wrap_to_loop_in(pl, epoch).await;
+                    if let Err(e) = wrap_to_loop_in(pl, epoch).await {
+                        note_host_seam_err(pl, epoch, e, "LoopZone wrap failed.");
+                    }
                 });
                 return;
             }

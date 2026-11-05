@@ -8,7 +8,11 @@ use web_sys::HtmlCanvasElement;
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
-use super::slots::{ensure_clip_on_idle, idle_neighbor, preload_idle, try_promote_idle};
+use super::loop_seam::{HostZoneOwner, host_play_outside_zone, loop_owner, try_begin_seam};
+use super::slots::{
+    ensure_clip_on_idle, idle_neighbor, note_host_seam_err, preload_idle, try_promote_idle,
+    wrap_to_loop_in,
+};
 use super::source::PlaylistSource;
 use wasm_bindgen_futures::spawn_local;
 
@@ -276,16 +280,25 @@ impl VideoPlaylistRef {
 
     /// User goto (global frame): stop Play intent, ignore LoopZone. `glossary.md` § Goto.
     pub fn goto_frame(self, global_frame: u32) {
-        self.playing.set(false);
-        self.scrub_resume.set(false);
+        self.stop_play_for_goto();
         self.seek_frame(global_frame);
     }
 
     /// User goto (clip + local): stop Play intent, ignore LoopZone. `glossary.md` § Goto.
     pub fn goto_pos(self, pos: PlaylistPos) {
+        self.stop_play_for_goto();
+        self.seek_pos(pos);
+    }
+
+    /// Facade Pause + hard-stop live immediately. `seek_to_pos` may await idle
+    /// open — without this the old slot keeps Play while chrome shows Pause.
+    fn stop_play_for_goto(self) {
         self.playing.set(false);
         self.scrub_resume.set(false);
-        self.seek_pos(pos);
+        let live = self.live_video();
+        if live.playing.get_untracked() || live.ended.get_untracked() {
+            live.pause_hard_no_densify();
+        }
     }
 
     pub fn next_frame(self) {
@@ -369,24 +382,30 @@ impl VideoPlaylistRef {
                 // After promote the new live never saw PointerDown — Move alone is a no-op.
                 ScrubPhase::Move if promoted => live.scrub_pointer_down(aim.local_frame),
                 ScrubPhase::Move => live.scrub_pointer_move(aim.local_frame),
-                ScrubPhase::Up => live.scrub_pointer_up(aim.local_frame),
-            }
-            if matches!(phase, ScrubPhase::Up) {
-                let resume = self.scrub_resume.get_untracked();
-                self.scrub_resume.set(false);
-                if resume {
-                    // Host-aware Play path — not bare slot `play()` (skips wrap).
-                    self.play();
+                ScrubPhase::Up => {
+                    let resume = self.scrub_resume.get_untracked();
+                    self.scrub_resume.set(false);
+                    // Host outside: wrap now — do not Exact settle @outside then
+                    // race wrap prepare (`operation cancelled` regression).
+                    if resume && self.host_resume_wraps(global_frame) {
+                        self.spawn_host_wrap_after_scrub();
+                        return;
+                    }
+                    live.scrub_pointer_up(aim.local_frame);
+                    if resume {
+                        // Host-aware Play path — not bare slot `play()` (skips wrap).
+                        self.play();
+                    }
+                    let neighbor = idle_neighbor(
+                        &self.model.get_untracked(),
+                        self.live_clip.get_untracked(),
+                        self.looping.get_untracked(),
+                    );
+                    let epoch = self.open_gen.get_value();
+                    spawn_local(async move {
+                        preload_idle(self, neighbor, epoch).await;
+                    });
                 }
-                let neighbor = idle_neighbor(
-                    &self.model.get_untracked(),
-                    self.live_clip.get_untracked(),
-                    self.looping.get_untracked(),
-                );
-                let epoch = self.open_gen.get_value();
-                spawn_local(async move {
-                    preload_idle(self, neighbor, epoch).await;
-                });
             }
             return;
         }
@@ -395,11 +414,18 @@ impl VideoPlaylistRef {
         if matches!(phase, ScrubPhase::Up) {
             let resume = self.scrub_resume.get_untracked();
             self.scrub_resume.set(false);
+            if resume && self.host_resume_wraps(global_frame) {
+                self.spawn_host_wrap_after_scrub();
+                return;
+            }
             if resume {
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
                     if let Err(e) = super::slots::seek_to_pos(self, aim, epoch, true).await {
                         if self.open_gen.get_value() != epoch {
+                            return;
+                        }
+                        if super::host_zone::is_soft_seam_cancel(&e) {
                             return;
                         }
                         self.error.set(Some(e));
@@ -410,6 +436,37 @@ impl VideoPlaylistRef {
                 self.seek_pos(aim);
             }
         }
+    }
+
+    /// Scrub-while-play Up outside Host LoopZone — same wall as Effect / `play_fn`.
+    fn host_resume_wraps(self, global_frame: u32) -> bool {
+        let (zone_in, zone_out) = self.loop_zone();
+        host_play_outside_zone(
+            HostZoneOwner::from(loop_owner(self)),
+            self.looping.get_untracked(),
+            zone_in,
+            zone_out,
+            self.frame_count.get_untracked(),
+            global_frame,
+        )
+    }
+
+    /// Leave scrub without Exact@outside, then Host wrap to `loop_in`.
+    fn spawn_host_wrap_after_scrub(self) {
+        // Scrubbing → PausePressed → Ready + HardPause (clears settle race).
+        self.live_video().pause();
+        if !try_begin_seam(self) {
+            // Seam already in flight — keep facade Play; wall Effect re-enters.
+            self.playing.set(true);
+            return;
+        }
+        self.playing.set(true);
+        let epoch = self.open_gen.get_value();
+        spawn_local(async move {
+            if let Err(e) = wrap_to_loop_in(self, epoch).await {
+                note_host_seam_err(self, epoch, e, "LoopZone wrap failed.");
+            }
+        });
     }
 
     pub(crate) fn paint_hover_thumb(
