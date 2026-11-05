@@ -3,6 +3,7 @@
 //! Slice A: scrub-while-play Up. Slice B: PlayPressed / wall Effect Host outside.
 //! Slice C: WrapDone soft/hard coalesce. Slice D: Next/Prev step / Goto.
 //! Slice E: clip-EOF advance (`plan_advance_ended` / `plan_seam_next_clip`).
+//! Slice F: Play@clip-last shares seam-next / mid-in wrap (`plan_play_at_clip_last`).
 //! Design: `.ai/architecture.md` § Playlist host plans.
 //! **no equivalent** (playlist local).
 
@@ -319,6 +320,46 @@ pub(crate) fn plan_advance_ended(ctx: AdvanceEndedCtx) -> AdvanceEndedPlan {
         return AdvanceEndedPlan::Wrap;
     }
     AdvanceEndedPlan::TerminalEnd
+}
+
+/// Play pressed at live clip last while still inside Host zone (not outside-wall).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) struct PlayAtClipLastCtx {
+    pub zone_full: bool,
+    pub zone_in_aim: Option<(u32, u32)>,
+    pub seam_next: Option<u32>,
+    pub seam_busy: bool,
+}
+
+/// Avoid Host slot PlayPrime snap→0: promote next@0 or wrap to `loop_in`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) enum PlayAtClipLastPlan {
+    /// `seek_to_pos` clip@0 with then_play.
+    PromoteSeek { clip_index: u32 },
+    /// Mid `zone_in` or no next — `start_host_wrap`.
+    HostWrap { seam_already_busy: bool },
+}
+
+/// Same mid-in / next pick as EOF advance; cmds differ (seek+play vs promote_idle).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn plan_play_at_clip_last(ctx: PlayAtClipLastCtx) -> PlayAtClipLastPlan {
+    if let Some(next_i) = ctx.seam_next {
+        if !ctx.zone_full
+            && let Some((aim_clip, aim_local)) = ctx.zone_in_aim
+            && aim_clip == next_i
+            && aim_local > 0
+        {
+            return PlayAtClipLastPlan::HostWrap {
+                seam_already_busy: ctx.seam_busy,
+            };
+        }
+        return PlayAtClipLastPlan::PromoteSeek { clip_index: next_i };
+    }
+    PlayAtClipLastPlan::HostWrap {
+        seam_already_busy: ctx.seam_busy,
+    }
 }
 
 #[cfg(test)]
@@ -670,6 +711,41 @@ mod tests {
                 zone_in_aim: None,
             }),
             AdvanceEndedPlan::TerminalEnd
+        );
+    }
+
+    #[test]
+    fn play_at_clip_last_promote_or_wrap() {
+        assert_eq!(
+            plan_play_at_clip_last(PlayAtClipLastCtx {
+                zone_full: false,
+                zone_in_aim: Some((0, 0)),
+                seam_next: Some(1),
+                seam_busy: false,
+            }),
+            PlayAtClipLastPlan::PromoteSeek { clip_index: 1 }
+        );
+        assert_eq!(
+            plan_play_at_clip_last(PlayAtClipLastCtx {
+                zone_full: false,
+                zone_in_aim: Some((0, 10)),
+                seam_next: Some(0),
+                seam_busy: true,
+            }),
+            PlayAtClipLastPlan::HostWrap {
+                seam_already_busy: true
+            }
+        );
+        assert_eq!(
+            plan_play_at_clip_last(PlayAtClipLastCtx {
+                zone_full: false,
+                zone_in_aim: Some((0, 10)),
+                seam_next: None,
+                seam_busy: false,
+            }),
+            PlayAtClipLastPlan::HostWrap {
+                seam_already_busy: false
+            }
         );
     }
 }

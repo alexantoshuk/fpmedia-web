@@ -99,9 +99,9 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Idle neighbor | Next clip; on last + playlist **loop** → **0** (wrap origin-stash target); else previous. `idle_neighbor` / `set_loop` re-preload |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
 
-### Playlist host plans (slices A–E)
+### Playlist host plans (slices A–F)
 
-**no equivalent** (playlist local). Pure `plan_*` in `video_playlist::plan`; UI runs cmds (`run_scrub_up_plan`, `start_host_wrap`, `run_wrap_done`, `run_step_plan`, `advance_after_ended`). Optional later: Play@clip-last promote shares `plan_seam_next_clip`.
+**no equivalent** (playlist local). Pure `plan_*` in `video_playlist::plan`; UI runs cmds (`run_scrub_up_plan`, `start_host_wrap`, `run_wrap_done`, `run_step_plan`, `advance_after_ended`).
 
 | Event | Condition | Plan (cmds) |
 | ----- | --------- | ----------- |
@@ -112,6 +112,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | WrapDone / seam Err | `plan_wrap_done` (`is_soft_seam_cancel`) | soft → `ResumeLiveKeepPlay`; hard → clear Play + error; epoch mismatch → Ignore |
 | Next / Prev | `plan_step` (no LoopZone) | mid → `LiveStep` + clear intent; edge → `GotoPos` (`goto_pos`); terminal → `ClearPlayIntent` |
 | Clip EOF advance | `plan_advance_ended` + `plan_seam_next_clip` | Wrap / Promote@0 / TerminalEnd; Effect still latches `try_begin_seam` before clear `ended` |
+| Play@clip-last (Host, inside zone) | `plan_play_at_clip_last` + `plan_seam_next_clip` | PromoteSeek@0 / HostWrap (mid-in parity with EOF) |
 
 Soft cancel ≠ sticky UI error. User goto stays on ref (`goto_*` → `stop_play_for_goto` + seek). Internal `seek_*` does not stop Play. Traps: `skills/leptos.md`.
 
@@ -139,7 +140,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | Media clock | `fpmedia_web::clock_state` |
 | Play session | `fpmedia_web::PlayPhase` (`Idle` / `Live` / `LoopSeam`) |
 | rAF restart | `fpmedia_web::session` (`restarting`) |
-| Playlist host | `LoopOwner` + `SeamPhase` + facade `playing` + **`plan_scrub_up` / `plan_host_outside` / `plan_wrap_done` / `plan_step` / `plan_advance_ended`**. Derive owner from zone⊆live; never probe slot `Video.looping` / slot `playing` for chrome. Table: [Playlist host plans](#playlist-host-plans-slices-ae) |
+| Playlist host | `LoopOwner` + `SeamPhase` + facade `playing` + **`plan_*` in `video_playlist::plan`**. Derive owner from zone⊆live; never probe slot `Video.looping` / slot `playing` for chrome. Table: [Playlist host plans](#playlist-host-plans-slices-af) |
 
 **Success bar:** a new race is fixed by a transition or coalesce row, not another flag. Failure modes: skills.
 

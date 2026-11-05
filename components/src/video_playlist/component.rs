@@ -13,7 +13,8 @@ use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 use super::host_zone::HostZoneOwner;
 use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, seam_trace, try_begin_seam};
 use super::plan::{
-    HostOutsideCtx, HostOutsidePlan, StepCtx, StepDir, StepPlan, plan_host_outside, plan_step,
+    HostOutsideCtx, HostOutsidePlan, PlayAtClipLastCtx, PlayAtClipLastPlan, SeamNextCtx, StepCtx,
+    StepDir, StepPlan, plan_host_outside, plan_play_at_clip_last, plan_seam_next_clip, plan_step,
 };
 use super::slots::{
     advance_after_ended, maybe_kick_idle_seam_warm, note_host_seam_err, seek_to_pos,
@@ -408,25 +409,47 @@ pub fn VideoPlaylist(
             let at_clip_last =
                 clip_frames > 0 && live.playhead.get_untracked() >= clip_frames.saturating_sub(1);
             if at_clip_last && matches!(loop_owner(playlist), LoopOwner::Host) {
-                // Still inside zone but clip EOF — promote next (not snap → 0).
+                // Still inside zone but clip last — same next/mid-in law as EOF.
                 let cur = live_clip.get_untracked();
                 let model = playlist.model.get_untracked();
-                if let Some(next) = model.next_clip_index(cur) {
-                    let next_start = model.clip_start_frame(next).unwrap_or(0);
-                    if next_start < zone_out {
+                let zone_full = zone_in == 0 && zone_out == total;
+                let next_clip = model.next_clip_index(cur);
+                let next_start = next_clip
+                    .and_then(|n| model.clip_start_frame(n))
+                    .unwrap_or(0);
+                let zone_in_aim = model
+                    .at_global_frame(zone_in)
+                    .map(|p| (p.clip_index, p.local_frame));
+                let seam_next = plan_seam_next_clip(SeamNextCtx {
+                    cur,
+                    next_clip,
+                    next_start,
+                    zone_in_clip: zone_in_aim.map(|(c, _)| c),
+                    looping: true,
+                    zone_full,
+                    zone_out,
+                    clip_count: model.len() as u32,
+                });
+                match plan_play_at_clip_last(PlayAtClipLastCtx {
+                    zone_full,
+                    zone_in_aim,
+                    seam_next,
+                    seam_busy: seam_busy(playlist),
+                }) {
+                    PlayAtClipLastPlan::PromoteSeek { clip_index } => {
                         let epoch = open_gen.get_value();
                         let pl = playlist;
-                        let aim = PlaylistPos::new(next, 0);
+                        let aim = PlaylistPos::new(clip_index, 0);
                         spawn_local(async move {
                             if let Err(e) = seek_to_pos(pl, aim, epoch, true).await {
                                 note_host_seam_err(pl, epoch, e, "Playlist seam failed.");
                             }
                         });
-                        return;
+                    }
+                    PlayAtClipLastPlan::HostWrap { seam_already_busy } => {
+                        start_host_wrap(playlist, seam_already_busy);
                     }
                 }
-                // No next in zone → wrap to loop_in.
-                start_host_wrap(playlist, seam_busy(playlist));
                 return;
             }
         }
