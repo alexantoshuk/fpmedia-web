@@ -733,7 +733,7 @@ async fn ensure_scan_window(
     if pos >= *win_off && pos.saturating_add(need_u) <= win_end {
         return Ok(());
     }
-    let available = file_size.saturating_sub(pos) as usize;
+    let available = crate::source::byte_util::available_len(file_size, pos);
     if available < need {
         return Err(MediaError::Mp4(format!(
             "truncated box header at offset {pos} (need {need}, have {available})"

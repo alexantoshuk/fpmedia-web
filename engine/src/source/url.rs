@@ -22,6 +22,7 @@ use bytes::Bytes;
 
 use crate::error::MediaError;
 
+use super::byte_util::{available_len, parse_content_range, shorten_url};
 use super::orchestrator::{
     PrefetchProfile, ReadOrchestrator, ReadOrchestratorOptions, URL_ORCH_CACHE_SIZE, WorkerId,
 };
@@ -138,8 +139,7 @@ impl MediaSource for UrlSource {
             if offset > size {
                 return Err(MediaError::ReadOutOfRange { offset, len, size });
             }
-            let available = (size - offset) as usize;
-            let want = len.min(available);
+            let want = len.min(available_len(size, offset));
             if want == 0 {
                 return Ok(Bytes::new());
             }
@@ -213,7 +213,10 @@ async fn run_worker_loop(orch: Arc<ReadOrchestrator>, id: WorkerId, url: &str, a
             Ok(r) => r,
             Err(_e) => {
                 if controller.signal().aborted() {
-                    orch.signal_worker_stopped_running(id);
+                    // Dispose already completed slices (`aborted`); first-byte
+                    // timeout must fail pending — not clear them silently.
+                    // mediabunny: signalWorkerStoppedRunning only after targetPos.
+                    stop_or_fail_aborted(&orch, id, start);
                     return;
                 }
                 // Brief retry then fail the pending slices.
@@ -257,6 +260,14 @@ async fn run_worker_loop(orch: Arc<ReadOrchestrator>, id: WorkerId, url: &str, a
             return;
         }
 
+        // Stricter than mediabunny: refuse a 206 whose Content-Range start
+        // does not match the open Range we asked for (wrong offset → corrupt cache).
+        if let Err(e) = check_partial_content_range(&resp, start) {
+            let _ = resp.body().map(|b| b.cancel());
+            reject_worker(&orch, id, e);
+            return;
+        }
+
         let Some(body) = resp.body() else {
             reject_worker(
                 &orch,
@@ -293,7 +304,7 @@ async fn run_worker_loop(orch: Arc<ReadOrchestrator>, id: WorkerId, url: &str, a
                 Ok(v) => v,
                 Err(e) => {
                     if controller.signal().aborted() {
-                        orch.signal_worker_stopped_running(id);
+                        stop_or_fail_aborted(&orch, id, start);
                         return;
                     }
                     // Resume outer loop with a new open Range (mediabunny retry).
@@ -348,6 +359,21 @@ fn reject_worker(orch: &Arc<ReadOrchestrator>, id: WorkerId, err: MediaError) {
     orch.fail_worker(id, err);
 }
 
+/// Abort while `worker.aborted` → dispose already completed slices; otherwise
+/// first-byte / stray abort must `fail_worker` (pending clear without complete hangs).
+fn stop_or_fail_aborted(orch: &Arc<ReadOrchestrator>, id: WorkerId, start: u64) {
+    let aborted = orch.worker_snapshot(id).is_some_and(|s| s.aborted);
+    if aborted {
+        orch.signal_worker_stopped_running(id);
+    } else {
+        reject_worker(
+            orch,
+            id,
+            MediaError::Source(format!("open Range bytes={start}- aborted before complete")),
+        );
+    }
+}
+
 async fn range_get_open(
     url: &str,
     start: u64,
@@ -368,12 +394,13 @@ async fn range_get_open(
     let request = Request::new_with_str_and_init(url, &init).map_err(js_to_source)?;
     let fetch_promise = window.fetch_with_request(&request);
 
-    // Long streams: floor 30 s to first byte; cap 180 s (body read has its own life).
+    // First-byte only — cancel after Response so the body is not aborted at 180 s.
     let timeout_ms = 180_000i32;
-    let timeout = abort_after(controller, timeout_ms);
+    let (timeout, cancel_timeout) = abort_after(controller, timeout_ms);
 
     let raced = js_sys::Promise::race(&js_sys::Array::of2(&fetch_promise, &timeout));
     let resp_val = JsFuture::from(raced).await.map_err(|e| {
+        cancel_timeout.cancel();
         let msg = format_js_fetch_err(e);
         if msg.to_ascii_lowercase().contains("abort") {
             MediaError::Source(format!(
@@ -383,6 +410,7 @@ async fn range_get_open(
             MediaError::Source(msg)
         }
     })?;
+    cancel_timeout.cancel();
 
     if resp_val.is_null() || resp_val.is_undefined() {
         return Err(MediaError::Source(format!(
@@ -396,9 +424,12 @@ async fn range_get_open(
 }
 
 /// Race arm for `fetch`: aborts `controller` and resolves `null` after `ms`.
-fn abort_after(controller: &AbortController, ms: i32) -> js_sys::Promise {
+fn abort_after(
+    controller: &AbortController,
+    ms: i32,
+) -> (js_sys::Promise, crate::timer::CancelTimeout) {
     let ctrl = controller.clone();
-    crate::timer::timeout_promise(ms, move || {
+    crate::timer::timeout_promise_cancellable(ms, move || {
         ctrl.abort();
         wasm_bindgen::JsValue::NULL
     })
@@ -421,10 +452,14 @@ async fn range_get_closed(url: &str, start: u64, end: u64) -> Result<Response, M
     let request = Request::new_with_str_and_init(url, &init).map_err(js_to_source)?;
     let fetch_promise = window.fetch_with_request(&request);
     let timeout_ms = 15_000i32;
-    let timeout = abort_after(&controller, timeout_ms);
+    let (timeout, cancel_timeout) = abort_after(&controller, timeout_ms);
 
     let raced = js_sys::Promise::race(&js_sys::Array::of2(&fetch_promise, &timeout));
-    let resp_val = JsFuture::from(raced).await.map_err(js_to_source)?;
+    let resp_val = JsFuture::from(raced).await.map_err(|e| {
+        cancel_timeout.cancel();
+        js_to_source(e)
+    })?;
+    cancel_timeout.cancel();
     if resp_val.is_null() || resp_val.is_undefined() {
         return Err(MediaError::Source(format!(
             "Range bytes={start}-{end} timed out ({timeout_ms}ms)"
@@ -439,16 +474,35 @@ fn parse_total_size_from_content_range(resp: &Response) -> Result<Option<u64>, M
     let Some(cr) = resp.headers().get("content-range").map_err(js_to_source)? else {
         return Ok(None);
     };
-    let Some((_, total)) = cr.rsplit_once('/') else {
-        return Ok(None);
+    Ok(parse_content_range(&cr).and_then(|p| p.total).or_else(|| {
+        // Fallback: tolerate odd servers that only give `/TOTAL` without a
+        // parseable start (connect probe still needs a size).
+        let (_, total) = cr.rsplit_once('/')?;
+        if total == "*" {
+            None
+        } else {
+            total.parse().ok()
+        }
+    }))
+}
+
+/// Ensure a 206 body starts at the open-Range offset we will write.
+fn check_partial_content_range(resp: &Response, expected_start: u64) -> Result<(), MediaError> {
+    let Some(cr) = resp.headers().get("content-range").map_err(js_to_source)? else {
+        return Err(MediaError::Source(
+            "206 without Content-Range (cannot verify offset)".into(),
+        ));
     };
-    if total == "*" {
-        return Ok(None);
+    let Some(parsed) = parse_content_range(&cr) else {
+        return Err(MediaError::Source(format!("bad Content-Range: {cr}")));
+    };
+    if parsed.start != expected_start {
+        return Err(MediaError::Source(format!(
+            "Content-Range start {} != requested {expected_start}",
+            parsed.start
+        )));
     }
-    total
-        .parse::<u64>()
-        .map(Some)
-        .map_err(|_| MediaError::Source(format!("bad Content-Range total: {cr}")))
+    Ok(())
 }
 
 fn js_to_source(err: wasm_bindgen::JsValue) -> MediaError {
@@ -466,12 +520,7 @@ fn format_js_fetch_err(err: wasm_bindgen::JsValue) -> String {
 }
 
 fn shorten(url: &str) -> String {
-    const MAX: usize = 96;
-    if url.len() <= MAX {
-        url.to_string()
-    } else {
-        format!("{}…", &url[..MAX])
-    }
+    shorten_url(url, 96)
 }
 
 /// True when progressive Range open is unavailable (host may full-fetch).

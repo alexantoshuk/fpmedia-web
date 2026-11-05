@@ -287,7 +287,7 @@ fn margin_prefetch_job(
     if fill_start >= file_size || state.covers_byte(fill_start) {
         return None;
     }
-    let available = (file_size - fill_start) as usize;
+    let available = super::byte_util::available_len(file_size, fill_start);
     if available == 0 {
         return None;
     }
@@ -554,7 +554,7 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
                 return Err(MediaError::ReadOutOfRange { offset, len, size });
             }
 
-            let available = (size - offset) as usize;
+            let available = super::byte_util::available_len(size, offset);
             let want = len.min(available);
             if want == 0 {
                 return Ok(Bytes::new());
@@ -669,7 +669,7 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
         // Still advance the gray meter — Blob is sliceable (`mediabunny: BlobSource`).
         if !self.inner.network_min_load() {
             let size = self.inner.size();
-            let available = size.saturating_sub(offset) as usize;
+            let available = super::byte_util::available_len(size, offset);
             note_local_gray(
                 &self.shared.fetch_map,
                 offset,
@@ -685,7 +685,7 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
         if offset >= size {
             return;
         }
-        let available = (size - offset) as usize;
+        let available = super::byte_util::available_len(size, offset);
         let len = len.min(available).min(self.shared.quantum);
         if len == 0 {
             return;

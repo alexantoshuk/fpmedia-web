@@ -3,6 +3,7 @@
 //! Progressive open reads only the ranges it needs (`moov`, then samples).
 //! Native `FileSource` is deferred — see `.ai/state.md`.
 
+pub(crate) mod byte_util;
 mod cache;
 mod fetch_map;
 mod memory;

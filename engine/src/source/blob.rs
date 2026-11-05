@@ -68,7 +68,7 @@ impl MediaSource for BlobSource {
             if offset > size {
                 return Err(MediaError::ReadOutOfRange { offset, len, size });
             }
-            let want = len.min((size - offset) as usize);
+            let want = len.min(super::byte_util::available_len(size, offset));
             if want == 0 {
                 return Ok(Bytes::new());
             }
