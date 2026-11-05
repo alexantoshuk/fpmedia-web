@@ -130,7 +130,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 
 | Domain | Machine |
 | ------ | ------- |
-| Host transport | `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*` |
+| Host transport | `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. `ui_playing` = play intent (incl. scrub-while-play) — `product.md` § Play chrome. |
 | OpQueue | `fpmedia_web::HostOp` / `apply_enqueue` (in place); epochs preserved on survivors |
 | Engine mode | `fpmedia_web::engine_mode` (`Play` / `Scrub` / `ExactHold` + `AudioResume`). Densify abort via cmds: `EnterScrub` / `PreExact { rearm }` / `BeginExact` (always AbortDensify rearm true) / `ScrubCacheOff` / `EnterPlay`. Seek/settle: **`PreExact` → densify yield → `BeginExact`**. Seam densify=false only on PreExact. Not `pause_inner` side-door `abort_scrub_fill`. |
 | Decoder slot | `fpmedia_web::decoder_slot` (`Idle` / `CheckedOut` + `reset_pending`) |

@@ -60,17 +60,20 @@ impl fmt::Display for TransportState {
 }
 
 impl TransportState {
-    /// UI transport "is playing" once the play session may present.
+    /// UI transport "is playing" = **play intent** for chrome (not soft-hold clock).
     ///
-    /// [`Self::Playing`] always. [`Self::PlayPriming`] / resume-[`Self::Settling`]
-    /// only when the engine session is already live (after `begin_play_session`) —
-    /// so rAF can present before `PlayPrimeDone` / `ScrubReleaseDone` lands.
-    /// Distinct from engine `Shared.playing` (ExactHold/Scrub mid-play).
+    /// [`Self::Playing`], scrub-while-play [`Self::Scrubbing`] `{ resume: true }`,
+    /// and resume-[`Self::Settling`] always (Pause through drag + Up settle; soft-hold
+    /// clears the session so do **not** gate resume-settle on `play_session_live`).
+    /// [`Self::PlayPriming`] only when the engine session is already live (rAF before
+    /// `PlayPrimeDone`). Distinct from engine `Shared.playing`.
+    /// UX: `.ai/product.md` § Play chrome. **no equivalent**.
     pub fn ui_playing(self, play_session_live: bool) -> bool {
         match self {
             Self::Playing => true,
+            Self::Scrubbing { resume: true, .. } => true,
+            Self::Settling { resume: true, .. } => true,
             Self::PlayPriming { .. } => play_session_live,
-            Self::Settling { resume: true, .. } => play_session_live,
             _ => false,
         }
     }
@@ -700,13 +703,6 @@ mod tests {
         let priming = TransportState::PlayPriming { from_scrub: false };
         assert!(!priming.ui_playing(false));
         assert!(priming.ui_playing(true));
-        let settling = TransportState::Settling {
-            resume: true,
-            frame: 1,
-            settle_gen: 1,
-        };
-        assert!(!settling.ui_playing(false));
-        assert!(settling.ui_playing(true));
         let settle_only = TransportState::Settling {
             resume: false,
             frame: 1,
@@ -714,6 +710,29 @@ mod tests {
         };
         assert!(!settle_only.ui_playing(true));
         assert!(TransportState::Playing.ui_playing(false));
+    }
+
+    #[test]
+    fn ui_playing_scrub_while_play_keeps_intent() {
+        let resume_scrub = TransportState::Scrubbing {
+            resume: true,
+            frame: 10,
+        };
+        assert!(resume_scrub.ui_playing(false));
+        assert!(resume_scrub.ui_playing(true));
+        let paused_scrub = TransportState::Scrubbing {
+            resume: false,
+            frame: 10,
+        };
+        assert!(!paused_scrub.ui_playing(true));
+        // Soft-hold clears session — resume settle must still show intent (no Play flash).
+        let resume_settle = TransportState::Settling {
+            resume: true,
+            frame: 10,
+            settle_gen: 1,
+        };
+        assert!(resume_settle.ui_playing(false));
+        assert!(resume_settle.ui_playing(true));
     }
 
     #[test]

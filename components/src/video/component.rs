@@ -3,7 +3,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use fpmedia_web::{BlobSource, MediaSource, OpenPhase, OpenSourceKind, PlayTick, TransportEvent};
+use fpmedia_web::{
+    BlobSource, MediaSource, OpenPhase, OpenSourceKind, PlayTick, TransportEvent, TransportState,
+};
 use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use leptos_use::utils::Pausable;
@@ -510,19 +512,29 @@ pub fn Video(
                 web_sys::console::log_1(&"fpmedia-web: play ignored (not ready)".into());
                 return;
             }
-            // Transport already in a live play session (Pause race / double Play).
+            // Play intent already on (Playing / scrub-while-play / resume-settle).
+            // Recover only stale `Playing` with a dead session — not Settling/Scrubbing
+            // resume (soft-hold clears live while intent stays). `product.md` § Play chrome.
             let live = ctx
                 .player
                 .borrow()
                 .as_ref()
                 .is_some_and(|p| p.play_session_live());
-            if ctx.transport.state().ui_playing(live) {
+            let state = ctx.transport.state();
+            if state.ui_playing(live) {
                 if live {
                     web_sys::console::log_1(&"fpmedia-web: play ignored (already playing)".into());
                     return;
                 }
-                web_sys::console::log_1(&"fpmedia-web: recover stale transport playing".into());
-                ctx.stop_playback();
+                if matches!(state, TransportState::Playing) {
+                    web_sys::console::log_1(&"fpmedia-web: recover stale transport playing".into());
+                    ctx.stop_playback();
+                } else {
+                    web_sys::console::log_1(
+                        &"fpmedia-web: play ignored (play intent, session soft-held)".into(),
+                    );
+                    return;
+                }
             }
             if ctx.player.borrow().as_ref().is_none() {
                 web_sys::console::log_1(&"fpmedia-web: play ignored (no player)".into());

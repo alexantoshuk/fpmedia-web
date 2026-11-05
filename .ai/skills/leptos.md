@@ -10,6 +10,7 @@
 | Android Browse / file picker dead | `.wm-file input` not `display:none` — opacity overlay |
 | Open stuck after `open_blob start` | `wasm_bindgen_futures::spawn_local` (not leptos spawn) |
 | Play / Next / Prev disabled or no-op | transport `ui_playing`; recover stale Playing + `!play_session_live`; Settling+Play Preempt |
+| Video scrub-while-play flips Pause→Play (incl. Up flash) | `ui_playing` = intent through `Scrubbing`/`Settling` `{ resume: true }` (not `play_session_live`). Stale recover only `Playing && !live`. `product.md` § Play chrome. **no equivalent** |
 | New clip: Play disabled / silent after N URLs | `retire_clip`: Closed + cancel_all + drop player — engine dispose: `skills/media.md` |
 | Hover thumb stuck after new URL | hide on `!ready`; `cancel_hover_thumb` |
 | Tab hidden: play freezes or densify spins | visibility → `yield_scrub_work_for_hidden` + 500 ms play tick — `skills/media.md` |
@@ -82,7 +83,7 @@ Tailwind: only literal class strings in `.rs`/`.css`; prefer canonical utilities
 
 1. **OpQueue** — serialize open/seek/play-prime (CallSerializer + asyncId). `busy` = draining, not “drop input”.
 2. **No `RefCell` across `.await`** — clone `Rc<VideoPlayer>`, await, put back. Engine re-entry: `skills/media.md` RefCell.
-3. **`playing` follows transport** — `TransportState::ui_playing(session_live)` (`Playing`, or priming/resume-settle after `begin_play_session`). Never `playing.set(engine.playing)` in `sync_ui`. Seek/Step/Play/Pause/scrub → `dispatch_transport` / `note_transport`.
+3. **`playing` follows transport** — `TransportState::ui_playing(session_live)` = play intent (`Playing`, resume `Scrubbing`/`Settling`; `PlayPriming` needs live session). Never `playing.set(engine.playing)` in `sync_ui`. Seek/Step/Play/Pause/scrub → `dispatch_transport` / `note_transport`.
 4. **Transport** — pointers → `VideoRef::scrub_pointer_*`; Seek/Step → `SeekRequested` / `StepRequested`. FSM owns resume (`ScrubRelease { then_play }`). Soft-hold via `pause_for_scrub`. PlayPrime fail → soft-park (no bump) so retry works.
 5. **Playhead** — sync on pointerdown/move before `scrub_pointer_*`. `sync_ui` updates playhead only while playing or on new clip. Leaving play: snap playhead to engine. Hold ←/→: aim `engine±1`, not `playhead++`.
 6. **Clock / play session** — `VideoPlayer::media_time()` only; engine owns prefetch, underrun, loop seam, silent-clock arm (`play_raf_tick` / `begin_play_session`). Host: OpQueue prime + rAF tick; visibility → scrub yield + hidden play interval (not clock hold).
