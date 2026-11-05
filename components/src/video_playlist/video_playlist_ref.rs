@@ -8,7 +8,9 @@ use web_sys::HtmlCanvasElement;
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
-use super::loop_seam::{HostZoneOwner, host_play_outside_zone, loop_owner, try_begin_seam};
+use super::host_zone::HostZoneOwner;
+use super::loop_seam::{loop_owner, seam_busy, try_begin_seam};
+use super::playlist_reduce::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
 use super::slots::{
     ensure_clip_on_idle, idle_neighbor, note_host_seam_err, preload_idle, try_promote_idle,
     wrap_to_loop_in,
@@ -373,8 +375,8 @@ impl VideoPlaylistRef {
             }
         }
 
-        // Paused scrub ignores LoopZone (aim as released). Scrub-while-play
-        // resume → playlist `play()` (Host outside → wrap). **no equivalent**.
+        // Paused scrub ignores LoopZone. Scrub-while-play Up → `plan_scrub_up`
+        // (Host outside → wrap, no Exact@outside). **no equivalent**.
         if aim.clip_index == self.live_clip.get_untracked() {
             let live = self.live_video();
             match phase {
@@ -385,26 +387,7 @@ impl VideoPlaylistRef {
                 ScrubPhase::Up => {
                     let resume = self.scrub_resume.get_untracked();
                     self.scrub_resume.set(false);
-                    // Host outside: wrap now — do not Exact settle @outside then
-                    // race wrap prepare (`operation cancelled` regression).
-                    if resume && self.host_resume_wraps(global_frame) {
-                        self.spawn_host_wrap_after_scrub();
-                        return;
-                    }
-                    live.scrub_pointer_up(aim.local_frame);
-                    if resume {
-                        // Host-aware Play path — not bare slot `play()` (skips wrap).
-                        self.play();
-                    }
-                    let neighbor = idle_neighbor(
-                        &self.model.get_untracked(),
-                        self.live_clip.get_untracked(),
-                        self.looping.get_untracked(),
-                    );
-                    let epoch = self.open_gen.get_value();
-                    spawn_local(async move {
-                        preload_idle(self, neighbor, epoch).await;
-                    });
+                    self.run_scrub_up_plan(global_frame, resume, true, aim);
                 }
             }
             return;
@@ -414,48 +397,78 @@ impl VideoPlaylistRef {
         if matches!(phase, ScrubPhase::Up) {
             let resume = self.scrub_resume.get_untracked();
             self.scrub_resume.set(false);
-            if resume && self.host_resume_wraps(global_frame) {
-                self.spawn_host_wrap_after_scrub();
-                return;
+            self.run_scrub_up_plan(global_frame, resume, false, aim);
+        }
+    }
+
+    /// Execute [`plan_scrub_up`] — single owner for Up outside Host zone.
+    fn run_scrub_up_plan(
+        self,
+        global_frame: u32,
+        resume: bool,
+        aim_on_live: bool,
+        aim: PlaylistPos,
+    ) {
+        let (zone_in, zone_out) = self.loop_zone();
+        let plan = plan_scrub_up(ScrubUpCtx {
+            global: global_frame,
+            resume,
+            aim_on_live,
+            owner: HostZoneOwner::from(loop_owner(self)),
+            looping: self.looping.get_untracked(),
+            zone_in,
+            zone_out,
+            total_frames: self.frame_count.get_untracked(),
+            seam_busy: seam_busy(self),
+        });
+        match plan {
+            ScrubUpPlan::HostWrap { seam_already_busy } => {
+                self.run_host_wrap_after_scrub(seam_already_busy);
             }
-            if resume {
+            ScrubUpPlan::LiveSettle { then_play } => {
+                let live = self.live_video();
+                live.scrub_pointer_up(aim.local_frame);
+                if then_play {
+                    // Host-aware Play — not bare slot `play()` (skips wrap).
+                    self.play();
+                }
+                let neighbor = idle_neighbor(
+                    &self.model.get_untracked(),
+                    self.live_clip.get_untracked(),
+                    self.looping.get_untracked(),
+                );
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
-                    if let Err(e) = super::slots::seek_to_pos(self, aim, epoch, true).await {
-                        if self.open_gen.get_value() != epoch {
-                            return;
-                        }
-                        if super::host_zone::is_soft_seam_cancel(&e) {
-                            return;
-                        }
-                        self.error.set(Some(e));
-                        self.status.set("Seek failed.".into());
-                    }
+                    preload_idle(self, neighbor, epoch).await;
                 });
-            } else {
-                self.seek_pos(aim);
+            }
+            ScrubUpPlan::CrossClipSeek { then_play } => {
+                if then_play {
+                    let epoch = self.open_gen.get_value();
+                    spawn_local(async move {
+                        if let Err(e) = super::slots::seek_to_pos(self, aim, epoch, true).await {
+                            if self.open_gen.get_value() != epoch {
+                                return;
+                            }
+                            if super::host_zone::is_soft_seam_cancel(&e) {
+                                return;
+                            }
+                            self.error.set(Some(e));
+                            self.status.set("Seek failed.".into());
+                        }
+                    });
+                } else {
+                    self.seek_pos(aim);
+                }
             }
         }
     }
 
-    /// Scrub-while-play Up outside Host LoopZone — same wall as Effect / `play_fn`.
-    fn host_resume_wraps(self, global_frame: u32) -> bool {
-        let (zone_in, zone_out) = self.loop_zone();
-        host_play_outside_zone(
-            HostZoneOwner::from(loop_owner(self)),
-            self.looping.get_untracked(),
-            zone_in,
-            zone_out,
-            self.frame_count.get_untracked(),
-            global_frame,
-        )
-    }
-
     /// Leave scrub without Exact@outside, then Host wrap to `loop_in`.
-    fn spawn_host_wrap_after_scrub(self) {
+    fn run_host_wrap_after_scrub(self, seam_already_busy: bool) {
         // Scrubbing → PausePressed → Ready + HardPause (clears settle race).
         self.live_video().pause();
-        if !try_begin_seam(self) {
+        if seam_already_busy || !try_begin_seam(self) {
             // Seam already in flight — keep facade Play; wall Effect re-enters.
             self.playing.set(true);
             return;

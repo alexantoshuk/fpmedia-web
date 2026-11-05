@@ -99,6 +99,19 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Idle neighbor | Next clip; on last + playlist **loop** → **0** (wrap origin-stash target); else previous. `idle_neighbor` / `set_loop` re-preload |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
 
+### Playlist host reduce (scrub Up — slice A)
+
+**no equivalent** (playlist local). Pure plan: `components` `playlist_reduce::plan_scrub_up`; UI runs cmds in `VideoPlaylistRef::run_scrub_up_plan`. PlayPressed / wall Effect still duplicate wrap entry — next slices fold them in.
+
+| Scrub Up | Condition | Plan (cmds) |
+| -------- | --------- | ----------- |
+| Resume + Host outside zone | `host_play_outside_zone` (`g < in` \| `g ≥ out−1`, not full-axis) | `HostWrap`: preempt scrub (slot pause, no Exact@outside) → `BeginSeam` + `AsyncWrap` (or keep facade Play if seam busy) |
+| Resume + inside / Engine / loop off | else + aim on live | `LiveSettle`: slot `scrub_pointer_up` → facade `play()` + preload idle |
+| Resume + inside, aim not live | else + cross-clip | `CrossClipSeek { then_play }` |
+| Paused scrub (any aim) | `!resume` | Settle / seek only — LoopZone ignored |
+
+Soft-cancel on wrap ≠ sticky UI error (`is_soft_seam_cancel`). Traps: `skills/leptos.md`.
+
 Docs trim / leftover smoke: `state.md` § Playlist.
 
 ---
@@ -123,7 +136,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | Media clock | `fpmedia_web::clock_state` |
 | Play session | `fpmedia_web::PlayPhase` (`Idle` / `Live` / `LoopSeam`) |
 | rAF restart | `fpmedia_web::session` (`restarting`) |
-| Playlist host | `LoopOwner` `{ Off, Engine, Host }` + `SeamPhase` (`Idle` / `Preparing` / `Swapping` / `Playing`) + facade `playing` intent in `components` `video_playlist` — derive owner from zone⊆live; never probe slot `Video.looping` / slot `playing` for chrome |
+| Playlist host | `LoopOwner` `{ Off, Engine, Host }` + `SeamPhase` + facade `playing` + **`plan_scrub_up`** (scrub Up laws). Derive owner from zone⊆live; never probe slot `Video.looping` / slot `playing` for chrome. Table: [Playlist host reduce](#playlist-host-reduce-scrub-up-slice-a) |
 
 **Success bar:** a new race is fixed by a transition or coalesce row, not another flag. Failure modes: skills.
 
