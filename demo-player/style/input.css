@@ -33,13 +33,13 @@ body {
 }
 
 @utility wm-position {
-  /* Sits in the flex middle column — centered in the gap between side clusters
-     (not the full bar; left/right button counts differ). */
-  @apply relative z-20 flex items-center justify-center;
+  /* Middle column — centered in the gap between side clusters. */
+  @apply relative z-20 flex min-w-0 max-w-full items-center justify-center;
 }
 
 @utility wm-position-field {
-  @apply h-9 min-w-30 max-w-[min(18rem,42vw)] rounded-md border-0 px-2.5 text-center font-mono text-[13px]/tight tabular-nums whitespace-nowrap text-zinc-100;
+  /* Narrow: two-line now/end inside the same h-9 as icon buttons. */
+  @apply h-9 min-w-0 max-w-full rounded-md border-0 px-1.5 text-center font-mono text-[10px]/none tabular-nums text-zinc-100 @3xl:px-2.5 @3xl:text-[13px]/tight @3xl:whitespace-nowrap;
 }
 
 @utility wm-position-display {
@@ -47,11 +47,19 @@ body {
 }
 
 @utility wm-position-input {
-  @apply wm-position-field bg-zinc-950 outline outline-1 outline-zinc-700;
+  @apply wm-position-field bg-zinc-950 outline outline-1 outline-zinc-700 whitespace-nowrap;
 }
 
 @utility wm-position-label {
-  @apply inline-flex items-baseline gap-1;
+  @apply inline-flex flex-col items-center justify-center gap-0 @3xl:flex-row @3xl:items-baseline @3xl:gap-1;
+}
+
+@utility wm-position-cur {
+  @apply whitespace-nowrap;
+}
+
+@utility wm-position-rest {
+  @apply whitespace-nowrap;
 }
 
 @utility wm-position-menu {

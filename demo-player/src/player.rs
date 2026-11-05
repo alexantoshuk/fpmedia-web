@@ -1822,17 +1822,29 @@ fn position_sides(video: &VideoRef, format: PositionFormat) -> (String, String) 
 }
 
 fn playlist_position_label(playlist: VideoPlaylistRef, format: PositionFormat) -> String {
+    let (cur, last) = playlist_position_sides(playlist, format);
+    format!("{cur} / {last}")
+}
+
+/// Playlist readout parts: `[i] now` and `end` (slash is chrome — hidden when stacked).
+fn playlist_position_sides(playlist: VideoPlaylistRef, format: PositionFormat) -> (String, String) {
     let pos = playlist.pos.get();
     let live = if playlist.live_is_a.get() {
         playlist.slot_a
     } else {
         playlist.slot_b
     };
+    let n = live.frame_count.get().max(1);
+    let last = last_frame_id(n);
+    let i = pos.display_index();
     match format {
-        PositionFormat::Frames => format_playlist_frames(pos, live.frame_count.get().max(1)),
+        PositionFormat::Frames => (format!("[{i}] {}", pos.local_frame), last.to_string()),
         PositionFormat::Timecode => match live.metadata.get() {
-            Some(m) => format_playlist_timecode(pos, &m),
-            None => format_playlist_frames(pos, live.frame_count.get().max(1)),
+            Some(m) => (
+                format!("[{i}] {}", format_timecode_at_loose(&m, pos.local_frame)),
+                format_timecode_at_loose(&m, last),
+            ),
+            None => (format!("[{i}] {}", pos.local_frame), last.to_string()),
         },
     }
 }
@@ -1962,9 +1974,9 @@ fn PositionDisplay(
         <div
             class=move || {
                 if open.get() {
-                    "wm-position shrink-0 is-open".to_string()
+                    "wm-position is-open".to_string()
                 } else {
-                    "wm-position shrink-0".to_string()
+                    "wm-position".to_string()
                 }
             }
             node_ref=root
@@ -2051,7 +2063,10 @@ fn PositionDisplay(
                                             <span class="wm-position-cur">
                                                 {move || position_sides(&video, format.get()).0}
                                             </span>
-                                            <span class="wm-position-slash" aria-hidden="true">
+                                            <span
+                                                class="wm-position-slash @max-3xl:hidden"
+                                                aria-hidden="true"
+                                            >
                                                 "/"
                                             </span>
                                             <span class="wm-position-rest">
@@ -2061,8 +2076,22 @@ fn PositionDisplay(
                                     }
                                 }
                             >
-                                <span class="wm-position-label" data-testid="playlist-position">
-                                    {move || playlist_position_label(playlist, format.get())}
+                                <span
+                                    class="wm-position-label"
+                                    data-testid="playlist-position"
+                                >
+                                    <span class="wm-position-cur">
+                                        {move || playlist_position_sides(playlist, format.get()).0}
+                                    </span>
+                                    <span
+                                        class="wm-position-slash @max-3xl:hidden"
+                                        aria-hidden="true"
+                                    >
+                                        "/"
+                                    </span>
+                                    <span class="wm-position-rest">
+                                        {move || playlist_position_sides(playlist, format.get()).1}
+                                    </span>
                                 </span>
                             </Show>
                         </button>
