@@ -12,13 +12,34 @@ use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
 use super::host_zone::HostZoneOwner;
 use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, seam_trace, try_begin_seam};
-use super::playlist_reduce::{HostOutsideCtx, HostOutsidePlan, plan_host_outside};
+use super::playlist_reduce::{
+    HostOutsideCtx, HostOutsidePlan, StepCtx, StepDir, StepPlan, plan_host_outside, plan_step,
+};
 use super::slots::{
     advance_after_ended, maybe_kick_idle_seam_warm, note_host_seam_err, seek_to_pos,
     start_host_wrap, sync_live_loop_from_playlist, wait_ready,
 };
 use super::source::PlaylistSource;
 use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};
+
+/// Run [`StepPlan`] from Next/Prev chrome (clear intent / live step / goto).
+fn run_step_plan(pl: VideoPlaylistRef, plan: StepPlan) {
+    match plan {
+        StepPlan::LiveStep { dir } => {
+            pl.playing.set(false);
+            pl.scrub_resume.set(false);
+            match dir {
+                StepDir::Next => pl.live_video().next_frame(),
+                StepDir::Prev => pl.live_video().previous_frame(),
+            }
+        }
+        StepPlan::GotoPos { pos } => pl.goto_pos(pos),
+        StepPlan::ClearPlayIntent => {
+            pl.playing.set(false);
+            pl.scrub_resume.set(false);
+        }
+    }
+}
 
 /// Dual-slot playlist stage. Drive via [`VideoPlaylistRef`].
 ///
@@ -466,7 +487,7 @@ pub fn VideoPlaylist(
 
     // Goto/Next/Prev/paused scrub ignore LoopZone; scrub-while-play resume is
     // Play (outside → loop_in). Zone is not a nav clamp. **no equivalent**.
-    // Next/Prev: stop facade via `goto_pos` (cross-clip) or clear intent (step).
+    // Next/Prev: [`plan_step`] → LiveStep / GotoPos / ClearPlayIntent.
     let next_frame_fn = {
         let pl = playlist;
         Rc::new(move || {
@@ -480,20 +501,16 @@ pub fn VideoPlaylist(
             let Some(clip) = model.clip(clip_i as usize) else {
                 return;
             };
-            if local < clip.last_frame() {
-                pl.playing.set(false);
-                pl.scrub_resume.set(false);
-                pl.live_video().next_frame();
-                return;
-            }
-            if let Some(n) = model.next_clip_index(clip_i) {
-                pl.goto_pos(PlaylistPos::new(n, 0));
-            } else if looping.get_untracked() {
-                pl.goto_pos(PlaylistPos::new(0, 0));
-            } else {
-                pl.playing.set(false);
-                pl.scrub_resume.set(false);
-            }
+            let plan = plan_step(StepCtx {
+                dir: StepDir::Next,
+                clip_index: clip_i,
+                local_frame: local,
+                clip_last_frame: clip.last_frame(),
+                clip_count: model.len() as u32,
+                looping: looping.get_untracked(),
+                edge_target_local: 0,
+            });
+            run_step_plan(pl, plan);
         }) as Rc<dyn Fn()>
     };
 
@@ -507,30 +524,30 @@ pub fn VideoPlaylist(
             let model = model.get_untracked();
             let clip_i = pl.live_clip.get_untracked();
             let local = pl.live_video().frame.get_untracked();
-            if local > 0 {
-                pl.playing.set(false);
-                pl.scrub_resume.set(false);
-                pl.live_video().previous_frame();
+            let Some(clip) = model.clip(clip_i as usize) else {
                 return;
-            }
-            if clip_i > 0 {
-                let prev = clip_i - 1;
-                let last = model
-                    .clip(prev as usize)
+            };
+            let edge_target_local = if local > 0 {
+                0
+            } else if clip_i > 0 {
+                model
+                    .clip((clip_i - 1) as usize)
                     .map(|c| c.last_frame())
-                    .unwrap_or(0);
-                pl.goto_pos(PlaylistPos::new(prev, last));
-            } else if looping.get_untracked() {
-                let last_i = model.len().saturating_sub(1) as u32;
-                let last = model
-                    .clip(last_i as usize)
-                    .map(|c| c.last_frame())
-                    .unwrap_or(0);
-                pl.goto_pos(PlaylistPos::new(last_i, last));
+                    .unwrap_or(0)
             } else {
-                pl.playing.set(false);
-                pl.scrub_resume.set(false);
-            }
+                let last_i = model.len().saturating_sub(1);
+                model.clip(last_i).map(|c| c.last_frame()).unwrap_or(0)
+            };
+            let plan = plan_step(StepCtx {
+                dir: StepDir::Prev,
+                clip_index: clip_i,
+                local_frame: local,
+                clip_last_frame: clip.last_frame(),
+                clip_count: model.len() as u32,
+                looping: looping.get_untracked(),
+                edge_target_local,
+            });
+            run_step_plan(pl, plan);
         }) as Rc<dyn Fn()>
     };
 
