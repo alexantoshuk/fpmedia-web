@@ -33,13 +33,16 @@ body {
 }
 
 @utility wm-position {
-  /* Middle column — centered in the gap between side clusters. */
-  @apply relative z-20 flex min-w-0 max-w-full items-center justify-center;
+  /* Fills the middle flex column so `cqi` tracks available width (not content). */
+  @apply relative z-20 flex w-full min-w-0 max-w-full items-center justify-center;
+  container-type: inline-size;
+  container-name: wm-position;
 }
 
 @utility wm-position-field {
-  /* Narrow: two-line now/end inside the same h-9 as icon buttons. */
-  @apply h-9 min-w-0 max-w-full rounded-md border-0 px-1.5 text-center font-mono text-[10px]/none tabular-nums text-zinc-100 @3xl:px-2.5 @3xl:text-[13px]/tight @3xl:whitespace-nowrap;
+  /* One line always; font scales with middle-column width (no two-line stack). */
+  @apply h-9 min-w-0 max-w-full rounded-md border-0 px-1.5 text-center font-mono leading-none tabular-nums text-zinc-100 whitespace-nowrap;
+  font-size: clamp(0.5625rem, 5.5cqi, 0.8125rem);
 }
 
 @utility wm-position-display {
@@ -47,11 +50,11 @@ body {
 }
 
 @utility wm-position-input {
-  @apply wm-position-field bg-zinc-950 outline outline-1 outline-zinc-700 whitespace-nowrap;
+  @apply wm-position-field bg-zinc-950 outline outline-1 outline-zinc-700;
 }
 
 @utility wm-position-label {
-  @apply inline-flex flex-col items-center justify-center gap-0 @3xl:flex-row @3xl:items-baseline @3xl:gap-1;
+  @apply inline-flex max-w-full flex-row flex-nowrap items-baseline justify-center gap-1;
 }
 
 @utility wm-position-cur {

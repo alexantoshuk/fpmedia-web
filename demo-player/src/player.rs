@@ -1826,7 +1826,7 @@ fn playlist_position_label(playlist: VideoPlaylistRef, format: PositionFormat) -
     format!("{cur} / {last}")
 }
 
-/// Playlist readout parts: `[i] now` and `end` (slash is chrome — hidden when stacked).
+/// Playlist readout parts: `[i] now` and `end`.
 fn playlist_position_sides(playlist: VideoPlaylistRef, format: PositionFormat) -> (String, String) {
     let pos = playlist.pos.get();
     let live = if playlist.live_is_a.get() {
@@ -2063,10 +2063,7 @@ fn PositionDisplay(
                                             <span class="wm-position-cur">
                                                 {move || position_sides(&video, format.get()).0}
                                             </span>
-                                            <span
-                                                class="wm-position-slash @max-3xl:hidden"
-                                                aria-hidden="true"
-                                            >
+                                            <span class="wm-position-slash" aria-hidden="true">
                                                 "/"
                                             </span>
                                             <span class="wm-position-rest">
@@ -2083,10 +2080,7 @@ fn PositionDisplay(
                                     <span class="wm-position-cur">
                                         {move || playlist_position_sides(playlist, format.get()).0}
                                     </span>
-                                    <span
-                                        class="wm-position-slash @max-3xl:hidden"
-                                        aria-hidden="true"
-                                    >
+                                    <span class="wm-position-slash" aria-hidden="true">
                                         "/"
                                     </span>
                                     <span class="wm-position-rest">
@@ -2173,6 +2167,7 @@ fn PositionDisplay(
                         start_goto();
                     }
                 >
+                    <span class="wm-position-check" aria-hidden="true"></span>
                     "Go to…"
                 </button>
             </div>
