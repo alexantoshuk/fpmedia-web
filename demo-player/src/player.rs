@@ -3,8 +3,8 @@
 use crate::icon;
 use fpmedia_web_components::helpers::{
     FRAME_ZEBRA_MIN_SLOT_PX, format_metadata, format_timecode_at, format_timecode_at_loose,
-    frame_zebra_step, last_frame_id, odd_frame_runs, parse_position, playhead_tip_css,
-    playhead_width_css, strip_canvas_buffer_width,
+    format_timecode_from_fps, frame_zebra_step, last_frame_id, odd_frame_runs, parse_position,
+    playhead_tip_css, playhead_width_css, strip_canvas_buffer_width,
 };
 use fpmedia_web_components::{
     HoverThumb, HoverThumbCtx, PipelinePlane, PipelineStats, ReadyFrameKind, ScrubCachePolicy,
@@ -910,6 +910,8 @@ pub fn DemoPlayer() -> impl IntoView {
     // Text buttons: filled bg, no border. Icon buttons: icon-only (no chrome).
     let btn = "inline-flex items-center justify-center rounded-md border-0 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 hover:bg-zinc-700 disabled:cursor-default disabled:opacity-45";
     let btn_icon = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
+    // Accent only when the glyph itself does not show state (Loop / menu open /
+    // copied). Play / mute / fullscreen swap icons — stay zinc.
     let btn_icon_on = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-emerald-400 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     let btn_play = "wm-btn-icon inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
     // Step buttons: no bare `inline-flex` — it fights `@max-*`/`hidden` and leaves a gap.
@@ -1247,13 +1249,8 @@ pub fn DemoPlayer() -> impl IntoView {
                         >
                             <button
                                 type="button"
-                                class=move || {
-                                    if demo_muted(video, playlist, use_playlist) {
-                                        format!("{btn_icon_on} is-on")
-                                    } else {
-                                        btn_icon.to_string()
-                                    }
-                                }
+                                // Mute swaps Volume0 — not an "on" emerald latch (Loop / fullscreen).
+                                class=btn_icon
                                 data-testid="btn-mute"
                                 prop:disabled=move || {
                                     let v = demo_active_video(video, playlist, use_playlist);
@@ -1486,8 +1483,9 @@ pub fn DemoPlayer() -> impl IntoView {
                         <button
                             type="button"
                             class=move || {
+                                // Icon swap (enter/exit) carries state — no accent.
                                 let base = if fullscreen.get() {
-                                    format!("{btn_icon_on} is-fullscreen")
+                                    format!("{btn_icon} is-fullscreen")
                                 } else {
                                     btn_icon.to_string()
                                 };
@@ -1848,7 +1846,13 @@ fn playlist_position_label(playlist: VideoPlaylistRef, format: PositionFormat) -
 }
 
 /// Playlist readout parts: `[i] now` and `end`.
+///
+/// While probing / opening (`!ready`), return a stable placeholder — live-slot
+/// `frame_count` / metadata flicker through each probe open otherwise.
 fn playlist_position_sides(playlist: VideoPlaylistRef, format: PositionFormat) -> (String, String) {
+    if !playlist.ready.get() {
+        return ("—".into(), "—".into());
+    }
     let pos = playlist.pos.get();
     let live = if playlist.live_is_a.get() {
         playlist.slot_a
@@ -1865,7 +1869,18 @@ fn playlist_position_sides(playlist: VideoPlaylistRef, format: PositionFormat) -
                 format!("[{i}] {}", format_timecode_at_loose(&m, pos.local_frame)),
                 format_timecode_at_loose(&m, last),
             ),
-            None => (format!("[{i}] {}", pos.local_frame), last.to_string()),
+            // Live warm but meta not yet — keep Timecode mode via model fps.
+            None => {
+                let fps = playlist
+                    .model
+                    .get()
+                    .clip(pos.clip_index as usize)
+                    .and_then(|c| c.fps);
+                (
+                    format!("[{i}] {}", format_timecode_from_fps(pos.local_frame, fps)),
+                    format_timecode_from_fps(last, fps),
+                )
+            }
         },
     }
 }
@@ -1969,7 +1984,18 @@ fn PositionDisplay(
                     let live = playlist.live_video();
                     match live.metadata.get_untracked() {
                         Some(m) => format_playlist_goto_timecode(pos, &m),
-                        None => format_playlist_goto_frames(pos),
+                        None => {
+                            let fps = playlist
+                                .model
+                                .get_untracked()
+                                .clip(pos.clip_index as usize)
+                                .and_then(|c| c.fps);
+                            format!(
+                                "[{}] {}",
+                                pos.display_index(),
+                                format_timecode_from_fps(pos.local_frame, fps)
+                            )
+                        }
                     }
                 }
             };
@@ -2225,34 +2251,50 @@ fn HoverPlaylistThumbLabel(
                 let Some(global) = ctx.frame.get() else {
                     return String::new();
                 };
-                let Some(pos) = playlist.model.get_untracked().at_global_frame(global) else {
+                let model = playlist.model.get();
+                let Some(pos) = model.at_global_frame(global) else {
                     return String::new();
                 };
-                // Prefer the slot that owns the hover clip when warm.
-                let video = if playlist.live_clip.get() == pos.clip_index {
-                    if playlist.live_is_a.get() {
-                        playlist.slot_a
+                let Some(clip) = model.clip(pos.clip_index as usize) else {
+                    return String::new();
+                };
+                let n = clip.frame_count.max(1);
+                // Warm-slot metadata only when that slot owns this clip — never
+                // borrow live meta for an off-slot hover (wrong fps / TC start).
+                let meta = {
+                    let live_i = playlist.live_clip.get();
+                    let idle_i = playlist.idle_clip.get();
+                    let live_is_a = playlist.live_is_a.get();
+                    if live_i == pos.clip_index {
+                        let live = if live_is_a {
+                            playlist.slot_a
+                        } else {
+                            playlist.slot_b
+                        };
+                        live.metadata.get()
+                    } else if idle_i == Some(pos.clip_index) {
+                        let idle = if live_is_a {
+                            playlist.slot_b
+                        } else {
+                            playlist.slot_a
+                        };
+                        idle.metadata.get()
                     } else {
-                        playlist.slot_b
+                        None
                     }
-                } else if playlist.idle_clip.get() == Some(pos.clip_index) {
-                    if playlist.live_is_a.get() {
-                        playlist.slot_b
-                    } else {
-                        playlist.slot_a
-                    }
-                } else if playlist.live_is_a.get() {
-                    playlist.slot_a
-                } else {
-                    playlist.slot_b
                 };
                 match format.get() {
-                    PositionFormat::Frames => {
-                        format_playlist_frames(pos, video.frame_count.get().max(1))
-                    }
-                    PositionFormat::Timecode => match video.metadata.get() {
+                    PositionFormat::Frames => format_playlist_frames(pos, n),
+                    PositionFormat::Timecode => match meta {
                         Some(m) => format_playlist_timecode(pos, &m),
-                        None => format_playlist_frames(pos, video.frame_count.get().max(1)),
+                        // Probe timing from the model — Timecode mode must not
+                        // fall back to bare frames when the slot is cold.
+                        None => {
+                            let last = last_frame_id(n);
+                            let now = format_timecode_from_fps(pos.local_frame, clip.fps);
+                            let end = format_timecode_from_fps(last, clip.fps);
+                            format!("[{}] {now} / {end}", pos.display_index())
+                        }
                     },
                 }
             }}
