@@ -226,8 +226,12 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     pl.apply_gain_to_slots();
 }
 
-/// Make `aim.clip_index` live (swap or open), then internal-seek to `aim.local_frame`.
-/// `then_play`: after seek, playlist `play()` (Host outside LoopZone → wrap).
+/// Make `aim.clip_index` live (swap or open) at `aim.local_frame`.
+///
+/// Cross-clip: **paint on idle → swap** (same as [`promote_idle_at`]) — swap-then
+/// seek flashed open@0 / soft-cold / Exact on paused scrub Up. Same-clip: slot
+/// `seek_frame`. `then_play`: playlist `play()` after aim is live (Host LoopZone
+/// wrap when outside). **no equivalent**.
 pub(crate) async fn seek_to_pos(
     pl: VideoPlaylistRef,
     aim: crate::video_playlist::PlaylistPos,
@@ -244,15 +248,22 @@ pub(crate) async fn seek_to_pos(
     }
 
     if pl.live_clip.get_untracked() != aim.clip_index {
-        if !try_promote_idle(pl, aim.clip_index) {
-            ensure_clip_on_idle(pl, aim.clip_index, epoch).await?;
-            if pl.open_gen.get_value() != epoch {
-                return Ok(());
-            }
+        ensure_clip_on_idle(pl, aim.clip_index, epoch).await?;
+        if pl.open_gen.get_value() != epoch {
+            return Ok(());
+        }
+        // Stop outgoing Play before idle Exact (goto/scrub-while-play callers).
+        stop_live_for_host_seam(pl);
+        let lead = PromoteLead::for_local(aim.local_frame);
+        lead.prepare(pl.idle_video()).await?;
+        if pl.open_gen.get_value() != epoch {
+            return Ok(());
+        }
+        if pl.live_clip.get_untracked() != aim.clip_index && !try_promote_idle(pl, aim.clip_index) {
             swap_live_idle(pl, aim.clip_index);
         }
-        // Before neighbor preload await — else mirror sees new live + stale
-        // idle local and yanks tip inside the target clip. **no equivalent**.
+        // Aim local before neighbor preload — mirror must not see new live +
+        // stale idle local. **no equivalent**.
         pl.live_video().playhead.set(aim.local_frame);
         let neighbor = idle_neighbor_for_zone(
             &pl.model.get_untracked(),
@@ -262,6 +273,21 @@ pub(crate) async fn seek_to_pos(
             pl.loop_zone().1,
         );
         preload_idle(pl, neighbor, epoch).await;
+        if pl.open_gen.get_value() != epoch {
+            return Ok(());
+        }
+        sync_live_loop_from_playlist(pl);
+        let live = pl.live_video();
+        live.ended.set(false);
+        live.playhead.set(aim.local_frame);
+        if then_play {
+            // Prepare already painted — PlayPrime, no second Exact flash.
+            pl.play();
+        } else if live.frame.get_untracked() != aim.local_frame {
+            // Prepare missed (cancel/cold) — Exact on live (rare visible settle).
+            live.seek_frame(aim.local_frame);
+        }
+        return Ok(());
     }
 
     if pl.open_gen.get_value() != epoch {
@@ -271,12 +297,9 @@ pub(crate) async fn seek_to_pos(
     let live = pl.live_video();
     live.ended.set(false);
     // Slot playhead is local — PlayPrime reads it (playlist global ≠ slot).
-    // Without this, promote@0 + play() starts at clip origin then seeks (flash /
-    // densify), or worse races an EOF seam to the next clip.
     live.playhead.set(aim.local_frame);
     live.seek_frame(aim.local_frame);
     if then_play {
-        // Playlist Play path (Host outside LoopZone → wrap). Not bare slot play.
         pl.play();
     }
     Ok(())
