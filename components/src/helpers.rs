@@ -90,6 +90,9 @@ pub fn scrub_touch_move_accepts(
 }
 
 /// Clamp hover-thumb left so the preview stays inside the scrubber track.
+///
+/// `thumb_w` should be the **laid-out** preview width (root `offsetWidth`), not
+/// only the canvas max — host chrome (timecode label) can be wider.
 pub fn hover_thumb_left(x: f64, track_width: f64, thumb_w: f64) -> f64 {
     let thumb_w = thumb_w.max(0.0);
     (x - thumb_w / 2.0).clamp(0.0, (track_width - thumb_w).max(0.0))
@@ -127,15 +130,12 @@ pub fn format_timecode_at(meta: &VideoMetadata, frame: u32) -> Option<String> {
     meta.timecode_at(u64::from(frame)).map(|tc| tc.to_string())
 }
 
-/// SMPTE for display even when [`format_timecode_at`] has no known rate.
+/// Loose SMPTE from presentation `frame` + optional fps (`None` → 24).
 ///
-/// Falls back to nominal fps from `meta.fps` (or 24) so UI never silently looks
-/// like bare frame numbers in Timecode mode.
-pub fn format_timecode_at_loose(meta: &VideoMetadata, frame: u32) -> String {
-    if let Some(s) = format_timecode_at(meta, frame) {
-        return s;
-    }
-    let fps = meta.fps.unwrap_or(24.0).max(1.0);
+/// Used when Timecode mode has clip timing but no warm-slot [`VideoMetadata`]
+/// (playlist probe / off-slot hover) — never silently show bare frame numbers.
+pub fn format_timecode_from_fps(frame: u32, fps: Option<f64>) -> String {
+    let fps = fps.unwrap_or(24.0).max(1.0);
     let nominal = fps.round().max(1.0) as u32;
     let ff = frame % nominal;
     let total_sec = frame / nominal;
@@ -143,6 +143,17 @@ pub fn format_timecode_at_loose(meta: &VideoMetadata, frame: u32) -> String {
     let mm = (total_sec / 60) % 60;
     let hh = total_sec / 3600;
     format!("{hh:02}:{mm:02}:{ss:02}:{ff:02}")
+}
+
+/// SMPTE for display even when [`format_timecode_at`] has no known rate.
+///
+/// Falls back to [`format_timecode_from_fps`] so UI never silently looks like bare
+/// frame numbers in Timecode mode.
+pub fn format_timecode_at_loose(meta: &VideoMetadata, frame: u32) -> String {
+    if let Some(s) = format_timecode_at(meta, frame) {
+        return s;
+    }
+    format_timecode_from_fps(frame, meta.fps)
 }
 
 /// Last presentation frame id (`frame_count − 1`), or `0` when empty.

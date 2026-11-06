@@ -114,7 +114,17 @@ pub fn HoverThumb(
                     hide();
                     return;
                 }
-                let left = hover_thumb_left(x, track_width, width as f64);
+                // Clamp by laid-out root (canvas + host chrome). Prop `width` is
+                // canvas max only — label can be wider; left edge still looked
+                // fine (clamp to 0) while the right overflowed by (real−prop).
+                // Hidden (`display:none`) → offsetWidth 0 → fall back to prop
+                // until the next move after `is-visible`.
+                let thumb_w = root_ref
+                    .get_untracked()
+                    .map(|el| f64::from(el.offset_width()))
+                    .filter(|w| *w > 1.0)
+                    .unwrap_or(width as f64);
+                let left = hover_thumb_left(x, track_width, thumb_w);
                 transform.set(hover_thumb_transform_css(left));
                 frame.set(Some(aim));
                 if !visible.get_untracked() {
