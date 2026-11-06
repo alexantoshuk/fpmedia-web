@@ -251,6 +251,9 @@ pub(crate) async fn seek_to_pos(
             }
             swap_live_idle(pl, aim.clip_index);
         }
+        // Before neighbor preload await — else mirror sees new live + stale
+        // idle local and yanks tip inside the target clip. **no equivalent**.
+        pl.live_video().playhead.set(aim.local_frame);
         let neighbor = idle_neighbor_for_zone(
             &pl.model.get_untracked(),
             aim.clip_index,

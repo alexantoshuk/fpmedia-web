@@ -24,7 +24,7 @@
 | Playlist thumbs only on live clip | max **2** slot-bound `ThumbSink`s (host policy on both); idle densify off; hover rebinds idle for off-slot clips — not N / not app-wide shared |
 | Scrub 3rd clip shows 1st media | `swap_live_idle`: `idle_clip` = former live only; neighbor via `preload_idle` — never label aspirational clip |
 | Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap (global frames); mirror live→pos when not `scrubbing` (paused step OK; scrub owns aim) — `architecture.md` § Playlist |
-| Playlist scrub tip jumps on pointer-up | mirror: if slot `playhead ≠ frame` map from playhead (settle lag); Up clears `scrubbing` only after aim `playhead`/`pos` set. **no equivalent** |
+| Playlist scrub tip jumps on pointer-up | mirror: slot `playhead ≠ frame` → use playhead; skip while `pos.clip ≠ live` (CrossClipSeek); Up clears `scrubbing` only after aim set; `seek_to_pos` sets live playhead before preload await. **no equivalent** |
 | Playlist zebra gate / stripe size wrong | axis = Σ frames (not ms); same `frame_zebra_step` as single-clip |
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
 | Playlist scrub→other clip drops Play | latch `scrub_resume` on Down while `playing` (soft-pause clears it before cross-cut) |

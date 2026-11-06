@@ -84,12 +84,18 @@ pub fn VideoPlaylist(
     // Not while seam_busy — wrap owns global aim (else mirror fights zone_in
     // snap → wall re-wrap / dual tip). After Up, slot `frame` lags settle —
     // use playhead when it diverges so the tip does not yank to a stale local
-    // then snap back. **no equivalent**.
+    // then snap back. Cross-clip Up/seek: facade `pos` aims the new clip while
+    // live is still old — skip until promote (else tip jumps to old global).
+    // **no equivalent**.
     Effect::new(move |_| {
         if !ready.get() || playlist.scrubbing.get() {
             return;
         }
         let clip = live_clip.get();
+        // Pending rebind owns aim — do not map old live over CrossClipSeek.
+        if pos.get_untracked().clip_index != clip {
+            return;
+        }
         let live = if live_is_a.get() { slot_a } else { slot_b };
         let committed = live.frame.get();
         let aim = live.playhead.get();
