@@ -7,7 +7,7 @@ use fpmedia_web::{
 use leptos::prelude::*;
 
 use crate::VideoRef;
-use crate::video_playlist::PlaylistModel;
+use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
 use super::host_zone::{HostZoneOwner, is_soft_seam_cancel};
 use super::loop_seam::{
@@ -420,6 +420,13 @@ async fn promote_idle_at(
     set_seam_phase(pl, SeamPhase::Swapping);
     swap_live_idle(pl, clip_index);
     pl.seam_warm_for.set_value(None);
+    // Facade must match new live — else mirror `pos.clip ≠ live` skip (tip-jump
+    // guard) freezes the progress bar while Play continues. **no equivalent**.
+    let facade = PlaylistPos::new(clip_index, local);
+    pl.pos.set(facade);
+    if let Some(g) = pl.model.get_untracked().global_frame_at(facade) {
+        pl.playhead.set(g);
+    }
     let live = pl.live_video();
     live.ended.set(false);
     if live.playhead.get_untracked() != local {

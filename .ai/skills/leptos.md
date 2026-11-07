@@ -25,6 +25,7 @@
 | Scrub 3rd clip shows 1st media | `swap_live_idle`: `idle_clip` = former live only; neighbor via `preload_idle` — never label aspirational clip |
 | Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap (global frames); mirror live→pos when not `scrubbing` (paused step OK; scrub owns aim) — `architecture.md` § Playlist |
 | Playlist scrub tip jumps on pointer-up | mirror: slot `playhead ≠ frame` → use playhead; skip while `pos.clip ≠ live` (CrossClipSeek); Up clears `scrubbing` only after aim set; `seek_to_pos` sets live playhead before preload await. **no equivalent** |
+| Playlist Play: progress freezes after clip join | `promote_idle_at` must set facade `pos`/`playhead` on swap — else mirror `pos.clip ≠ live` skip sticks. **no equivalent** |
 | Playlist paused scrub Up: canvas flashes 2–3× | `seek_to_pos` cross-clip: idle `prepare_seam_at` → swap (not swap→soft-cold→Exact); skip post-swap seek when `frame==aim`. **no equivalent** |
 | Playlist zebra gate / stripe size wrong | axis = Σ frames (not ms); same `frame_zebra_step` as single-clip |
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
