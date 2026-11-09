@@ -8,13 +8,11 @@
 
 ### Handoff
 
-- **HEAD:** Slice B — single/Engine `LoopPlayWarm` (2nd HW PlayIter @`loop_in` → adopt on LoopSeam). Verified laptop; **verify mobile** loop residual + Engine LoopZone in playlist.
-- **Open:** Host LoopZone spanning a playlist join snaps to `loop_in` once after the first mid-zone cut, then later laps OK — regression from SeamHold join (slice A); attempted wall/`end_seam` belts did not fix. Still open.
-- **Prior:** Playlist Host SeamHold join (slice A) `1419a68` Play All 2–3 clips.
-- **Stash:** `stash@{0}` = densify-free `clear_pending` after `EndExact` — optional (cut Exact flash).
-- **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset; `39d20a4` BeginExact-before-yield / `BeginExact { rearm: densify }`.
+- **Open:** mobile LoopPlayWarm unverified.
+- **Prior:** A+B laptop OK; Host LoopZone spanning-join fix landed (SeamHold release restarts PlayIter @aim).
+- **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional.
+- **Do not land:** `b8206d1`; WIP cut/LoopZone hard-reset; `39d20a4`.
 - **Parked:** Pause densify pin-holes; idle Fetch gray.
-- **Unverified:** LoopPlayWarm on mobile; cut densify flash after optional stash.
 
 ---
 
@@ -24,7 +22,7 @@
 
 Shared volume + frame-sum scrub + origin-stash seam shipped (`0.1.0-alpha.4`). Design: `architecture.md` § Playlist.
 
-**Next:** fix Host spanning-join false wrap→`loop_in` (slice A regression). Verify LoopPlayWarm on mobile / Engine zone. Optional: cut markers / clip name in `[i]` (Later). Idle Fetch gray — parked.
+**Next:** Verify LoopPlayWarm on mobile / Engine zone. Optional: cut markers / clip name in `[i]` (Later). Idle Fetch gray — parked.
 
 **Out of v1:** compare dual-visible.
 

@@ -295,7 +295,22 @@ impl VideoPlayer {
             };
             let ts = self.frame_timestamp_seconds(id)?;
             let t = self.media_time();
-            if ts <= t && self.shared.play_phase.get() == PlayPhase::Live {
+            // Pending silent = clock not armed yet. mediabunny: updateNextFrame
+            // overdue draw. Non-shuttle: at most one overdue commit per kick —
+            // else SeamHold release skip-catches past a Host LoopZone wall.
+            let can_skip = self.shared.play_phase.get() == PlayPhase::Live
+                && !self.shared.pending_silent_clock.get();
+            if ts <= t && can_skip {
+                if !self.is_shuttle() && overdue >= 1 {
+                    let slot = self.copy_to_play_pool(id, video.as_web_sys())?;
+                    drop(video);
+                    *self.shared.play_next.borrow_mut() = Some(PlayNext {
+                        frame: id,
+                        ts,
+                        slot,
+                    });
+                    break;
+                }
                 overdue += 1;
                 self.shared
                     .last_behind_ms
@@ -319,8 +334,7 @@ impl VideoPlayer {
             self.shared
                 .frames_skipped
                 .set(self.shared.frames_skipped.get().saturating_add(overdue - 1));
-            // Silent PlaybackClock only: realign to the painted playhead so the
-            // next rAF is not still overdue (ChG skip storm). AAC stays master.
+            // Silent PlaybackClock: realign after multi-skip (ChG). AAC stays master.
             if self
                 .shared
                 .playback_clock
@@ -1358,6 +1372,11 @@ impl VideoPlayer {
     }
 
     /// Playlist cut: `SeamHold` → `Live` + warm (or silent) media clock at aim.
+    ///
+    /// Restart PlayIter @ aim before Live clock — do not continue a hold-aged
+    /// iterator (slice A regression: skip-catch past Host LoopZone wall). Same
+    /// shape as pre-A cold PlayPrime after paint. No underrun-catchup grace.
+    /// **no equivalent** (playlist local).
     pub async fn release_playlist_seam_hold(self: &Rc<Self>) -> Result<(), MediaError> {
         if self.shared.play_phase.get() == PlayPhase::Live && self.is_playing() {
             return Ok(());
@@ -1365,18 +1384,30 @@ impl VideoPlayer {
         if !self.shared.play_phase.get().is_seam_hold() {
             return Err(MediaError::Cancelled);
         }
-        self.apply_play_phase(PlayPhaseEvent::ReleaseSeamHold);
-        if self.shared.play_phase.get() != PlayPhase::Live {
-            return Err(MediaError::Cancelled);
-        }
-        self.shared.seam_hold_frame.set(None);
-        self.arm_underrun_catchup_grace();
+        let aim = self
+            .shared
+            .seam_hold_frame
+            .get()
+            .unwrap_or_else(|| self.state().frame);
         let t0 = self
             .shared
             .held_media_origin
             .get()
             .unwrap_or_else(|| self.state().timestamp.seconds);
         let warm = self.shared.seam_audio_warm.replace(false);
+        // Fresh iterator @ aim while still SeamHold (`presents` false). Continuing
+        // the hold-aged PlayIter into Live skip-caught the Host zone tail.
+        let epoch = self.shared.op_epoch.get();
+        self.start_play_iter(aim, epoch).await?;
+        if !self.shared.play_phase.get().is_seam_hold() || !self.is_playing() {
+            return Err(MediaError::Cancelled);
+        }
+        self.apply_play_phase(PlayPhaseEvent::ReleaseSeamHold);
+        if self.shared.play_phase.get() != PlayPhase::Live {
+            return Err(MediaError::Cancelled);
+        }
+        self.shared.seam_hold_frame.set(None);
+        // No `arm_underrun_catchup_grace` — warm→Live grace helped skip storms.
         if warm {
             // Soft-held during arm — `restart_warm` primes buffers without begin gap.
             let _ = self.take_audio_warm_resume();
@@ -1392,7 +1423,7 @@ impl VideoPlayer {
             self.shared.held_media_origin.set(None);
         }
         web_sys::console::log_1(
-            &format!("fpmedia-web: playlist seam hold released warm_audio={warm}").into(),
+            &format!("fpmedia-web: playlist seam hold released warm_audio={warm} aim={aim}").into(),
         );
         Ok(())
     }

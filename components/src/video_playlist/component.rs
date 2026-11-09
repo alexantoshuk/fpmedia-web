@@ -104,10 +104,16 @@ pub fn VideoPlaylist(
         if seam_busy(playlist) {
             if let Some(would) = model.get_untracked().global_frame_at(p) {
                 let cur = playhead.get_untracked();
-                let (zone_in, _) = playlist.loop_zone();
+                let (zone_in, zone_out) = playlist.loop_zone();
+                let zone_last = zone_out.saturating_sub(1);
                 if would != cur {
                     seam_trace(&format!(
-                        "mirror blocked busy cur={cur} would={would} zone_in={zone_in}"
+                        "mirror blocked busy cur={cur} would={would} zone_in={zone_in} local={local} aim={aim} frame={committed}"
+                    ));
+                }
+                if would >= zone_last {
+                    seam_trace(&format!(
+                        "mirror blocked past-wall would={would} zone_last={zone_last} local={local}"
                     ));
                 }
             }
@@ -115,6 +121,15 @@ pub fn VideoPlaylist(
         }
         pos.set(p);
         if let Some(g) = model.get_untracked().global_frame_at(p) {
+            let cur = playhead.get_untracked();
+            let (_, zone_out) = playlist.loop_zone();
+            let zone_last = zone_out.saturating_sub(1);
+            let jump = cur.abs_diff(g);
+            if g != cur && (g >= zone_last || jump > 1) {
+                seam_trace(&format!(
+                    "mirror write cur={cur} → {g} jump={jump} zone_last={zone_last} clip={clip} local={local} aim={aim} frame={committed}"
+                ));
+            }
             playhead.set(g);
         }
     });
@@ -162,9 +177,13 @@ pub fn VideoPlaylist(
             && !live.ended.get()
         {
             seam_trace(&format!(
-                "outside-play fire g={g} zone_in={zone_in} zone_last={zone_last} live_clip={} phase={:?}",
+                "outside-play fire g={g} zone_in={zone_in} zone_last={zone_last} live_clip={} phase={:?} live_frame={} live_ph={} live_playing={} live_ended={}",
                 live_clip.get_untracked(),
-                playlist.seam_phase.get_untracked()
+                playlist.seam_phase.get_untracked(),
+                live.frame.get_untracked(),
+                live.playhead.get_untracked(),
+                live.playing.get_untracked(),
+                live.ended.get_untracked(),
             ));
             start_host_wrap(playlist, false);
             return;

@@ -754,6 +754,7 @@ pub(crate) async fn advance_after_ended(
         let zone_in_aim = model
             .at_global_frame(zone_in)
             .map(|p| (p.clip_index, p.local_frame));
+        let seam_next = seam_next_clip(pl, from_clip);
         let plan = plan_advance_ended(AdvanceEndedCtx {
             live_still_from_clip: pl.live_clip.get_untracked() == from_clip,
             owner: HostZoneOwner::from(loop_owner(pl)),
@@ -761,9 +762,12 @@ pub(crate) async fn advance_after_ended(
             zone_out,
             clip_end: model.clip_end_frame(from_clip).unwrap_or(0),
             zone_in_aim,
-            seam_next: seam_next_clip(pl, from_clip),
+            seam_next,
             looping: pl.looping.get_untracked(),
         });
+        seam_trace(&format!(
+            "advance plan={plan:?} from_clip={from_clip} zone_in_aim={zone_in_aim:?} seam_next={seam_next:?} zone_out={zone_out}"
+        ));
         match plan {
             AdvanceEndedPlan::Noop => Ok(()),
             AdvanceEndedPlan::Wrap => wrap_to_loop_in(pl, epoch).await,
