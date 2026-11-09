@@ -76,6 +76,8 @@ impl VideoPlayer {
         self.shared.loop_origin_warm_started.set(false);
         self.shared.seam_audio_warm.set(false);
         self.shared.seam_hold_frame.set(None);
+        self.shared.seam_release_no_skip.set(false);
+        self.shared.seam_release_aim.set(None);
         // Keep `loop_origin_stash` — playlist idle prewarm must survive pause of
         // the outgoing clip / soft holds; PlayPrime@0 and LoopSeam consume it.
         // Seek / open drop via [`Self::drop_origin_stash`].
@@ -176,6 +178,24 @@ impl VideoPlayer {
             }
         };
         self.kick_update_next_frame();
+        // Clear no-skip after natural advance past aim; snap once (not every rAF —
+        // per-tick glue pinned media_time at aim forever → stall at Host join).
+        if self.shared.seam_release_no_skip.get() {
+            let aim = self.shared.seam_release_aim.get().unwrap_or(0);
+            if self.state().frame > aim {
+                let aac_master = self
+                    .shared
+                    .audio
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|a| a.is_playing());
+                if !aac_master {
+                    self.snap_playing_clock_to_playhead();
+                }
+                self.shared.seam_release_no_skip.set(false);
+                self.shared.seam_release_aim.set(None);
+            }
+        }
         Ok(tick)
     }
 
@@ -295,11 +315,12 @@ impl VideoPlayer {
             };
             let ts = self.frame_timestamp_seconds(id)?;
             let t = self.media_time();
-            // Pending silent = clock not armed yet. mediabunny: updateNextFrame
-            // overdue draw. Non-shuttle: at most one overdue commit per kick —
-            // else SeamHold release skip-catches past a Host LoopZone wall.
+            // Pending silent / SeamHold-release gate: clock or warm iter must not
+            // overdue-skip past a Host LoopZone wall. Non-shuttle: ≤1 overdue/kick.
+            // mediabunny: updateNextFrame overdue draw; gates local.
             let can_skip = self.shared.play_phase.get() == PlayPhase::Live
-                && !self.shared.pending_silent_clock.get();
+                && !self.shared.pending_silent_clock.get()
+                && !self.shared.seam_release_no_skip.get();
             if ts <= t && can_skip {
                 if !self.is_shuttle() && overdue >= 1 {
                     let slot = self.copy_to_play_pool(id, video.as_web_sys())?;
@@ -1373,11 +1394,13 @@ impl VideoPlayer {
 
     /// Playlist cut: `SeamHold` → `Live` + warm (or silent) media clock at aim.
     ///
-    /// Restart PlayIter @ aim before Live clock — do not continue a hold-aged
-    /// iterator (slice A regression: skip-catch past Host LoopZone wall). Same
-    /// shape as pre-A cold PlayPrime after paint. No underrun-catchup grace.
-    /// **no equivalent** (playlist local).
-    pub async fn release_playlist_seam_hold(self: &Rc<Self>) -> Result<(), MediaError> {
+    /// `restart_iter`: Host mid-zone — fresh PlayIter @aim on release (prepare
+    /// refresh alone re-snapped to `loop_in`). Full-axis keeps hold iter.
+    /// Hard-reset + no-skip either way. **no equivalent** (playlist local).
+    pub async fn release_playlist_seam_hold(
+        self: &Rc<Self>,
+        restart_iter: bool,
+    ) -> Result<(), MediaError> {
         if self.shared.play_phase.get() == PlayPhase::Live && self.is_playing() {
             return Ok(());
         }
@@ -1395,35 +1418,39 @@ impl VideoPlayer {
             .get()
             .unwrap_or_else(|| self.state().timestamp.seconds);
         let warm = self.shared.seam_audio_warm.replace(false);
-        // Fresh iterator @ aim while still SeamHold (`presents` false). Continuing
-        // the hold-aged PlayIter into Live skip-caught the Host zone tail.
-        let epoch = self.shared.op_epoch.get();
-        self.start_play_iter(aim, epoch).await?;
-        if !self.shared.play_phase.get().is_seam_hold() || !self.is_playing() {
-            return Err(MediaError::Cancelled);
+        if restart_iter {
+            // While still SeamHold — drop hold-aged decode queue (skip storm).
+            let epoch = self.shared.op_epoch.get();
+            self.start_play_iter(aim, epoch).await?;
+            if !self.shared.play_phase.get().is_seam_hold() || !self.is_playing() {
+                return Err(MediaError::Cancelled);
+            }
         }
         self.apply_play_phase(PlayPhaseEvent::ReleaseSeamHold);
         if self.shared.play_phase.get() != PlayPhase::Live {
             return Err(MediaError::Cancelled);
         }
         self.shared.seam_hold_frame.set(None);
+        self.shared.seam_release_aim.set(Some(aim));
+        self.shared.seam_release_no_skip.set(true);
+        self.hard_reset_timeline_to(t0);
+        self.shared.held_media_origin.set(Some(t0));
         // No `arm_underrun_catchup_grace` — warm→Live grace helped skip storms.
         if warm {
-            // Soft-held during arm — `restart_warm` primes buffers without begin gap.
             let _ = self.take_audio_warm_resume();
             self.resume_media_clock(t0).await?;
+            self.shared.held_media_origin.set(None);
         } else if self.shared.audio.borrow().is_some() {
             self.start_media_clock(t0).await?;
-        } else {
-            // No AAC: arm silent driver on first present (PlayPrime shape).
-            self.shared.pending_silent_clock.set(true);
-            self.shared.held_media_origin.set(Some(t0));
-        }
-        if warm || self.shared.audio.borrow().is_some() {
             self.shared.held_media_origin.set(None);
+        } else {
+            self.shared.pending_silent_clock.set(true);
         }
         web_sys::console::log_1(
-            &format!("fpmedia-web: playlist seam hold released warm_audio={warm} aim={aim}").into(),
+            &format!(
+                "fpmedia-web: playlist seam hold released warm_audio={warm} aim={aim} restart={restart_iter}"
+            )
+            .into(),
         );
         Ok(())
     }

@@ -318,13 +318,17 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     }
     let still_queued = || queue.is_current(id);
 
+    // Consume mid-zone latch even on cold prime (stale promote must not poison
+    // a later full-axis SeamHold release).
+    let restart_iter = ctx.video.take_seam_hold_restart_on_release();
+
     // Playlist Host: idle already Play-ready (`SeamHold`) — release clock, skip
     // cold PlayPrime / `play()` cancel_ops. **no equivalent** (playlist local).
     if p.seam_hold_armed() {
         web_sys::console::log_1(&"fpmedia-web: play prime seam-hold release".into());
         fps_meter.borrow_mut().reset();
         fps.set(None);
-        let release_ok = match p.release_playlist_seam_hold().await {
+        let release_ok = match p.release_playlist_seam_hold(restart_iter).await {
             Ok(()) => true,
             Err(e) if e.is_cancelled() => false,
             Err(e) => {

@@ -442,6 +442,14 @@ async fn promote_idle_at(
     }
     set_seam_phase(pl, SeamPhase::Playing);
     pl.playing.set(true);
+    // Host mid-zone: release restarts PlayIter (prepare-only refresh re-snapped
+    // to loop_in). Full-axis keeps hold iter. **no equivalent** (playlist local).
+    let (zone_in, zone_out) = pl.loop_zone();
+    let total = pl.model.get_untracked().total_frame_count();
+    let zone_full = zone_in == 0 && zone_out == total;
+    let restart =
+        pl.looping.get_untracked() && matches!(loop_owner(pl), LoopOwner::Host) && !zone_full;
+    live.set_seam_hold_restart_on_release(restart);
     live.play();
     Ok(())
 }
@@ -641,6 +649,12 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
             sync_live_loop_from_playlist(pl);
             set_seam_phase(pl, SeamPhase::Playing);
             pl.playing.set(true);
+            let total = model.total_frame_count();
+            let zone_full = zone_in == 0 && zone_out == total;
+            let restart = pl.looping.get_untracked()
+                && matches!(loop_owner(pl), LoopOwner::Host)
+                && !zone_full;
+            live.set_seam_hold_restart_on_release(restart);
             live.play();
             return Ok(());
         }

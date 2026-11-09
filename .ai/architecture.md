@@ -269,7 +269,7 @@ Shared warm/stash primitives on `VideoPlayer`; host owns **slot swap only** (no 
 | ---- | --------------------------- | --------------------- |
 | Near-wall warm | `maybe_kick_loop_origin` → bytes + **2nd HW** `LoopPlayWarm` @`loop_in` (SW stash fallback) | `seam_warm_schedule` → `PromoteLead::kick_warm` → idle **main** `SeamHold`; skip when `LoopOwner::Engine` |
 | Play-ready / paint | `adopt_loop_play_warm` (or SW stash + bg catch-up / cold `start_play_iter`) | Idle `arm_playlist_seam_hold_at` → PlayIter under hold; paint prepare = fallback |
-| Session / clock | Hold → resume **same** `VideoPlayer` (warm HW becomes Play) | Outgoing `pause_hard_no_densify` → swap → PlayPrime **release**: `start_play_iter` @aim (drop hold-aged iter), no catch-up grace; silent pending→first rAF; non-shuttle overdue ≤1/kick |
+| Session / clock | Hold → resume **same** `VideoPlayer` (warm HW becomes Play) | Outgoing `pause_hard_no_densify` → swap → PlayPrime **release**: Host mid-zone (`!zone_full`) restarts PlayIter @aim (prepare-only refresh re-snaps); full-axis keeps hold iter. Both: `hard_reset_timeline_to(aim)` + `seam_release_no_skip` until `frame > aim` (one snap; not per-rAF); no catch-up grace; overdue ≤1/kick |
 | Slot | Same stage | `swap_live_idle` then release / cold Play |
 
 While Playing: densify is off (epoch cancel); Exact trail uses farthest-evict trim only — never a full Exact wipe. Continuous Play prioritizes cadence and A/V sync over painting every presentation frame (`product.md` Exact vs Play). Shuttle may drop overdue frames. Prefer mediabunny present + clock patterns; silent clock uses wall time when there is no audible audio graph.

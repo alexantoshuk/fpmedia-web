@@ -286,6 +286,20 @@ impl VideoPlayer {
         }
     }
 
+    /// Stop any advancing silent/wall driver and park [`MediaClock`] at `t`.
+    /// Used by playlist SeamHold release so a warm PlayIter cannot skip-catch
+    /// against a clock that ran ahead during the hold. Does not tear AAC
+    /// soft-hold (caller resumes / starts after). **no equivalent**.
+    pub(super) fn hard_reset_timeline_to(&self, t: f64) {
+        let t = t.max(0.0);
+        self.apply_clock_event(ClockEvent::Stop);
+        if let Some(c) = self.shared.playback_clock.as_ref() {
+            c.snap(t);
+        }
+        self.shared.wall_origin.set(None);
+        self.shared.clock.borrow_mut().snap(t);
+    }
+
     /// Snap the media clock (pause / seek). Stops audio nodes if attached.
     pub(super) fn stop_media_clock(&self) -> f64 {
         self.apply_clock_event(ClockEvent::Stop);

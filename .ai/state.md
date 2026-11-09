@@ -8,10 +8,10 @@
 
 ### Handoff
 
-- **Open:** mobile LoopPlayWarm unverified.
-- **Prior:** A+B laptop OK; Host LoopZone spanning-join fix landed (SeamHold release restarts PlayIter @aim).
+- **Open:** mobile LoopPlayWarm unverified. Residual light mobile pause on Host mid-zone LoopZone seam (release restart tradeoff) — later.
+- **Prior:** Host mid-zone no `loop_in` snap (release restart + hard-reset/no-skip); full-axis keep-iter; prepare-only refresh failed.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional.
-- **Do not land:** `b8206d1`; WIP cut/LoopZone hard-reset; `39d20a4`.
+- **Do not land:** `b8206d1`; `39d20a4`.
 - **Parked:** Pause densify pin-holes; idle Fetch gray.
 
 ---

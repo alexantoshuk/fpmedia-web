@@ -68,6 +68,9 @@ pub struct VideoRef {
     pub(crate) ops: StoredValue<Option<VideoOps>, LocalStorage>,
     /// Refcounts for [`PipelineInterest`] planes (strips / debug meters).
     pipeline_interest_counts: StoredValue<pipeline_interest::InterestCounts, LocalStorage>,
+    /// Host mid-zone: next SeamHold release restarts PlayIter @aim.
+    /// Cleared by PlayPrime. Full-axis joins leave false.
+    seam_hold_restart_on_release: StoredValue<bool, LocalStorage>,
 }
 
 #[derive(Clone)]
@@ -139,7 +142,20 @@ impl VideoRef {
             pipeline_interest_counts: StoredValue::new_local(
                 pipeline_interest::InterestCounts::default(),
             ),
+            seam_hold_restart_on_release: StoredValue::new_local(false),
         }
+    }
+
+    /// Next SeamHold → Live release restarts PlayIter (Host mid-zone only).
+    pub fn set_seam_hold_restart_on_release(&self, yes: bool) {
+        self.seam_hold_restart_on_release.set_value(yes);
+    }
+
+    /// Take-and-clear the Host mid-zone restart latch (PlayPrime).
+    pub(crate) fn take_seam_hold_restart_on_release(&self) -> bool {
+        let yes = self.seam_hold_restart_on_release.get_value();
+        self.seam_hold_restart_on_release.set_value(false);
+        yes
     }
 
     /// Clone one registered callback out of [`Self::ops`] (call it after the
