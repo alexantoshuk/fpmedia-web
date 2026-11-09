@@ -99,11 +99,23 @@ impl PlayCanvasPool {
 
 /// Remotion-shaped loop-origin decode stash (second sink → canvases before EOF).
 ///
-/// Built on PreferSoftware while the live PlayIter still owns main HW; promoted
-/// into [`PlayCanvasPool`] / stage at [`super::VideoPlayer`] LoopSeam.
-/// **no equivalent** (MB media-player has no loop); Remotion
+/// PreferSoftware fallback while live PlayIter owns main HW. Preferred path =
+/// [`LoopPlayWarm`] (2nd HW PlayIter). **no equivalent** (MB no loop); Remotion
 /// `prewarmIteratorForLooping` / `makeIteratorOrUsePrewarmed`.
 pub(super) struct LoopOriginStash {
+    pub(super) pool: PlayCanvasPool,
+    pub(super) first: FrameId,
+    pub(super) first_slot: usize,
+    pub(super) second: Option<(FrameId, usize)>,
+}
+
+/// Slice B: second **HW** PlayIter primed at `loop_in` while main still Plays.
+///
+/// First two samples copied into the pool; the iterator stays alive so LoopSeam
+/// can adopt it without cold `start_play_iter` catch-up (mobile residual).
+/// Short dual-HW window (~1 s). **no equivalent**; Remotion `prewarmIteratorForLooping`.
+pub(super) struct LoopPlayWarm {
+    pub(super) iter: crate::decode::webcodecs::PlayIter,
     pub(super) pool: PlayCanvasPool,
     pub(super) first: FrameId,
     pub(super) first_slot: usize,

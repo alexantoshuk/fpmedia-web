@@ -93,7 +93,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Strip / tip domain | One owner: `TimelineRef` (playlist units = **global frames**). Gesture / tip / hover / zebra / `<TimelineMeta>` all use it. `strip_video()` → live slot; ready/fetch remapped via `strip_ready_marks` / `strip_fetch_ranges`. Meta re-leases on `strip_video_key` change — **never** remount `<Scrubber>` on live swap. Mirror live→`playhead`/`pos` when not `scrubbing` (Play + paused step/seek; scrub gesture owns aim) |
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute** + **`playing` intent**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
 | Seam | **`LoopOwner`:** zone ⊆ live → `Engine` (`sync_live_loop_from_playlist` → `LoopSeam`); else `Host` → `promote_idle_at` / `wrap_to_loop_in`. Host cut/wrap latched by **`SeamPhase`** (not a bool). Densify-free seam paint via `seek_frame_with(..., false)`. Playlist `playing` stays true across slot `pause_hard` / EOF until pause, terminal end, or seam error — do not mirror live `VideoRef::playing` for chrome. |
-| Host promote policy | **`PromoteLead`** (`Origin` @0 / `Mid` @`loop_in`): one table for idle Play-ready + near-wall `kick_warm`. Kick/prepare → idle **main** `arm_playlist_seam_hold_at` (`SeamHold`); promote swap → PlayPrime **release** (not cold prime). Paint `prepare_seam_at` = fallback / paused scrub only. **no** post-swap `warm_play_origin`. PreferSoftware origin stash = single/Engine loop only (slice B). Port map: [below](#loopseam-vs-host-promote). |
+| Host promote policy | **`PromoteLead`** (`Origin` @0 / `Mid` @`loop_in`): idle **main** `SeamHold` before wall; promote → PlayPrime **release**. Paint `prepare_seam_at` = fallback / paused scrub. Single/Engine loop: **2nd HW** `LoopPlayWarm` (SW stash fallback). Port map: [below](#loopseam-vs-host-promote). |
 | Host prewarm schedule | **`seam_warm_schedule`**: `LoopOwner` + zone + media time → `SeamWarmTarget` (`PromoteLead` + idle). Kick → `kick_arm_seam_hold` when `SeamPhase::Idle` and owner ≠ `Engine`. Priority: Host zone wall → near clip-EOF next/`loop_in`. |
 | Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
 | Idle neighbor | Next clip; on last + playlist **loop** → **0** (wrap origin-stash target); else previous. `idle_neighbor` / `set_loop` re-preload |
@@ -248,7 +248,7 @@ flowchart TD
 
 `PlayPhase` (`Idle` / `Live` / `LoopSeam`) is the session machine; seek / scrub / pause end it (`clear_play_session` → `PlayIter::finish` resets and returns the decoder). Seek / step / Exact stay on `decode_frame` + warm pump (`samplesAtTimestamps`-shaped); Play never reads the presentation queue.
 
-**Loop (local / Remotion-shaped):** MB media-player has no loop. Near zone-end (~1 s) warms **loop-in** bytes + PreferSoftware **origin stash** on the scrub slot (`loop_in`/+1) while main PlayIter still owns HW. `LoopSeam` paints stash, seeds `play_next`, resumes clock; main PlayIter catch-up drains under `play_updating`. Miss → await `start_play_iter(loop_in)` on **main HW** under hold. Traps: `skills/media.md`.
+**Loop (local / Remotion-shaped):** MB media-player has no loop. Near zone-end (~1 s) warms **loop-in** bytes + **2nd HW** `LoopPlayWarm` (PlayIter @`loop_in`, dual-HW ~1 s) while main still Plays; PreferSoftware stash = fallback. `LoopSeam` **adopts** the warm iterator (no cold catch-up) or paints SW stash + bg catch-up / cold `start_play_iter`. Traps: `skills/media.md`.
 
 **LoopZone (shipped, local):** Half-open `[in, out)` while `looping`. Default = full axis (`in=0`, `out=frame_count` / Σ frames). Vocab: `glossary.md` § LoopZone. UX: `product.md` § Loop zone.
 
@@ -267,9 +267,9 @@ Shared warm/stash primitives on `VideoPlayer`; host owns **slot swap only** (no 
 
 | Step | Single `<Video>` `LoopSeam` | Playlist Host promote |
 | ---- | --------------------------- | --------------------- |
-| Near-wall warm | `maybe_kick_loop_origin` → bytes + PreferSoftware stash @`loop_in` (slice B: 2nd play-warm) | `seam_warm_schedule` → `PromoteLead::kick_warm` → idle **main** `SeamHold`; skip when `LoopOwner::Engine` |
-| Play-ready / paint | `start_loop_seam_with_stash` (or cold `start_play_iter`) | Idle `arm_playlist_seam_hold_at` → PlayIter under hold; paint prepare = fallback |
-| Session / clock | Hold → resume **same** `VideoPlayer` | Outgoing `pause_hard_no_densify` → swap → PlayPrime **release** (`release_playlist_seam_hold`) |
+| Near-wall warm | `maybe_kick_loop_origin` → bytes + **2nd HW** `LoopPlayWarm` @`loop_in` (SW stash fallback) | `seam_warm_schedule` → `PromoteLead::kick_warm` → idle **main** `SeamHold`; skip when `LoopOwner::Engine` |
+| Play-ready / paint | `adopt_loop_play_warm` (or SW stash + bg catch-up / cold `start_play_iter`) | Idle `arm_playlist_seam_hold_at` → PlayIter under hold; paint prepare = fallback |
+| Session / clock | Hold → resume **same** `VideoPlayer` (warm HW becomes Play) | Outgoing `pause_hard_no_densify` → swap → PlayPrime **release** (`release_playlist_seam_hold`) |
 | Slot | Same stage | `swap_live_idle` then release / cold Play |
 
 While Playing: densify is off (epoch cancel); Exact trail uses farthest-evict trim only — never a full Exact wipe. Continuous Play prioritizes cadence and A/V sync over painting every presentation frame (`product.md` Exact vs Play). Shuttle may drop overdue frames. Prefer mediabunny present + clock patterns; silent clock uses wall time when there is no audible audio graph.

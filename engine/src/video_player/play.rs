@@ -79,6 +79,8 @@ impl VideoPlayer {
         // Keep `loop_origin_stash` — playlist idle prewarm must survive pause of
         // the outgoing clip / soft holds; PlayPrime@0 and LoopSeam consume it.
         // Seek / open drop via [`Self::drop_origin_stash`].
+        // Drop HW loop play-warm (owns a second decoder) — do not keep across pause.
+        self.drop_loop_play_warm();
         *self.shared.play_driver_error.borrow_mut() = None;
         self.end_play_iter();
     }
@@ -86,6 +88,15 @@ impl VideoPlayer {
     /// Invalidate PreferSoftware origin stash (seek / new aim — not pause).
     pub(super) fn drop_origin_stash(&self) {
         self.shared.loop_origin_stash.borrow_mut().take();
+        self.drop_loop_play_warm();
+    }
+
+    pub(super) fn drop_loop_play_warm(&self) {
+        if let Some(warm) = self.shared.loop_play_warm.borrow_mut().take()
+            && let Some(d) = warm.iter.finish()
+        {
+            drop(d);
+        }
     }
 
     /// mediabunny `videoFrameIterator.return()` — decoder back to the slot.
@@ -322,12 +333,11 @@ impl VideoPlayer {
         Ok(())
     }
 
-    /// EOF while looping: restart the iterator at 0 under a soft-held clock.
+    /// EOF while looping: restart the iterator at `loop_in` under a soft-held clock.
     ///
-    /// mediabunny: no loop in `examples/media-player` — `startVideoIterator(0)` +
-    /// play. Near-EOF prewarm mirrors Remotion `prewarmIteratorForLooping`:
-    /// bytes + PreferSoftware origin decode stash; seam presents stash and
-    /// resumes while main PlayIter catch-up drains under `play_updating`.
+    /// mediabunny: no loop in `examples/media-player`. Near-EOF prewarm mirrors
+    /// Remotion `prewarmIteratorForLooping`: prefer 2nd HW [`LoopPlayWarm`] adopt
+    /// (slice B); else PreferSoftware stash + bg catch-up; else cold `start_play_iter`.
     fn start_loop_seam(self: &Rc<Self>) {
         if self.shared.play_phase.get() != PlayPhase::Live {
             return;
@@ -350,23 +360,36 @@ impl VideoPlayer {
             if player.shared.play_phase.get() != PlayPhase::LoopSeam {
                 return;
             }
-            // Stash hit: paint + seed sync, main catch-up in bg (Remotion swap).
-            // Miss: await `start_play_iter(loop_in)` under the hold (old path).
             let origin = player.shared.loop_zone().in_frame;
+            let warm = player.shared.loop_play_warm.borrow_mut().take();
             let stash = player.shared.loop_origin_stash.borrow_mut().take();
-            let primed = match stash {
-                Some(stash) if stash.first == origin => {
-                    player.start_loop_seam_with_stash(stash, epoch);
+            let primed = if let Some(warm) = warm {
+                if warm.first == origin {
+                    player.adopt_loop_play_warm(warm);
                     Ok(())
+                } else {
+                    if let Some(d) = warm.iter.finish() {
+                        drop(d);
+                    }
+                    drop(stash);
+                    player.start_play_iter(origin, epoch).await
                 }
-                _ => player.start_play_iter(origin, epoch).await,
+            } else {
+                match stash {
+                    // Stash hit: paint + seed sync, main catch-up in bg (fallback).
+                    Some(stash) if stash.first == origin => {
+                        player.start_loop_seam_with_stash(stash, epoch);
+                        Ok(())
+                    }
+                    _ => player.start_play_iter(origin, epoch).await,
+                }
             };
             if player.shared.play_phase.get() != PlayPhase::LoopSeam {
                 return;
             }
             player.apply_play_phase(PlayPhaseEvent::LoopDone);
             player.shared.loop_origin_warm_started.set(false);
-            // Fresh PlayIter at 0 may skip-catch while audio resumes — same grace
+            // Fresh PlayIter may skip-catch while audio resumes — same grace
             // as PlayPrime / tab return (avoid underrun→audio silence at seam).
             player.arm_underrun_catchup_grace();
             match primed {
@@ -385,6 +408,63 @@ impl VideoPlayer {
                 }
             }
         });
+    }
+
+    /// Install a primed 2nd-HW PlayIter as the live session (no cold catch-up).
+    /// Drops the outgoing main decoder from the slot — warm's HW becomes sole Play.
+    fn adopt_loop_play_warm(self: &Rc<Self>, warm: super::play_pool::LoopPlayWarm) {
+        self.end_play_iter();
+        self.shared.displayed.borrow_mut().take();
+        self.clear_presentation();
+        // Outgoing main is back in `decoder` — drop it (warm owns the new Play HW).
+        let _ = self.decoder.borrow_mut().take();
+
+        let super::play_pool::LoopPlayWarm {
+            iter,
+            pool,
+            first,
+            first_slot,
+            second,
+        } = warm;
+        if let Err(e) = pool.draw(first_slot, &self.shared.canvas, &self.shared.ctx) {
+            *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+            if let Some(d) = iter.finish() {
+                *self.decoder.borrow_mut() = Some(d);
+            }
+            return;
+        }
+        if let Err(e) = self.shared.commit_frame(first) {
+            *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+            if let Some(d) = iter.finish() {
+                *self.decoder.borrow_mut() = Some(d);
+            }
+            return;
+        }
+        self.touch_playhead(first);
+        *self.shared.play_pool.borrow_mut() = Some(pool);
+        if let Some((id, slot)) = second {
+            match self.frame_timestamp_seconds(id) {
+                Ok(ts) => {
+                    *self.shared.play_next.borrow_mut() = Some(PlayNext {
+                        frame: id,
+                        ts,
+                        slot,
+                    });
+                }
+                Err(e) => {
+                    *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+                    if let Some(d) = iter.finish() {
+                        *self.decoder.borrow_mut() = Some(d);
+                    }
+                    return;
+                }
+            }
+        }
+        *self.shared.play_iter.borrow_mut() = Some(iter);
+        web_sys::console::log_1(
+            &format!("fpmedia-web: LoopSeam adopt HW play-warm frame={first}").into(),
+        );
+        self.kick_update_next_frame();
     }
 
     /// Draw stash frame 0 onto the stage **without consuming** the stash.
@@ -853,16 +933,16 @@ impl VideoPlayer {
         }
     }
 
-    /// PreferSoftware origin decode into [`Shared::loop_origin_stash`] (Remotion
-    /// second-iterator). Joins [`Shared::play_origin_decode`]. Independent of
-    /// `ScrubCachePolicy` — ephemeral PreferSoftware when scrub slot is Off.
+    /// Loop-origin warm flight: HW [`LoopPlayWarm`] (slice B) then SW stash
+    /// fallback. Joins [`Shared::play_origin_decode`].
     ///
-    /// Loop: Live/LoopSeam while looping. Playlist: Idle slot near-EOF (cold
-    /// `play_seam` hit path). **no equivalent** (playlist local); loop =
-    /// Remotion `prewarmIteratorForLooping`.
+    /// Loop: Live/LoopSeam while looping. Playlist idle near-EOF still uses SW
+    /// stash via [`Self::warm_play_origin_stash`] (Host SeamHold is separate).
+    /// **no equivalent**; Remotion `prewarmIteratorForLooping`.
     pub async fn warm_play_origin_stash(&self) -> Result<(), MediaError> {
         loop {
             if self.shared.play_origin_decode.request() {
+                // Playlist idle / explicit stash callers — PreferSoftware only.
                 let result = self.decode_loop_origin_into_stash().await;
                 let again = self.shared.play_origin_decode.finish();
                 if again {
@@ -878,16 +958,44 @@ impl VideoPlayer {
     }
 
     async fn warm_loop_origin_decode(&self) -> Result<(), MediaError> {
-        self.warm_play_origin_stash().await
+        loop {
+            if self.shared.play_origin_decode.request() {
+                let result = self.warm_loop_origin_decode_inner().await;
+                let again = self.shared.play_origin_decode.finish();
+                if again {
+                    continue;
+                }
+                return result;
+            }
+            crate::timer::sleep_ms(8).await;
+            if !self.shared.play_origin_decode.is_busy() {
+                return Ok(());
+            }
+        }
     }
 
-    /// True while PreferSoftware origin stash warm is allowed.
+    async fn warm_loop_origin_decode_inner(&self) -> Result<(), MediaError> {
+        // Slice B: 2nd HW PlayIter @ loop_in while main still Plays.
+        match self.decode_loop_origin_into_play_warm().await {
+            Ok(()) if self.shared.loop_play_warm.borrow().is_some() => return Ok(()),
+            Ok(()) => {}
+            Err(e) if e.is_cancelled() => return Ok(()),
+            Err(e) => {
+                web_sys::console::warn_1(
+                    &format!("fpmedia-web: loop HW play-warm failed → SW stash ({e})").into(),
+                );
+            }
+        }
+        self.decode_loop_origin_into_stash().await
+    }
+
+    /// True while loop-origin warm (HW or SW) is allowed.
     fn origin_stash_warm_allowed(&self) -> bool {
         if self.shared.is_disposed() {
             return false;
         }
         match self.shared.play_phase.get() {
-            // Single-clip loop seam prewarm / in-seam finish.
+            // Single-clip / Engine LoopSeam prewarm / in-seam finish.
             PlayPhase::Live | PlayPhase::LoopSeam => self.is_looping(),
             // Playlist idle: PreferSoftware stash OK while paused; SeamHold uses
             // main PlayIter — do not SW-decode over it.
@@ -896,14 +1004,154 @@ impl VideoPlayer {
         }
     }
 
+    /// Second HW PlayIter at `loop_in` (slice B). Short dual-HW window.
+    /// **no equivalent**; Remotion `prewarmIteratorForLooping`.
+    async fn decode_loop_origin_into_play_warm(&self) -> Result<(), MediaError> {
+        if !self.origin_stash_warm_allowed() || !self.is_looping() {
+            return Ok(());
+        }
+        // Only while main Play owns the session — not playlist idle stash path.
+        if !matches!(
+            self.shared.play_phase.get(),
+            PlayPhase::Live | PlayPhase::LoopSeam
+        ) {
+            return Ok(());
+        }
+        let origin = self.shared.loop_zone().in_frame;
+        if self
+            .shared
+            .loop_play_warm
+            .borrow()
+            .as_ref()
+            .is_some_and(|w| w.first == origin)
+        {
+            return Ok(());
+        }
+        self.drop_loop_play_warm();
+
+        let meta = self.shared.track.metadata();
+        let decoder = WebCodecsDecoder::create(&meta).await?;
+        if !self.origin_stash_warm_allowed() {
+            drop(decoder);
+            return Ok(());
+        }
+
+        let t0 = now_ms().unwrap_or(0.0);
+        let lead = meta.settle_policy().play_index_lead;
+        let track = self.shared.track.clone();
+        let iter = PlayIter::start(decoder, track, origin, lead);
+        let first = match iter.next().await {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(d) = iter.finish() {
+                    drop(d);
+                }
+                return if e.is_cancelled() { Ok(()) } else { Err(e) };
+            }
+        };
+        let second = match iter.next().await {
+            Ok(v) => v,
+            Err(e) => {
+                drop(first);
+                if let Some(d) = iter.finish() {
+                    drop(d);
+                }
+                return if e.is_cancelled() { Ok(()) } else { Err(e) };
+            }
+        };
+        if !self.origin_stash_warm_allowed() {
+            drop(first);
+            drop(second);
+            if let Some(d) = iter.finish() {
+                drop(d);
+            }
+            return Ok(());
+        }
+
+        let warm = match first {
+            Some((id0, vf0)) => {
+                let w = self.shared.canvas.width().max(1);
+                let h = self.shared.canvas.height().max(1);
+                let mut pool = match super::play_pool::PlayCanvasPool::new() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        drop(vf0);
+                        drop(second);
+                        if let Some(d) = iter.finish() {
+                            drop(d);
+                        }
+                        return Err(e);
+                    }
+                };
+                let first_slot = match pool.copy(id0, vf0.as_web_sys(), w, h) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        drop(vf0);
+                        drop(second);
+                        if let Some(d) = iter.finish() {
+                            drop(d);
+                        }
+                        return Err(e);
+                    }
+                };
+                drop(vf0);
+                let second_slot = match second {
+                    Some((id1, vf1)) => {
+                        let slot = pool.copy(id1, vf1.as_web_sys(), w, h);
+                        drop(vf1);
+                        match slot {
+                            Ok(s) => Some((id1, s)),
+                            Err(e) => {
+                                if let Some(d) = iter.finish() {
+                                    drop(d);
+                                }
+                                return Err(e);
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                Some(super::play_pool::LoopPlayWarm {
+                    iter,
+                    pool,
+                    first: id0,
+                    first_slot,
+                    second: second_slot,
+                })
+            }
+            None => {
+                drop(second);
+                if let Some(d) = iter.finish() {
+                    drop(d);
+                }
+                None
+            }
+        };
+
+        if let Some(warm) = warm {
+            let ms = now_ms().unwrap_or(t0) - t0;
+            web_sys::console::log_1(
+                &format!("fpmedia-web: loop HW play-warm {ms:.0}ms frame={origin}").into(),
+            );
+            // Prefer HW warm over leftover SW stash this lap.
+            self.shared.loop_origin_stash.borrow_mut().take();
+            *self.shared.loop_play_warm.borrow_mut() = Some(warm);
+        }
+        Ok(())
+    }
+
     /// Decode frame 0 (+1 when present) on PreferSoftware while main PlayIter
-    /// still owns HW (loop) or on idle playlist slot. **no equivalent** (MB
-    /// media-player has no loop); Remotion `prewarmIteratorForLooping`.
+    /// still owns HW (loop fallback) or on idle playlist slot. **no equivalent**
+    /// (MB media-player has no loop); Remotion `prewarmIteratorForLooping`.
     async fn decode_loop_origin_into_stash(&self) -> Result<(), MediaError> {
         if !self.origin_stash_warm_allowed() {
             return Ok(());
         }
         if self.shared.scrub_densify_blocked.get() || self.shared.densify.is_busy() {
+            return Ok(());
+        }
+        // HW play-warm already ready — skip SW.
+        if self.shared.loop_play_warm.borrow().is_some() {
             return Ok(());
         }
         // Already have a stash from this lap — keep it.

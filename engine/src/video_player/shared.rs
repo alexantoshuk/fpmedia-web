@@ -31,7 +31,7 @@ use crate::residency::ScrubChunkStore;
 use crate::types::{FrameId, Timestamp};
 
 use super::api::PlayerState;
-use super::play_pool::{LoopOriginStash, PlayCanvasPool};
+use super::play_pool::{LoopOriginStash, LoopPlayWarm, PlayCanvasPool};
 use crate::policy::workload::WorkloadHints;
 
 /// Live VF ahead of the playhead for paused Next hits (not used by Play).
@@ -122,11 +122,13 @@ pub(super) struct Shared {
     /// Origin (frame 0) byte warm — loop prewarm, playlist idle near-EOF, and
     /// PlayPrime at head 0 share one flight so kick + prime do not double-read.
     pub(super) play_origin_warm: SingleFlight,
-    /// PreferSoftware origin decode into [`Self::loop_origin_stash`] (Remotion
-    /// second-iterator shape). Seam joins this flight after byte warm.
+    /// Loop-origin warm flight (HW [`LoopPlayWarm`] preferred; SW stash fallback).
+    /// Seam joins this flight after byte warm.
     pub(super) play_origin_decode: SingleFlight,
-    /// Decoded frame 0 (+ optional 1) canvases ready before EOF / LoopSeam.
+    /// PreferSoftware 2-canvas stash fallback when HW play-warm fails.
     pub(super) loop_origin_stash: RefCell<Option<LoopOriginStash>>,
+    /// Second HW PlayIter @ `loop_in` (slice B) — adopt on LoopSeam.
+    pub(super) loop_play_warm: RefCell<Option<LoopPlayWarm>>,
     /// Playlist `SeamHold` primed AAC via muted start→hold (release = warm resume).
     pub(super) seam_audio_warm: Cell<bool>,
     /// Idle Play-ready arm flight — near-EOF kick + promote join (`arm_playlist_seam_hold_at`).

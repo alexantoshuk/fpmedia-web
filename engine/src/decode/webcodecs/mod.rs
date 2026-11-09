@@ -68,20 +68,21 @@ impl WebCodecsDecoder {
     /// Main play/seek decoder — knobs from [`VideoMetadata::play_policy`].
     ///
     /// Always probes `prefer-hardware` when the host supports it (Hd and Uhd,
-    /// incl. mobile). Densify scrub / thumb / loop stash stay
-    /// [`HwAccel::PreferSoftware`] via [`Self::create_scrub`] — soft-drag /
-    /// settle Exact stay on this main session.
+    /// incl. mobile). Densify scrub / thumb / SW loop-stash fallback stay
+    /// [`HwAccel::PreferSoftware`] via [`Self::create_scrub`]. Loop slice B may
+    /// briefly open a **second** HW via this path for `LoopPlayWarm` (~1 s).
+    /// Soft-drag / settle Exact stay on the live main session.
     /// mediabunny: `decoderOptions.hardwareAcceleration` (PR #406).
     pub async fn create(meta: &VideoMetadata) -> Result<Self, MediaError> {
         // `true`: HW-only codecs (HEVC) + prefer HW for main play when available.
         Self::create_with_policy(meta, meta.play_policy(), true).await
     }
 
-    /// Pause densify / loop-origin stash decoder — always [`PlayPolicy::hd`]
-    /// knobs and explicit `prefer-software` so main keeps the sole HW session
-    /// for Play / soft-drag / settle (mediabunny: `src/media-sink.ts` alpha
-    /// `prefer-software`; dual-HW / `Unsupported configuration` if scrub steals HW).
-    /// Soft-drag does **not** use this path — `drag_key_chase` stays on main.
+    /// Pause densify / SW loop-stash fallback — always [`PlayPolicy::hd`] knobs
+    /// and explicit `prefer-software` so densify never dual-HW poisons main
+    /// (mediabunny: `src/media-sink.ts` alpha `prefer-software`). Soft-drag does
+    /// **not** use this path — `drag_key_chase` stays on main. Loop preferred
+    /// warm = second `create()` HW (`LoopPlayWarm`), not this scrub slot.
     pub async fn create_scrub(meta: &VideoMetadata) -> Result<Self, MediaError> {
         // Hd knobs (cap/warm) only — force PreferSoftware even if main prefers HW.
         Self::create_with_policy(meta, PlayPolicy::hd(), false).await
