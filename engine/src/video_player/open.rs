@@ -192,6 +192,8 @@ impl VideoPlayer {
             play_origin_decode: crate::SingleFlight::new(),
             loop_origin_stash: RefCell::new(None),
             seam_audio_warm: Cell::new(false),
+            seam_hold_arm: crate::SingleFlight::new(),
+            seam_hold_frame: Cell::new(None),
             scrub_gesture: Cell::new(false),
             drag_aim: Cell::new(0),
             engine: Cell::new(EngineModel::new()),

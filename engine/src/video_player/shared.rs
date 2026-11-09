@@ -129,6 +129,10 @@ pub(super) struct Shared {
     pub(super) loop_origin_stash: RefCell<Option<LoopOriginStash>>,
     /// Playlist `SeamHold` primed AAC via muted start→hold (release = warm resume).
     pub(super) seam_audio_warm: Cell<bool>,
+    /// Idle Play-ready arm flight — near-EOF kick + promote join (`arm_playlist_seam_hold_at`).
+    pub(super) seam_hold_arm: SingleFlight,
+    /// Aim frame for an armed / arming [`crate::PlayPhase::SeamHold`] (playlist Host).
+    pub(super) seam_hold_frame: Cell<Option<FrameId>>,
     /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).
     pub(super) scrub_gesture: Cell<bool>,
     /// Latest soft-drag aim (updated sync on every pointer sample). In-flight

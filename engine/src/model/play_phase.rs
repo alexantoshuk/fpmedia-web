@@ -10,8 +10,8 @@
 //! mediabunny: `examples/media-player/media-player.ts` — `play()` after
 //! `startVideoIterator`; loop = `startVideoIterator(0)` while the clock is held
 //! (local adaptation: the example has no loop).
-//! `SeamHold` — **no equivalent** (playlist dual-present local): idle slot
-//! primes PlayIter@0 under a held clock until host handoff.
+//! `SeamHold` — **no equivalent** (playlist Host local): idle slot primes
+//! main PlayIter @ aim under a held clock until promote release.
 
 use std::fmt;
 
@@ -24,7 +24,7 @@ pub enum PlayPhase {
     Live,
     /// Iterator restart at frame 0 under a soft-held clock.
     LoopSeam,
-    /// Playlist idle: PlayIter@0 primed, clock held until handoff release.
+    /// Playlist idle: main PlayIter @ aim primed, clock held until release.
     SeamHold,
 }
 
@@ -65,9 +65,9 @@ pub enum PlayPhaseEvent {
     LoopStart,
     /// New iterator primed at frame 0 (or the restart was cancelled).
     LoopDone,
-    /// Playlist: arm PlayIter@0 under held clock (idle slot).
+    /// Playlist Host: arm main PlayIter under held clock (idle slot).
     ArmSeamHold,
-    /// Playlist: release held seam → Live (present + clock).
+    /// Playlist Host: release held seam → Live (present + clock).
     ReleaseSeamHold,
     /// Pause / soft-hold / teardown.
     End,

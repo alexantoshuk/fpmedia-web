@@ -806,6 +806,21 @@ pub fn Video(
         }) as super::LocalFutFnU32<Result<(), String>>
     };
 
+    let arm_seam_hold_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |frame: u32| {
+            let ctx = ctx.clone();
+            Box::pin(async move {
+                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
+                    return Err("no player".into());
+                };
+                p.arm_playlist_seam_hold_at(u64::from(frame))
+                    .await
+                    .map_err(|e| e.to_string())
+            }) as super::BoxedLocalFut<Result<(), String>>
+        }) as super::LocalFutFnU32<Result<(), String>>
+    };
+
     let close_fn = {
         let ctx = ctx.clone();
         Rc::new(move || {
@@ -840,6 +855,7 @@ pub fn Video(
         set_scrub_cache_policy: set_scrub_cache_policy_fn,
         warm_play_origin: warm_play_origin_fn,
         prepare_seam_at: prepare_seam_at_fn,
+        arm_seam_hold: arm_seam_hold_fn,
     }));
 
     on_cleanup({

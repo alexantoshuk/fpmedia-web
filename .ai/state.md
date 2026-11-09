@@ -8,10 +8,10 @@
 
 ### Handoff
 
-- **HEAD:** Host multi-clip LoopZone seam races fixed (mirror/`seam_busy`, prepare epoch, warm idle-only, stop live before prepare). Prior: residual densify `9caad63`.
+- **HEAD:** Playlist Host SeamHold join (slice A) — idle main Play-ready before EOF; promote release; `end_seam` before neighbor preload (3-clip tip freeze). Verified Play All 2–3 clips.
 - **Stash:** `stash@{0}` = densify-free `clear_pending` after `EndExact` — optional (cut Exact flash).
 - **Do not land:** `b8206d1` Exact wipe-on-settle; WIP cut/LoopZone hard-reset; `39d20a4` BeginExact-before-yield / `BeginExact { rearm: densify }`.
-- **Parked:** Pause densify pin-holes; idle Fetch gray; seam deeper stash / lead.
+- **Parked:** Pause densify pin-holes; idle Fetch gray; **slice B** single/Engine LoopSeam 2nd play-warm (mobile loop residual).
 - **Unverified:** cut densify flash after optional stash.
 
 ---
@@ -22,7 +22,7 @@
 
 Shared volume + frame-sum scrub + origin-stash seam shipped (`0.1.0-alpha.4`). Design: `architecture.md` § Playlist.
 
-**Optional:** cut markers / clip name in `[i]` (Later). Idle Fetch gray — parked.
+**Next:** slice B — single/Engine LoopSeam 2nd play-warm (mobile loop residual). Optional: cut markers / clip name in `[i]` (Later). Idle Fetch gray — parked.
 
 **Out of v1:** compare dual-visible.
 

@@ -316,6 +316,44 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
             ph = safe;
         }
     }
+    let still_queued = || queue.is_current(id);
+
+    // Playlist Host: idle already Play-ready (`SeamHold`) — release clock, skip
+    // cold PlayPrime / `play()` cancel_ops. **no equivalent** (playlist local).
+    if p.seam_hold_armed() {
+        web_sys::console::log_1(&"fpmedia-web: play prime seam-hold release".into());
+        fps_meter.borrow_mut().reset();
+        fps.set(None);
+        let release_ok = match p.release_playlist_seam_hold().await {
+            Ok(()) => true,
+            Err(e) if e.is_cancelled() => false,
+            Err(e) => {
+                if still_queued() {
+                    error.set(Some(e.to_string()));
+                }
+                false
+            }
+        };
+        if !still_queued() {
+            return false;
+        }
+        if release_ok && p.play_session_live() {
+            // Release already → Live + clock / pending silent. Do not
+            // `begin_play_session` (would clear silent `held_media_origin`).
+            sync_playing_from_transport(ctx);
+            if still_queued() && ctx.video.playing.get_untracked() {
+                resume_raf();
+            }
+            web_sys::console::log_1(&"fpmedia-web: play prime seam-hold done".into());
+            return still_queued() && p.play_session_live();
+        }
+        // Release missed — tear hold so cold prime does not fight SeamHold.
+        web_sys::console::warn_1(&"fpmedia-web: seam-hold release missed → cold prime".into());
+        if p.seam_hold_armed() {
+            p.pause_hard_no_densify();
+        }
+    }
+
     if p.state().frame != u64::from(ph) {
         web_sys::console::log_1(
             &format!(
@@ -343,7 +381,6 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     // UI `playing` flips only on transport PlayPrimeDone / ScrubReleaseDone
     // (`TransportState::Playing`). Keep it false during prime so rAF cannot
     // End→stop_playback mid-PlayPrime.
-    let still_queued = || queue.is_current(id);
 
     // Unlock AudioContext during the Play click turn — before long prime awaits.
     if let Err(e) = p.resume_audio_context().await {

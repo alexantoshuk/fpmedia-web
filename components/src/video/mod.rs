@@ -107,6 +107,8 @@ pub(crate) struct VideoOps {
     pub warm_play_origin: LocalFutFn<()>,
     /// Idle: warm + paint `frame` before promote (0 = clip seam; mid = LoopZone in).
     pub prepare_seam_at: LocalFutFnU32<Result<(), String>>,
+    /// Idle Play-ready: main PlayIter @ `frame` under `SeamHold` (playlist Host).
+    pub arm_seam_hold: LocalFutFnU32<Result<(), String>>,
 }
 
 impl VideoRef {
@@ -473,6 +475,25 @@ impl VideoRef {
     /// Fire-and-forget [`Self::prepare_seam_at`] (near-wall idle warm).
     pub fn kick_prepare_seam_at(&self, frame: u32) {
         if let Some(make) = self.op(|o| &o.prepare_seam_at) {
+            let fut = make(frame);
+            spawn_local(async move {
+                let _ = fut.await;
+            });
+        }
+    }
+
+    /// Idle Play-ready under `SeamHold` (playlist Host near-EOF / promote).
+    pub async fn arm_seam_hold(&self, frame: u32) -> Result<(), String> {
+        if let Some(make) = self.op(|o| &o.arm_seam_hold) {
+            make(frame).await
+        } else {
+            Err("Video not mounted".into())
+        }
+    }
+
+    /// Fire-and-forget [`Self::arm_seam_hold`].
+    pub fn kick_arm_seam_hold(&self, frame: u32) {
+        if let Some(make) = self.op(|o| &o.arm_seam_hold) {
             let fut = make(frame);
             spawn_local(async move {
                 let _ = fut.await;

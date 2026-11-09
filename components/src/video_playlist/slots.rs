@@ -307,13 +307,12 @@ pub(crate) async fn seek_to_pos(
 
 /// Host promote lead for a local aim. One table for [`promote_idle_at`] +
 /// [`maybe_kick_idle_seam_warm`] — no `if local==0` fork at call sites.
-/// Deeper PreferSoftware stash = parked (`state.md`). **no equivalent**.
+/// Play path: idle **main** `SeamHold` (not PreferSoftware stash). **no equivalent**.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PromoteLead {
-    /// Frame 0 — PreferSoftware origin stash (`prepare_playlist_seam_at(0)` /
-    /// near-EOF `kick_warm_play_origin`).
+    /// Frame 0 — idle `arm_seam_hold(0)` / near-EOF kick.
     Origin,
-    /// Mid-clip (LoopZone `loop_in`) — densify-free `prepare_seam_at(n)`.
+    /// Mid-clip (LoopZone `loop_in`) — idle `arm_seam_hold(n)`.
     Mid { local: u32 },
 }
 
@@ -333,29 +332,38 @@ impl PromoteLead {
         }
     }
 
-    /// Idle (or same-clip) paint before swap / wrap play.
-    /// Engine `prepare_playlist_seam_at` `begin_op`s first — cancels in-flight
-    /// near-wall `kick_prepare` before warm/seek (small-zone late-seek stop).
+    /// Idle Play-ready before swap (`SeamHold` on main HW). Paint-only
+    /// `prepare_seam_at` remains the fallback if arm fails (scrub settle still
+    /// uses prepare directly). Soft-cancel → retry arm once.
     async fn prepare(self, video: VideoRef) -> Result<(), String> {
-        seam_trace(&format!("prepare lead={self:?} local={}", self.local()));
-        match video.prepare_seam_at(self.local()).await {
+        let local = self.local();
+        seam_trace(&format!("prepare lead={self:?} local={local} (seam hold)"));
+        match video.arm_seam_hold(local).await {
             Ok(()) => Ok(()),
-            // Near-wall kick / scrub settle can supersede once — retry once.
             Err(e) if is_soft_seam_cancel(&e) => {
-                seam_trace("prepare soft-cancel retry");
-                video.prepare_seam_at(self.local()).await
+                seam_trace("arm soft-cancel retry");
+                match video.arm_seam_hold(local).await {
+                    Ok(()) => Ok(()),
+                    Err(e2) if is_soft_seam_cancel(&e2) => {
+                        seam_trace("arm soft-cancel → paint fallback");
+                        video.prepare_seam_at(local).await
+                    }
+                    Err(e2) => {
+                        seam_trace(&format!("arm fail → paint fallback: {e2}"));
+                        video.prepare_seam_at(local).await
+                    }
+                }
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                seam_trace(&format!("arm fail → paint fallback: {e}"));
+                video.prepare_seam_at(local).await
+            }
         }
     }
 
-    /// Near-wall fire-and-forget. Origin uses the PlayPrime-join warm path;
-    /// mid uses full prepare (lead + Exact/seek paint).
+    /// Near-wall fire-and-forget: idle main Play-ready (`SeamHold`).
     fn kick_warm(self, video: VideoRef) {
-        match self {
-            Self::Origin => video.kick_warm_play_origin(),
-            Self::Mid { local } => video.kick_prepare_seam_at(local),
-        }
+        video.kick_arm_seam_hold(self.local());
     }
 }
 
@@ -381,10 +389,10 @@ fn resume_live_if_playlist_playing(pl: VideoPlaylistRef) {
     live.play();
 }
 
-/// Paint `local` on idle → swap → Play. Shared by clip cut (`Origin`) and
-/// cross-clip LoopZone wrap (`Mid`). Prepare already warms/paints — no post-swap
-/// `warm_play_origin` (was a cut@0 double warm). `expect_live`: abort if live
-/// moved (EOF seam race). **no equivalent** (playlist host).
+/// Idle Play-ready (`SeamHold`) → swap → PlayPrime release. Shared by clip cut
+/// (`Origin`) and cross-clip LoopZone wrap (`Mid`). Arm on idle main — no
+/// post-swap `warm_play_origin`. `expect_live`: abort if live moved (EOF race).
+/// **no equivalent** (playlist host).
 async fn promote_idle_at(
     pl: VideoPlaylistRef,
     epoch: u64,
@@ -601,6 +609,7 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         "wrap enter epoch={epoch} zone_in={zone_in_log} live_clip={}",
         pl.live_clip.get_untracked()
     ));
+    let mut neighbor_after: Option<u32> = None;
     let result: Result<(), String> = async {
         let (zone_in, zone_out) = pl.loop_zone();
         let model = pl.model.get_untracked();
@@ -644,14 +653,14 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         if pl.open_gen.get_value() != epoch {
             return Ok(());
         }
-        let neighbor = idle_neighbor_for_zone(
+        // Defer neighbor open until after `end_seam` (mirror). **no equivalent**.
+        neighbor_after = idle_neighbor_for_zone(
             &model,
             aim.clip_index,
             pl.looping.get_untracked(),
             zone_in,
             zone_out,
         );
-        preload_idle(pl, neighbor, epoch).await;
         Ok(())
     }
     .await;
@@ -666,6 +675,9 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         pl.playhead.get_untracked()
     ));
     end_seam(pl);
+    if result.is_ok() {
+        preload_idle(pl, neighbor_after, epoch).await;
+    }
     result
 }
 
@@ -767,6 +779,10 @@ pub(crate) async fn advance_after_ended(
                 pl.ended.set(false);
                 pl.status
                     .set(format!("Playing clip {}/{}", next_i + 1, model.len()));
+                // Unblock facade mirror before neighbor open — awaiting preload
+                // under seam_busy froze progress/frame on 3-clip first join while
+                // SeamHold canvas already played. **no equivalent**.
+                end_seam(pl);
                 let following = idle_neighbor_for_zone(
                     &model,
                     next_i,
