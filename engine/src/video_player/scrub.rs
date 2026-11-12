@@ -461,6 +461,15 @@ impl VideoPlayer {
                     }
 
                     if !exact_scrub_ready(&self.shared, key) {
+                        // Cold GOP: stage often picks key (no blit) — paint the
+                        // hole-aware Exact neighbor instead of leaving a stale
+                        // previous canvas. **no equivalent** (scrub local).
+                        if blit_cached.is_some_and(|id| stage != Some(id))
+                            && let Some(id) = blit_cached
+                            && self.present_from_cache(id).await?
+                        {
+                            self.shared.commit_frame(id)?;
+                        }
                         return Ok(());
                     }
                     if self.shared.densify.is_busy() {

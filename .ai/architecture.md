@@ -305,7 +305,7 @@ flowchart TD
   PP --> PRIME["PlayPrime → start_play_iter"]
 ```
 
-Soft-drag must not run densify under the finger (PreferSoftware densify saturates mobile Chrome); picture updates via **main-HW key** chase on `drag_aim` (Exact = dwell/settle on main only — traps: `skills/media.md`). Soft-drag **and** hover-thumb interim paint pick neighbors with **floor when moving forward / ceil when backward** (`scrub_preview_neighbor` + `scrub_dir` / `hover_dir`) so Exact/aim refine does not jump opposite the gesture. Settle must not wipe Exact blit (soft-drag trail). Densify soft-ban stops infinite re-decode; residual pin-holes on constrained machines are accepted strip cosmetics (`product.md`). Scrub-while-play release skips Exact.
+Soft-drag must not run densify under the finger (PreferSoftware densify saturates mobile Chrome); picture updates via **main-HW key** chase on `drag_aim` (Exact = dwell/settle on main only — traps: `skills/media.md`). Soft-drag **and** hover-thumb interim paint pick neighbors with **floor when moving forward / ceil when backward** (`scrub_preview_neighbor` + `scrub_dir` / `hover_dir`) within `SCRUB_DIR_BIAS_MAX_LAG_FRAMES` of aim (near-trail settle anti-reverse); beyond that lag, take the closer side so cold Exact/Thumb holes do not stick on a stale previous frame. Settle must not wipe Exact blit (soft-drag trail). Densify soft-ban stops infinite re-decode; residual pin-holes on constrained machines are accepted strip cosmetics (`product.md`). Scrub-while-play release skips Exact.
 
 ### Scrub phases
 

@@ -687,13 +687,16 @@ mod tests {
     #[test]
     fn nearest_with_dir_floors_forward_ceils_backward() {
         let w = window_with(8, 0, &[10, 20]);
-        // Abs-nearest would pick 20 at aim 16 — forward must floor.
+        // Near trail: abs-nearest would pick 20 at aim 16 — forward must floor.
         assert_eq!(w.nearest_with_dir(16, 1), Some(10));
         assert_eq!(w.nearest_with_dir(16, -1), Some(20));
         assert_eq!(w.nearest_with_dir(16, 0), Some(20));
         // Hit under aim.
         assert_eq!(w.nearest_with_dir(10, 1), Some(10));
         assert_eq!(w.nearest_with_dir(10, -1), Some(10));
+        // Cold hole: floor beyond dir lag, ceil closer → next.
+        let cold = window_with(8, 0, &[40, 105]);
+        assert_eq!(cold.nearest_with_dir(100, 1), Some(105));
     }
 
     #[test]

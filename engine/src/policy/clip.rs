@@ -42,6 +42,11 @@ pub const EDGE_MARGIN_RIGHT_MIN: u64 = 4;
 /// Covered-only densify edge margin (each side, frames) once Exact is idle.
 /// Independent of Exact blit cap / GOP soft-drag margins. **no equivalent** (scrub local).
 pub const COVERED_EDGE_MARGIN_FRAMES: u64 = 300;
+/// Soft-drag / hover dir-bias max lag (frames). Prefer floor(forward) /
+/// ceil(backward) only while that side stays within this distance of aim; beyond
+/// it, take the closer side (cold Exact/Thumb holes). Keeps near-trail settle
+/// anti-reverse; **no equivalent** (scrub local).
+pub const SCRUB_DIR_BIAS_MAX_LAG_FRAMES: u64 = 16;
 
 /// Asymmetric edge margins from a GOP length hint (Short `len` / Long `median`).
 ///
@@ -90,29 +95,50 @@ pub fn scrub_gap_fill_armed(
 
 /// Soft-drag Exact neighbor among floor (`≤ target`) / ceil (`≥ target`).
 ///
-/// Forward (`dir > 0`) → floor (fallback ceil); backward (`dir < 0`) → ceil
-/// (fallback floor); neutral → abs-nearest (tie → floor). Preferring the side
-/// the gesture came from so settle Exact never paints a reverse jump vs the
-/// interim canvas. **no equivalent** (scrub local).
+/// Forward (`dir > 0`) → floor; backward (`dir < 0`) → ceil; neutral →
+/// abs-nearest (tie → floor). Dir side wins while within
+/// [`SCRUB_DIR_BIAS_MAX_LAG_FRAMES`] of aim (near-trail settle anti-reverse).
+/// When the preferred side is farther than that lag **and** the other side is
+/// strictly closer, take the closer side — cold Exact/Thumb holes otherwise
+/// stick on a stale previous frame. Empty preferred → other side.
+/// **no equivalent** (scrub local).
 pub fn scrub_preview_neighbor(
     target: FrameId,
     floor: Option<FrameId>,
     ceil: Option<FrameId>,
     dir: i8,
 ) -> Option<FrameId> {
+    let abs_nearest = |a: FrameId, b: FrameId| {
+        if a.abs_diff(target) <= b.abs_diff(target) {
+            a
+        } else {
+            b
+        }
+    };
+    let dir_or_closer = |preferred: FrameId, other: FrameId| {
+        let pd = preferred.abs_diff(target);
+        let od = other.abs_diff(target);
+        if pd > SCRUB_DIR_BIAS_MAX_LAG_FRAMES && od < pd {
+            other
+        } else {
+            preferred
+        }
+    };
     if dir > 0 {
-        floor.or(ceil)
+        match (floor, ceil) {
+            (Some(f), Some(c)) if f != c => Some(dir_or_closer(f, c)),
+            (Some(f), _) | (_, Some(f)) => Some(f),
+            (None, None) => None,
+        }
     } else if dir < 0 {
-        ceil.or(floor)
+        match (floor, ceil) {
+            (Some(f), Some(c)) if f != c => Some(dir_or_closer(c, f)),
+            (Some(f), _) | (_, Some(f)) => Some(f),
+            (None, None) => None,
+        }
     } else {
         match (floor, ceil) {
-            (Some(a), Some(b)) if a != b => {
-                if a.abs_diff(target) <= b.abs_diff(target) {
-                    Some(a)
-                } else {
-                    Some(b)
-                }
-            }
+            (Some(a), Some(b)) if a != b => Some(abs_nearest(a, b)),
             (Some(a), _) | (_, Some(a)) => Some(a),
             (None, None) => None,
         }
@@ -855,9 +881,9 @@ mod tests {
 
     #[test]
     fn scrub_preview_neighbor_dir_avoids_reverse_jump() {
-        // Forward: ahead closer (16→20) must still floor — settle to 16 won't jump back.
+        // Near trail: ahead closer (16→20) must still floor — settle to 16 won't jump back.
         assert_eq!(scrub_preview_neighbor(16, Some(10), Some(20), 1), Some(10));
-        // Backward: behind closer must still ceil.
+        // Near trail: behind closer must still ceil.
         assert_eq!(scrub_preview_neighbor(16, Some(10), Some(20), -1), Some(20));
         // Neutral keeps abs-nearest (tie → floor).
         assert_eq!(scrub_preview_neighbor(15, Some(10), Some(20), 0), Some(10));
@@ -865,6 +891,25 @@ mod tests {
         // Preferred side empty → other side.
         assert_eq!(scrub_preview_neighbor(16, None, Some(20), 1), Some(20));
         assert_eq!(scrub_preview_neighbor(16, Some(10), None, -1), Some(10));
+    }
+
+    #[test]
+    fn scrub_preview_neighbor_cold_hole_takes_closer_side() {
+        // Forward cold hole: floor far behind lag, ceil closer → next (not stale prev).
+        assert_eq!(
+            scrub_preview_neighbor(100, Some(40), Some(105), 1),
+            Some(105)
+        );
+        // Backward cold hole: ceil far ahead, floor closer → prev.
+        assert_eq!(
+            scrub_preview_neighbor(100, Some(95), Some(160), -1),
+            Some(95)
+        );
+        // Preferred side still within lag → keep dir bias even if other closer.
+        assert_eq!(
+            scrub_preview_neighbor(100, Some(90), Some(105), 1),
+            Some(90)
+        );
     }
 
     #[test]
