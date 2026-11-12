@@ -186,6 +186,32 @@ pub fn scrub_preview_choice_with_dir(
     }
 }
 
+/// Hover ThumbCache vs Exact pick among **already** dir-biased neighbors.
+///
+/// Soft-drag [`scrub_preview_choice_with_dir`] treats the 2nd arg as a GOP sync
+/// key and drops the wrong side of aim — do **not** pass ThumbCache ids there
+/// (ahead thumb discarded → far densify Exact flashes as “random”). Compare by
+/// `|id − aim|` only; Exact wins ties (better pixels). **no equivalent**
+/// (filmstrip local).
+pub fn hover_preview_choice(
+    aim: FrameId,
+    thumb: Option<FrameId>,
+    exact: Option<FrameId>,
+) -> Option<FrameId> {
+    match (thumb, exact) {
+        (Some(t), Some(e)) => {
+            if e.abs_diff(aim) <= t.abs_diff(aim) {
+                Some(e)
+            } else {
+                Some(t)
+            }
+        }
+        (Some(t), None) => Some(t),
+        (None, Some(e)) => Some(e),
+        (None, None) => None,
+    }
+}
+
 /// Merge blit + displayed into one directional cached id (floor/ceil), then the
 /// same key-vs-cache pick as [`scrub_preview_choice_with_dir`]. Soft-drag stage
 /// and interim preview share this so key decode cannot paint behind a warmer
@@ -929,6 +955,22 @@ mod tests {
             scrub_preview_choice_with_dir(16, Some(16), Some(20), -1),
             Some(16)
         );
+    }
+
+    #[test]
+    fn hover_preview_choice_keeps_nearer_thumb_vs_far_exact() {
+        // Forward: nearer ahead thumb vs farther behind Exact. Scrub key filter
+        // would drop thumb 120 (wrong side) and flash Exact 50.
+        assert_eq!(
+            scrub_preview_choice_with_dir(100, Some(120), Some(50), 1),
+            Some(50)
+        );
+        assert_eq!(hover_preview_choice(100, Some(120), Some(50)), Some(120));
+        // Exact closer or tie → Exact.
+        assert_eq!(hover_preview_choice(100, Some(300), Some(98)), Some(98));
+        assert_eq!(hover_preview_choice(100, Some(110), Some(90)), Some(90));
+        assert_eq!(hover_preview_choice(100, Some(50), None), Some(50));
+        assert_eq!(hover_preview_choice(100, None, Some(50)), Some(50));
     }
 
     #[test]

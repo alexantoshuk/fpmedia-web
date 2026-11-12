@@ -34,6 +34,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Soft-drag rare R→L reverse (no Exact strip) | `scrub_drag_key_advances` / `commit_frame` | advances vs last stage `frame` (blit present commits); not stale `displayed` VF — else later key jumps back on canvas. **no equivalent** (scrub local) |
 | Soft-drag / hover thumb jumps back 1–2 frames | `scrub_drag_stage_choice` / `scrub_preview_neighbor` | floor/ceil + key-vs-cache for stage **and** interim; do not blind-present GOP key over warmer Exact blit. **no equivalent** (scrub local) |
 | Soft-drag / hover: previous frame on cold Exact/Thumb holes | `scrub_preview_neighbor` / cold drag fallback | dir-bias only within `SCRUB_DIR_BIAS_MAX_LAG_FRAMES`; farther preferred + closer other → closer side. Cold key miss → paint hole-aware blit neighbor. Hover shares helper. **no equivalent** (scrub local) |
+| Hover flashes far / “random” Exact vs nearer thumb | `hover_preview_choice` | Thumb∪Exact by distance (Exact on tie) — never pass Thumb ids to `scrub_preview_choice_with_dir` (GOP-key wrong-side filter drops ahead thumb). **no equivalent** (filmstrip local) |
 | Soft-drag R→L Exact strip: return flicker / skipped frames | `scrub_drag_stage_choice` / `scrub_to` drag | Exact hit (`blit==aim`) → present aim before stage merge; blit does not refresh `displayed`, so R→L ceil-bias re-picked stale ahead VF. Host move still must **not** sync `try_present_scrub_exact` (ScrubDrag owns canvas). **no equivalent** (scrub local) |
 | Hold scrub then release jumps | `ScrubDwellExact` / `arm_scrub_dwell` | Exact hit under finger → present now; miss → ~100 ms stillness Exact while finger down. Move resets dwell; release often cache-hit. **no equivalent** (scrub local) |
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
@@ -138,7 +139,7 @@ Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `a
 - Do not cancel in-flight GOP densify on aim move; do not blit interim; do not wipe markers on settle/Play; do not drop prune salvage “to clean the strip” (re-decodes GOP — `AGENTS.md` Suboptimal).
 - Step: ring → blit → soft goto without abort densify. Pause after Play: refill blit gaps (`next_gap` prefers blit holes). Exact `put` refuses far inserts at cap (no origin/EOF thrash).
 - **GopProfile** → Short on **max** GOP only (scene-cut spread must not force Long).
-- Thumbs: `ThumbSink` product (not densify decoder); Play cache/Exact only; Pause progressive + rank eviction (even grid); hover same ranks; Exact-on-dwell after host 150 ms. Skip only `painted==aim`. **no equivalent** (filmstrip); `mediabunny: media-sink.ts CanvasSink`.
+- Thumbs: `ThumbSink` product (not densify decoder); Play cache/Exact only; Pause progressive + rank eviction (even grid); hover same ranks; merge Thumb∪Exact via `hover_preview_choice` (not scrub key filter); Exact-on-dwell after host 150 ms. Skip only `painted==aim`. **no equivalent** (filmstrip); `mediabunny: media-sink.ts CanvasSink`.
 
 ### RefCell / WASM re-entry
 

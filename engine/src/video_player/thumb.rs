@@ -10,7 +10,7 @@ use crate::decode::thumb_sink::{
 };
 use crate::error::MediaError;
 use crate::policy::workload::{allows_thumb_aim_decode, allows_thumb_key_fill};
-use crate::policy::{ThumbPolicy, hover_thumb_dims, scrub_preview_choice_with_dir};
+use crate::policy::{ThumbPolicy, hover_preview_choice, hover_thumb_dims};
 use crate::types::FrameId;
 
 use super::{Shared, VideoPlayer, now_ms, sleep_ms};
@@ -99,11 +99,12 @@ impl VideoPlayer {
 
     /// Sync hover paint from [`ThumbSink`] / nearest available preview.
     ///
-    /// Picks ThumbCache vs Exact via [`scrub_preview_choice_with_dir`] (same
-    /// floor/ceil-by-motion rule as soft-drag). When Exact wins, downscales into
-    /// ThumbCache **synchronously** (cheap `bitmap_to_sized`) so pointermove
-    /// never leaves a farther thumb on the canvas. `mediabunny:` present cached
-    /// canvas immediately; decode only on true miss (Pause). Play: cache/Exact only.
+    /// Neighbors via dir-biased `nearest_*`, then [`hover_preview_choice`]
+    /// (distance; Exact on tie) — **not** soft-drag [`scrub_preview_choice_with_dir`]
+    /// (GOP-key wrong-side filter drops ahead thumbs → far Exact flash).
+    /// Exact winner downscales into ThumbCache sync. `mediabunny:` present
+    /// cached canvas immediately; decode only on true miss (Pause). Play:
+    /// cache/Exact only.
     pub fn try_paint_hover_thumb_cached(
         &self,
         frame: FrameId,
@@ -148,8 +149,7 @@ impl VideoPlayer {
             };
             thumbs.nearest_frame_with_dir(frame, tw, th, dir)
         };
-        let Some(preview) = scrub_preview_choice_with_dir(frame, cached_thumb, cached_exact, dir)
-        else {
+        let Some(preview) = hover_preview_choice(frame, cached_thumb, cached_exact) else {
             return Ok(None);
         };
 
@@ -274,9 +274,9 @@ impl VideoPlayer {
 
     /// Exact blit → sized thumb into [`ThumbSink`] (read-only densify plane).
     ///
-    /// Only runs when Exact is the [`scrub_preview_choice_with_dir`] winner vs
-    /// ThumbCache (caller already tried cache). Localizes to directional Exact
-    /// neighbor of aim.
+    /// Only runs when Exact is the [`hover_preview_choice`] winner vs ThumbCache
+    /// (caller already tried cache). Localizes to directional Exact neighbor of
+    /// aim.
     pub(super) fn try_hover_thumb_from_exact(
         &self,
         frame: FrameId,
@@ -297,7 +297,7 @@ impl VideoPlayer {
             .try_borrow()
             .ok()
             .and_then(|b| b.nearest_frame_with_dir(frame, dir));
-        let Some(preview) = scrub_preview_choice_with_dir(frame, None, cached_exact, dir) else {
+        let Some(preview) = hover_preview_choice(frame, None, cached_exact) else {
             return Ok(None);
         };
         let store_key = self.key_for(preview).unwrap_or(preview);
