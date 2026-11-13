@@ -15,6 +15,8 @@
 }
 
 .wm-player {
+  /* Named containment — nested `.wm-position` cqi must not steal bar-menu queries. */
+  container: player / inline-size;
   --wm-rate-track-w: min(19.25rem, calc(100cqi - 1rem));
 }
 
@@ -32,6 +34,35 @@ body {
   @apply absolute z-20 rounded-lg border border-zinc-700 bg-zinc-900 shadow-[0_8px_24px_rgba(0,0,0,0.45)];
 }
 
+/*
+ * Bar chrome menus (product.md § Share common logic):
+ *   .wm-bar-menu-host > (trigger | .wm-position-scale) + .wm-bar-menu[.wm-bar-menu--end|--center]
+ * Desktop: menu CB = host. Narrow (<@2xl): host static → CB = `.wm-controls`, full-bleed.
+ */
+@utility wm-bar-menu-host {
+  @apply relative;
+}
+
+/*
+ * Elevate the controls column that owns an open pop (not the host alone).
+ * Hosts live inside side/center wrappers — host z-index cannot beat a sibling column.
+ */
+.wm-controls > *:has(.is-open) {
+  z-index: 20;
+}
+
+@utility wm-bar-menu {
+  @apply wm-pop bottom-[calc(100%+var(--wm-pop-gap))] hidden flex-col gap-0.5 p-1.5;
+}
+
+@utility wm-bar-menu--end {
+  @apply right-0 left-auto;
+}
+
+@utility wm-bar-menu--center {
+  @apply left-1/2 -translate-x-1/2;
+}
+
 @utility wm-file {
   @apply relative inline-flex overflow-hidden;
 }
@@ -41,8 +72,13 @@ body {
 }
 
 @utility wm-position {
-  /* Fills the middle flex column so `cqi` tracks available width (not content). */
-  @apply relative z-20 flex w-full min-w-0 max-w-full items-center justify-center;
+  /* Same host shape as settings — pair with `wm-bar-menu-host` in markup. */
+  @apply flex w-full min-w-0 max-w-full items-center justify-center;
+}
+
+@utility wm-position-scale {
+  /* Readout-only container for `cqi` — never wrap `.wm-bar-menu` (layout containment). */
+  @apply flex w-full min-w-0 max-w-full items-center justify-center;
   container-type: inline-size;
   container-name: wm-position;
 }
@@ -73,8 +109,9 @@ body {
   @apply whitespace-nowrap;
 }
 
+/* Pair with `wm-bar-menu wm-bar-menu--center` in markup. */
 @utility wm-position-menu {
-  @apply wm-pop bottom-[calc(100%+var(--wm-pop-gap))] left-1/2 hidden min-w-40 -translate-x-1/2 flex-col gap-0.5 p-1.5;
+  @apply min-w-40;
 }
 
 @utility wm-position-item {
@@ -97,8 +134,9 @@ body {
   @apply text-zinc-400 hover:text-zinc-100;
 }
 
+/* Pair with `wm-bar-menu wm-bar-menu--end` in markup. */
 @utility wm-settings-menu {
-  @apply wm-pop right-0 bottom-[calc(100%+var(--wm-pop-gap))] left-auto hidden min-w-52 flex-col gap-0.5 p-1.5;
+  @apply min-w-52;
 }
 
 @utility wm-settings-item {
@@ -687,49 +725,71 @@ body {
 }
 
 /*
- * Narrow chrome — sibling-unified (product.md § Demo chrome consistency):
+ * Narrow chrome — one path for every `wm-bar-menu` / `wm-bar-menu-host`
+ * (product.md § Share common logic). Named `player` container + viewport fallback.
  *
- * <@2xl — all bar menus full-bleed + centered on `.wm-controls` (hosts
- * `position: static` so left/right inset is vs the bar). Shared bottom keeps
- * the same gap above h-9 triggers: controls `py-3` (0.75rem) + `--wm-pop-gap`.
- *
- * @2xl…@3xl — rate still in settings; cap that menu to the rate track width,
- * still trigger-anchored (no CB change).
+ * <@2xl — host static → CB `.wm-controls`; full-bleed; strip --center translate.
+ * @2xl…@3xl — rate-in-settings: cap menu to track width (still host-anchored).
  */
 .wm-controls {
   --wm-controls-pad-y: 0.75rem; /* matches `py-3` on the bar */
 }
 
-@container (max-width: 41.999rem) {
-  .wm-settings,
-  .wm-position {
-    position: static;
+.wm-controls .wm-bar-menu--center {
+  max-width: calc(100% - 0.5rem);
+}
+
+@container player (max-width: 41.999rem) {
+  .wm-controls .wm-bar-menu-host {
+    position: static !important;
   }
 
-  .wm-settings-menu,
-  .wm-position-menu {
-    left: 0.25rem;
-    right: 0.25rem;
-    width: auto;
-    min-width: 0;
-    max-width: none;
-    transform: none;
-    bottom: calc(100% - var(--wm-controls-pad-y) + var(--wm-pop-gap));
+  .wm-controls .wm-bar-menu {
+    left: 0 !important;
+    right: 0 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    /* Tailwind v4 `--center` uses `translate`, not `transform`. */
+    transform: none !important;
+    translate: none !important;
+    bottom: calc(100% - var(--wm-controls-pad-y) + var(--wm-pop-gap)) !important;
   }
 
-  .wm-settings-rate .wm-rate-track {
+  .wm-controls .wm-settings-rate .wm-rate-track {
     width: 100%;
   }
 }
 
-@container (min-width: 42rem) and (max-width: 47.999rem) {
-  .wm-settings-menu:has(.wm-settings-rate) {
+@media (max-width: 41.999rem) {
+  .wm-controls .wm-bar-menu-host {
+    position: static !important;
+  }
+
+  .wm-controls .wm-bar-menu {
+    left: 0 !important;
+    right: 0 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    transform: none !important;
+    translate: none !important;
+    bottom: calc(100% - var(--wm-controls-pad-y) + var(--wm-pop-gap)) !important;
+  }
+
+  .wm-controls .wm-settings-rate .wm-rate-track {
+    width: 100%;
+  }
+}
+
+@container player (min-width: 42rem) and (max-width: 47.999rem) {
+  .wm-controls .wm-bar-menu:has(.wm-settings-rate) {
     width: min(var(--wm-rate-track-w), calc(100cqi - 0.5rem));
     max-width: calc(100cqi - 0.5rem);
     min-width: 0;
   }
 
-  .wm-settings-rate .wm-rate-track {
+  .wm-controls .wm-settings-rate .wm-rate-track {
     width: 100%;
   }
 }

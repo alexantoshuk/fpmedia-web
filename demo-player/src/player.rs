@@ -14,11 +14,12 @@ use fpmedia_web_components::{
 };
 use leptos::either::{Either, EitherOf3};
 use leptos::ev;
-use leptos::html::{Canvas, Div, Input};
+use leptos::html::{Button, Canvas, Div, Input};
 use leptos::prelude::*;
 use leptos_use::{
-    UseClipboardReturn, UseTimeoutFnReturn, on_click_outside, use_clipboard, use_event_listener,
-    use_media_query, use_resize_observer, use_timeout_fn,
+    OnClickOutsideOptions, UseClipboardReturn, UseTimeoutFnReturn, on_click_outside,
+    on_click_outside_with_options, use_clipboard, use_event_listener, use_media_query,
+    use_resize_observer, use_timeout_fn,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -769,8 +770,11 @@ pub fn DemoPlayer() -> impl IntoView {
     let volume_sliding = RwSignal::new(false);
     let rate_root = NodeRef::<Div>::new();
     let volume_root = NodeRef::<Div>::new();
-    let position_root = NodeRef::<Div>::new();
-    let settings_root = NodeRef::<Div>::new();
+    // Bar menus: outside-target = panel (not the wide host). Trigger ignored so toggle still works.
+    let position_menu = NodeRef::<Div>::new();
+    let position_trigger = NodeRef::<Button>::new();
+    let settings_menu = NodeRef::<Div>::new();
+    let settings_trigger = NodeRef::<Button>::new();
     // File name or URL string from last open (clip line under the toolbar).
     let clip_label = RwSignal::new(None::<String>);
     let url_input = NodeRef::<Input>::new();
@@ -983,13 +987,21 @@ pub fn DemoPlayer() -> impl IntoView {
     let _volume_outside = on_click_outside(volume_root, move |_| {
         volume_open.set(false);
     });
-    let _position_outside = on_click_outside(position_root, move |_| {
-        // Menu only — Go to edit keeps `open=false` and must not be cancelled here.
-        position_open.set(false);
-    });
-    let _settings_outside = on_click_outside(settings_root, move |_| {
-        settings_open.set(false);
-    });
+    let _position_outside = on_click_outside_with_options(
+        position_menu,
+        move |_| {
+            // Menu only — Go to edit keeps `open=false` and must not be cancelled here.
+            position_open.set(false);
+        },
+        OnClickOutsideOptions::default().ignore(position_trigger),
+    );
+    let _settings_outside = on_click_outside_with_options(
+        settings_menu,
+        move |_| {
+            settings_open.set(false);
+        },
+        OnClickOutsideOptions::default().ignore(settings_trigger),
+    );
 
     // Text buttons: filled bg, no border. Icon buttons: icon-only (no chrome).
     let btn = "inline-flex items-center justify-center rounded-md border-0 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 hover:bg-zinc-700 disabled:cursor-default disabled:opacity-45";
@@ -1136,9 +1148,9 @@ pub fn DemoPlayer() -> impl IntoView {
                 class=move || {
                     // `@container` — chrome responds to player width (embed-safe), not viewport.
                     if fullscreen.get() && !controls_visible.get() {
-                        "wm-player @container is-controls-hidden overflow-hidden bg-zinc-900"
+                        "wm-player @container/player is-controls-hidden overflow-hidden bg-zinc-900"
                     } else {
-                        "wm-player @container overflow-hidden bg-zinc-900"
+                        "wm-player @container/player overflow-hidden bg-zinc-900"
                     }
                 }
                 data-testid="player"
@@ -1305,7 +1317,8 @@ pub fn DemoPlayer() -> impl IntoView {
                                 use_playlist=use_playlist
                                 open=position_open
                                 format=position_format
-                                root=position_root
+                                menu=position_menu
+                                trigger=position_trigger
                                 rate_open=rate_open
                                 volume_open=volume_open
                                 settings_open=settings_open
@@ -1479,13 +1492,13 @@ pub fn DemoPlayer() -> impl IntoView {
                         <div
                             class=move || {
                                 let open = if settings_open.get() { " is-open" } else { "" };
-                                format!("wm-settings relative shrink-0{open}")
+                                format!("wm-settings wm-bar-menu-host shrink-0{open}")
                             }
-                            node_ref=settings_root
                             data-testid="settings"
                         >
                             <button
                                 type="button"
+                                node_ref=settings_trigger
                                 class=move || {
                                     if settings_open.get() {
                                         btn_icon_on.to_string()
@@ -1512,7 +1525,8 @@ pub fn DemoPlayer() -> impl IntoView {
                                 <icon::Settings class="wm-icon"/>
                             </button>
                             <div
-                                class="wm-settings-menu"
+                                class="wm-bar-menu wm-bar-menu--end wm-settings-menu"
+                                node_ref=settings_menu
                                 role="menu"
                                 aria-label="More controls"
                                 data-testid="settings-menu"
@@ -2002,7 +2016,8 @@ fn PositionDisplay(
     use_playlist: RwSignal<bool>,
     open: RwSignal<bool>,
     format: RwSignal<PositionFormat>,
-    root: NodeRef<Div>,
+    menu: NodeRef<Div>,
+    trigger: NodeRef<Button>,
     rate_open: RwSignal<bool>,
     volume_open: RwSignal<bool>,
     settings_open: RwSignal<bool>,
@@ -2117,126 +2132,131 @@ fn PositionDisplay(
         <div
             class=move || {
                 if open.get() {
-                    "wm-position is-open".to_string()
+                    "wm-position wm-bar-menu-host is-open".to_string()
                 } else {
-                    "wm-position".to_string()
+                    "wm-position wm-bar-menu-host".to_string()
                 }
             }
-            node_ref=root
             data-testid="position"
         >
-            {move || {
-                if editing.get() {
-                    Either::Left(view! {
-                        <input
-                            type="text"
-                            class="wm-position-input"
-                            data-testid="frame-input"
-                            node_ref=input_ref
-                            prop:value=move || draft.get()
-                            prop:aria-label="Go to"
-                            on:input=move |ev| {
-                                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                                    return;
-                                };
-                                draft.set(input.value());
-                            }
-                            on:keydown=move |ev| {
-                                let key = ev.key();
-                                if key == "Enter" {
-                                    ev.prevent_default();
+            // Scale container wraps readout only — not the menu (container-type
+            // layout containment would trap abspos `.wm-bar-menu` like a second CB).
+            <div class="wm-position-scale">
+                {move || {
+                    if editing.get() {
+                        Either::Left(view! {
+                            <input
+                                type="text"
+                                class="wm-position-input"
+                                data-testid="frame-input"
+                                node_ref=input_ref
+                                prop:value=move || draft.get()
+                                prop:aria-label="Go to"
+                                on:input=move |ev| {
+                                    let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                        return;
+                                    };
+                                    draft.set(input.value());
+                                }
+                                on:keydown=move |ev| {
+                                    let key = ev.key();
+                                    if key == "Enter" {
+                                        ev.prevent_default();
+                                        commit_goto();
+                                    } else if key == "Escape" {
+                                        ev.prevent_default();
+                                        cancel_goto();
+                                    }
+                                }
+                                on:blur=move |_| {
                                     commit_goto();
-                                } else if key == "Escape" {
-                                    ev.prevent_default();
-                                    cancel_goto();
                                 }
-                            }
-                            on:blur=move |_| {
-                                commit_goto();
-                            }
-                        />
-                    })
-                } else {
-                    Either::Right(view! {
-                        <button
-                            type="button"
-                            class="wm-position-display"
-                            data-testid="position-display"
-                            prop:disabled=move || {
-                                if use_playlist.get() {
-                                    !playlist.ready.get()
-                                } else {
-                                    !video.ready.get()
+                            />
+                        })
+                    } else {
+                        Either::Right(view! {
+                            <button
+                                type="button"
+                                class="wm-position-display"
+                                node_ref=trigger
+                                data-testid="position-display"
+                                prop:disabled=move || {
+                                    if use_playlist.get() {
+                                        !playlist.ready.get()
+                                    } else {
+                                        !video.ready.get()
+                                    }
                                 }
-                            }
-                            prop:aria-expanded=move || open.get()
-                            prop:aria-haspopup="menu"
-                            prop:aria-label=move || {
-                                if use_playlist.get() {
-                                    playlist_position_label(playlist, format.get())
-                                } else {
-                                    let (cur, last) = position_sides(&video, format.get());
-                                    format!("{cur} / {last}")
+                                prop:aria-expanded=move || open.get()
+                                prop:aria-haspopup="menu"
+                                prop:aria-label=move || {
+                                    if use_playlist.get() {
+                                        playlist_position_label(playlist, format.get())
+                                    } else {
+                                        let (cur, last) = position_sides(&video, format.get());
+                                        format!("{cur} / {last}")
+                                    }
                                 }
-                            }
-                            prop:title="Position (format / Go to…)"
-                            on:click=move |_| {
-                                let ready = if use_playlist.get_untracked() {
-                                    playlist.ready.get_untracked()
-                                } else {
-                                    video.ready.get_untracked()
-                                };
-                                if !ready {
-                                    return;
-                                }
-                                let next = !open.get_untracked();
-                                open.set(next);
-                                if next {
-                                    rate_open.set(false);
-                                    volume_open.set(false);
-                                    settings_open.set(false);
-                                }
-                            }
-                        >
-                            <Show
-                                when=move || use_playlist.get()
-                                fallback=move || {
-                                    view! {
-                                        <span class="wm-position-label">
-                                            <span class="wm-position-cur">
-                                                {move || position_sides(&video, format.get()).0}
-                                            </span>
-                                            <span class="wm-position-slash" aria-hidden="true">
-                                                "/"
-                                            </span>
-                                            <span class="wm-position-rest">
-                                                {move || position_sides(&video, format.get()).1}
-                                            </span>
-                                        </span>
+                                prop:title="Position (format / Go to…)"
+                                on:click=move |_| {
+                                    let ready = if use_playlist.get_untracked() {
+                                        playlist.ready.get_untracked()
+                                    } else {
+                                        video.ready.get_untracked()
+                                    };
+                                    if !ready {
+                                        return;
+                                    }
+                                    let next = !open.get_untracked();
+                                    open.set(next);
+                                    if next {
+                                        rate_open.set(false);
+                                        volume_open.set(false);
+                                        settings_open.set(false);
                                     }
                                 }
                             >
-                                <span
-                                    class="wm-position-label"
-                                    data-testid="playlist-position"
+                                <Show
+                                    when=move || use_playlist.get()
+                                    fallback=move || {
+                                        view! {
+                                            <span class="wm-position-label">
+                                                <span class="wm-position-cur">
+                                                    {move || position_sides(&video, format.get()).0}
+                                                </span>
+                                                <span class="wm-position-slash" aria-hidden="true">
+                                                    "/"
+                                                </span>
+                                                <span class="wm-position-rest">
+                                                    {move || position_sides(&video, format.get()).1}
+                                                </span>
+                                            </span>
+                                        }
+                                    }
                                 >
-                                    <span class="wm-position-cur">
-                                        {move || playlist_position_sides(playlist, format.get()).0}
+                                    <span
+                                        class="wm-position-label"
+                                        data-testid="playlist-position"
+                                    >
+                                        <span class="wm-position-cur">
+                                            {move || playlist_position_sides(playlist, format.get()).0}
+                                        </span>
+                                        <span class="wm-position-slash" aria-hidden="true">
+                                            "/"
+                                        </span>
+                                        <span class="wm-position-rest">
+                                            {move || playlist_position_sides(playlist, format.get()).1}
+                                        </span>
                                     </span>
-                                    <span class="wm-position-slash" aria-hidden="true">
-                                        "/"
-                                    </span>
-                                    <span class="wm-position-rest">
-                                        {move || playlist_position_sides(playlist, format.get()).1}
-                                    </span>
-                                </span>
-                            </Show>
-                        </button>
-                    })
-                }
-            }}
+                                </Show>
+                            </button>
+                        })
+                    }
+                }}
+            </div>
             <div
-                class="wm-position-menu"
+                class="wm-bar-menu wm-bar-menu--center wm-position-menu"
+                node_ref=menu
                 role="menu"
                 aria-label="Position format"
                 data-testid="position-menu"
