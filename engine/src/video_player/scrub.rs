@@ -184,6 +184,16 @@ impl VideoPlayer {
             }
             sleep_ms(0).await;
         }
+        // Dual-HW race: task stalled past both windows → force-clear busy so
+        // Exact is not soft-cold-skipped with an empty blit (gray + no densify).
+        // mediabunny: seekToTime awaits videoFrameIterator.return() then starts
+        // a new iterator — local densify plane must not wedge Exact forever.
+        if self.shared.densify.is_busy() {
+            web_sys::console::warn_1(
+                &"fpmedia-web: densify still busy after re-abort — force release_busy".into(),
+            );
+            self.shared.densify.release_busy();
+        }
     }
 
     /// Update predictive densify direction from a drag sample (`sign(aim − prev)`).

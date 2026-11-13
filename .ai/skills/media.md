@@ -23,7 +23,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Rate >1 audio chops on heavy video (long-GOP 720p / 4K), light clip fine; worse after scrub tap / loop seam | `AudioOutput::feed_and_schedule` | park on decoder output/`dequeue` at queue 4 — **no** `setTimeout(0)` per packet/WSOLA chunk (timer cadence ≈ 2× realtime → every chunk late). Yield via `ScheduleSlice` only. `mediabunny: media-sink.ts mediaSamplesInRange` |
 | Play residual fps_min≈23 @1 s | e2e residual / host rAF | Demo `sync_ui` ~100 ms — prefer `fps5s` / status fps meter; not engine judder. Parked. |
 | `decoder busy` / key chunk / backpressure | DecoderSlot / pump | wall-clock take wait; wake on new output; `q≈41,held=0` → reset |
-| Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after yield → skip Exact; fault typing: `MediaError::from_codec_message` / `DecodeStall` |
+| Settle Exact poison / dual-HW race | densify yield + soft-cold | `await_scrub_densify_yield`; busy after both windows → `release_busy` then Exact (not soft-cold forever); fault typing: `MediaError::from_codec_message` / `DecodeStall`. `mediabunny: seekToTime` → `videoFrameIterator.return()` |
 | Seek eng≪aim (fMP4) | `seek_frame` cold | index + GOP warm then Exact — `e2e/player.fetchmap.fmp4-gap.spec.ts` |
 | Soft-drag eng lags / bar lags cursor | `note_scrub_frame` / soft pause | drag = aim + interim blit + key chase; `EnterScrub{soft, densify:false}`; host ~50 ms throttle; `apply_engine_event` runs cmds |
 | Pause strips don't grow / no hole-fill | `pause_warm_idle` | Pause button: `SoftPause{densify:true}` — not `pause_for_scrub` (drag-only) |
