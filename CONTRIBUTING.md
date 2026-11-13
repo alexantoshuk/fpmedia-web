@@ -32,21 +32,30 @@ Do **not** commit or open/update a PR until these pass locally. `cargo check` al
 
 While iterating on a change, prefer `cargo check` (and targeted crate checks). Do **not** run the full Clippy gate on every edit — reserve it for immediately before commit or PR.
 
+**Canonical gate script:** [`scripts/check.sh`](scripts/check.sh) (fmt / Clippy `-D warnings` incl. wasm targets / tests). CI [`check.yml`](.github/workflows/check.yml) and [`.githooks/pre-push`](.githooks/pre-push) both run it — do not fork the command list. Needs **bash** (Git Bash on Windows). Trunk build and e2e stay out of the script.
+
+**Install hooks (once per clone)** — makes the gates real (not docs-only):
+
 ```sh
-cargo fmt --all -- --check
-cargo clippy -p fpmedia-web --all-targets --all-features -- -D warnings
-cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-demo-player -- -D warnings
-cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-components -- -D warnings
-cargo clippy -p fpmedia-web-components --all-targets -- -D warnings
-cargo check --target wasm32-unknown-unknown -p fpmedia-web-demo-player
-cargo check --target wasm32-unknown-unknown -p fpmedia-web-components
-cargo test -p fpmedia-web
-cargo test -p fpmedia-web-components
-(cd demo-player && trunk build)
+git config core.hooksPath .githooks
+```
+
+| Hook | Runs |
+| ---- | ---- |
+| [`.githooks/pre-commit`](.githooks/pre-commit) | `cargo fmt --all -- --check` only |
+| [`.githooks/pre-push`](.githooks/pre-push) | full [`scripts/check.sh`](scripts/check.sh) |
+
+Emergency skip: `SKIP_GATES=1 git commit` / `git push` (or `--no-verify`).
+
+**Toolchain:** [`rust-toolchain.toml`](rust-toolchain.toml) pins `stable` + rustfmt/clippy/wasm32 so local and CI share one channel. After a new Rust stable lands, run `rustup update` (or re-enter the repo) before push — floating stable can fail Clippy on code that was green on the previous release.
+
+```sh
+bash scripts/check.sh
+(cd demo-player && trunk build)   # local-only; not in check.sh / CI check
 ```
 
 - Always run `cargo fmt` (rustfmt) before committing Rust changes; include any fmt-only touch-ups in the same commit.
-- Never commit code failing the gates above. CI mirrors these gates (minus Trunk build / e2e): [`.github/workflows/check.yml`](.github/workflows/check.yml).
+- Never commit code failing `scripts/check.sh`.
 - For UI/player behaviour changes that e2e covers: also run `npm run e2e` with `trunk serve` (demo-player) on `:3000` when practical.
 
 ### Commit / PR size

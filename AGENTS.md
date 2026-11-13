@@ -223,20 +223,16 @@ Diagnosis often leaves a working side-path. **Do not commit that shape.** Before
 
 ## Dev commands
 
-Iteration cheat sheet. Mandatory **commit / PR** gates (Clippy, fmt check, build) live only in [`CONTRIBUTING.md`](CONTRIBUTING.md) — run them immediately before commit or PR, not on every edit.
+Iteration cheat sheet. **Commit / PR gates** → [`CONTRIBUTING.md`](CONTRIBUTING.md) / [`scripts/check.sh`](scripts/check.sh) — do not restate that command list here; run immediately before commit or PR, not on every edit.
 
 ```sh
-cargo fmt                                               # rustfmt
+bash scripts/check.sh                                   # fmt + Clippy -D warnings + tests (CI / pre-push)
 cd demo-player && trunk serve                           # dev → http://127.0.0.1:3000
 npm run media:fetch                                     # once: testvideo → demo-player/public/media/ (URL e2e)
 # Pages: cd demo-player && trunk build --release --public-url /fpmedia-web/
-cargo check --target wasm32-unknown-unknown -p fpmedia-web-demo-player
-cargo check --target wasm32-unknown-unknown -p fpmedia-web-components # <Video> element crate
-cargo check --target wasm32-unknown-unknown -p fpmedia-web --features webcodecs # engine wasm-only code
+cargo check --target wasm32-unknown-unknown -p fpmedia-web --features webcodecs # engine wasm-only (not in check.sh)
 # Opt-in HEVC: `cargo test -p fpmedia-web --features hevc`; demo WASM →
 # `fpmedia-web-components` feature `hevc` (e.g. default = ["thumbs", "hevc"] while testing)
-cargo test -p fpmedia-web                                  # engine tests (native; wasm-only modules not covered)
-cargo test -p fpmedia-web-components                       # host UI math (native; wasm modules cfg'd out)
 npm install && npm run e2e:install                      # once: Playwright (+ Chromium if CDN ok)
 npm run e2e                                             # browser smoke (`trunk serve` on :3000; Win uses system Chrome)
 # Scrub perf probes: e2e/perf.scrub.*.spec.ts — listed in skills/media.md Triage

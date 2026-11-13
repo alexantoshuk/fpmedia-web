@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Runs `scripts/check.sh` (same gates as CI). See CONTRIBUTING.md.
+set -euo pipefail
+
+if [[ "${SKIP_GATES:-}" == "1" ]]; then
+  echo "pre-push: SKIP_GATES=1 — skipping CONTRIBUTING gates"
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+exec bash "$ROOT/scripts/check.sh"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Fast commit gate: rustfmt only. Full Clippy/tests → pre-push / scripts/check.sh.
+set -euo pipefail
+
+if [[ "${SKIP_GATES:-}" == "1" ]]; then
+  echo "pre-commit: SKIP_GATES=1 — skipping fmt"
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+echo "pre-commit: fmt"
+cargo fmt --all -- --check
+echo "pre-commit: ok"

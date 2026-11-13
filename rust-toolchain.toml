@@ -1,0 +1,7 @@
+# Same channel CI uses (`dtolnay/rust-toolchain` reads this file).
+# Floating stable: after a Rust release, `rustup update` (or re-enter the
+# directory) before push so local Clippy matches GitHub Actions.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
