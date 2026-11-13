@@ -124,10 +124,7 @@ pub fn fragment_backfill_should_idle_yield(
     urgent: bool,
     min_ahead: u64,
 ) -> bool {
-    if urgent || matches!(mode, WorkloadMode::Play) || ahead < min_ahead {
-        return false;
-    }
-    true
+    !(urgent || matches!(mode, WorkloadMode::Play) || ahead < min_ahead)
 }
 
 /// Default index lead before fragment backfill idle-yields (frames).
