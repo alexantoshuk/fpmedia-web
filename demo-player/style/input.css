@@ -222,7 +222,6 @@ body {
 /* Timeline scrubber — pixel strips / hit targets stay custom. */
 .wm-scrubber {
   position: relative;
-  height: 22px;
   background: #1c1c1c;
   cursor: pointer;
   touch-action: none;
@@ -263,7 +262,6 @@ body {
 
 .wm-scrubber-track {
   position: relative;
-  height: 10px;
   background: #2a2a2a;
   overflow: hidden;
   flex: 0 0 auto;
@@ -350,21 +348,16 @@ body {
 
 .wm-scrubber-ready {
   position: relative;
-  height: 12px;
   background: #141414;
-  border-top: 1px solid #2a2a2a;
   pointer-events: none;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 
 .wm-ready-strip {
   position: absolute;
-  left: 0;
-  right: 0;
-  top: 2px;
-  bottom: 2px;
+  inset: 0;
   width: 100%;
-  height: calc(100% - 4px);
+  height: 100%;
   pointer-events: none;
   image-rendering: pixelated;
   image-rendering: crisp-edges;

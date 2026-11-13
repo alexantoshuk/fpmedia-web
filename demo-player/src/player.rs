@@ -2311,7 +2311,7 @@ fn DemoScrubber(
     position_format: RwSignal<PositionFormat>,
 ) -> impl IntoView {
     view! {
-        <Scrubber video=video class="wm-scrubber".to_string()>
+        <Scrubber video=video class="wm-scrubber h-3.5".to_string()>
             <Show when=move || thumbs_on.get() && !no_hover.get()>
                 <HoverThumb class="fpvideo-thumb-preview".to_string()>
                     <HoverThumbFrameLabel video=video format=position_format />
@@ -2323,7 +2323,7 @@ fn DemoScrubber(
                 loop_out=Signal::derive(move || video.loop_out.get())
                 frame_count=Signal::derive(move || video.frame_count.get())
             >
-                <div class="wm-scrubber-track">
+                <div class="wm-scrubber-track h-3">
                     <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />
                     <TimelineMeta
                         kind=TimelineMetaKind::Fetch
@@ -2338,7 +2338,7 @@ fn DemoScrubber(
                 //   <TimelineMeta kind=TimelineMetaKind::Keyframes class="wm-ready-strip is-keyframes".to_string() />
                 // under Covered in the ready row.
                 <div
-                    class="wm-scrubber-ready"
+                    class="wm-scrubber-ready h-0.5"
                     aria-hidden="true"
                     title="Decode densify: dim=markers (kept on Play), bright=blit ImageBitmap"
                 >
@@ -2408,7 +2408,7 @@ fn DemoPlaylistScrubber(
 ) -> impl IntoView {
     let timeline = playlist.as_timeline();
     view! {
-        <Scrubber timeline=timeline class="wm-scrubber".to_string()>
+        <Scrubber timeline=timeline class="wm-scrubber h-3.5".to_string()>
             <Show when=move || thumbs_on.get() && !no_hover.get()>
                 <HoverThumb class="fpvideo-thumb-preview".to_string()>
                     <HoverPlaylistThumbLabel
@@ -2423,7 +2423,7 @@ fn DemoPlaylistScrubber(
                 loop_out=Signal::derive(move || playlist.loop_out.get())
                 frame_count=Signal::derive(move || playlist.frame_count.get())
             >
-                <div class="wm-scrubber-track">
+                <div class="wm-scrubber-track h-3">
                     <FrameZebra contrast=FRAME_ZEBRA_CONTRAST />
                     <TimelineMeta
                         kind=TimelineMetaKind::Fetch
@@ -2434,7 +2434,7 @@ fn DemoPlaylistScrubber(
                     <ScrubPlayheadTip />
                 </div>
                 <div
-                    class="wm-scrubber-ready"
+                    class="wm-scrubber-ready h-0.5"
                     aria-hidden="true"
                     title="Decode densify: dim=markers (kept on Play), bright=blit ImageBitmap"
                 >
