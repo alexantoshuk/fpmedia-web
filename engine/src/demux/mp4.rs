@@ -395,10 +395,7 @@ impl Mp4VideoTrack {
             meta.duration_ticks = warm_dur.saturating_mul(total_moofs) / warm_moofs;
         }
 
-        if meta.duration_ticks > 0 && meta.frame_count > 0 {
-            meta.fps =
-                Some(meta.frame_count as f64 * meta.timescale as f64 / meta.duration_ticks as f64);
-        }
+        meta.refresh_fps();
         self.sync_gen.set(self.sync_gen.get().saturating_add(1));
     }
 
@@ -484,24 +481,19 @@ impl Mp4VideoTrack {
                     self.index.borrow_mut().append_entries(new_entries);
                 }
                 if complete {
-                    let (fc, gop, duration_ticks, fps) = {
+                    let (fc, gop, duration_ticks, timescale) = {
                         let indexed = self.index.borrow();
                         let fc = indexed.len() as u64;
                         let gop = indexed.gop_profile();
-                        let (duration_ticks, fps) = indexed
+                        let (duration_ticks, timescale) = indexed
                             .get(fc.saturating_sub(1))
                             .map(|last| {
                                 let dur = (last.composition_timestamp_ticks.max(0) as u64)
                                     .saturating_add(last.duration_ticks);
-                                let fps = if dur > 0 && fc > 0 {
-                                    Some(fc as f64 * last.timescale as f64 / dur as f64)
-                                } else {
-                                    None
-                                };
-                                (dur, fps)
+                                (dur, last.timescale)
                             })
-                            .unwrap_or((0, None));
-                        (fc, gop, duration_ticks, fps)
+                            .unwrap_or((0, 0));
+                        (fc, gop, duration_ticks, timescale)
                     };
                     let mut meta = self.metadata.borrow_mut();
                     meta.frame_count = fc;
@@ -509,9 +501,10 @@ impl Mp4VideoTrack {
                     if duration_ticks > 0 {
                         meta.duration_ticks = duration_ticks;
                     }
-                    if fps.is_some() {
-                        meta.fps = fps;
+                    if timescale > 0 {
+                        meta.timescale = timescale;
                     }
+                    meta.refresh_fps();
                 }
                 if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
                     state.plan = if complete { None } else { Some(plan) };
@@ -1168,19 +1161,13 @@ fn build_video_track(
     let frame_count = index.len() as u64;
     let gop_profile = index.gop_profile();
 
-    let fps = if track.duration > 0 && frame_count > 0 {
-        Some(frame_count as f64 * track.timescale as f64 / track.duration as f64)
-    } else {
-        None
-    };
-
-    let metadata = VideoMetadata {
+    let mut metadata = VideoMetadata {
         width: u32::from(track.width),
         height: u32::from(track.height),
         timescale: track.timescale,
         duration_ticks: track.duration,
         frame_count,
-        fps,
+        fps: VideoMetadata::average_fps(frame_count, track.timescale, track.duration),
         codec: CodecConfig {
             codec,
             codec_string,
@@ -1189,6 +1176,7 @@ fn build_video_track(
         gop_profile,
         timecode_start,
     };
+    metadata.ensure_fps();
 
     Ok(Some(Mp4VideoTrack {
         sync_source: Arc::clone(&source),

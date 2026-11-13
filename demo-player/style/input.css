@@ -10,6 +10,12 @@
   --wm-border: #3f3f46;
   /* Gap above control-bar triggers — rate / volume / settings / position share this. */
   --wm-pop-gap: 0.35rem;
+  /* Fallback; `.wm-player` overrides with cqi so menus stay inside the stage. */
+  --wm-rate-track-w: min(19.25rem, calc(100vw - 1rem));
+}
+
+.wm-player {
+  --wm-rate-track-w: min(19.25rem, calc(100cqi - 1rem));
 }
 
 body {
@@ -427,24 +433,32 @@ body {
 
 /* Rate popover — anchored to `.wm-rate` (same gap as settings / position / volume). */
 .wm-rate-pop {
-  @apply wm-pop right-0 bottom-[calc(100%+var(--wm-pop-gap))] left-auto hidden px-3.5 pt-2.5 pb-1.5;
+  @apply wm-pop right-0 bottom-[calc(100%+var(--wm-pop-gap))] left-auto hidden px-3.5 pt-3.5 pb-3;
 }
 
 .wm-rate.is-open .wm-rate-pop {
   @apply block;
 }
 
-/* Shared by bar pop + settings overflow (`PlaybackRateTrack`). */
+/* Non-clickable label — muted (not a settings menu item). */
 .wm-rate-heading {
-  @apply mb-1 text-[11px] text-zinc-400;
+  @apply mb-2.5 text-[13px]/tight text-zinc-400;
+}
+
+/* Settings overflow host — same vertical pad idea as `.wm-rate-pop`. */
+.wm-settings-rate {
+  @apply px-2.5 pt-2.5 pb-2.5;
 }
 
 .wm-rate-track {
   --wm-rate-thumb: 14px;
-  width: min(17.5rem, calc(100vw - 1rem));
+  --wm-rate-edge: 0.4rem;
+  width: var(--wm-rate-track-w);
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
+  padding-inline: var(--wm-rate-edge);
+  box-sizing: border-box;
 }
 
 .wm-rate-input {
@@ -493,6 +507,7 @@ body {
 .wm-rate-ticks {
   width: 100%;
   height: 1.55rem;
+  /* Half-thumb inset — must match range thumb travel (do not add extra pad here). */
   padding: 0 calc(var(--wm-rate-thumb) / 2);
   box-sizing: border-box;
   pointer-events: none;
@@ -534,7 +549,8 @@ body {
 }
 
 .wm-rate-tick-label {
-  @apply select-none text-[10px]/none tabular-nums;
+  /* Same mono family/size default as position/timecode. */
+  @apply select-none font-mono text-[0.8125rem]/none tabular-nums;
 }
 
 .wm-rate-tick.is-active {
@@ -670,10 +686,52 @@ body {
   @apply flex;
 }
 
-/* Rate track inside settings overflow — fit the menu, not the bar pop width. */
-.wm-settings-rate .wm-rate-track {
-  width: 100%;
-  min-width: 12rem;
+/*
+ * Narrow chrome — sibling-unified (product.md § Demo chrome consistency):
+ *
+ * <@2xl — all bar menus full-bleed + centered on `.wm-controls` (hosts
+ * `position: static` so left/right inset is vs the bar). Shared bottom keeps
+ * the same gap above h-9 triggers: controls `py-3` (0.75rem) + `--wm-pop-gap`.
+ *
+ * @2xl…@3xl — rate still in settings; cap that menu to the rate track width,
+ * still trigger-anchored (no CB change).
+ */
+.wm-controls {
+  --wm-controls-pad-y: 0.75rem; /* matches `py-3` on the bar */
+}
+
+@container (max-width: 41.999rem) {
+  .wm-settings,
+  .wm-position {
+    position: static;
+  }
+
+  .wm-settings-menu,
+  .wm-position-menu {
+    left: 0.25rem;
+    right: 0.25rem;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    transform: none;
+    bottom: calc(100% - var(--wm-controls-pad-y) + var(--wm-pop-gap));
+  }
+
+  .wm-settings-rate .wm-rate-track {
+    width: 100%;
+  }
+}
+
+@container (min-width: 42rem) and (max-width: 47.999rem) {
+  .wm-settings-menu:has(.wm-settings-rate) {
+    width: min(var(--wm-rate-track-w), calc(100cqi - 0.5rem));
+    max-width: calc(100cqi - 0.5rem);
+    min-width: 0;
+  }
+
+  .wm-settings-rate .wm-rate-track {
+    width: 100%;
+  }
 }
 
 .wm-position-slash,

@@ -20,7 +20,7 @@
 
 ### Playlist
 
-Shared volume + frame-sum scrub + origin-stash seam shipped (`0.1.0-alpha.4`). Design: `architecture.md` § Playlist.
+Shared volume + frame-sum scrub + origin-stash seam shipped (`0.1.0-alpha.5`). Design: `architecture.md` § Playlist.
 
 **Next:** Verify LoopPlayWarm on mobile / Engine zone. Optional: cut markers / clip name in `[i]` (Later). Idle Fetch gray — parked.
 
@@ -34,7 +34,7 @@ Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. 
 
 **Hard gate:** do **not** publish until `re_mp4` is on crates.io with #35+#38 (no fork). Until then: `cargo publish` blocked. Keep git `re_mp4` pin until then.
 
-**Hygiene done (still `publish = false`):** `[workspace.package] version = 0.1.0-alpha.4` (members `version.workspace = true`; path deps omit version). README badges → in-repo guides. Demo header = `fpmedia_web_components::VERSION`. Bumps: `architecture.md` § Versions.
+**Hygiene done (still `publish = false`):** `[workspace.package] version = 0.1.0-alpha.5` (members `version.workspace = true`; path deps omit version). README badges → in-repo guides. Demo header = `fpmedia_web_components::VERSION`. Bumps: `architecture.md` § Versions.
 
 1. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
 2. **Ship** — flip `publish`; CONTRIBUTING gates + e2e; lockstep publish order timecode → engine → components; GH Release notes; restore crates.io/docs.rs badges; drop this block from state.

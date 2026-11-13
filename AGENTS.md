@@ -71,15 +71,26 @@ Before **any** write to the repo (code, config, docs, generated assets):
 
 1. **Describe the plan first** — short: what, where, why (files/symbols if known). Stop there.
 2. **Media changes:** plan must satisfy [Pre-edit gate (media)](#pre-edit-gate-media--hard-stop) (mediabunny cite or explicit no-equivalent).
-3. **`.ai/` / docs changes:** plan must satisfy [Documentation write gate](#documentation-write-gate--hard-stop) (canonical file + no duplicate prose).
-4. **Docs line (hard):** every plan that changes shipped behaviour / ownership / policy must name `docs:` — canonical slot(s) to update (`architecture.md` § … / `glossary.md` § … / skill triage / `product.md`), **or** `docs: none` + why (pure refactor, typo, probe-only). Omitting the line = incomplete plan — do not implement.
-5. **Do not start implementation** until the user explicitly approves **that plan** (e.g. `ok`, `go`, `да`, `approve` on the plan you just stated).
-6. **Not plan approval:** `next`, priority reorder, “разбери”, diagnosis-only, or a bare `go` that meant “show the plan” / “start researching”. If unclear, ask — do not code.
-7. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
-8. **Exception:** only if the user explicitly says to skip approval for that task or session.
-9. **Commits are separate** — edit/`go` approval is **not** commit consent. See [Commits](#commits).
+3. **Demo / host chrome UI:** plan must satisfy [Chrome sibling check](#chrome-sibling-check--hard-stop) (unify similar pops/controls — do not cobble one surface).
+4. **`.ai/` / docs changes:** plan must satisfy [Documentation write gate](#documentation-write-gate--hard-stop) (canonical file + no duplicate prose).
+5. **Docs line (hard):** every plan that changes shipped behaviour / ownership / policy must name `docs:` — canonical slot(s) to update (`architecture.md` § … / `glossary.md` § … / skill triage / `product.md`), **or** `docs: none` + why (pure refactor, typo, probe-only). Omitting the line = incomplete plan — do not implement.
+6. **Do not start implementation** until the user explicitly approves **that plan** (e.g. `ok`, `go`, `да`, `approve` on the plan you just stated).
+7. **Not plan approval:** `next`, priority reorder, “разбери”, diagnosis-only, or a bare `go` that meant “show the plan” / “start researching”. If unclear, ask — do not code.
+8. **Reading, search, and non-mutating checks** (`cargo check`, tests, `git status`/`diff`/`log`) are allowed without consent.
+9. **Exception:** only if the user explicitly says to skip approval for that task or session.
+10. **Commits are separate** — edit/`go` approval is **not** commit consent. See [Commits](#commits).
 
 If the plan changes mid-work (scope creep, different files), stop and re-approve before further edits.
+
+## Chrome sibling check — hard stop
+
+Before changing **demo / host chrome** (pops, menus, control-bar widgets, shared `--wm-*` layout):
+
+1. **Find siblings** — same job elsewhere (rate / volume / settings / position pops; bar vs settings overflow; trigger alignment).
+2. **Unify** — one shared mechanism for behaviour + visual (gap, bottom align to bar triggers, type, open/close, width policy). Prefer extending the common pattern over a one-off.
+3. **Refuse** a plan that only patches one surface when siblings will drift (e.g. re-anchor one menu to `.wm-controls` while others stay on their buttons).
+
+UX home: [`product.md`](.ai/product.md) § Demo chrome consistency. Do not restate the essay here.
 
 ## Skills index
 
@@ -139,6 +150,7 @@ Comments that state **who owns decode**, HW vs PreferSoftware, densify on/off, m
 | Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
 | Scrub UX / densify / soft-drag / Exact blit (no MB scrub) | `AGENTS.md` § Scrub is local | One-line pointer only — do not invent `mediabunny: … scrub` cites |
 | Approve-before-edit / ask-before-commit | `AGENTS.md` | Do not restate |
+| Demo chrome consistency (unify siblings) | `product.md` § Demo chrome consistency | `AGENTS.md` § Chrome sibling check — pointer only |
 | Fix commit hygiene (integrate, strip debris) | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |
 | Doc write gate / skill budgets / same-diff freshness / policy comments | `AGENTS.md` | Do not restate — `CONTRIBUTING.md`: one-line pointer only |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |

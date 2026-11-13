@@ -104,6 +104,34 @@ fn format_rate_tick(r: f64) -> String {
     }
 }
 
+/// Near-1× — same epsilon as active rate tick highlight.
+fn rate_is_unity(r: f64) -> bool {
+    (r - 1.0).abs() < 0.026
+}
+
+/// Compact fps for rate chrome (`24fps`, `23.9fps`; ≤1 fractional digit).
+/// Truncate (not round) — `23.976` → `23.9`, never `24`.
+fn format_fps_label(fps: f64) -> String {
+    let truncated = (fps * 10.0).trunc() / 10.0;
+    if (truncated - truncated.trunc()).abs() < 1e-9 {
+        format!("{}fps", truncated.trunc() as i32)
+    } else {
+        format!("{truncated:.1}fps")
+    }
+}
+
+/// Effective fps in the rate pop heading — round to ≤3 fractional digits.
+fn format_fps_label_precise(fps: f64) -> String {
+    let rounded = (fps * 1000.0).round() / 1000.0;
+    if (rounded - rounded.trunc()).abs() < 1e-9 {
+        format!("{} fps", rounded.trunc() as i32)
+    } else {
+        let s = format!("{rounded:.3}");
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        format!("{s} fps")
+    }
+}
+
 fn rate_tick_left_pct(r: f64) -> String {
     let span = RATE_SLIDER_MAX - RATE_SLIDER_MIN;
     let p = ((r - RATE_SLIDER_MIN) / span * 100.0).clamp(0.0, 100.0);
@@ -302,6 +330,26 @@ fn demo_playback_rate(
         playlist.playback_rate.get()
     } else {
         video.playback_rate.get()
+    }
+}
+
+/// Source fps of the current clip (playlist model or single-clip metadata).
+///
+/// Playlist: subscribe to [`VideoPlaylistRef::live_clip`] — not `pos` (pos
+/// mirrors every sync tick and would thrash rate chrome / main thread).
+fn demo_source_fps(
+    video: VideoRef,
+    playlist: VideoPlaylistRef,
+    use_playlist: RwSignal<bool>,
+) -> Option<f64> {
+    if use_playlist.get() {
+        let idx = playlist.live_clip.get() as usize;
+        playlist
+            .model
+            .with(|m| m.clip(idx).and_then(|c| c.fps))
+            .or_else(|| playlist.live_video().metadata.get().and_then(|m| m.fps))
+    } else {
+        video.metadata.get().and_then(|m| m.fps)
     }
 }
 
@@ -953,7 +1001,11 @@ pub fn DemoPlayer() -> impl IntoView {
     // Step buttons: no bare `inline-flex` — it fights `@max-*`/`hidden` and leaves a gap.
     // Hidden until player container ≥ `@3xl` (~768px); then no layout space when gone.
     let btn_icon_step = "wm-btn-icon hidden @3xl:inline-flex h-9 w-9 items-center justify-center rounded-md border-0 bg-transparent text-zinc-100 hover:bg-zinc-800/60 disabled:cursor-default disabled:opacity-45";
-    let btn_rate = "wm-rate-btn inline-flex h-9 min-w-11 items-center justify-center rounded-md border-0 bg-transparent px-1.5 text-sm tabular-nums text-zinc-300 hover:text-zinc-100 disabled:cursor-default disabled:opacity-45";
+    // Mono + size like position/timecode default (`wm-position-field` clamp max).
+    // `min-w-16` (~4rem) reserves `XX.Xfps` / `1.50x` so the bar does not jump.
+    // Accent when rate ≠ 1× (fps label stays zinc).
+    let btn_rate = "wm-rate-btn inline-flex h-9 min-w-16 items-center justify-center rounded-md border-0 bg-transparent px-1.5 font-mono text-[0.8125rem] tabular-nums text-zinc-300 hover:text-zinc-100 disabled:cursor-default disabled:opacity-45";
+    let btn_rate_accent = "wm-rate-btn inline-flex h-9 min-w-16 items-center justify-center rounded-md border-0 bg-transparent px-1.5 font-mono text-[0.8125rem] tabular-nums text-[var(--wm-accent)] hover:text-[var(--wm-accent)] disabled:cursor-default disabled:opacity-45";
 
     let btn_round = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-zinc-100 opacity-50 hover:bg-zinc-800/60 hover:opacity-100 disabled:cursor-default disabled:opacity-45";
     let btn_round_on = "inline-flex h-7 w-7 items-center justify-center rounded-full border-0 bg-transparent text-emerald-400 opacity-100 hover:bg-emerald-400/20 disabled:cursor-default disabled:opacity-45";
@@ -1364,16 +1416,23 @@ pub fn DemoPlayer() -> impl IntoView {
                         </div>
                         <div
                             class=move || {
-                                // Next tier after step buttons (`@3xl`): rate needs `@4xl` (~896px).
+                                // Same tier as step buttons (`@3xl` ~768px); below → settings overflow.
                                 let open = if rate_open.get() { " is-open" } else { "" };
-                                format!("wm-rate relative shrink-0 hidden @4xl:block{open}")
+                                format!("wm-rate relative shrink-0 hidden @3xl:block{open}")
                             }
                             node_ref=rate_root
                             data-testid="playback-rate"
                         >
                             <button
                                 type="button"
-                                class=btn_rate
+                                class=move || {
+                                    let r = demo_playback_rate(video, playlist, use_playlist);
+                                    if rate_is_unity(r) {
+                                        btn_rate.to_string()
+                                    } else {
+                                        btn_rate_accent.to_string()
+                                    }
+                                }
                                 prop:disabled=move || !media_ready.get()
                                 prop:aria-expanded=move || rate_open.get()
                                 prop:aria-label="Playback rate"
@@ -1393,10 +1452,14 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             >
                                 {move || {
-                                    format!(
-                                        "{:.2}x",
-                                        demo_playback_rate(video, playlist, use_playlist)
-                                    )
+                                    let r = demo_playback_rate(video, playlist, use_playlist);
+                                    if rate_is_unity(r)
+                                        && let Some(fps) =
+                                            demo_source_fps(video, playlist, use_playlist)
+                                    {
+                                        return format_fps_label(fps);
+                                    }
+                                    format!("{:.2}x", r)
                                 }}
                             </button>
                             <div
@@ -1496,12 +1559,12 @@ pub fn DemoPlayer() -> impl IntoView {
                                     "Reset Loop Zone"
                                 </button>
                                 <div
-                                    class="wm-settings-overflow flex flex-col gap-0.5 @4xl:hidden"
+                                    class="wm-settings-overflow flex flex-col gap-0.5 @3xl:hidden"
                                     role="group"
                                     aria-label="Playback rate"
                                 >
                                     <div class="wm-settings-menu-sep"></div>
-                                    <div class="wm-settings-rate px-2 pb-1 pt-0.5">
+                                    <div class="wm-settings-rate">
                                         <PlaybackRateTrack
                                             video=video
                                             playlist=playlist
@@ -2500,7 +2563,18 @@ fn PlaybackRateTrack(
 ) -> impl IntoView {
     view! {
         <div class="wm-rate-panel">
-            <div class="wm-rate-heading">"Playback rate"</div>
+            <div class="wm-rate-heading">
+                {move || {
+                    let r = demo_playback_rate(video, playlist, use_playlist);
+                    match demo_source_fps(video, playlist, use_playlist) {
+                        Some(fps) => format!(
+                            "Playback rate {}",
+                            format_fps_label_precise(fps * r)
+                        ),
+                        None => "Playback rate".to_string(),
+                    }
+                }}
+            </div>
             <div class="wm-rate-track">
                 <input
                     type="range"

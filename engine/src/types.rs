@@ -80,6 +80,8 @@ pub struct VideoMetadata {
     pub duration_ticks: u64,
     pub frame_count: u64,
     /// Average fps from duration/frame_count when available.
+    /// Demux fills via [`Self::ensure_fps`] whenever ticks allow; `None` only if
+    /// duration or frame_count is missing (unusable clip).
     pub fps: Option<f64>,
     pub codec: CodecConfig,
     /// Keyframe spacing class — drives [`ScrubPolicy`] (densify / drag mode).
@@ -92,6 +94,30 @@ pub struct VideoMetadata {
 impl VideoMetadata {
     pub fn duration(&self) -> Timestamp {
         Timestamp::from_ticks(self.duration_ticks as i64, self.timescale)
+    }
+
+    /// Average fps from presentation length: `frame_count * timescale / duration_ticks`.
+    pub fn average_fps(frame_count: u64, timescale: u64, duration_ticks: u64) -> Option<f64> {
+        if duration_ticks > 0 && frame_count > 0 && timescale > 0 {
+            Some(frame_count as f64 * timescale as f64 / duration_ticks as f64)
+        } else {
+            None
+        }
+    }
+
+    /// Set [`Self::fps`] from ticks whenever computable (open + duration refresh).
+    pub fn refresh_fps(&mut self) {
+        if let Some(fps) = Self::average_fps(self.frame_count, self.timescale, self.duration_ticks)
+        {
+            self.fps = Some(fps);
+        }
+    }
+
+    /// Fill [`Self::fps`] from ticks when missing but computable.
+    pub fn ensure_fps(&mut self) {
+        if self.fps.is_none() {
+            self.refresh_fps();
+        }
     }
 
     /// Play knobs (primary) — from coded height. Hd ≡ historical FHD defaults.
@@ -172,6 +198,32 @@ mod tests {
             meta.scrub_cache_frame_budget(),
             scrub_cache_frame_budget(10_000, 1920, 1080, DEFAULT_SCRUB_CACHE_MIB)
         );
+    }
+
+    #[test]
+    fn ensure_fps_fills_from_ticks() {
+        let mut meta = VideoMetadata {
+            width: 320,
+            height: 240,
+            timescale: 24_000,
+            duration_ticks: 24_000,
+            frame_count: 24,
+            fps: None,
+            codec: CodecConfig {
+                codec: VideoCodec::Avc,
+                codec_string: None,
+                description: Vec::new(),
+            },
+            gop_profile: GopProfile::AllIntra,
+            timecode_start: None,
+        };
+        meta.ensure_fps();
+        assert_eq!(meta.fps, Some(24.0));
+        meta.fps = Some(30.0);
+        meta.ensure_fps();
+        assert_eq!(meta.fps, Some(30.0));
+        meta.refresh_fps();
+        assert_eq!(meta.fps, Some(24.0));
     }
 
     #[test]
