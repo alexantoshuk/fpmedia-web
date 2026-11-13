@@ -1093,7 +1093,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 node_ref=player_root
             >
                 <div
-                    class="wm-media flex flex-col cursor-pointer"
+                    class="wm-media flex flex-col"
                     data-testid="media-stage"
                     on:click=move |_| {
                         if !media_ready.get_untracked() {

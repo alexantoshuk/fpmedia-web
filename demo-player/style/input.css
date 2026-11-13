@@ -230,15 +230,15 @@ body {
   flex-direction: column;
 }
 
-@media (pointer: coarse) {
-  .wm-scrubber::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: -22px;
-    bottom: 0;
-  }
+/* Hit pad above bar (1× height) — mouse + touch; keeps scrub from missing into stage play-toggle. */
+.wm-scrubber::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -100%;
+  bottom: 0;
+  z-index: 1;
 }
 
 .wm-scrubber[aria-disabled="true"] {
