@@ -228,10 +228,9 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
 
 /// Make `aim.clip_index` live (swap or open) at `aim.local_frame`.
 ///
-/// Cross-clip: **paint on idle → swap** (same as [`promote_idle_at`]) — swap-then
-/// seek flashed open@0 / soft-cold / Exact on paused scrub Up. Same-clip: slot
-/// `seek_frame`. `then_play`: playlist `play()` after aim is live (Host LoopZone
-/// wrap when outside). **no equivalent**.
+/// Cross-clip: paint on idle → swap. `then_play`: SeamHold (`PromoteLead`) →
+/// `play()`; pause/goto: `prepare_seam_at` → always `seek_frame` (Exact+densify).
+/// Same-clip: slot `seek_frame`. **no equivalent**.
 pub(crate) async fn seek_to_pos(
     pl: VideoPlaylistRef,
     aim: crate::video_playlist::PlaylistPos,
@@ -252,10 +251,20 @@ pub(crate) async fn seek_to_pos(
         if pl.open_gen.get_value() != epoch {
             return Ok(());
         }
-        // Stop outgoing Play before idle Exact (goto/scrub-while-play callers).
+        // Stop outgoing Play before idle Exact / SeamHold (goto / scrub Up).
         stop_live_for_host_seam(pl);
-        let lead = PromoteLead::for_local(aim.local_frame);
-        lead.prepare(pl.idle_video()).await?;
+        let idle = pl.idle_video();
+        if then_play {
+            // Play join: idle main SeamHold → promote → PlayPrime release.
+            PromoteLead::for_local(aim.local_frame)
+                .prepare(idle)
+                .await?;
+        } else {
+            // Paused scrub / goto: Exact paint only — never leave SeamHold.
+            // SeamHold + skip seek when frame==aim left playing densify-blocked
+            // (gray + empty Exact). **no equivalent** (playlist scrub local).
+            idle.prepare_seam_at(aim.local_frame).await?;
+        }
         if pl.open_gen.get_value() != epoch {
             return Ok(());
         }
@@ -281,10 +290,11 @@ pub(crate) async fn seek_to_pos(
         live.ended.set(false);
         live.playhead.set(aim.local_frame);
         if then_play {
-            // Prepare already painted — PlayPrime, no second Exact flash.
+            // SeamHold already painted — PlayPrime, no second Exact flash.
             pl.play();
-        } else if live.frame.get_untracked() != aim.local_frame {
-            // Prepare missed (cancel/cold) — Exact on live (rare visible settle).
+        } else {
+            // Always Exact + densify arm — prepare is densify-free; skipping
+            // when frame==aim left Exact empty after soft-cold / paint-only.
             live.seek_frame(aim.local_frame);
         }
         return Ok(());
@@ -333,8 +343,8 @@ impl PromoteLead {
     }
 
     /// Idle Play-ready before swap (`SeamHold` on main HW). Paint-only
-    /// `prepare_seam_at` remains the fallback if arm fails (scrub settle still
-    /// uses prepare directly). Soft-cancel → retry arm once.
+    /// `prepare_seam_at` = arm-fail fallback **and** paused `seek_to_pos`
+    /// (never leave SeamHold without Exact densify). Soft-cancel → retry arm once.
     async fn prepare(self, video: VideoRef) -> Result<(), String> {
         let local = self.local();
         seam_trace(&format!("prepare lead={self:?} local={local} (seam hold)"));
