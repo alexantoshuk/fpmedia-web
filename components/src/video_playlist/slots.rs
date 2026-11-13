@@ -126,7 +126,7 @@ pub(crate) async fn ensure_clip_on_idle(
     src.open_on(idle);
     pl.idle_clip.set(Some(clip_index));
     wait_ready(idle, epoch, pl.open_gen).await?;
-    // Open resets engine gain — re-apply playlist-wide volume/mute.
+    // Open resets engine A/V — re-apply playlist-wide volume/mute/rate.
     pl.apply_gain_to_slots();
     Ok(())
 }

@@ -50,6 +50,8 @@ pub struct VideoPlaylistRef {
     pub volume: RwSignal<f64>,
     /// Playlist-wide mute (both slots).
     pub muted: RwSignal<bool>,
+    /// Playlist-wide playback rate (both slots). Facade — not per-clip.
+    pub playback_rate: RwSignal<f64>,
     /// Resume Play after scrub that crossed clips (per-slot `then_play` does not survive promote).
     pub(crate) scrub_resume: RwSignal<bool>,
     pub slot_a: VideoRef,
@@ -99,6 +101,7 @@ impl VideoPlaylistRef {
             // HTMLMediaElement default volume is 1.0.
             volume: RwSignal::new(1.0),
             muted: RwSignal::new(false),
+            playback_rate: RwSignal::new(1.0),
             scrub_resume: RwSignal::new(false),
             slot_a: VideoRef::new(),
             slot_b: VideoRef::new(),
@@ -186,18 +189,33 @@ impl VideoPlaylistRef {
         self.apply_mute_to_slots();
     }
 
-    /// Re-push volume + mute onto both `<Video>` slots (after open / swap).
+    /// Playlist-wide playback rate → both slots (live + idle).
+    pub fn set_playback_rate(self, rate: f64) {
+        let r = fpmedia_web::normalize_playback_rate(rate);
+        self.playback_rate.set(r);
+        self.slot_a.set_playback_rate(r);
+        self.slot_b.set_playback_rate(r);
+    }
+
+    /// Re-push volume + mute + rate onto both `<Video>` slots (after open / swap).
     pub(crate) fn apply_gain_to_slots(self) {
         let v = self.volume.get_untracked();
         self.slot_a.set_volume(v);
         self.slot_b.set_volume(v);
         self.apply_mute_to_slots();
+        self.apply_rate_to_slots();
     }
 
     fn apply_mute_to_slots(self) {
         let m = self.muted.get_untracked();
         self.live_video().set_muted(m);
         self.idle_video().set_muted(m);
+    }
+
+    fn apply_rate_to_slots(self) {
+        let r = self.playback_rate.get_untracked();
+        self.slot_a.set_playback_rate(r);
+        self.slot_b.set_playback_rate(r);
     }
 
     pub fn live_video(self) -> VideoRef {

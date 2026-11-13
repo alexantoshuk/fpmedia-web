@@ -171,9 +171,10 @@ fn open_demo_urls(
         return;
     }
     clip_label.set(Some(parts.join("; ")));
-    // Carry single-video gain into playlist-wide volume/mute.
+    // Carry single-video A/V into playlist-wide volume/mute/rate.
     playlist.set_volume(video.volume.get_untracked());
     playlist.set_muted(video.muted.get_untracked());
+    playlist.set_playback_rate(video.playback_rate.get_untracked());
     video.close();
     use_playlist.set(true);
     let resolved = parts
@@ -222,6 +223,7 @@ fn open_demo_files(
     clip_label.set(Some(names.join(", ")));
     playlist.set_volume(video.volume.get_untracked());
     playlist.set_muted(video.muted.get_untracked());
+    playlist.set_playback_rate(video.playback_rate.get_untracked());
     video.close();
     use_playlist.set(true);
     playlist
@@ -288,6 +290,31 @@ fn demo_set_muted(
         playlist.set_muted(muted);
     } else {
         video.set_muted(muted);
+    }
+}
+
+fn demo_playback_rate(
+    video: VideoRef,
+    playlist: VideoPlaylistRef,
+    use_playlist: RwSignal<bool>,
+) -> f64 {
+    if use_playlist.get() {
+        playlist.playback_rate.get()
+    } else {
+        video.playback_rate.get()
+    }
+}
+
+fn demo_set_playback_rate(
+    video: VideoRef,
+    playlist: VideoPlaylistRef,
+    use_playlist: RwSignal<bool>,
+    rate: f64,
+) {
+    if use_playlist.get_untracked() {
+        playlist.set_playback_rate(rate);
+    } else {
+        video.set_playback_rate(rate);
     }
 }
 
@@ -832,7 +859,6 @@ pub fn DemoPlayer() -> impl IntoView {
         if !media_ready.get_untracked() {
             return;
         }
-        let active = demo_active_video(video, playlist, use_playlist);
         let playing = media_playing.get_untracked();
         match ev.key().as_str() {
             "ArrowLeft" => {
@@ -849,16 +875,26 @@ pub fn DemoPlayer() -> impl IntoView {
             }
             "l" | "L" => {
                 ev.prevent_default();
-                let next = jkl_step(active.playback_rate.get_untracked(), 1);
-                active.set_playback_rate(next);
+                let cur = if use_playlist.get_untracked() {
+                    playlist.playback_rate.get_untracked()
+                } else {
+                    video.playback_rate.get_untracked()
+                };
+                let next = jkl_step(cur, 1);
+                demo_set_playback_rate(video, playlist, use_playlist, next);
                 if !playing {
                     demo_play(video, playlist, use_playlist);
                 }
             }
             "j" | "J" => {
                 ev.prevent_default();
-                let next = jkl_step(active.playback_rate.get_untracked(), -1);
-                active.set_playback_rate(next);
+                let cur = if use_playlist.get_untracked() {
+                    playlist.playback_rate.get_untracked()
+                } else {
+                    video.playback_rate.get_untracked()
+                };
+                let next = jkl_step(cur, -1);
+                demo_set_playback_rate(video, playlist, use_playlist, next);
                 if !playing {
                     demo_play(video, playlist, use_playlist);
                 }
@@ -869,9 +905,9 @@ pub fn DemoPlayer() -> impl IntoView {
                 // playing spawns audio; doing that then pause leaves music on.
                 if playing {
                     demo_pause(video, playlist, use_playlist);
-                    active.set_playback_rate(1.0);
+                    demo_set_playback_rate(video, playlist, use_playlist, 1.0);
                 } else {
-                    active.set_playback_rate(1.0);
+                    demo_set_playback_rate(video, playlist, use_playlist, 1.0);
                     demo_play(video, playlist, use_playlist);
                 }
             }
@@ -1352,17 +1388,14 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                                 on:dblclick=move |ev| {
                                     ev.prevent_default();
-                                    demo_active_video(video, playlist, use_playlist)
-                                        .set_playback_rate(1.0);
+                                    demo_set_playback_rate(video, playlist, use_playlist, 1.0);
                                     rate_open.set(false);
                                 }
                             >
                                 {move || {
                                     format!(
                                         "{:.2}x",
-                                        demo_active_video(video, playlist, use_playlist)
-                                            .playback_rate
-                                            .get()
+                                        demo_playback_rate(video, playlist, use_playlist)
                                     )
                                 }}
                             </button>
@@ -2477,9 +2510,7 @@ fn PlaybackRateTrack(
                     max="1.75"
                     step="0.05"
                     prop:value=move || {
-                        let r = demo_active_video(video, playlist, use_playlist)
-                            .playback_rate
-                            .get();
+                        let r = demo_playback_rate(video, playlist, use_playlist);
                         if r < 0.0 {
                             "0.25".to_string()
                         } else {
@@ -2492,7 +2523,7 @@ fn PlaybackRateTrack(
                             return;
                         };
                         if let Ok(v) = input.value().parse::<f64>() {
-                            demo_active_video(video, playlist, use_playlist).set_playback_rate(v);
+                            demo_set_playback_rate(video, playlist, use_playlist, v);
                         }
                     }
                 />
@@ -2506,9 +2537,7 @@ fn PlaybackRateTrack(
                                     <button
                                         type="button"
                                         class=move || {
-                                            let r = demo_active_video(video, playlist, use_playlist)
-                                                .playback_rate
-                                                .get()
+                                            let r = demo_playback_rate(video, playlist, use_playlist)
                                                 .clamp(RATE_SLIDER_MIN, RATE_SLIDER_MAX);
                                             if (r - t).abs() < 0.026 {
                                                 "wm-rate-tick is-active"
@@ -2521,8 +2550,12 @@ fn PlaybackRateTrack(
                                         prop:title=format!("{}×", format_rate_tick(t))
                                         on:click=move |ev| {
                                             ev.stop_propagation();
-                                            demo_active_video(video, playlist, use_playlist)
-                                                .set_playback_rate(t);
+                                            demo_set_playback_rate(
+                                                video,
+                                                playlist,
+                                                use_playlist,
+                                                t,
+                                            );
                                         }
                                     >
                                         <span class="wm-rate-tick-mark"></span>

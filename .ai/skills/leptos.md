@@ -48,7 +48,7 @@
 | Playlist Host LoopZone: scrub-left before `in` / Play outside → cancel or double wrap | Up → `plan_scrub_up`; Play + wall Effect → `plan_host_outside` + `start_host_wrap`. Soft/hard after wrap → `plan_wrap_done` / `run_wrap_done`. `architecture.md` § Playlist host plans. **no equivalent** |
 | Playlist clip join hitch + Covered/Exact storm | `stop_playback` → `pause_hard_no_densify` (not `pause` densify). Pause button still `pause_warm_idle`. **no equivalent** |
 | LoopZone 2-clip: pause@out → 2nd@0 → green → in | `try_begin_seam` before spawn; paint-before-swap `prepare_seam_at(loop_in)` (not pause+cold `seek_to_pos`); Host wall → wrap. **no equivalent** |
-| Playlist seam volume jump | `VideoPlaylistRef::volume`/`muted` + `apply_gain_to_slots`; demo binds playlist gain, not live slot |
+| Playlist seam volume / rate jump | `VideoPlaylistRef` `volume`/`muted`/`playback_rate` + `apply_gain_to_slots`; demo binds facade, not live slot. **no equivalent** |
 | Playlist Play↔Pause icon flash at clip join / wrap | Facade `VideoPlaylistRef::playing` (intent); demo `media_playing` — not live slot. Slot EOF/`pause_hard` clears slot only. Clear facade on pause / terminal end / seam error. **no equivalent** |
 | Playlist goto/Next/Prev: Pause icon while audio still plays | edge Next/Prev → `GotoPos` → `goto_*` → `stop_play_for_goto` before seek; mid → clear intent + live step. Internal `seek_*` does not stop intent. **no equivalent** |
 | Playlist Host wrap: Pause frozen / Play icon after failed prepare | `plan_wrap_done` → soft `ResumeLiveKeepPlay` / hard clear Play+error (`run_wrap_done`); live already `stop_live_for_host_seam`. **no equivalent** |
