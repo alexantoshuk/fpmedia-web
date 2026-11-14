@@ -503,7 +503,7 @@ body {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: var(--wm-rate-thumb);
+  height: 100%;
   margin: 0;
   background: transparent;
   cursor: pointer;
@@ -630,9 +630,6 @@ body {
 }
 
 .wm-volume-slider-v .wm-volume-input {
-  /* Width = thumb so the hit-box centers on the knob (track is thinner). */
-  width: var(--wm-volume-thumb);
-  height: 5.5rem;
   writing-mode: vertical-lr;
   direction: rtl;
 }
@@ -643,6 +640,7 @@ body {
  */
 .wm-volume-input {
   --wm-volume-track: 6px;
+  /* `--wm-volume-thumb` from `.wm-slider-v` host when wrapped. */
   --wm-volume-thumb: 14px;
   --wm-volume-pct: 0%;
   -webkit-appearance: none;
@@ -651,6 +649,71 @@ body {
   border: 0;
   background: transparent;
   cursor: pointer;
+}
+
+/*
+ * Reusable range hosts (product.md § Share common logic):
+ *   set `--wm-slider-thumb` (+ `--wm-slider-travel` for vertical), wrap `<input type=range>`.
+ * Flow size stays thumb; coarse expands the input absolutely to `--wm-slider-hit`.
+ */
+.wm-slider-h,
+.wm-slider-v {
+  position: relative;
+}
+
+.wm-slider-h {
+  width: 100%;
+  height: var(--wm-slider-thumb);
+}
+
+.wm-slider-v {
+  width: var(--wm-slider-thumb);
+  height: var(--wm-slider-travel);
+}
+
+.wm-slider-h > input[type="range"],
+.wm-slider-v > input[type="range"] {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+.wm-rate-track .wm-slider-h {
+  --wm-slider-thumb: var(--wm-rate-thumb);
+}
+
+.wm-volume-slider-v .wm-slider-v {
+  --wm-volume-thumb: 14px;
+  --wm-slider-thumb: var(--wm-volume-thumb);
+  --wm-slider-travel: 5.5rem;
+}
+
+@media (pointer: coarse) {
+  :root {
+    --wm-slider-hit: 2.75rem; /* ~44px */
+  }
+
+  .wm-slider-h > input[type="range"] {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    width: 100%;
+    height: var(--wm-slider-hit);
+    transform: translateY(-50%);
+  }
+
+  .wm-slider-v > input[type="range"] {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: var(--wm-slider-hit);
+    height: 100%;
+    transform: translateX(-50%);
+  }
 }
 
 .wm-volume-input::-webkit-slider-runnable-track {

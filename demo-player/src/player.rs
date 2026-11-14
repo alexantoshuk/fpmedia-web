@@ -2596,31 +2596,33 @@ fn PlaybackRateTrack(
                 }}
             </div>
             <div class="wm-rate-track">
-                <input
-                    type="range"
-                    class="wm-rate-input"
-                    attr:data-testid=input_testid
-                    min="0.25"
-                    max="1.75"
-                    step="0.05"
-                    prop:value=move || {
-                        let r = demo_playback_rate(video, playlist, use_playlist);
-                        if r < 0.0 {
-                            "0.25".to_string()
-                        } else {
-                            r.min(1.75).to_string()
+                <div class="wm-slider-h">
+                    <input
+                        type="range"
+                        class="wm-rate-input"
+                        attr:data-testid=input_testid
+                        min="0.25"
+                        max="1.75"
+                        step="0.05"
+                        prop:value=move || {
+                            let r = demo_playback_rate(video, playlist, use_playlist);
+                            if r < 0.0 {
+                                "0.25".to_string()
+                            } else {
+                                r.min(1.75).to_string()
+                            }
                         }
-                    }
-                    prop:disabled=move || !media_ready.get()
-                    on:input=move |ev| {
-                        let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                            return;
-                        };
-                        if let Ok(v) = input.value().parse::<f64>() {
-                            demo_set_playback_rate(video, playlist, use_playlist, v);
+                        prop:disabled=move || !media_ready.get()
+                        on:input=move |ev| {
+                            let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                                return;
+                            };
+                            if let Ok(v) = input.value().parse::<f64>() {
+                                demo_set_playback_rate(video, playlist, use_playlist, v);
+                            }
                         }
-                    }
-                />
+                    />
+                </div>
                 <div class="wm-rate-ticks" aria-hidden="true">
                     <div class="wm-rate-ticks-rail">
                         {RATE_TICKS
@@ -2677,81 +2679,83 @@ fn VolumeRangeInput(
     no_hover: Signal<bool>,
 ) -> impl IntoView {
     view! {
-        <input
-            type="range"
-            class="wm-volume-input"
-            data-testid="volume-input"
-            min="0"
-            max="1"
-            step="0.05"
-            style:--wm-volume-pct=move || {
-                let pct = if demo_muted(video, playlist, use_playlist) {
-                    0.0
-                } else {
-                    demo_volume(video, playlist, use_playlist).clamp(0.0, 1.0) * 100.0
-                };
-                format!("{pct}%")
-            }
-            prop:value=move || {
-                // Mute parks the thumb at 0 without clearing stored volume;
-                // unmute restores playlist/single `volume`.
-                if demo_muted(video, playlist, use_playlist) {
-                    "0".to_string()
-                } else {
-                    demo_volume(video, playlist, use_playlist).to_string()
-                }
-            }
-            prop:disabled=move || {
-                let v = demo_active_video(video, playlist, use_playlist);
-                !v.ready.get() || !v.has_audio.get()
-            }
-            on:pointerdown=move |ev| {
-                // Drag keep-open = `is-sliding` only. Do not latch `volume_open`
-                // (that stuck the V pop until click-outside).
-                volume_sliding.set(true);
-                if let Some(t) = ev.target()
-                    && let Ok(el) = t.dyn_into::<HtmlElement>()
-                {
-                    let _ = el.set_pointer_capture(ev.pointer_id());
-                }
-            }
-            on:pointerup=move |ev| {
-                volume_sliding.set(false);
-                // Hover path: drop focus so `:focus-within` does not pin the pop.
-                if !no_hover.get_untracked()
-                    && let Some(t) = ev.target()
-                    && let Ok(el) = t.dyn_into::<HtmlElement>()
-                {
-                    let _ = el.blur();
-                }
-            }
-            on:pointercancel=move |ev| {
-                volume_sliding.set(false);
-                if !no_hover.get_untracked()
-                    && let Some(t) = ev.target()
-                    && let Ok(el) = t.dyn_into::<HtmlElement>()
-                {
-                    let _ = el.blur();
-                }
-            }
-            on:input=move |ev| {
-                let Some(input) = event_target::<HtmlInputElement>(&ev) else {
-                    return;
-                };
-                if let Ok(v) = input.value().parse::<f64>() {
-                    // Snap to 0.05 so icon thresholds stay clean.
-                    let snapped = (v / 0.05).round() * 0.05;
-                    demo_set_volume(video, playlist, use_playlist, snapped.clamp(0.0, 1.0));
-                    let muted = if use_playlist.get_untracked() {
-                        playlist.muted.get_untracked()
+        <div class="wm-slider-v">
+            <input
+                type="range"
+                class="wm-volume-input"
+                data-testid="volume-input"
+                min="0"
+                max="1"
+                step="0.05"
+                style:--wm-volume-pct=move || {
+                    let pct = if demo_muted(video, playlist, use_playlist) {
+                        0.0
                     } else {
-                        video.muted.get_untracked()
+                        demo_volume(video, playlist, use_playlist).clamp(0.0, 1.0) * 100.0
                     };
-                    if muted {
-                        demo_set_muted(video, playlist, use_playlist, false);
+                    format!("{pct}%")
+                }
+                prop:value=move || {
+                    // Mute parks the thumb at 0 without clearing stored volume;
+                    // unmute restores playlist/single `volume`.
+                    if demo_muted(video, playlist, use_playlist) {
+                        "0".to_string()
+                    } else {
+                        demo_volume(video, playlist, use_playlist).to_string()
                     }
                 }
-            }
-        />
+                prop:disabled=move || {
+                    let v = demo_active_video(video, playlist, use_playlist);
+                    !v.ready.get() || !v.has_audio.get()
+                }
+                on:pointerdown=move |ev| {
+                    // Drag keep-open = `is-sliding` only. Do not latch `volume_open`
+                    // (that stuck the V pop until click-outside).
+                    volume_sliding.set(true);
+                    if let Some(t) = ev.target()
+                        && let Ok(el) = t.dyn_into::<HtmlElement>()
+                    {
+                        let _ = el.set_pointer_capture(ev.pointer_id());
+                    }
+                }
+                on:pointerup=move |ev| {
+                    volume_sliding.set(false);
+                    // Hover path: drop focus so `:focus-within` does not pin the pop.
+                    if !no_hover.get_untracked()
+                        && let Some(t) = ev.target()
+                        && let Ok(el) = t.dyn_into::<HtmlElement>()
+                    {
+                        let _ = el.blur();
+                    }
+                }
+                on:pointercancel=move |ev| {
+                    volume_sliding.set(false);
+                    if !no_hover.get_untracked()
+                        && let Some(t) = ev.target()
+                        && let Ok(el) = t.dyn_into::<HtmlElement>()
+                    {
+                        let _ = el.blur();
+                    }
+                }
+                on:input=move |ev| {
+                    let Some(input) = event_target::<HtmlInputElement>(&ev) else {
+                        return;
+                    };
+                    if let Ok(v) = input.value().parse::<f64>() {
+                        // Snap to 0.05 so icon thresholds stay clean.
+                        let snapped = (v / 0.05).round() * 0.05;
+                        demo_set_volume(video, playlist, use_playlist, snapped.clamp(0.0, 1.0));
+                        let muted = if use_playlist.get_untracked() {
+                            playlist.muted.get_untracked()
+                        } else {
+                            video.muted.get_untracked()
+                        };
+                        if muted {
+                            demo_set_muted(video, playlist, use_playlist, false);
+                        }
+                    }
+                }
+            />
+        </div>
     }
 }
