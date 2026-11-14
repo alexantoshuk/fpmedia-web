@@ -195,12 +195,8 @@ body {
   bottom: 0;
   z-index: 2;
   padding: 2.5rem 0.85rem 0.85rem;
-  background: linear-gradient(
-    to top,
-    rgba(0, 0, 0, 0.82) 0%,
-    rgba(0, 0, 0, 0.55) 55%,
-    transparent 100%
-  );
+  /* Color hint biases the fade (no ease-* on linear-gradient). */
+  background: linear-gradient(to top, rgb(0 0 0 / 0.82), 40%, transparent);
   transition:
     opacity 0.22s ease,
     visibility 0.22s ease;
@@ -213,6 +209,19 @@ body {
 .wm-player:fullscreen .wm-rate-btn,
 .wm-player:fullscreen .wm-stats-head .wm-btn {
   color: #d4d4d4;
+}
+
+/* Scrub substrates see through to the picture in fullscreen. */
+.wm-player:fullscreen .wm-scrubber {
+  background: transparent;
+}
+
+.wm-player:fullscreen .wm-scrubber-track {
+  background: rgb(42 42 42 / 0.5);
+}
+
+.wm-player:fullscreen .wm-scrubber-zebra-host {
+  opacity: 0.5;
 }
 
 .wm-player:fullscreen.is-controls-hidden {
@@ -337,7 +346,7 @@ body {
   height: 100%;
   pointer-events: none;
   z-index: 0;
-  opacity: 0.4;
+  opacity: 0.25;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
@@ -392,7 +401,7 @@ body {
 
 .wm-scrubber-ready {
   position: relative;
-  background: #141414;
+  background: transparent;
   pointer-events: none;
   flex: 0 0 auto;
 }
