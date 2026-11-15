@@ -30,6 +30,7 @@ use web_sys::HtmlCanvasElement;
 type BoxedLocalFut<T> = Pin<Box<dyn Future<Output = T>>>;
 type LocalFutFn<T> = Rc<dyn Fn() -> BoxedLocalFut<T>>;
 type LocalFutFnU32<T> = Rc<dyn Fn(u32) -> BoxedLocalFut<T>>;
+type PresentImageBitmapFn = Rc<dyn Fn(u32, &web_sys::ImageBitmap) -> bool>;
 
 /// Cloneable handle to a mounted [`Video`] — like a ref to an HTMLMediaElement.
 #[derive(Clone, Copy)]
@@ -71,6 +72,11 @@ pub struct VideoRef {
     /// Host mid-zone: next SeamHold release restarts PlayIter @aim.
     /// Cleared by PlayPrime. Full-axis joins leave false.
     seam_hold_restart_on_release: StoredValue<bool, LocalStorage>,
+    /// VT Exact ledger for this single-clip timeline (identity global=local).
+    pub(crate) exact_ledger:
+        StoredValue<Option<crate::virtual_timeline::LedgerHandle>, LocalStorage>,
+    /// Bumped when VT Exact ledger mutates — TimelineMeta Exact strip subscribes.
+    pub exact_residency_epoch: RwSignal<u64>,
 }
 
 #[derive(Clone)]
@@ -106,6 +112,40 @@ pub(crate) struct VideoOps {
     pub cancel_hover_thumb: Rc<dyn Fn()>,
     pub set_thumb_policy: Rc<dyn Fn(ThumbPolicy)>,
     pub set_scrub_cache_policy: Rc<dyn Fn(ScrubCachePolicy)>,
+    /// VT backend demote: densify off, keep Exact/Covered (not user Scrub Off wipe).
+    pub park_scrub_cache: Rc<dyn Fn()>,
+    /// Exact blit resident? (VT Exact-settle hit test).
+    pub has_scrub_exact_blit: Rc<dyn Fn(u32) -> bool>,
+    /// Present Exact blit when cached (VT PresentHit).
+    pub try_present_scrub_exact: Rc<dyn Fn(u32) -> bool>,
+    /// Arm Pause densify after Exact present (VT PresentHit settle).
+    pub arm_scrub_densify_after_exact: Rc<dyn Fn(u32)>,
+    /// Present VT ledger Exact bitmap onto this slot (`local` FrameId).
+    pub present_image_bitmap: PresentImageBitmapFn,
+    /// Take Exact blit for VT ledger import.
+    pub take_scrub_exact_blit: Rc<dyn Fn(u32) -> Option<web_sys::ImageBitmap>>,
+    /// Densify Exact FrameIds in the slot blit (local).
+    pub scrub_exact_frame_ids: Rc<dyn Fn() -> Vec<u32>>,
+    /// Densify Covered marker FrameIds (local).
+    pub scrub_covered_frame_ids: Rc<dyn Fn() -> Vec<u32>>,
+    /// Clone Exact blit for VT ledger (slot keeps its copy).
+    pub clone_scrub_exact_blit: Rc<dyn Fn(u32) -> Option<web_sys::ImageBitmap>>,
+    /// Slot Exact blit capacity (VT ledger matches).
+    pub scrub_exact_capacity: Rc<dyn Fn() -> usize>,
+    /// VT densify authority (gaps only from `queue_vt_densify_target`).
+    pub set_vt_densify_authority: Rc<dyn Fn(bool)>,
+    /// Queue one local densify target for VT-owned fill.
+    pub queue_vt_densify_target: Rc<dyn Fn(u32)>,
+    /// Local Exact ids already in VT ledger (densify skip after take).
+    pub set_vt_exact_residents: Rc<dyn Fn(Vec<u32>)>,
+    /// Scrub edge margins for VT densify plan.
+    pub scrub_plan_margins: Rc<dyn Fn() -> (u64, u64)>,
+    /// Scrub direction for VT densify plan.
+    pub scrub_dir: Rc<dyn Fn() -> i8>,
+    /// VT soft-banned local Exact FrameIds.
+    pub vt_densify_banned_locals: Rc<dyn Fn() -> Vec<u32>>,
+    /// Densify flight busy or pending.
+    pub densify_inflight: Rc<dyn Fn() -> bool>,
     /// Playlist / loop: frame-0 byte + stash warm (joins PlayPrime at origin).
     pub warm_play_origin: LocalFutFn<()>,
     /// Idle: warm + paint `frame` before promote (0 = clip seam; mid = LoopZone in).
@@ -143,7 +183,36 @@ impl VideoRef {
                 pipeline_interest::InterestCounts::default(),
             ),
             seam_hold_restart_on_release: StoredValue::new_local(false),
+            exact_ledger: StoredValue::new_local(
+                Some(crate::virtual_timeline::new_ledger_handle()),
+            ),
+            exact_residency_epoch: RwSignal::new(0),
         }
+    }
+
+    /// VT Exact ledger for this `<Video>` (Single timeline; global = local).
+    pub fn exact_ledger(&self) -> Option<crate::virtual_timeline::LedgerHandle> {
+        self.exact_ledger.get_value()
+    }
+
+    /// Notify Exact strip that the VT ledger changed.
+    pub fn bump_exact_residency(&self) {
+        self.exact_residency_epoch
+            .update(|n| *n = n.wrapping_add(1));
+    }
+
+    /// Clear Exact ledger (new open / close).
+    pub fn reset_exact_ledger(&self) {
+        if let Some(h) = self.exact_ledger.get_value() {
+            let mut led = h.borrow_mut();
+            for (_, bmp) in led.take_all_exact() {
+                bmp.close();
+            }
+        } else {
+            self.exact_ledger
+                .set_value(Some(crate::virtual_timeline::new_ledger_handle()));
+        }
+        self.bump_exact_residency();
     }
 
     /// Next SeamHold → Live release restarts PlayIter (Host mid-zone only).
@@ -454,6 +523,119 @@ impl VideoRef {
         if let Some(set) = self.op(|o| &o.set_scrub_cache_policy) {
             set(policy);
         }
+    }
+
+    /// VT backend demote / idle: abort densify, keep Exact + Covered.
+    /// User Scrub Off still uses [`Self::set_scrub_cache_policy`].
+    pub fn park_scrub_cache(&self) {
+        if let Some(park) = self.op(|o| &o.park_scrub_cache) {
+            park();
+        }
+    }
+
+    /// True when Exact blit already holds `frame` (VT Exact-settle hit test).
+    pub fn has_scrub_exact_blit(&self, frame: u32) -> bool {
+        self.op(|o| &o.has_scrub_exact_blit)
+            .map(|f| f(frame))
+            .unwrap_or(false)
+    }
+
+    /// Present Exact blit for `frame` when cached. Returns whether painted.
+    pub fn try_present_scrub_exact(&self, frame: u32) -> bool {
+        self.op(|o| &o.try_present_scrub_exact)
+            .map(|f| f(frame))
+            .unwrap_or(false)
+    }
+
+    /// Arm densify after Exact present (VT PresentHit settle).
+    pub fn arm_scrub_densify_after_exact(&self, frame: u32) {
+        if let Some(arm) = self.op(|o| &o.arm_scrub_densify_after_exact) {
+            arm(frame);
+        }
+    }
+
+    /// Present a VT ledger Exact bitmap onto this slot.
+    pub fn present_image_bitmap(&self, local: u32, bitmap: &web_sys::ImageBitmap) -> bool {
+        self.op(|o| &o.present_image_bitmap)
+            .map(|f| f(local, bitmap))
+            .unwrap_or(false)
+    }
+
+    /// Take Exact blit for import into the VT ledger.
+    pub fn take_scrub_exact_blit(&self, local: u32) -> Option<web_sys::ImageBitmap> {
+        self.op(|o| &o.take_scrub_exact_blit).and_then(|f| f(local))
+    }
+
+    /// Local Exact FrameIds in the slot blit.
+    pub fn scrub_exact_frame_ids(&self) -> Vec<u32> {
+        self.op(|o| &o.scrub_exact_frame_ids)
+            .map(|f| f())
+            .unwrap_or_default()
+    }
+
+    /// Local Covered marker FrameIds.
+    pub fn scrub_covered_frame_ids(&self) -> Vec<u32> {
+        self.op(|o| &o.scrub_covered_frame_ids)
+            .map(|f| f())
+            .unwrap_or_default()
+    }
+
+    /// Clone Exact blit for VT ledger import.
+    pub fn clone_scrub_exact_blit(&self, local: u32) -> Option<web_sys::ImageBitmap> {
+        self.op(|o| &o.clone_scrub_exact_blit)
+            .and_then(|f| f(local))
+    }
+
+    /// Slot Exact capacity (frames).
+    pub fn scrub_exact_capacity(&self) -> usize {
+        self.op(|o| &o.scrub_exact_capacity)
+            .map(|f| f())
+            .unwrap_or(1)
+    }
+
+    /// VT densify authority on/off.
+    pub fn set_vt_densify_authority(&self, on: bool) {
+        if let Some(f) = self.op(|o| &o.set_vt_densify_authority) {
+            f(on);
+        }
+    }
+
+    /// Queue local FrameId for VT densify fill task.
+    pub fn queue_vt_densify_target(&self, local: u32) {
+        if let Some(f) = self.op(|o| &o.queue_vt_densify_target) {
+            f(local);
+        }
+    }
+
+    /// Local Exact already in VT ledger — densify must not re-decode after take.
+    pub fn set_vt_exact_residents(&self, locals: &[u32]) {
+        if let Some(f) = self.op(|o| &o.set_vt_exact_residents) {
+            f(locals.to_vec());
+        }
+    }
+
+    /// Scrub margins for [`crate::virtual_timeline::plan_next_densify_gap`].
+    pub fn scrub_plan_margins(&self) -> (u64, u64) {
+        self.op(|o| &o.scrub_plan_margins)
+            .map(|f| f())
+            .unwrap_or((12, 6))
+    }
+
+    pub fn scrub_dir(&self) -> i8 {
+        self.op(|o| &o.scrub_dir).map(|f| f()).unwrap_or(0)
+    }
+
+    /// VT densify soft-ban locals (skip in timeline plan).
+    pub fn vt_densify_banned_locals(&self) -> Vec<u32> {
+        self.op(|o| &o.vt_densify_banned_locals)
+            .map(|f| f())
+            .unwrap_or_default()
+    }
+
+    pub fn densify_inflight(&self) -> bool {
+        self.op(|o| &o.densify_inflight)
+            .map(|f| f())
+            .unwrap_or(false)
     }
 
     /// Fire-and-forget frame-0 byte + PreferSoftware stash warm (playlist

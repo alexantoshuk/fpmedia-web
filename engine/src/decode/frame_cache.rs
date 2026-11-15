@@ -73,6 +73,11 @@ impl ScrubBlitLru {
         self.window.contains(frame)
     }
 
+    /// Remove Exact bitmap (VT ledger import — slot becomes decode scratch).
+    pub fn take(&mut self, frame: FrameId) -> Option<ImageBitmap> {
+        self.window.remove(frame)
+    }
+
     pub fn len(&self) -> usize {
         self.window.len()
     }

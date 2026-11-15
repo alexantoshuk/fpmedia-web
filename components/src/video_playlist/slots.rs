@@ -117,6 +117,8 @@ pub(crate) async fn ensure_clip_on_idle(
         .ok_or_else(|| format!("missing source for clip {}", clip_index + 1))?;
     let idle = pl.idle_video();
     idle.set_loop(false);
+    // Teardown wipe old media Exact; after open park (densify off, no wipe).
+    // Promote → On. **no equivalent** (playlist scrub local).
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     idle.close();
     sleep_ms(0).await;
@@ -126,6 +128,14 @@ pub(crate) async fn ensure_clip_on_idle(
     src.open_on(idle);
     pl.idle_clip.set(Some(clip_index));
     wait_ready(idle, epoch, pl.open_gen).await?;
+    // Move may promote during wait_ready sleep — never park a live slot
+    // (Host Off sticks; Exact ingest dies). **no equivalent**.
+    if pl.live_clip.get_untracked() == clip_index {
+        idle.set_scrub_cache_policy(ScrubCachePolicy::On);
+    } else if pl.idle_clip.get_untracked() == Some(clip_index) {
+        idle.park_scrub_cache();
+    }
+    idle.set_vt_densify_authority(false);
     // Open resets engine A/V — re-apply playlist-wide volume/mute/rate.
     pl.apply_gain_to_slots();
     Ok(())
@@ -165,8 +175,9 @@ pub(crate) fn sync_live_loop_from_playlist(pl: VideoPlaylistRef) {
 /// to idle (former live) — never an aspirational neighbor (that lied and made
 /// scrub promote the wrong media). Caller [`preload_idle`]s the desired neighbor.
 ///
-/// Policy On = scrub-cache **capability** only (does not arm densify). Pause fill
-/// comes from seek / EnterScrub / pause doors; seam Play never arms. **no equivalent**.
+/// Policy On = scrub-cache **capability** only (does not arm densify).
+/// Live On; idle **park** (densify off, keep Exact). Off wipe only on media
+/// replace / user Scrub Off. Exact = slot blit. **no equivalent**.
 pub(crate) fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32) {
     // Stop outgoing before flip — else hidden slot keeps Playing and can EOF /
     // densify while the new live seeks (LoopZone wrap flash).
@@ -180,9 +191,11 @@ pub(crate) fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32) {
     pl.idle_clip.set(Some(former_live));
     let live = pl.live_video();
     live.set_scrub_cache_policy(ScrubCachePolicy::On);
+    live.set_vt_densify_authority(false);
     live.ended.set(false);
     let idle = pl.idle_video();
-    idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
+    idle.park_scrub_cache();
+    idle.set_vt_densify_authority(false);
     idle.ended.set(false);
     sync_live_loop_from_playlist(pl);
     pl.apply_gain_to_slots();
@@ -219,18 +232,25 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     };
     let idle = pl.idle_video();
     idle.set_loop(false);
+    // Replace media → wipe; after open park unless promote won the race.
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     src.open_on(idle);
     pl.idle_clip.set(Some(i));
     let _ = wait_ready(idle, epoch, pl.open_gen).await;
+    if pl.live_clip.get_untracked() == i {
+        idle.set_scrub_cache_policy(ScrubCachePolicy::On);
+    } else if pl.idle_clip.get_untracked() == Some(i) {
+        idle.park_scrub_cache();
+    }
+    idle.set_vt_densify_authority(false);
     pl.apply_gain_to_slots();
 }
 
 /// Make `aim.clip_index` live (swap or open) at `aim.local_frame`.
 ///
 /// Cross-clip: paint on idle → swap. `then_play`: SeamHold (`PromoteLead`) →
-/// `play()`; pause/goto: `prepare_seam_at` → always `seek_frame` (Exact+densify).
-/// Same-clip: slot `seek_frame`. **no equivalent**.
+/// `play()`; pause/goto: slot Exact PresentHit or seek densify.
+/// Same-clip pause: same law. **no equivalent**.
 pub(crate) async fn seek_to_pos(
     pl: VideoPlaylistRef,
     aim: crate::video_playlist::PlaylistPos,
@@ -242,9 +262,9 @@ pub(crate) async fn seek_to_pos(
     }
     pl.ended.set(false);
     pl.pos.set(aim);
-    if let Some(g) = pl.model.get_untracked().global_frame_at(aim) {
-        pl.playhead.set(g);
-    }
+    let global = pl.model.get_untracked().global_frame_at(aim).unwrap_or(0);
+    pl.playhead.set(global);
+    let _ = global; // playhead already set above
 
     if pl.live_clip.get_untracked() != aim.clip_index {
         ensure_clip_on_idle(pl, aim.clip_index, epoch).await?;
@@ -254,15 +274,16 @@ pub(crate) async fn seek_to_pos(
         // Stop outgoing Play before idle Exact / SeamHold (goto / scrub Up).
         stop_live_for_host_seam(pl);
         let idle = pl.idle_video();
+        let slot_exact_hit = !then_play && idle.has_scrub_exact_blit(aim.local_frame);
         if then_play {
             // Play join: idle main SeamHold → promote → PlayPrime release.
             PromoteLead::for_local(aim.local_frame)
                 .prepare(idle)
                 .await?;
-        } else {
-            // Paused scrub / goto: Exact paint only — never leave SeamHold.
-            // SeamHold + skip seek when frame==aim left playing densify-blocked
-            // (gray + empty Exact). **no equivalent** (playlist scrub local).
+        } else if !slot_exact_hit {
+            // Paused miss: On so prepare Exact ingest works (Off gates blit).
+            // Never leave SeamHold. **no equivalent** (playlist scrub local).
+            idle.set_scrub_cache_policy(ScrubCachePolicy::On);
             idle.prepare_seam_at(aim.local_frame).await?;
         }
         if pl.open_gen.get_value() != epoch {
@@ -293,9 +314,7 @@ pub(crate) async fn seek_to_pos(
             // SeamHold already painted — PlayPrime, no second Exact flash.
             pl.play();
         } else {
-            // Always Exact + densify arm — prepare is densify-free; skipping
-            // when frame==aim left Exact empty after soft-cold / paint-only.
-            live.seek_frame(aim.local_frame);
+            settle_playlist_pause_exact(pl, live, aim.local_frame, slot_exact_hit);
         }
         return Ok(());
     }
@@ -308,11 +327,36 @@ pub(crate) async fn seek_to_pos(
     live.ended.set(false);
     // Slot playhead is local — PlayPrime reads it (playlist global ≠ slot).
     live.playhead.set(aim.local_frame);
-    live.seek_frame(aim.local_frame);
     if then_play {
         pl.play();
+    } else {
+        settle_playlist_pause_exact(pl, live, aim.local_frame, false);
     }
     Ok(())
+}
+
+/// Pause Exact from slot blit: PresentHit → present; miss → seek densify.
+///
+/// `known_hit` skips a second blit check after cross-clip promote already checked.
+/// Always re-assert live On — open/park leave HostCtx Off and Exact ingest is
+/// gated by `scrub_cache_off`. **no equivalent** (playlist scrub local).
+fn settle_playlist_pause_exact(
+    _pl: VideoPlaylistRef,
+    live: crate::VideoRef,
+    local: u32,
+    known_hit: bool,
+) {
+    use crate::virtual_timeline::{ExactSettlePlan, plan_exact_settle};
+    live.set_scrub_cache_policy(ScrubCachePolicy::On);
+    live.set_vt_densify_authority(false);
+    let hit = known_hit || live.has_scrub_exact_blit(local);
+    if matches!(plan_exact_settle(hit), ExactSettlePlan::PresentHit)
+        && live.try_present_scrub_exact(local)
+    {
+        live.arm_scrub_densify_after_exact(local);
+        return;
+    }
+    live.seek_frame(local);
 }
 
 /// Host promote lead for a local aim. One table for [`promote_idle_at`] +

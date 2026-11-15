@@ -2,6 +2,7 @@
 //!
 //! - [`video`] — frame-precise `<Video>` + [`VideoRef`]
 //! - [`timeline`] — shared [`TimelineRef`] for scrub/hover (Video / VideoPlaylist)
+//! - [`virtual_timeline`] — VT policy (Exact settle / resolve; backends decode-only)
 //! - [`scrubber`] — headless `<Scrubber>` (gesture + context)
 //! - [`timeline_meta`] — `<TimelineMeta>` (one fetch/residency strip)
 //! - [`hover_thumb`] — `<HoverThumb>` (paint inside; host chrome via children)
@@ -29,6 +30,7 @@ pub mod timeline_meta;
 #[cfg(target_arch = "wasm32")]
 pub mod video;
 pub mod video_playlist;
+pub mod virtual_timeline;
 
 #[cfg(target_arch = "wasm32")]
 pub use hover_thumb::{

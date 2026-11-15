@@ -73,10 +73,17 @@ pub fn VideoPlaylist(
         ..
     } = playlist;
 
-    // Idle: no densify / scrub cache. Thumbs follow host `ThumbPolicy` (both slots).
+    // Live densify On (engine next_gap); idle park (keep Exact). Exact = slot blit.
+    // VT = axis/settle/remap only. **no equivalent** (VT local).
     Effect::new(move |_| {
         let idle = if live_is_a.get() { slot_b } else { slot_a };
-        idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
+        let live = if live_is_a.get() { slot_a } else { slot_b };
+        idle.park_scrub_cache();
+        idle.set_vt_densify_authority(false);
+        live.set_vt_densify_authority(false);
+        if ready.get() {
+            live.set_scrub_cache_policy(ScrubCachePolicy::On);
+        }
     });
 
     // Mirror live presentation → playlist pos + global frame.
@@ -334,6 +341,7 @@ pub fn VideoPlaylist(
                     return;
                 }
 
+                playlist.reset_exact_ledger();
                 status.set("Opening live clip…".into());
                 list[0].open_on(slot_a);
                 slot_a.set_scrub_cache_policy(ScrubCachePolicy::On);
@@ -342,8 +350,10 @@ pub fn VideoPlaylist(
                 if list.len() > 1 {
                     status.set("Opening idle clip…".into());
                     list[1].open_on(slot_b);
-                    slot_b.set_scrub_cache_policy(ScrubCachePolicy::Off);
+                    slot_b.park_scrub_cache();
                 }
+                slot_a.set_vt_densify_authority(false);
+                slot_b.set_vt_densify_authority(false);
 
                 match wait_ready(slot_a, epoch, open_gen).await {
                     Ok(_) => {

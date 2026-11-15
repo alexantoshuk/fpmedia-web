@@ -81,6 +81,8 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
             let p = Rc::new(p);
             // Capability before `seek_frame(0)` (seek arms densify; policy does not).
             p.set_scrub_cache_policy(ctx.scrub_cache_policy.get());
+            // Exact residency = slot blit; engine next_gap. VT = axis/settle only.
+            p.set_vt_densify_authority(false);
             p.set_thumb_policy(ctx.thumb_policy.get());
             metadata.set(Some(p.metadata()));
             has_audio.set(p.has_audio());
@@ -90,6 +92,7 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
                 p.set_muted(muted.get_untracked());
             }
             // New clip → full-axis LoopZone; preserve host `looping` intent.
+            ctx.video.reset_exact_ledger();
             ctx.video.loop_in.set(0);
             ctx.video.loop_out.set(None);
             p.set_loop(ctx.video.looping.get_untracked());
@@ -200,11 +203,23 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
             target,
             then_play: false,
         } => {
-            let r = p.scrub_to(u64::from(target), true).await;
-            // Settle no longer arms densify inside the engine — if Play is queued,
-            // keep the warm main decoder for prime (play-after-scrub).
+            // Exact in slot blit — PresentHit or scrub_to settle. **no equivalent**.
+            use crate::virtual_timeline::{ExactSettlePlan, plan_exact_settle};
+            let local = u64::from(target);
+            let plan = plan_exact_settle(p.has_scrub_exact_blit(local));
+            let r = match plan {
+                ExactSettlePlan::PresentHit => {
+                    if p.try_present_scrub_exact(local) {
+                        Ok(())
+                    } else {
+                        p.scrub_to(local, true).await
+                    }
+                }
+                ExactSettlePlan::DecodeExact => p.scrub_to(local, true).await,
+            };
             if r.is_ok() && queue.is_current(id) && !queue.has_pending_play() {
-                p.arm_scrub_densify_after_exact(u64::from(target));
+                p.set_vt_densify_authority(false);
+                p.arm_scrub_densify_after_exact(local);
             }
             r
         }

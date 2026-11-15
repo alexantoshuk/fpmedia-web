@@ -117,6 +117,7 @@ pub fn TimelineMeta(
         }
 
         // Track pipeline / domain even when canvas NodeRef is not ready yet.
+        // Exact/Covered from slot blit via remapped ready_frames (not VT ledger).
         let pipe = video.pipeline.get();
         let frame_count = timeline.strip_domain_len();
         let marks = pipe

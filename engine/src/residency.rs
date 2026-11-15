@@ -55,6 +55,10 @@ impl<V> AimWindow<V> {
         self.items.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     pub fn max(&self) -> usize {
         self.max
     }

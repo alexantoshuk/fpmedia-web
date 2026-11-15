@@ -776,6 +776,152 @@ pub fn Video(
         }) as Rc<dyn Fn(fpmedia_web::ScrubCachePolicy)>
     };
 
+    let park_scrub_cache_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            // Capability Off without wipe — host signal stays Off so open re-apply
+            // does not clear parked Exact. User Scrub Off uses set_scrub_cache_policy.
+            ctx.scrub_cache_policy
+                .set(fpmedia_web::ScrubCachePolicy::Off);
+            ctx.with_player(|p| p.park_scrub_cache());
+        }) as Rc<dyn Fn()>
+    };
+
+    let has_scrub_exact_blit_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |frame: u32| {
+            ctx.with_player(|p| p.has_scrub_exact_blit(u64::from(frame)))
+                .unwrap_or(false)
+        }) as Rc<dyn Fn(u32) -> bool>
+    };
+
+    let try_present_scrub_exact_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |frame: u32| {
+            ctx.with_player(|p| p.try_present_scrub_exact(u64::from(frame)))
+                .unwrap_or(false)
+        }) as Rc<dyn Fn(u32) -> bool>
+    };
+
+    let arm_scrub_densify_after_exact_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |frame: u32| {
+            ctx.with_player(|p| p.arm_scrub_densify_after_exact(u64::from(frame)));
+        }) as Rc<dyn Fn(u32)>
+    };
+
+    let present_image_bitmap_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |frame: u32, bitmap: &web_sys::ImageBitmap| {
+            ctx.with_player(|p| p.present_image_bitmap(u64::from(frame), bitmap).is_ok())
+                .unwrap_or(false)
+        }) as Rc<dyn Fn(u32, &web_sys::ImageBitmap) -> bool>
+    };
+
+    let take_scrub_exact_blit_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |frame: u32| {
+            ctx.with_player(|p| p.take_scrub_exact_blit(u64::from(frame)))
+                .flatten()
+        }) as Rc<dyn Fn(u32) -> Option<web_sys::ImageBitmap>>
+    };
+
+    let scrub_exact_frame_ids_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            ctx.with_player(|p| {
+                p.scrub_exact_frame_ids()
+                    .into_iter()
+                    .filter_map(|id| u32::try_from(id).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        }) as Rc<dyn Fn() -> Vec<u32>>
+    };
+
+    let scrub_covered_frame_ids_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            ctx.with_player(|p| {
+                p.scrub_covered_frame_ids()
+                    .into_iter()
+                    .filter_map(|id| u32::try_from(id).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        }) as Rc<dyn Fn() -> Vec<u32>>
+    };
+
+    let clone_scrub_exact_blit_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |frame: u32| {
+            ctx.with_player(|p| p.clone_scrub_exact_blit(u64::from(frame)))
+                .flatten()
+        }) as Rc<dyn Fn(u32) -> Option<web_sys::ImageBitmap>>
+    };
+
+    let scrub_exact_capacity_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || ctx.with_player(|p| p.scrub_exact_capacity()).unwrap_or(1))
+            as Rc<dyn Fn() -> usize>
+    };
+
+    let set_vt_densify_authority_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |on: bool| {
+            ctx.with_player(|p| p.set_vt_densify_authority(on));
+        }) as Rc<dyn Fn(bool)>
+    };
+
+    let queue_vt_densify_target_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |frame: u32| {
+            ctx.with_player(|p| p.queue_vt_densify_target(u64::from(frame)));
+        }) as Rc<dyn Fn(u32)>
+    };
+
+    let set_vt_exact_residents_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |locals: Vec<u32>| {
+            ctx.with_player(|p| {
+                let ids: Vec<u64> = locals.into_iter().map(u64::from).collect();
+                p.set_vt_exact_residents(&ids);
+            });
+        }) as Rc<dyn Fn(Vec<u32>)>
+    };
+
+    let scrub_plan_margins_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            ctx.with_player(|p| p.scrub_plan_margins())
+                .unwrap_or((12, 6))
+        }) as Rc<dyn Fn() -> (u64, u64)>
+    };
+
+    let scrub_dir_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || ctx.with_player(|p| p.scrub_dir()).unwrap_or(0)) as Rc<dyn Fn() -> i8>
+    };
+
+    let vt_densify_banned_locals_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            ctx.with_player(|p| {
+                p.vt_densify_banned_locals()
+                    .into_iter()
+                    .filter_map(|id| u32::try_from(id).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        }) as Rc<dyn Fn() -> Vec<u32>>
+    };
+
+    let densify_inflight_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || ctx.with_player(|p| p.densify_inflight()).unwrap_or(false))
+            as Rc<dyn Fn() -> bool>
+    };
+
     let warm_play_origin_fn = {
         let ctx = ctx.clone();
         Rc::new(move || {
@@ -853,6 +999,23 @@ pub fn Video(
         cancel_hover_thumb: cancel_hover_thumb_fn,
         set_thumb_policy: set_thumb_policy_fn,
         set_scrub_cache_policy: set_scrub_cache_policy_fn,
+        park_scrub_cache: park_scrub_cache_fn,
+        has_scrub_exact_blit: has_scrub_exact_blit_fn,
+        try_present_scrub_exact: try_present_scrub_exact_fn,
+        arm_scrub_densify_after_exact: arm_scrub_densify_after_exact_fn,
+        present_image_bitmap: present_image_bitmap_fn,
+        take_scrub_exact_blit: take_scrub_exact_blit_fn,
+        scrub_exact_frame_ids: scrub_exact_frame_ids_fn,
+        scrub_covered_frame_ids: scrub_covered_frame_ids_fn,
+        clone_scrub_exact_blit: clone_scrub_exact_blit_fn,
+        scrub_exact_capacity: scrub_exact_capacity_fn,
+        set_vt_densify_authority: set_vt_densify_authority_fn,
+        queue_vt_densify_target: queue_vt_densify_target_fn,
+        set_vt_exact_residents: set_vt_exact_residents_fn,
+        scrub_plan_margins: scrub_plan_margins_fn,
+        scrub_dir: scrub_dir_fn,
+        vt_densify_banned_locals: vt_densify_banned_locals_fn,
+        densify_inflight: densify_inflight_fn,
         warm_play_origin: warm_play_origin_fn,
         prepare_seam_at: prepare_seam_at_fn,
         arm_seam_hold: arm_seam_hold_fn,

@@ -84,6 +84,9 @@ pub use policy::playback::{
     EofWall, LOOP_ORIGIN_PREWARM_SECS, LoopZone, eof_timeline_end, eof_wall_decision,
     loop_zone_wall_end, should_prewarm_loop_origin,
 };
+pub use policy::scrub_plan::{
+    NextGapDecision, covered_aim_band, covered_edge_margins, decide_next_gap,
+};
 pub use policy::workload::{
     FRAGMENT_BACKFILL_IDLE_AHEAD, PLAY_THUMB_AIM_DECODE_MIN_MS, WorkloadHints, WorkloadMode,
     allows_bg_sync_verify, allows_thumb_aim_decode, allows_thumb_key_fill, classify,
@@ -107,6 +110,7 @@ pub use policy::{
     scrub_preview_choice_with_dir, scrub_preview_neighbor, thumb_progressive_coarse_count,
     thumb_progressive_rank,
 };
+pub use residency::AimWindow;
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use source::{BlobSource, UrlSource, UrlSourceOptions, is_no_http_range};
 pub use source::{

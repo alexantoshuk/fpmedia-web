@@ -40,6 +40,11 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Dense empty / black flash densify | predictive densify / rAF pace | finish in-flight GOP; one rAF between GOPs |
 | Densify fills far/edge before near aim | `nearer_gap_with_dir` | distance-first; `dir` tie-break only |
 | Scrub UI off but scrub decoder / densify still alive | `set_scrub_cache_policy` / `ScrubCacheOff` | Off → `EngineEvent::ScrubCacheOff` (`AbortDensify`) then drop decoder + clear Covered/Exact; gate densify + gray + ingest. Host re-applies in `run_open` before `seek_frame(0)`. **no equivalent** |
+| Playlist Exact wiped on promote / empty after cross-clip | demote `park_scrub_cache` | Idle park (keep Exact); live On before prepare/settle (Off gates ingest). Off wipe only on media replace / user Scrub Off. **no equivalent** |
+| Exact confetti / strip ignores densify | strip ↔ slot blit | Exact only in slot; strip remaps pipeline marks — no take/ledger mirror. **no equivalent** |
+| Exact vanishes on dwell / scrub Up | `scrub_gesture` + orphan defer | Clear gesture in `prepare_scrub_settle`; densify orphan-evict only after first GOP (keep soft-drag trail). **no equivalent** |
+| Covered/Exact strip live-only | `strip_ready_marks` | Remap live (+ idle Exact/Covered if present). Cut fill = later idle-edge densify. **no equivalent** |
+| Dual next_gap / VT densify hang | `vt_densify_authority=false` | Pause fill = engine `next_gap` on live only. **no equivalent** |
 | Hover Exact never after dwell (key stuck) | `may_start_hover_aim_decode` / `<HoverThumb>` | Pause Exact refine free after host 150 ms; do **not** global 800 ms floor without reschedule. Skip only `painted==aim`. Play: no aim |
 | Thumb cache dense in one place, empty elsewhere | `ThumbCache` rank eviction / `thumb_progressive_rank` | rank 0=coarse … Exact=`MAX`; at cap drop highest rank first (not LRU). Hover+Pause same rank helper |
 | Need thumbs without player / filmstrip API | `ThumbSink::get` / `at_frames` | product surface (`product.md`); not `frames_at_timestamps` (full-res stub) |

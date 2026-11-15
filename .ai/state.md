@@ -8,9 +8,11 @@
 
 ### Handoff
 
-- **Open:** mobile LoopPlayWarm unverified. Residual light mobile pause on Host mid-zone LoopZone seam (release restart tradeoff) — later.
-- **Prior:** Host mid-zone no `loop_in` snap (release restart + hard-reset/no-skip); full-axis keep-iter; prepare-only refresh failed.
-- **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional.
+- **Branch:** `main` (VT=A Exact = slot blit; demote park; ensure must not park live after promote race — browser OK).
+- **Next:** cut-aware densify (idle edge across стык, no second Exact store).
+- **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.
+- **Open (unchanged):** mobile LoopPlayWarm unverified. Residual light mobile pause on Host mid-zone LoopZone seam — later.
+- **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional (unrelated).
 - **Do not land:** `b8206d1`; `39d20a4`.
 - **Parked:** Pause densify pin-holes; idle Fetch gray.
 
@@ -18,11 +20,14 @@
 
 ## Next up
 
-### Playlist
+### Playlist — Virtual Timeline
 
-Shared volume + frame-sum scrub + origin-stash seam shipped (`0.1.0-alpha.5`). Design: `architecture.md` § Playlist.
+Priority over LoopPlayWarm chrome polish. Product: Exact across clips = one axis (`product.md` § Playlist).
 
-**Next:** Verify LoopPlayWarm on mobile / Engine zone. Optional: cut markers / clip name in `[i]` (Later). Idle Fetch gray — parked.
+1. **Cut-aware densify** — idle edge On near join; Exact stays slot blit (no ledger SoftPark).
+2. **Later:** Thumbs VT; Play intent + LoopZone on VT axis.
+
+Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i]`; idle Fetch gray — parked.
 
 **Out of v1:** compare dual-visible.
 

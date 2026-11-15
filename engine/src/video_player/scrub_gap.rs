@@ -24,7 +24,19 @@ pub(super) fn playhead_and_last(shared: &Shared) -> (FrameId, FrameId) {
 
 /// Next missing frame nearest the playhead (biased by scrub `dir`), or `None`
 /// when saturated / disarmed / stalled at this aim.
+///
+/// VT authority: peek [`Shared::vt_densify_target`] (no slot-local pick).
 pub(super) fn next_gap_target(shared: &Shared) -> Option<FrameId> {
+    if shared.vt_densify_authority.get() {
+        let t = shared.vt_densify_target.get()?;
+        let banned = shared.vt_densify_banned.borrow();
+        if banned.contains(&t) {
+            drop(banned);
+            shared.vt_densify_target.set(None);
+            return None;
+        }
+        return Some(t);
+    }
     let (playhead, last) = playhead_and_last(shared);
     // fMP4 warm open: provisional duration may exceed indexed samples — never
     // densify past the indexed prefix (would stall on mfra backfill + decode).
@@ -80,6 +92,16 @@ pub(super) fn next_gap_unbanned(
     shared: &Shared,
     banned_keys: &HashSet<FrameId>,
 ) -> Option<FrameId> {
+    // VT owns the axis — never free-walk; peek target, honor task + sticky bans.
+    if shared.vt_densify_authority.get() {
+        let t = next_gap_target(shared)?;
+        let key = shared.track.index().nearest_keyframe(t).unwrap_or(t);
+        if banned_keys.contains(&key) {
+            shared.vt_densify_target.set(None);
+            return None;
+        }
+        return Some(t);
+    }
     if banned_keys.is_empty() {
         return next_gap_target(shared);
     }

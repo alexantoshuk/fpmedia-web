@@ -43,11 +43,11 @@ Bytes that have ever been fetched into the source cache plane. Backed by **Fetch
 
 ### Covered (dim green)
 
-“We have decoded coverage for this FrameId” as **gap geometry** — a **marker** in `ScrubChunkStore`, not necessarily a live bitmap. Uncapped for the open clip (presence-only). Used so densify / gap-pick know what is already solid. Soft-drag **preview must not** use Covered alone (no pixels). Covered-only densify hard-bounded to aim±`COVERED_EDGE_MARGIN_FRAMES` (`architecture.md` § Play / scrub residency).
+“We have decoded coverage for this FrameId” as **gap geometry** — a marker, not necessarily a live bitmap. **Strip:** remapped from slot `ScrubChunkStore` (playlist local→global). Soft-drag **preview must not** use Covered alone (no pixels). Covered-only densify hard-bounded to aim±`COVERED_EDGE_MARGIN_FRAMES` (`architecture.md` § Play / scrub residency / Virtual Timeline).
 
 ### Exact (bright green)
 
-A live densify **ImageBitmap** in `ScrubBlitLru` for that FrameId. Means step-ready near the playhead; soft-drag interim preview reads this plane (`scrub_preview_frame`) before main-HW key chase. Pause/seek/settle/dwell canvas Exactness is the key→N decode to aim — the strip is the residency map, not a substitute for that decode.
+A live densify **ImageBitmap** for that FrameId in the **slot** `ScrubBlitLru` (sole Exact store). Strip remaps slot marks; PresentHit = slot has blit. VT = axis/settle/resolve only — not a second Exact cache. Pause/seek/settle/dwell canvas Exactness is the key→N decode to aim — the strip is the residency map, not a substitute for that decode.
 
 ### Marker
 
@@ -177,7 +177,11 @@ Surfaces: `product.md`. Host traps: `skills/leptos.md`.
 
 ### TimelineRef
 
-Shared scrub/hover handle in `fpmedia-web-components` (`ready` / `playhead` / `frame_count` + scrub/hover ops). Backed by [`VideoRef`](#video--videoref) or [`VideoPlaylistRef`](#videoplaylist--videoplaylistref). `<Scrubber>` / `<HoverThumb>` take this (or `video=` → `as_timeline`). Not the engine clock.
+Shared scrub/hover **UI** handle in `fpmedia-web-components` (`ready` / `playhead` / `frame_count` + scrub/hover ops). Backed by [`VideoRef`](#video--videoref) or [`VideoPlaylistRef`](#videoplaylist--videoplaylistref). `<Scrubber>` / `<HoverThumb>` take this (or `video=` → `as_timeline`). Not the engine clock. Exact/settle policy: [`Virtual Timeline`](#virtual-timeline).
+
+### Virtual Timeline
+
+Shared **axis + settle/resolve** for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact bitmaps stay in slot blit; VT does not own a second residency store. Densify plan for cut-aware fill — later. UI strips remap via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
 
 ### PlaylistPos
 

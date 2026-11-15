@@ -109,25 +109,53 @@ impl TimelineRef {
     }
 
     /// Live pipeline ready marks → timeline units (identity for single-clip;
-    /// playlist remaps local FrameId → global frame in the live clip window).
+    /// playlist remaps local→global). Exact/Covered stay in slot blit.
+    /// Idle Exact/Covered remapped too so the strip spans clips. **no equivalent**.
     pub fn strip_ready_marks(self, marks: &[ReadyFrameMark]) -> Vec<ReadyFrameMark> {
         match self.inner {
             TimelineInner::Video(_) => marks.to_vec(),
             TimelineInner::Playlist(p) => {
                 let live_clip = p.live_clip.get();
                 let model = p.model.get();
-                marks
-                    .iter()
-                    .filter_map(|m| {
-                        let lo_f = u32::try_from(m.frame).ok()?;
-                        let hi_f = u32::try_from(m.end).ok()?;
-                        let lo =
-                            u64::from(model.global_frame_at(PlaylistPos::new(live_clip, lo_f))?);
-                        let hi =
-                            u64::from(model.global_frame_at(PlaylistPos::new(live_clip, hi_f))?);
-                        Some(ReadyFrameMark::run(lo, hi, m.kind))
-                    })
-                    .collect()
+                let remap = |clip: u32, marks: &[ReadyFrameMark]| -> Vec<ReadyFrameMark> {
+                    marks
+                        .iter()
+                        .filter_map(|m| {
+                            let lo_f = u32::try_from(m.frame).ok()?;
+                            let hi_f = u32::try_from(m.end).ok()?;
+                            let lo =
+                                u64::from(model.global_frame_at(PlaylistPos::new(clip, lo_f))?);
+                            let hi =
+                                u64::from(model.global_frame_at(PlaylistPos::new(clip, hi_f))?);
+                            Some(ReadyFrameMark::run(lo, hi, m.kind))
+                        })
+                        .collect()
+                };
+                let mut out = remap(live_clip, marks);
+                if let Some(idle_idx) = p.idle_clip.get() {
+                    let idle = if p.live_is_a.get() {
+                        p.slot_b
+                    } else {
+                        p.slot_a
+                    };
+                    // Subscribe idle pipeline so Exact grows on the neighbor clip.
+                    let _ = idle.pipeline.get();
+                    if let Some(pipe) = idle.pipeline.get_untracked() {
+                        let idle_res: Vec<ReadyFrameMark> = pipe
+                            .ready_frames
+                            .iter()
+                            .copied()
+                            .filter(|m| {
+                                matches!(
+                                    m.kind,
+                                    crate::ReadyFrameKind::Exact | crate::ReadyFrameKind::Covered
+                                )
+                            })
+                            .collect();
+                        out.extend(remap(idle_idx, &idle_res));
+                    }
+                }
+                out
             }
         }
     }

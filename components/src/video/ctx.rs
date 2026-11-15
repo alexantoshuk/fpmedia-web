@@ -73,8 +73,8 @@ impl HostCtx {
             // Do NOT sync `playing` from the engine — transport FSM owns UI
             // `playing` (`TransportState::ui_playing`).
             v.looping.set(st.looping);
-            v.pipeline
-                .set(Some(p.pipeline_stats(v.pipeline_interest())));
+            let pipe = p.pipeline_stats(v.pipeline_interest());
+            v.pipeline.set(Some(pipe));
         }
     }
 
@@ -131,6 +131,7 @@ impl HostCtx {
         // `retiring` drops here → decoder/caches + UrlSource orch.dispose.
         // `ready=false` also hides HoverThumbPreview (Effect on ready).
         self.fps_meter.borrow_mut().reset();
+        v.reset_exact_ledger();
         v.ready.set(false);
         v.ended.set(false);
         v.error.set(None);
