@@ -32,7 +32,7 @@
 2. **Cut join PresentHit warm** — neighbor Exact without Pause playhead thrash (cut-warm v1 pulled). After Covered-on-VT if strip no longer needs idle densify.
 3. **Later:** Thumbs VT; Play intent + LoopZone on VT axis.
 
-Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i]`; idle Fetch gray — parked.
+Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i]`; idle Fetch gray — parked; **gray strip = live buffer MiB** (not FetchMap-only — see Later).
 
 **Out of v1:** compare dual-visible.
 
@@ -61,6 +61,7 @@ Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
 
 ## Later
 
+- **Gray Fetch = live byte buffer (MiB)** — strip should show real `CachedSource` / orch residency (budget + occupancy), not only FetchMap “ever fetched” (`architecture.md` Progressive open / glossary § Fetch). Demo chrome OK; honest buffer meter.
 - **CutWindow** — half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut. After LoopZone (shipped — `architecture.md` § LoopZone). Prefer after host seam machine (§2), else seams grow more flag soup. Not current priority.
 - Optional: harden Pause densify pin-holes on slow PreferSoftware (salvage + skip-bridge `put_chunk`; no Exact wipe) — only if strip cosmetics stop being acceptable (`product.md`).
 - Revisit seek Exact follow **without** wiping Exact on settle (densify yield / unbanned walk only — prove scrub still paints).
