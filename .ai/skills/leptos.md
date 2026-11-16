@@ -28,8 +28,11 @@
 | Playlist Play: progress freezes after clip join | `promote_idle_at` must set facade `pos`/`playhead` on swap — else mirror `pos.clip ≠ live` skip sticks. **no equivalent** |
 | Playlist paused scrub Up: gray + empty Exact | `seek_to_pos(!then_play)`: idle `prepare_seam_at` → swap → PresentHit or `seek_frame` (densify). Never `arm_seam_hold` on pause. Play path keeps SeamHold. **no equivalent** |
 | Playlist Exact drains on promote / empty on return clip | Demote `park_scrub_cache` (not Off wipe); live On + densify on promote/settle. Cut join warm — later, without Pause playhead thrash. `architecture.md` § Virtual Timeline. **no equivalent** |
+| Playlist scrub across cut: Exact grows on prev, aim clip empty | `scrub_timeline` cross-clip: `pause_hard_no_densify` then `pause()` — not bare `PausePressed` (Ready = densify no-op). Engine `want_again` gates `scrub_cache_off`. **no equivalent** |
 | Playlist sticky `operation cancelled` on pause seek | `seek_pos` / `seek_frame` | Ignore `is_soft_seam_cancel` (same as play path) — promote/ensure race must not sticky UI. **no equivalent** |
 | Playlist Exact OK on first scrub, dead after visit neighbor | `ensure_clip_on_idle` / `preload_idle` after `wait_ready` | Promote can win during poll sleep — park only if still idle; if `live_clip==opened` → On (do not park live). **no equivalent** |
+| Playlist reverse cut (2→1): Exact dead on aim; 2→3 OK | `ensure_clip_on_idle` / `settle_playlist_pause_exact` / `seek_frame_with` | Idle=forward → ensure. Stale ensure must not park live. PresentHit: `clear_densify_hold` before arm. Cancel after BeginExact → EndExact (else densify latch-only). Promote re-assert On. **no equivalent** |
+| Playlist 1\|2 scrub lag; 2\|3 OK | `PlaylistModel::idle_neighbor_near_cut` / `kick_ensure_idle` | Idle = other clip of nearest cut (near 1\|2 → slots 1+2; near 2\|3 → 2+3), mid hysteresis. Cross-clip pause once/gesture. Pause settle: On+clear hold+arm. **no equivalent** |
 | Playlist zebra gate / stripe size wrong | axis = Σ frames (not ms); same `frame_zebra_step` as single-clip |
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |
 | Playlist scrub→other clip drops Play | latch `scrub_resume` on Down while `playing` (soft-pause clears it before cross-cut) |

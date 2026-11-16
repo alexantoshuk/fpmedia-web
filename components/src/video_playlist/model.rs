@@ -225,6 +225,67 @@ impl PlaylistModel {
         self.at_global_frame(g.min(self.total_frame_count.saturating_sub(1)))
     }
 
+    /// Hysteresis (frames) so midpoint scrub does not flip cut-idle every move.
+    pub const CUT_IDLE_HYSTERESIS: u32 = 24;
+
+    /// Scrub idle = other clip of the **nearest cut** (1|2 vs 2|3).
+    /// `sticky` = current idle (keep when distances are within hysteresis of a tie).
+    /// Play / seam still use next-prefer elsewhere. **no equivalent**.
+    pub fn idle_neighbor_near_cut(
+        &self,
+        live_clip: u32,
+        local: u32,
+        looping: bool,
+        sticky: Option<u32>,
+    ) -> Option<u32> {
+        let clip = self.clip(live_clip as usize)?;
+        if clip.frame_count == 0 {
+            return self
+                .next_clip_index(live_clip)
+                .or_else(|| live_clip.checked_sub(1));
+        }
+        let last = clip.last_frame();
+        let local = local.min(last);
+        let dist_prev = local;
+        let dist_next = last.saturating_sub(local);
+
+        let prev = live_clip.checked_sub(1).or_else(|| {
+            if looping && self.len() > 1 {
+                Some(self.len().saturating_sub(1) as u32)
+            } else {
+                None
+            }
+        });
+        let next = self.next_clip_index(live_clip).or_else(|| {
+            if looping && self.len() > 1 {
+                Some(0)
+            } else {
+                None
+            }
+        });
+
+        match (prev, next) {
+            (Some(p), Some(n)) => {
+                let clearly_prev = dist_prev + Self::CUT_IDLE_HYSTERESIS < dist_next;
+                let clearly_next = dist_next + Self::CUT_IDLE_HYSTERESIS < dist_prev;
+                if clearly_prev {
+                    Some(p)
+                } else if clearly_next {
+                    Some(n)
+                } else if sticky == Some(p) || sticky == Some(n) {
+                    sticky
+                } else if dist_prev <= dist_next {
+                    Some(p)
+                } else {
+                    Some(n)
+                }
+            }
+            (Some(p), None) => Some(p),
+            (None, Some(n)) => Some(n),
+            (None, None) => None,
+        }
+    }
+
     /// Next clip index after `clip_index`, if any.
     pub fn next_clip_index(&self, clip_index: u32) -> Option<u32> {
         let n = self.clips.len() as u32;
@@ -302,5 +363,18 @@ mod tests {
         let m = PlaylistModel::new(vec![clip(10, 1.0, 10.0), clip(10, 1.0, 10.0)]);
         assert_eq!(m.next_clip_index(0), Some(1));
         assert_eq!(m.next_clip_index(1), None);
+    }
+
+    #[test]
+    fn near_cut_idle_on_clip2() {
+        let m = PlaylistModel::new(vec![
+            clip(100, 4.0, 25.0),
+            clip(100, 4.0, 25.0),
+            clip(100, 4.0, 25.0),
+        ]);
+        assert_eq!(m.idle_neighbor_near_cut(1, 5, false, None), Some(0));
+        assert_eq!(m.idle_neighbor_near_cut(1, 95, false, None), Some(2));
+        assert_eq!(m.idle_neighbor_near_cut(1, 50, false, Some(0)), Some(0));
+        assert_eq!(m.idle_neighbor_near_cut(1, 50, false, Some(2)), Some(2));
     }
 }

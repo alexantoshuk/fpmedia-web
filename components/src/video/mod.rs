@@ -120,6 +120,8 @@ pub(crate) struct VideoOps {
     pub try_present_scrub_exact: Rc<dyn Fn(u32) -> bool>,
     /// Arm Pause densify after Exact present (VT PresentHit settle).
     pub arm_scrub_densify_after_exact: Rc<dyn Fn(u32)>,
+    /// End ExactHold without densify (PresentHit settle must clear before arm).
+    pub clear_densify_hold: Rc<dyn Fn()>,
     /// Present VT ledger Exact bitmap onto this slot (`local` FrameId).
     pub present_image_bitmap: PresentImageBitmapFn,
     /// Take Exact blit for VT ledger import.
@@ -551,6 +553,13 @@ impl VideoRef {
     pub fn arm_scrub_densify_after_exact(&self, frame: u32) {
         if let Some(arm) = self.op(|o| &o.arm_scrub_densify_after_exact) {
             arm(frame);
+        }
+    }
+
+    /// Clear ExactHold without arming densify (playlist PresentHit settle).
+    pub fn clear_densify_hold(&self) {
+        if let Some(clear) = self.op(|o| &o.clear_densify_hold) {
+            clear();
         }
     }
 

@@ -1119,7 +1119,11 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
     }
 
     let was_pending = shared.densify.finish();
+    // Park / ScrubCacheOff can win the race after this task saw Off and exited
+    // with pending still latched — never respawn fill on a parked idle slot
+    // (playlist Exact growing on the previous clip). **no equivalent**.
     let want_again = was_pending
+        && !shared.scrub_cache_off()
         && shared.engine.get().allows_densify()
         && !shared.playing.get()
         && !shared.scrub_gesture.get()
@@ -1130,7 +1134,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
         let again = Rc::clone(&shared);
         wasm_bindgen_futures::spawn_local(async move {
             yield_microtask().await;
-            if again.is_disposed() {
+            if again.is_disposed() || again.scrub_cache_off() {
                 again.densify.release_busy();
                 return;
             }

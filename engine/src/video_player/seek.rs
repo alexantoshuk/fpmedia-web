@@ -110,15 +110,15 @@ impl VideoPlayer {
         }
         .await;
         self.apply_session_event(crate::SessionEvent::EndRestart);
-        // Exact seek can leave main decodeQ elevated; idle before densify.
+        // Always leave ExactHold — cancel after BeginExact used to stick hold so
+        // later arm_scrub_densify only latched (playlist reverse-cut Exact dead).
+        // **no equivalent** (playlist scrub local).
+        self.apply_engine_event(EngineEvent::EndExact { densify: false });
         if !self.is_current(epoch) {
             return Err(MediaError::Cancelled);
         }
         result?;
         self.snap_media_clock_to_playhead();
-        // Clear ExactHold without ScheduleDensify — densify aim may be
-        // `pending_cold_exact`, not `state().frame` (soft-committed prefix).
-        self.apply_engine_event(EngineEvent::EndExact { densify: false });
         if densify {
             // Prefer pending cold aim so densify walks toward the Seek target, not the
             // soft-committed prefix (was: arm at eng while aim≪far → eng never catches).

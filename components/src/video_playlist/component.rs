@@ -237,6 +237,8 @@ pub fn VideoPlaylist(
         move || {
             let g = open_gen.get_value().wrapping_add(1);
             open_gen.set_value(g);
+            playlist.ensure_idle_for.set_value(None);
+            playlist.scrub_cross_paused.set_value(false);
             g
         }
     }) as Rc<dyn Fn() -> u64>;

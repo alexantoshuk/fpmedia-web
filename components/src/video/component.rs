@@ -810,6 +810,13 @@ pub fn Video(
         }) as Rc<dyn Fn(u32)>
     };
 
+    let clear_densify_hold_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            ctx.with_player(|p| p.clear_densify_hold());
+        }) as Rc<dyn Fn()>
+    };
+
     let present_image_bitmap_fn = {
         let ctx = ctx.clone();
         Rc::new(move |frame: u32, bitmap: &web_sys::ImageBitmap| {
@@ -1003,6 +1010,7 @@ pub fn Video(
         has_scrub_exact_blit: has_scrub_exact_blit_fn,
         try_present_scrub_exact: try_present_scrub_exact_fn,
         arm_scrub_densify_after_exact: arm_scrub_densify_after_exact_fn,
+        clear_densify_hold: clear_densify_hold_fn,
         present_image_bitmap: present_image_bitmap_fn,
         take_scrub_exact_blit: take_scrub_exact_blit_fn,
         scrub_exact_frame_ids: scrub_exact_frame_ids_fn,

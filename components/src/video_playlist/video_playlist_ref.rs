@@ -12,7 +12,8 @@ use super::host_zone::HostZoneOwner;
 use super::loop_seam::{loop_owner, seam_busy};
 use super::plan::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
 use super::slots::{
-    ensure_clip_on_idle, idle_neighbor, preload_idle, start_host_wrap, try_promote_idle,
+    ensure_clip_on_idle, idle_neighbor, kick_ensure_idle, preload_idle, start_host_wrap,
+    try_promote_idle,
 };
 use super::source::PlaylistSource;
 use wasm_bindgen_futures::spawn_local;
@@ -61,6 +62,10 @@ pub struct VideoPlaylistRef {
     pub(crate) open_gen: StoredValue<u64, LocalStorage>,
     /// Clip index already kicked for near-EOF origin warm this lap (`None` = none).
     pub(crate) seam_warm_for: StoredValue<Option<u32>, LocalStorage>,
+    /// In-flight [`super::slots::ensure_clip_on_idle`] target — coalesce Move stampede.
+    pub(crate) ensure_idle_for: StoredValue<Option<u32>, LocalStorage>,
+    /// Cross-clip scrub: outgoing hard-paused once per gesture (not every Move).
+    pub(crate) scrub_cross_paused: StoredValue<bool, LocalStorage>,
     /// Host cut/wrap seam phase — RwSignal so EOF Effect re-runs when Idle.
     pub(crate) seam_phase: RwSignal<super::loop_seam::SeamPhase>,
     /// Parked VT ledger handle (Covered-on-VT next; Exact write unused).
@@ -114,6 +119,8 @@ impl VideoPlaylistRef {
             sources: StoredValue::new_local(Vec::new()),
             open_gen: StoredValue::new_local(0),
             seam_warm_for: StoredValue::new_local(None),
+            ensure_idle_for: StoredValue::new_local(None),
+            scrub_cross_paused: StoredValue::new_local(false),
             seam_phase: RwSignal::new(super::loop_seam::SeamPhase::Idle),
             exact_ledger: StoredValue::new_local(
                 Some(crate::virtual_timeline::new_ledger_handle()),
@@ -365,6 +372,16 @@ impl VideoPlaylistRef {
         }
     }
 
+    /// Idle clip for the cut nearest to `aim` (sticky = current idle).
+    fn cut_idle_want(self, aim: PlaylistPos) -> Option<u32> {
+        self.model.get_untracked().idle_neighbor_near_cut(
+            aim.clip_index,
+            aim.local_frame,
+            self.looping.get_untracked(),
+            self.idle_clip.get_untracked(),
+        )
+    }
+
     /// Timeline scrub units (global frames). Promotes idle when it already holds
     /// the aim clip; settle (`Up`) async-seeks if the clip still needs open/rebind.
     pub(crate) fn scrub_timeline(self, global_frame: u32, phase: ScrubPhase) {
@@ -372,6 +389,7 @@ impl VideoPlaylistRef {
         match phase {
             ScrubPhase::Down => {
                 self.scrubbing.set(true);
+                self.scrub_cross_paused.set_value(false);
                 // Latch playlist intent (not slot `playing` — soft-pause / seam
                 // hard-stop clear the slot while facade stays true).
                 // Per-slot `then_play` does not survive promote — playlist owns resume.
@@ -380,7 +398,9 @@ impl VideoPlaylistRef {
             ScrubPhase::Move => self.scrubbing.set(true),
             // Clear scrubbing after playhead/pos aim — else mirror can run on a
             // stale slot `frame` and yank the tip before settle. **no equivalent**.
-            ScrubPhase::Up => {}
+            ScrubPhase::Up => {
+                self.scrub_cross_paused.set_value(false);
+            }
         }
         self.playhead.set(global_frame);
         let Some(aim) = self.model.get_untracked().at_global_frame(global_frame) else {
@@ -396,32 +416,38 @@ impl VideoPlaylistRef {
 
         let mut promoted = false;
         if aim.clip_index != self.live_clip.get_untracked() {
-            // Cross-clip: hard-pause outgoing (idle must not stay soft-held).
-            // New slot PointerDown is from Ready → `then_play` false; use `scrub_resume`.
-            if matches!(phase, ScrubPhase::Down | ScrubPhase::Move) {
-                self.live_video().pause();
+            // Cross-clip: hard-pause outgoing once per gesture (not every Move).
+            // `PausePressed` alone is wrong: Ready → no-op; Playing → SoftPause densify.
+            // **no equivalent** (playlist scrub local).
+            if matches!(phase, ScrubPhase::Down | ScrubPhase::Move)
+                && !self.scrub_cross_paused.get_value()
+            {
+                let outgoing = self.live_video();
+                outgoing.pause_hard_no_densify();
+                outgoing.pause();
+                self.scrub_cross_paused.set_value(true);
             }
             promoted = try_promote_idle(self, aim.clip_index);
             if promoted {
-                // Idle now holds former live — warm the true neighbor (not a lying label).
-                let want = idle_neighbor(
-                    &self.model.get_untracked(),
-                    aim.clip_index,
-                    self.looping.get_untracked(),
-                );
-                let epoch = self.open_gen.get_value();
-                spawn_local(async move {
-                    preload_idle(self, want, epoch).await;
-                });
+                // ensure park leaves Host Off until swap On — re-assert after promote.
+                let live = self.live_video();
+                live.set_scrub_cache_policy(fpmedia_web::ScrubCachePolicy::On);
+                // Keep the other clip of the nearest cut in idle (1|2 or 2|3).
+                if let Some(want) = self.cut_idle_want(aim) {
+                    let epoch = self.open_gen.get_value();
+                    spawn_local(async move {
+                        preload_idle(self, Some(want), epoch).await;
+                    });
+                }
             } else if matches!(phase, ScrubPhase::Down | ScrubPhase::Move)
                 && self.idle_clip.get_untracked() != Some(aim.clip_index)
             {
-                // Aim not on idle yet — warm then later Moves promote when ready.
-                let epoch = self.open_gen.get_value();
-                let want = aim.clip_index;
-                spawn_local(async move {
-                    let _ = ensure_clip_on_idle(self, want, epoch).await;
-                });
+                kick_ensure_idle(self, aim.clip_index);
+            }
+        } else if matches!(phase, ScrubPhase::Down | ScrubPhase::Move) {
+            // Same clip: warm idle for nearest cut (near 1|2 → clip 1, near 2|3 → 3).
+            if let Some(want) = self.cut_idle_want(aim) {
+                kick_ensure_idle(self, want);
             }
         }
 
@@ -483,12 +509,22 @@ impl VideoPlaylistRef {
                 if then_play {
                     // Host-aware Play — not bare slot `play()` (skips wrap).
                     self.play();
+                } else {
+                    // Reverse-cut settle: re-assert On + clear ExactHold + densify
+                    // (PresentHit/cancel storms left strip empty). **no equivalent**.
+                    live.set_scrub_cache_policy(fpmedia_web::ScrubCachePolicy::On);
+                    live.clear_densify_hold();
+                    live.arm_scrub_densify_after_exact(aim.local_frame);
                 }
-                let neighbor = idle_neighbor(
-                    &self.model.get_untracked(),
-                    self.live_clip.get_untracked(),
-                    self.looping.get_untracked(),
-                );
+                // Keep cut-pair idle (near 1|2 → other of pair); Play EOF still
+                // seam-warms next when near wall.
+                let neighbor = self.cut_idle_want(aim).or_else(|| {
+                    idle_neighbor(
+                        &self.model.get_untracked(),
+                        self.live_clip.get_untracked(),
+                        self.looping.get_untracked(),
+                    )
+                });
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
                     preload_idle(self, neighbor, epoch).await;

@@ -75,6 +75,20 @@ pub(crate) fn idle_neighbor(model: &PlaylistModel, live_clip: u32, looping: bool
     })
 }
 
+/// Open `want` on idle when missing (coalesced). Scrub cut-proximity warm.
+pub(crate) fn kick_ensure_idle(pl: VideoPlaylistRef, want: u32) {
+    if pl.idle_clip.get_untracked() == Some(want) && pl.idle_video().ready.get_untracked() {
+        return;
+    }
+    if pl.ensure_idle_for.get_value() == Some(want) {
+        return;
+    }
+    let epoch = pl.open_gen.get_value();
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = ensure_clip_on_idle(pl, want, epoch).await;
+    });
+}
+
 /// Idle neighbor for LoopZone: sequential next while it starts before `zone_out`,
 /// else the clip that owns `zone_in` (wrap target). **no equivalent**.
 pub(crate) fn idle_neighbor_for_zone(
@@ -99,6 +113,46 @@ pub(crate) fn idle_neighbor_for_zone(
         .or_else(|| idle_neighbor(model, live_clip, true))
 }
 
+/// Slot we captured as idle (`opening_is_a`) is still idle iff live flipped away.
+fn opening_still_idle(pl: VideoPlaylistRef, opening_is_a: bool) -> bool {
+    pl.live_is_a.get_untracked() != opening_is_a
+}
+
+fn slot_is_a(pl: VideoPlaylistRef, is_a: bool) -> VideoRef {
+    if is_a { pl.slot_a } else { pl.slot_b }
+}
+
+/// After await: promote may have made our opening slot live — On + bail, never park/close.
+/// **no equivalent** (playlist scrub local).
+fn finish_if_opening_became_live(
+    pl: VideoPlaylistRef,
+    opening_is_a: bool,
+    clip_index: u32,
+) -> Option<Result<(), String>> {
+    if opening_still_idle(pl, opening_is_a) {
+        return None;
+    }
+    // Captured slot is now live.
+    if pl.live_clip.get_untracked() == clip_index {
+        let live = pl.live_video();
+        live.set_scrub_cache_policy(ScrubCachePolicy::On);
+        live.set_vt_densify_authority(false);
+        pl.apply_gain_to_slots();
+        return Some(Ok(()));
+    }
+    Some(Err("cancelled".into()))
+}
+
+fn ensure_live_on(pl: VideoPlaylistRef, clip_index: u32) -> bool {
+    if pl.live_clip.get_untracked() != clip_index {
+        return false;
+    }
+    let live = pl.live_video();
+    live.set_scrub_cache_policy(ScrubCachePolicy::On);
+    live.set_vt_densify_authority(false);
+    true
+}
+
 pub(crate) async fn ensure_clip_on_idle(
     pl: VideoPlaylistRef,
     clip_index: u32,
@@ -107,35 +161,100 @@ pub(crate) async fn ensure_clip_on_idle(
     if pl.open_gen.get_value() != epoch {
         return Err("cancelled".into());
     }
+    if ensure_live_on(pl, clip_index) {
+        pl.apply_gain_to_slots();
+        return Ok(());
+    }
     if pl.idle_clip.get_untracked() == Some(clip_index) && pl.idle_video().ready.get_untracked() {
         return Ok(());
+    }
+    // Coalesce Move stampede (2→1 reverse cut) — in-flight same clip: wait for ready.
+    if pl.ensure_idle_for.get_value() == Some(clip_index) {
+        loop {
+            if pl.open_gen.get_value() != epoch {
+                return Err("cancelled".into());
+            }
+            if ensure_live_on(pl, clip_index) {
+                pl.apply_gain_to_slots();
+                return Ok(());
+            }
+            if pl.idle_clip.get_untracked() == Some(clip_index)
+                && pl.idle_video().ready.get_untracked()
+            {
+                return Ok(());
+            }
+            if pl.ensure_idle_for.get_value() != Some(clip_index) {
+                break;
+            }
+            sleep_ms(PROBE_POLL_MS).await;
+        }
+        if ensure_live_on(pl, clip_index) {
+            pl.apply_gain_to_slots();
+            return Ok(());
+        }
+        if pl.idle_clip.get_untracked() == Some(clip_index) && pl.idle_video().ready.get_untracked()
+        {
+            return Ok(());
+        }
     }
     let src = pl
         .sources
         .try_with_value(|s| s.get(clip_index as usize).cloned())
         .flatten()
         .ok_or_else(|| format!("missing source for clip {}", clip_index + 1))?;
-    let idle = pl.idle_video();
+    let opening_is_a = !pl.live_is_a.get_untracked();
+    let idle = slot_is_a(pl, opening_is_a);
+    pl.ensure_idle_for.set_value(Some(clip_index));
     idle.set_loop(false);
     // Teardown wipe old media Exact; after open park (densify off, no wipe).
-    // Promote → On. **no equivalent** (playlist scrub local).
+    // Promote → On. Stale task must not close/park after promote. **no equivalent**.
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     idle.close();
     sleep_ms(0).await;
+    let clear_flight = |pl: VideoPlaylistRef, want: u32| {
+        if pl.ensure_idle_for.get_value() == Some(want) {
+            pl.ensure_idle_for.set_value(None);
+        }
+    };
     if pl.open_gen.get_value() != epoch {
+        clear_flight(pl, clip_index);
+        return Err("cancelled".into());
+    }
+    if let Some(r) = finish_if_opening_became_live(pl, opening_is_a, clip_index) {
+        clear_flight(pl, clip_index);
+        return r;
+    }
+    if ensure_live_on(pl, clip_index) {
+        clear_flight(pl, clip_index);
+        pl.apply_gain_to_slots();
+        return Ok(());
+    }
+    if !opening_still_idle(pl, opening_is_a) {
+        clear_flight(pl, clip_index);
         return Err("cancelled".into());
     }
     src.open_on(idle);
     pl.idle_clip.set(Some(clip_index));
-    wait_ready(idle, epoch, pl.open_gen).await?;
+    let ready = wait_ready(idle, epoch, pl.open_gen).await;
+    if let Some(r) = finish_if_opening_became_live(pl, opening_is_a, clip_index) {
+        clear_flight(pl, clip_index);
+        return r;
+    }
+    if let Err(e) = ready {
+        clear_flight(pl, clip_index);
+        return Err(e);
+    }
     // Move may promote during wait_ready sleep — never park a live slot
     // (Host Off sticks; Exact ingest dies). **no equivalent**.
-    if pl.live_clip.get_untracked() == clip_index {
-        idle.set_scrub_cache_policy(ScrubCachePolicy::On);
-    } else if pl.idle_clip.get_untracked() == Some(clip_index) {
+    if ensure_live_on(pl, clip_index) {
+        // live may be the captured slot (promote) or the other — On via live_video.
+    } else if pl.idle_clip.get_untracked() == Some(clip_index)
+        && opening_still_idle(pl, opening_is_a)
+    {
         idle.park_scrub_cache();
+        idle.set_vt_densify_authority(false);
     }
-    idle.set_vt_densify_authority(false);
+    clear_flight(pl, clip_index);
     // Open resets engine A/V — re-apply playlist-wide volume/mute/rate.
     pl.apply_gain_to_slots();
     Ok(())
@@ -220,6 +339,10 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     if pl.open_gen.get_value() != epoch {
         return;
     }
+    if ensure_live_on(pl, i) {
+        pl.apply_gain_to_slots();
+        return;
+    }
     if pl.idle_clip.get_untracked() == Some(i) && pl.idle_video().ready.get_untracked() {
         return;
     }
@@ -230,19 +353,26 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     else {
         return;
     };
-    let idle = pl.idle_video();
+    let opening_is_a = !pl.live_is_a.get_untracked();
+    let idle = slot_is_a(pl, opening_is_a);
     idle.set_loop(false);
     // Replace media → wipe; after open park unless promote won the race.
+    // Stale preload must not Off/park a promoted live. **no equivalent**.
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     src.open_on(idle);
     pl.idle_clip.set(Some(i));
     let _ = wait_ready(idle, epoch, pl.open_gen).await;
-    if pl.live_clip.get_untracked() == i {
-        idle.set_scrub_cache_policy(ScrubCachePolicy::On);
-    } else if pl.idle_clip.get_untracked() == Some(i) {
-        idle.park_scrub_cache();
+    if finish_if_opening_became_live(pl, opening_is_a, i).is_some() {
+        return;
     }
-    idle.set_vt_densify_authority(false);
+    if ensure_live_on(pl, i) {
+        pl.apply_gain_to_slots();
+        return;
+    }
+    if pl.idle_clip.get_untracked() == Some(i) && opening_still_idle(pl, opening_is_a) {
+        idle.park_scrub_cache();
+        idle.set_vt_densify_authority(false);
+    }
     pl.apply_gain_to_slots();
 }
 
@@ -353,6 +483,9 @@ fn settle_playlist_pause_exact(
     if matches!(plan_exact_settle(hit), ExactSettlePlan::PresentHit)
         && live.try_present_scrub_exact(local)
     {
+        // prepare_seam / cancelled seek can leave ExactHold — arm alone only
+        // latches densify. Parity with host_ops PresentHit. **no equivalent**.
+        live.clear_densify_hold();
         live.arm_scrub_densify_after_exact(local);
         return;
     }
