@@ -1,6 +1,7 @@
 //! Leptos media elements over [`fpmedia_web`] — HTML `<video>` / `<audio>` analogs.
 //!
 //! - [`video`] — frame-precise `<Video>` + [`VideoRef`]
+//! - [`media`] — shared [`MediaRef`] transport facade (Video / VideoPlaylist)
 //! - [`timeline`] — shared [`TimelineRef`] for scrub/hover (Video / VideoPlaylist)
 //! - [`virtual_timeline`] — VT policy (Exact settle / resolve; backends decode-only)
 //! - [`scrubber`] — headless `<Scrubber>` (gesture + context)
@@ -21,6 +22,8 @@ pub mod helpers;
 #[cfg(target_arch = "wasm32")]
 pub mod hover_thumb;
 #[cfg(target_arch = "wasm32")]
+pub mod media;
+#[cfg(target_arch = "wasm32")]
 pub mod scrubber;
 pub mod strip;
 #[cfg(target_arch = "wasm32")]
@@ -37,6 +40,8 @@ pub use hover_thumb::{
     DEFAULT_HOVER_THUMB_MAX_H, DEFAULT_HOVER_THUMB_MAX_W, HoverThumb, HoverThumbCtx,
     HoverThumbPreview,
 };
+#[cfg(target_arch = "wasm32")]
+pub use media::MediaRef;
 #[cfg(target_arch = "wasm32")]
 pub use scrubber::{HoverThumbApi, Scrubber, ScrubberCtx};
 #[cfg(target_arch = "wasm32")]

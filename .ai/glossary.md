@@ -175,13 +175,17 @@ Retired name — see **ThumbSink**. Host chrome wrapper `<HoverThumbPreview>` re
 
 Surfaces: `product.md`. Host traps: `skills/leptos.md`.
 
+### MediaRef
+
+Shared **transport** handle in `fpmedia-web-components` (play/pause/seek/goto/step/loop/gain + aliased ready/playing/playhead/… signals). Backed by [`VideoRef`](#video--videoref) or [`VideoPlaylistRef`](#videoplaylist--videoplaylistref) (`as_media` / `from_*`). Scrub/hover/strip via [`TimelineRef`](#timelineref) (`as_timeline`). Open, `[i]` / [`PlaylistPos`](#playlistpos), and slot/engine knobs stay on the concrete refs. Design: `architecture.md` § Virtual Timeline.
+
 ### TimelineRef
 
-Shared scrub/hover **UI** handle in `fpmedia-web-components` (`ready` / `playhead` / `frame_count` + scrub/hover ops). Backed by [`VideoRef`](#video--videoref) or [`VideoPlaylistRef`](#videoplaylist--videoplaylistref). `<Scrubber>` / `<HoverThumb>` take this (or `video=` → `as_timeline`). Not the engine clock. Exact/settle policy: [`Virtual Timeline`](#virtual-timeline).
+Shared scrub/hover **UI** handle in `fpmedia-web-components` (`ready` / `playhead` / `frame_count` + scrub/hover ops). Backed by [`VideoRef`](#video--videoref) or [`VideoPlaylistRef`](#videoplaylist--videoplaylistref). `<Scrubber>` / `<HoverThumb>` take this (or `video=` → `as_timeline`; or [`MediaRef`](#mediaref)::`as_timeline`). Not the engine clock. Exact/settle policy: [`Virtual Timeline`](#virtual-timeline).
 
 ### Virtual Timeline
 
-Shared **axis + settle/resolve** for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact bitmaps stay in slot blit; VT Exact-ledger write path parked. **Next:** Covered sole on VT. UI strips remap via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
+Shared **axis + settle/resolve** for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact bitmaps stay in slot blit; VT Exact-ledger write path parked. **Next:** Covered sole on VT. Host transport: [`MediaRef`](#mediaref); UI strips remap via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
 
 ### PlaylistPos
 

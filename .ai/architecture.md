@@ -17,7 +17,7 @@
 | Local media URL | Same-origin `/media/*` from `demo-player/public/media/` (`npm run media:fetch` ← testvideo v0.3.0) |
 | Pages demo | `trunk build --release --public-url /fpmedia-web/` → `demo-player/dist` (`state.md`) |
 | Demo UI | `demo-player` — **all** player chrome (controls, scrubber composition, thumb labels). Product boundary: `product.md` § Surfaces |
-| Media element | `fpmedia-web-components` — `<Video>` / `VideoRef` + `TimelineRef` + `<VideoPlaylist>` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `timeline`, `video_playlist`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
+| Media element | `fpmedia-web-components` — `<Video>` / `VideoRef` + `MediaRef` + `TimelineRef` + `<VideoPlaylist>` + headless `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>` (`product.md` § Element-layer helpers). Modules: `video`, `media`, `timeline`, `video_playlist`, `scrubber`, `timeline_meta`, `hover_thumb`, `strip`, `helpers` |
 | Media engine | `fpmedia-web` crate — demux + frame index + `VideoPlayer`; wasm WebCodecs in `decode/`; **`audio/`** for demux/stretch/output |
 | Browser helpers (UI) | **`leptos-use`** for observers / DOM events / rAF — prefer over raw `web-sys` in `components/` / `demo-player/` |
 | Styling | Tailwind in `demo-player/style/input.css` (Trunk `rel="tailwind-css"`, auto-download CLI). Prefer **canonical** utilities (`min-w-11`, `min-h-5`, …) over arbitrary `[…]` values when a scale class exists; reuse combos via `@utility` + `@apply`. Arbitrary OK only when no scale fit (e.g. `text-[11px]`, `max-w-[min(18rem,42vw)]`, complex shadows). |
@@ -85,8 +85,9 @@ Engine module map (file triage): `.ai/skills/media.md`.
 **no equivalent** (scrub / composition local — not a mediabunny port). Goal: Exact at a playlist cut behaves like Exact mid-clip because **both** go through one policy layer on a global FrameId axis. Single `<Video>` and `<VideoPlaylist>` share that layer; backends only differ.
 
 ```text
-Scrubber / HoverThumb / TimelineMeta / demo
-        → TimelineRef (UI binding: signals + scrub/hover/strip)
+Host chrome / demo
+        → MediaRef (transport: play/pause/seek/goto/step/loop/gain)
+        → TimelineRef (scrub/hover/strip; MediaRef::as_timeline)
         → virtual_timeline (Exact settle / resolve; later play · LoopZone)
         → backend adapters (Single VideoRef | Playlist 2-slot pool)
         → VideoPlayer ×1 or ×2 (demux / decode / clock)
@@ -94,6 +95,7 @@ Scrubber / HoverThumb / TimelineMeta / demo
 
 | Piece | Rule |
 | ----- | ---- |
+| Transport facade | **Shipped:** [`MediaRef`](../components/src/media.rs) — shared play/pause/seek/goto/step/loop/gain over Video \| Playlist. Open, `[i]`/`PlaylistPos`, slot/engine knobs stay on concrete refs |
 | Policy home | `components/src/virtual_timeline/` — settle law + resolve (axis). Densify plan + ExactLedger Exact-take = **parked** (Covered-on-VT next) — not a live Exact store |
 | UI binding | **Shipped:** [`TimelineRef`](../components/src/timeline.rs) — scrub/hover/strip domain. Covered+Exact = remapped **slot** pipeline marks |
 | Backend | Decode/open/present + densify Exact/Covered in slot blit + map timeline↔local. Single = identity; Playlist = Σ map + 2-slot |

@@ -7,10 +7,11 @@ use fpmedia_web_components::helpers::{
     playhead_tip_css, playhead_width_css, strip_canvas_buffer_width,
 };
 use fpmedia_web_components::{
-    HoverThumb, HoverThumbCtx, PipelinePlane, PipelineStats, ReadyFrameKind, ScrubCachePolicy,
-    Scrubber, ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, VERSION, Video,
-    VideoPlaylist, VideoPlaylistRef, VideoRef, format_playlist_frames, format_playlist_goto_frames,
-    format_playlist_goto_timecode, format_playlist_timecode, parse_playlist_goto,
+    HoverThumb, HoverThumbCtx, MediaRef, PipelinePlane, PipelineStats, ReadyFrameKind,
+    ScrubCachePolicy, Scrubber, ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, VERSION,
+    Video, VideoPlaylist, VideoPlaylistRef, VideoRef, format_playlist_frames,
+    format_playlist_goto_frames, format_playlist_goto_timecode, format_playlist_timecode,
+    parse_playlist_goto,
 };
 use leptos::either::{Either, EitherOf3};
 use leptos::ev;
@@ -261,76 +262,28 @@ fn open_demo_files(
     playlist.open_blobs(blobs);
 }
 
-/// Live [`VideoRef`] for the current demo mode (playlist → live slot).
-/// Tracks `use_playlist` / `live_is_a` when called from a reactive scope.
-fn demo_active_video(
+/// Active [`MediaRef`] for the current demo mode (reactive on `use_playlist`).
+fn demo_media(
     video: VideoRef,
     playlist: VideoPlaylistRef,
     use_playlist: RwSignal<bool>,
-) -> VideoRef {
+) -> MediaRef {
     if use_playlist.get() {
-        if playlist.live_is_a.get() {
-            playlist.slot_a
-        } else {
-            playlist.slot_b
-        }
+        MediaRef::from_playlist(playlist)
     } else {
-        video
+        MediaRef::from_video(video)
     }
 }
 
-/// Playlist-wide gain when in playlist mode; else the single `<Video>`.
-fn demo_volume(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) -> f64 {
-    if use_playlist.get() {
-        playlist.volume.get()
-    } else {
-        video.volume.get()
-    }
-}
-
-fn demo_muted(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) -> bool {
-    if use_playlist.get() {
-        playlist.muted.get()
-    } else {
-        video.muted.get()
-    }
-}
-
-fn demo_set_volume(
+fn demo_media_untracked(
     video: VideoRef,
     playlist: VideoPlaylistRef,
     use_playlist: RwSignal<bool>,
-    volume: f64,
-) {
+) -> MediaRef {
     if use_playlist.get_untracked() {
-        playlist.set_volume(volume);
+        MediaRef::from_playlist(playlist)
     } else {
-        video.set_volume(volume);
-    }
-}
-
-fn demo_set_muted(
-    video: VideoRef,
-    playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
-    muted: bool,
-) {
-    if use_playlist.get_untracked() {
-        playlist.set_muted(muted);
-    } else {
-        video.set_muted(muted);
-    }
-}
-
-fn demo_playback_rate(
-    video: VideoRef,
-    playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
-) -> f64 {
-    if use_playlist.get() {
-        playlist.playback_rate.get()
-    } else {
-        video.playback_rate.get()
+        MediaRef::from_video(video)
     }
 }
 
@@ -338,189 +291,83 @@ fn demo_playback_rate(
 ///
 /// Playlist: subscribe to [`VideoPlaylistRef::live_clip`] — not `pos` (pos
 /// mirrors every sync tick and would thrash rate chrome / main thread).
-fn demo_source_fps(
-    video: VideoRef,
-    playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
-) -> Option<f64> {
-    if use_playlist.get() {
+fn demo_source_fps(media: MediaRef) -> Option<f64> {
+    if let Some(playlist) = media.playlist() {
         let idx = playlist.live_clip.get() as usize;
         playlist
             .model
             .with(|m| m.clip(idx).and_then(|c| c.fps))
             .or_else(|| playlist.live_video().metadata.get().and_then(|m| m.fps))
     } else {
-        video.metadata.get().and_then(|m| m.fps)
+        media.active_video().metadata.get().and_then(|m| m.fps)
     }
 }
 
-fn demo_set_playback_rate(
-    video: VideoRef,
-    playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
-    rate: f64,
-) {
-    if use_playlist.get_untracked() {
-        playlist.set_playback_rate(rate);
-    } else {
-        video.set_playback_rate(rate);
-    }
-}
-
-fn demo_pause(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
-    if use_playlist.get_untracked() {
-        playlist.pause();
-    } else {
-        video.pause();
-    }
-}
-
-fn demo_play(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
-    if use_playlist.get_untracked() {
-        playlist.play();
-    } else {
-        video.play();
-    }
-}
-
-fn demo_toggle_play(
-    video: VideoRef,
-    playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
-    playing: bool,
-) {
+fn demo_toggle_play(media: MediaRef, playing: bool) {
     if playing {
-        demo_pause(video, playlist, use_playlist);
+        media.pause();
     } else {
-        demo_play(video, playlist, use_playlist);
+        media.play();
     }
 }
 
 /// Pause if playing, then step −1 (bar / overflow / ←).
-fn demo_previous_frame(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
-    let pl = use_playlist.get_untracked();
-    let playing = if pl {
-        playlist.playing.get_untracked()
+fn demo_previous_frame(media: MediaRef) {
+    if media.playing.get_untracked() {
+        media.pause();
     } else {
-        video.playing.get_untracked()
-    };
-    if playing {
-        demo_pause(video, playlist, use_playlist);
-    } else if pl {
-        playlist.previous_frame();
-    } else {
-        video.previous_frame();
+        media.previous_frame();
     }
 }
 
 /// Pause if playing, then step +1 (bar / overflow / →).
-fn demo_next_frame(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
-    let pl = use_playlist.get_untracked();
-    let playing = if pl {
-        playlist.playing.get_untracked()
+fn demo_next_frame(media: MediaRef) {
+    if media.playing.get_untracked() {
+        media.pause();
     } else {
-        video.playing.get_untracked()
-    };
-    if playing {
-        demo_pause(video, playlist, use_playlist);
-    } else if pl {
-        playlist.next_frame();
-    } else {
-        video.next_frame();
+        media.next_frame();
     }
 }
 
-fn demo_set_loop(
-    video: VideoRef,
-    playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
-    on: bool,
-) {
-    if use_playlist.get_untracked() {
-        playlist.set_loop(on);
-    } else {
-        video.set_loop(on);
-    }
-}
-
-fn demo_toggle_loop(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
-    let on = if use_playlist.get_untracked() {
-        !playlist.looping.get_untracked()
-    } else {
-        !video.looping.get_untracked()
-    };
-    demo_set_loop(video, playlist, use_playlist, on);
+fn demo_toggle_loop(media: MediaRef) {
+    media.set_loop(!media.looping.get_untracked());
 }
 
 /// LoopZone in = playhead; same spot again → reset in to 0. Arms loop if off (`[` / menu).
-fn demo_mark_loop_in(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
-    if use_playlist.get_untracked() {
-        if !playlist.looping.get_untracked() {
-            playlist.set_loop(true);
-        }
-        let ph = playlist.playhead.get_untracked();
-        let (inn, out) = playlist.loop_zone();
-        if inn == ph {
-            playlist.set_loop_zone(0, out);
-        } else {
-            playlist.set_loop_zone(ph, out.max(ph.saturating_add(1)));
-        }
+fn demo_mark_loop_in(media: MediaRef) {
+    if !media.looping.get_untracked() {
+        media.set_loop(true);
+    }
+    let ph = media.playhead.get_untracked();
+    let (inn, out) = media.loop_zone();
+    if inn == ph {
+        media.set_loop_zone(0, out);
     } else {
-        if !video.looping.get_untracked() {
-            video.set_loop(true);
-        }
-        let ph = video.playhead.get_untracked();
-        let (inn, out) = video.loop_zone();
-        if inn == ph {
-            video.set_loop_zone(0, out);
-        } else {
-            video.set_loop_zone(ph, out.max(ph.saturating_add(1)));
-        }
+        media.set_loop_zone(ph, out.max(ph.saturating_add(1)));
     }
 }
 
 /// LoopZone out = playhead + 1; same spot again → reset out to full. Arms loop if off (`]` / menu).
-fn demo_mark_loop_out(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
-    if use_playlist.get_untracked() {
-        if !playlist.looping.get_untracked() {
-            playlist.set_loop(true);
-        }
-        let ph = playlist.playhead.get_untracked();
-        let (inn, out) = playlist.loop_zone();
-        let want_out = ph.saturating_add(1);
-        let count = playlist.frame_count.get_untracked();
-        if out == want_out {
-            playlist.set_loop_zone(inn, count.max(inn.saturating_add(1)));
-        } else {
-            let inn = inn.min(want_out.saturating_sub(1));
-            playlist.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
-        }
+fn demo_mark_loop_out(media: MediaRef) {
+    if !media.looping.get_untracked() {
+        media.set_loop(true);
+    }
+    let ph = media.playhead.get_untracked();
+    let (inn, out) = media.loop_zone();
+    let want_out = ph.saturating_add(1);
+    let count = media.frame_count.get_untracked();
+    if out == want_out {
+        media.set_loop_zone(inn, count.max(inn.saturating_add(1)));
     } else {
-        if !video.looping.get_untracked() {
-            video.set_loop(true);
-        }
-        let ph = video.playhead.get_untracked();
-        let (inn, out) = video.loop_zone();
-        let want_out = ph.saturating_add(1);
-        let count = video.frame_count.get_untracked();
-        if out == want_out {
-            video.set_loop_zone(inn, count.max(inn.saturating_add(1)));
-        } else {
-            let inn = inn.min(want_out.saturating_sub(1));
-            video.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
-        }
+        let inn = inn.min(want_out.saturating_sub(1));
+        media.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
     }
 }
 
 /// LoopZone → full axis (`[0, frame_count)`). Does not change loop on/off (settings menu).
-fn demo_reset_loop_zone(video: VideoRef, playlist: VideoPlaylistRef, use_playlist: RwSignal<bool>) {
-    if use_playlist.get_untracked() {
-        let count = playlist.frame_count.get_untracked();
-        playlist.set_loop_zone(0, count);
-    } else {
-        let count = video.frame_count.get_untracked();
-        video.set_loop_zone(0, count);
-    }
+fn demo_reset_loop_zone(media: MediaRef) {
+    let count = media.frame_count.get_untracked();
+    media.set_loop_zone(0, count);
 }
 
 fn demo_meta_line(video: &VideoRef, clip_name: Option<String>) -> String {
@@ -784,28 +631,10 @@ pub fn DemoPlayer() -> impl IntoView {
         ..
     } = use_clipboard();
 
-    let media_ready = Memo::new(move |_| {
-        if use_playlist.get() {
-            playlist.ready.get()
-        } else {
-            video.ready.get()
-        }
-    });
-    let media_playing = Memo::new(move |_| {
-        if use_playlist.get() {
-            // Facade intent — not live slot (Host seam hard-stop gap flashes Play).
-            playlist.playing.get()
-        } else {
-            video.playing.get()
-        }
-    });
-    let media_looping = Memo::new(move |_| {
-        if use_playlist.get() {
-            playlist.looping.get()
-        } else {
-            video.looping.get()
-        }
-    });
+    let media_ready = Memo::new(move |_| demo_media(video, playlist, use_playlist).ready.get());
+    // Playlist: facade intent — not live slot (Host seam hard-stop gap flashes Play).
+    let media_playing = Memo::new(move |_| demo_media(video, playlist, use_playlist).playing.get());
+    let media_looping = Memo::new(move |_| demo_media(video, playlist, use_playlist).looping.get());
 
     Effect::new(move |_| {
         let policy = if scrubber_on.get() {
@@ -912,43 +741,34 @@ pub fn DemoPlayer() -> impl IntoView {
             return;
         }
         let playing = media_playing.get_untracked();
+        let media = demo_media_untracked(video, playlist, use_playlist);
         match ev.key().as_str() {
             "ArrowLeft" => {
                 ev.prevent_default();
-                demo_previous_frame(video, playlist, use_playlist);
+                demo_previous_frame(media);
             }
             "ArrowRight" => {
                 ev.prevent_default();
-                demo_next_frame(video, playlist, use_playlist);
+                demo_next_frame(media);
             }
             " " | "Spacebar" => {
                 ev.prevent_default();
-                demo_toggle_play(video, playlist, use_playlist, playing);
+                demo_toggle_play(media, playing);
             }
             "l" | "L" => {
                 ev.prevent_default();
-                let cur = if use_playlist.get_untracked() {
-                    playlist.playback_rate.get_untracked()
-                } else {
-                    video.playback_rate.get_untracked()
-                };
-                let next = jkl_step(cur, 1);
-                demo_set_playback_rate(video, playlist, use_playlist, next);
+                let next = jkl_step(media.playback_rate.get_untracked(), 1);
+                media.set_playback_rate(next);
                 if !playing {
-                    demo_play(video, playlist, use_playlist);
+                    media.play();
                 }
             }
             "j" | "J" => {
                 ev.prevent_default();
-                let cur = if use_playlist.get_untracked() {
-                    playlist.playback_rate.get_untracked()
-                } else {
-                    video.playback_rate.get_untracked()
-                };
-                let next = jkl_step(cur, -1);
-                demo_set_playback_rate(video, playlist, use_playlist, next);
+                let next = jkl_step(media.playback_rate.get_untracked(), -1);
+                media.set_playback_rate(next);
                 if !playing {
-                    demo_play(video, playlist, use_playlist);
+                    media.play();
                 }
             }
             "k" | "K" => {
@@ -956,11 +776,11 @@ pub fn DemoPlayer() -> impl IntoView {
                 // Pause *before* snapping to 1× — `set_playback_rate(1)` while
                 // playing spawns audio; doing that then pause leaves music on.
                 if playing {
-                    demo_pause(video, playlist, use_playlist);
-                    demo_set_playback_rate(video, playlist, use_playlist, 1.0);
+                    media.pause();
+                    media.set_playback_rate(1.0);
                 } else {
-                    demo_set_playback_rate(video, playlist, use_playlist, 1.0);
-                    demo_play(video, playlist, use_playlist);
+                    media.set_playback_rate(1.0);
+                    media.play();
                 }
             }
             "Escape" => {
@@ -971,11 +791,11 @@ pub fn DemoPlayer() -> impl IntoView {
             }
             "[" => {
                 ev.prevent_default();
-                demo_mark_loop_in(video, playlist, use_playlist);
+                demo_mark_loop_in(media);
             }
             "]" => {
                 ev.prevent_default();
-                demo_mark_loop_out(video, playlist, use_playlist);
+                demo_mark_loop_out(media);
             }
             _ => {}
         }
@@ -1163,16 +983,11 @@ pub fn DemoPlayer() -> impl IntoView {
                         if !media_ready.get_untracked() {
                             return;
                         }
+                        let media = demo_media_untracked(video, playlist, use_playlist);
                         if media_playing.get_untracked() {
-                            if use_playlist.get_untracked() {
-                                playlist.pause();
-                            } else {
-                                video.pause();
-                            }
-                        } else if use_playlist.get_untracked() {
-                            playlist.play();
+                            media.pause();
                         } else {
-                            video.play();
+                            media.play();
                         }
                     }
                 >
@@ -1249,9 +1064,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             }
                             on:click=move |_| {
                                 demo_toggle_play(
-                                    video,
-                                    playlist,
-                                    use_playlist,
+                                    demo_media_untracked(video, playlist, use_playlist),
                                     media_playing.get_untracked(),
                                 );
                             }
@@ -1278,7 +1091,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 if media_looping.get() { "Loop on" } else { "Loop off" }
                             }
                             on:click=move |_| {
-                                demo_toggle_loop(video, playlist, use_playlist);
+                                demo_toggle_loop(demo_media_untracked(video, playlist, use_playlist));
                             }
                         >
                             <icon::Loop class="wm-icon wm-icon-loop"/>
@@ -1291,7 +1104,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             prop:aria-label="Previous frame"
                             prop:title="Previous frame"
                             on:click=move |_| {
-                                demo_previous_frame(video, playlist, use_playlist);
+                                demo_previous_frame(demo_media_untracked(video, playlist, use_playlist));
                             }
                         >
                             <icon::NextFrame class="wm-icon wm-icon-prev -scale-x-100"/>
@@ -1304,7 +1117,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             prop:aria-label="Next frame"
                             prop:title="Next frame"
                             on:click=move |_| {
-                                demo_next_frame(video, playlist, use_playlist);
+                                demo_next_frame(demo_media_untracked(video, playlist, use_playlist));
                             }
                         >
                             <icon::NextFrame class="wm-icon wm-icon-next"/>
@@ -1354,21 +1167,21 @@ pub fn DemoPlayer() -> impl IntoView {
                                 class=btn_icon
                                 data-testid="btn-mute"
                                 prop:disabled=move || {
-                                    let v = demo_active_video(video, playlist, use_playlist);
+                                    let v = demo_media(video, playlist, use_playlist).active_video();
                                     !media_ready.get() || !v.has_audio.get()
                                 }
                                 prop:aria-pressed=move || {
-                                    demo_muted(video, playlist, use_playlist)
+                                    demo_media(video, playlist, use_playlist).muted.get()
                                 }
                                 prop:aria-label=move || {
-                                    if demo_muted(video, playlist, use_playlist) {
+                                    if demo_media(video, playlist, use_playlist).muted.get() {
                                         "Unmute"
                                     } else {
                                         "Mute"
                                     }
                                 }
                                 prop:title=move || {
-                                    if demo_muted(video, playlist, use_playlist) {
+                                    if demo_media(video, playlist, use_playlist).muted.get() {
                                         "Unmute"
                                     } else {
                                         "Mute"
@@ -1382,28 +1195,21 @@ pub fn DemoPlayer() -> impl IntoView {
                                         settings_open.set(false);
                                         return;
                                     }
-                                    let vol = if use_playlist.get_untracked() {
-                                        playlist.volume.get_untracked()
-                                    } else {
-                                        video.volume.get_untracked()
-                                    };
+                                    let media =
+                                        demo_media_untracked(video, playlist, use_playlist);
+                                    let vol = media.volume.get_untracked();
                                     // Volume already 0: mute toggle is a no-op visually — unmute + max.
                                     if vol <= 0.0 {
-                                        demo_set_volume(video, playlist, use_playlist, 1.0);
-                                        demo_set_muted(video, playlist, use_playlist, false);
+                                        media.set_volume(1.0);
+                                        media.set_muted(false);
                                         return;
                                     }
-                                    let muted = if use_playlist.get_untracked() {
-                                        playlist.muted.get_untracked()
-                                    } else {
-                                        video.muted.get_untracked()
-                                    };
-                                    demo_set_muted(video, playlist, use_playlist, !muted);
+                                    media.set_muted(!media.muted.get_untracked());
                                 }
                             >
                                 {move || {
-                                    let muted = demo_muted(video, playlist, use_playlist);
-                                    let vol = demo_volume(video, playlist, use_playlist);
+                                    let muted = demo_media(video, playlist, use_playlist).muted.get();
+                                    let vol = demo_media(video, playlist, use_playlist).volume.get();
                                     if muted || vol <= 0.0 {
                                         EitherOf3::A(view! { <icon::Volume0 class="wm-icon"/> })
                                     } else if vol < 0.5 {
@@ -1439,7 +1245,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             <button
                                 type="button"
                                 class=move || {
-                                    let r = demo_playback_rate(video, playlist, use_playlist);
+                                    let r = demo_media(video, playlist, use_playlist).playback_rate.get();
                                     if rate_is_unity(r) {
                                         btn_rate.to_string()
                                     } else {
@@ -1460,15 +1266,15 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                                 on:dblclick=move |ev| {
                                     ev.prevent_default();
-                                    demo_set_playback_rate(video, playlist, use_playlist, 1.0);
+                                    demo_media_untracked(video, playlist, use_playlist).set_playback_rate(1.0);
                                     rate_open.set(false);
                                 }
                             >
                                 {move || {
-                                    let r = demo_playback_rate(video, playlist, use_playlist);
+                                    let r = demo_media(video, playlist, use_playlist).playback_rate.get();
                                     if rate_is_unity(r)
                                         && let Some(fps) =
-                                            demo_source_fps(video, playlist, use_playlist)
+                                            demo_source_fps(demo_media(video, playlist, use_playlist))
                                     {
                                         return format_fps_label(fps);
                                     }
@@ -1538,7 +1344,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                     data-testid="btn-loop-in"
                                     prop:disabled=move || !media_ready.get()
                                     on:click=move |_| {
-                                        demo_mark_loop_in(video, playlist, use_playlist);
+                                        demo_mark_loop_in(demo_media_untracked(video, playlist, use_playlist));
                                         settings_open.set(false);
                                     }
                                 >
@@ -1552,7 +1358,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                     data-testid="btn-loop-out"
                                     prop:disabled=move || !media_ready.get()
                                     on:click=move |_| {
-                                        demo_mark_loop_out(video, playlist, use_playlist);
+                                        demo_mark_loop_out(demo_media_untracked(video, playlist, use_playlist));
                                         settings_open.set(false);
                                     }
                                 >
@@ -1566,7 +1372,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                     data-testid="btn-loop-zone-reset"
                                     prop:disabled=move || !media_ready.get()
                                     on:click=move |_| {
-                                        demo_reset_loop_zone(video, playlist, use_playlist);
+                                        demo_reset_loop_zone(demo_media_untracked(video, playlist, use_playlist));
                                         settings_open.set(false);
                                     }
                                 >
@@ -1686,7 +1492,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     <div class="flex min-w-0 flex-1 flex-col gap-0 text-sm leading-5 tabular-nums text-zinc-400">
                         <p class="wm-meta m-0 min-h-5" data-testid="meta">
                             {move || {
-                                let v = demo_active_video(video, playlist, use_playlist);
+                                let v = demo_media(video, playlist, use_playlist).active_video();
                                 let label = if use_playlist.get() {
                                     clip_label.get().map(|s| {
                                         format!(
@@ -1707,11 +1513,9 @@ pub fn DemoPlayer() -> impl IntoView {
                                 {
                                     return playlist.status.get();
                                 }
-                                demo_status_line(&demo_active_video(
-                                    video,
-                                    playlist,
-                                    use_playlist,
-                                ))
+                                demo_status_line(
+                                    &demo_media(video, playlist, use_playlist).active_video(),
+                                )
                             }}
                         </p>
                         <p
@@ -1720,7 +1524,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         >
                             {move || {
                                 demo_pipeline_line(
-                                    demo_active_video(video, playlist, use_playlist)
+                                    demo_media(video, playlist, use_playlist).active_video()
                                         .pipeline
                                         .get(),
                                 )
@@ -1750,7 +1554,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         on:click={
                             let copy_stats = copy_stats.clone();
                             move |_| {
-                                let v = demo_active_video(video, playlist, use_playlist);
+                                let v = demo_media(video, playlist, use_playlist).active_video();
                                 let text = demo_stats_clipboard(&v, clip_label.get());
                                 copy_stats(&text);
                             }
@@ -1770,7 +1574,7 @@ pub fn DemoPlayer() -> impl IntoView {
             >
                 {move || {
                     pipeline_stats_json(
-                        demo_active_video(video, playlist, use_playlist)
+                        demo_media(video, playlist, use_playlist).active_video()
                             .pipeline
                             .get(),
                     )
@@ -1786,7 +1590,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             .error
                             .get()
                             .or_else(|| {
-                                demo_active_video(video, playlist, use_playlist).error.get()
+                                demo_media(video, playlist, use_playlist).active_video().error.get()
                             })
                             .unwrap_or_default()
                     } else {
@@ -2573,6 +2377,9 @@ fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> Option<T> {
 }
 
 /// Shared rate heading + slider + ticks (bar pop + settings overflow).
+///
+/// Takes video/playlist/`use_playlist` so [`demo_media`] rebinds when mode flips
+/// (a stale [`MediaRef`] prop would keep the previous backend signals).
 #[component]
 fn PlaybackRateTrack(
     video: VideoRef,
@@ -2585,8 +2392,9 @@ fn PlaybackRateTrack(
         <div class="wm-rate-panel">
             <div class="wm-rate-heading">
                 {move || {
-                    let r = demo_playback_rate(video, playlist, use_playlist);
-                    match demo_source_fps(video, playlist, use_playlist) {
+                    let media = demo_media(video, playlist, use_playlist);
+                    let r = media.playback_rate.get();
+                    match demo_source_fps(media) {
                         Some(fps) => format!(
                             "Playback rate {}",
                             format_fps_label_precise(fps * r)
@@ -2605,7 +2413,7 @@ fn PlaybackRateTrack(
                         max="1.75"
                         step="0.05"
                         prop:value=move || {
-                            let r = demo_playback_rate(video, playlist, use_playlist);
+                            let r = demo_media(video, playlist, use_playlist).playback_rate.get();
                             if r < 0.0 {
                                 "0.25".to_string()
                             } else {
@@ -2618,7 +2426,8 @@ fn PlaybackRateTrack(
                                 return;
                             };
                             if let Ok(v) = input.value().parse::<f64>() {
-                                demo_set_playback_rate(video, playlist, use_playlist, v);
+                                demo_media_untracked(video, playlist, use_playlist)
+                                    .set_playback_rate(v);
                             }
                         }
                     />
@@ -2633,7 +2442,9 @@ fn PlaybackRateTrack(
                                     <button
                                         type="button"
                                         class=move || {
-                                            let r = demo_playback_rate(video, playlist, use_playlist)
+                                            let r = demo_media(video, playlist, use_playlist)
+                                                .playback_rate
+                                                .get()
                                                 .clamp(RATE_SLIDER_MIN, RATE_SLIDER_MAX);
                                             if (r - t).abs() < 0.026 {
                                                 "wm-rate-tick is-active"
@@ -2646,12 +2457,8 @@ fn PlaybackRateTrack(
                                         prop:title=format!("{}×", format_rate_tick(t))
                                         on:click=move |ev| {
                                             ev.stop_propagation();
-                                            demo_set_playback_rate(
-                                                video,
-                                                playlist,
-                                                use_playlist,
-                                                t,
-                                            );
+                                            demo_media_untracked(video, playlist, use_playlist)
+                                                .set_playback_rate(t);
                                         }
                                     >
                                         <span class="wm-rate-tick-mark"></span>
@@ -2688,24 +2495,26 @@ fn VolumeRangeInput(
                 max="1"
                 step="0.05"
                 style:--wm-volume-pct=move || {
-                    let pct = if demo_muted(video, playlist, use_playlist) {
+                    let media = demo_media(video, playlist, use_playlist);
+                    let pct = if media.muted.get() {
                         0.0
                     } else {
-                        demo_volume(video, playlist, use_playlist).clamp(0.0, 1.0) * 100.0
+                        media.volume.get().clamp(0.0, 1.0) * 100.0
                     };
                     format!("{pct}%")
                 }
                 prop:value=move || {
                     // Mute parks the thumb at 0 without clearing stored volume;
                     // unmute restores playlist/single `volume`.
-                    if demo_muted(video, playlist, use_playlist) {
+                    let media = demo_media(video, playlist, use_playlist);
+                    if media.muted.get() {
                         "0".to_string()
                     } else {
-                        demo_volume(video, playlist, use_playlist).to_string()
+                        media.volume.get().to_string()
                     }
                 }
                 prop:disabled=move || {
-                    let v = demo_active_video(video, playlist, use_playlist);
+                    let v = demo_media(video, playlist, use_playlist).active_video();
                     !v.ready.get() || !v.has_audio.get()
                 }
                 on:pointerdown=move |ev| {
@@ -2744,14 +2553,10 @@ fn VolumeRangeInput(
                     if let Ok(v) = input.value().parse::<f64>() {
                         // Snap to 0.05 so icon thresholds stay clean.
                         let snapped = (v / 0.05).round() * 0.05;
-                        demo_set_volume(video, playlist, use_playlist, snapped.clamp(0.0, 1.0));
-                        let muted = if use_playlist.get_untracked() {
-                            playlist.muted.get_untracked()
-                        } else {
-                            video.muted.get_untracked()
-                        };
-                        if muted {
-                            demo_set_muted(video, playlist, use_playlist, false);
+                        let media = demo_media_untracked(video, playlist, use_playlist);
+                        media.set_volume(snapped.clamp(0.0, 1.0));
+                        if media.muted.get_untracked() {
+                            media.set_muted(false);
                         }
                     }
                 }

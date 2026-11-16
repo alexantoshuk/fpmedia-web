@@ -35,6 +35,7 @@ Headless / paint-inside components in `fpmedia-web-components` (compose in demo;
 | Piece | Role |
 | ----- | ---- |
 | `<Video>` / `VideoRef` | Stage + element API (open/play/seek/rate/volume). |
+| `MediaRef` | Shared **transport** facade (`VideoRef` / `VideoPlaylistRef` via `as_media` / `from_*`). play/pause/seek/goto/step/loop/gain + shared signals; `as_timeline()` for scrub. Open / `[i]` / slot knobs stay on concrete refs. Vocab: `glossary.md` § MediaRef. |
 | `TimelineRef` | Shared scrub/hover/**strip** domain (`VideoRef` / `VideoPlaylistRef` via `as_timeline`). `<Scrubber>` / `<HoverThumb>` / `<TimelineMeta>` bind this (`video=` → timeline). Units = presentation frames (playlist = Σ / global). Strips follow live via `strip_video`. Vocab: `glossary.md` § TimelineRef. |
 | `<Scrubber>` | Gesture + track container + context. Owns pointer → playhead + `scrub_pointer_*` / transport / scrub phases. Takes `timeline=` and/or `video=`. Host: children + CSS; may observe `scrubbing`. Does **not** remount on playlist live swap; does **not** ship progress fill, ticks, or strip layout. |
 | `<TimelineMeta kind>` | One timeline meta strip (`Fetch` / `Keyframes` / `Covered` / `Exact`). Domain from parent `TimelineRef`; remaps live `pipeline` into that grid; re-leases interest when strip video identity changes. Host: `class` / color + DOM placement. |
