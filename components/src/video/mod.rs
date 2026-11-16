@@ -72,10 +72,10 @@ pub struct VideoRef {
     /// Host mid-zone: next SeamHold release restarts PlayIter @aim.
     /// Cleared by PlayPrime. Full-axis joins leave false.
     seam_hold_restart_on_release: StoredValue<bool, LocalStorage>,
-    /// VT Exact ledger for this single-clip timeline (identity global=local).
+    /// Parked VT ledger (Covered-on-VT next; Exact write unused).
     pub(crate) exact_ledger:
         StoredValue<Option<crate::virtual_timeline::LedgerHandle>, LocalStorage>,
-    /// Bumped when VT Exact ledger mutates — TimelineMeta Exact strip subscribes.
+    /// Epoch for future VT strip — unused while Exact/Covered = slot remap.
     pub exact_residency_epoch: RwSignal<u64>,
 }
 
@@ -190,7 +190,7 @@ impl VideoRef {
         }
     }
 
-    /// VT Exact ledger for this `<Video>` (Single timeline; global = local).
+    /// Parked VT ledger handle.
     pub fn exact_ledger(&self) -> Option<crate::virtual_timeline::LedgerHandle> {
         self.exact_ledger.get_value()
     }

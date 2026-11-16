@@ -1,7 +1,8 @@
-//! Wasm adapters: VT Exact ledger ↔ slot `VideoPlayer` / `VideoRef`.
+//! Wasm adapters for [`super::ExactLedger`] ↔ slot `VideoPlayer` / `VideoRef`.
 //!
-//! Ledger owns Exact/Covered residency. Slot blit = decode scratch → **take**
-//! into ledger (no clone-mirror sync). **no equivalent** (composition local).
+//! **Parked:** Exact take/import/present helpers are unused while Exact = slot blit.
+//! Keep for Covered-on-VT / optional revive — do not call from host settle.
+//! **no equivalent** (composition local).
 
 use std::cell::RefCell;
 use std::rc::Rc;

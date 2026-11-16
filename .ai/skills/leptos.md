@@ -26,8 +26,9 @@
 | Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap (global frames); mirror live→pos when not `scrubbing` (paused step OK; scrub owns aim) — `architecture.md` § Playlist |
 | Playlist scrub tip jumps on pointer-up | mirror: slot `playhead ≠ frame` → use playhead; skip while `pos.clip ≠ live` (CrossClipSeek); Up clears `scrubbing` only after aim set; `seek_to_pos` sets live playhead before preload await. **no equivalent** |
 | Playlist Play: progress freezes after clip join | `promote_idle_at` must set facade `pos`/`playhead` on swap — else mirror `pos.clip ≠ live` skip sticks. **no equivalent** |
-| Playlist paused scrub Up: gray + empty Exact | `seek_to_pos(!then_play)`: idle `prepare_seam_at` → swap → `seek_frame` (densify) until VT ledger. Never `arm_seam_hold` on pause. Play path keeps SeamHold. **no equivalent** |
-| Playlist Exact drains on promote / empty on return clip | Demote `park_scrub_cache` (not Off wipe); live On + densify on promote/settle. Cut densify later. `architecture.md` § Virtual Timeline. **no equivalent** |
+| Playlist paused scrub Up: gray + empty Exact | `seek_to_pos(!then_play)`: idle `prepare_seam_at` → swap → PresentHit or `seek_frame` (densify). Never `arm_seam_hold` on pause. Play path keeps SeamHold. **no equivalent** |
+| Playlist Exact drains on promote / empty on return clip | Demote `park_scrub_cache` (not Off wipe); live On + densify on promote/settle. Cut join warm — later, without Pause playhead thrash. `architecture.md` § Virtual Timeline. **no equivalent** |
+| Playlist sticky `operation cancelled` on pause seek | `seek_pos` / `seek_frame` | Ignore `is_soft_seam_cancel` (same as play path) — promote/ensure race must not sticky UI. **no equivalent** |
 | Playlist Exact OK on first scrub, dead after visit neighbor | `ensure_clip_on_idle` / `preload_idle` after `wait_ready` | Promote can win during poll sleep — park only if still idle; if `live_clip==opened` → On (do not park live). **no equivalent** |
 | Playlist zebra gate / stripe size wrong | axis = Σ frames (not ms); same `frame_zebra_step` as single-clip |
 | Playlist multi-open flashes first frames | probe paints on live slot — `visibility:hidden` while `[data-ready=false]` (keep layout; not `display:none`) |

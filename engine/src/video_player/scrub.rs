@@ -790,9 +790,9 @@ impl VideoPlayer {
 
     /// Densify off + drop scrub decoder; **keep** Covered + Exact.
     ///
-    /// VT backend demote / idle park — Exact trail survives swap until the sole
-    /// VT ledger owns residency. User Scrub Off still uses
-    /// [`Self::set_scrub_cache_policy`] (clears). **no equivalent**.
+    /// Playlist idle demote — Exact/Covered trail survives swap (slot store).
+    /// User Scrub Off still uses [`Self::set_scrub_cache_policy`] (clears).
+    /// **no equivalent**.
     pub fn park_scrub_cache(&self) {
         let _ = self
             .shared

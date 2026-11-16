@@ -43,7 +43,7 @@ Bytes that have ever been fetched into the source cache plane. Backed by **Fetch
 
 ### Covered (dim green)
 
-“We have decoded coverage for this FrameId” as **gap geometry** — a marker, not necessarily a live bitmap. **Strip:** remapped from slot `ScrubChunkStore` (playlist local→global). Soft-drag **preview must not** use Covered alone (no pixels). Covered-only densify hard-bounded to aim±`COVERED_EDGE_MARGIN_FRAMES` (`architecture.md` § Play / scrub residency / Virtual Timeline).
+“We have decoded coverage for this FrameId” as **gap geometry** — a marker, not necessarily a live bitmap. **Strip (now):** remapped from slot `ScrubChunkStore` (playlist local→global; wiped when idle media replaced). **Next:** sole Covered on VT so strip survives clip leave (`state.md`). Soft-drag **preview must not** use Covered alone (no pixels). Covered-only densify hard-bounded to aim±`COVERED_EDGE_MARGIN_FRAMES` (`architecture.md` § Play / scrub residency / Virtual Timeline).
 
 ### Exact (bright green)
 
@@ -181,7 +181,7 @@ Shared scrub/hover **UI** handle in `fpmedia-web-components` (`ready` / `playhea
 
 ### Virtual Timeline
 
-Shared **axis + settle/resolve** for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact bitmaps stay in slot blit; VT does not own a second residency store. Densify plan for cut-aware fill — later. UI strips remap via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
+Shared **axis + settle/resolve** for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact bitmaps stay in slot blit; VT Exact-ledger write path parked. **Next:** Covered sole on VT. UI strips remap via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
 
 ### PlaylistPos
 

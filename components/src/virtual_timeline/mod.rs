@@ -1,11 +1,9 @@
-//! Virtual Timeline — shared scrub / Exact / (later play · LoopZone) policy.
+//! Virtual Timeline — shared scrub settle / resolve (+ later play · LoopZone).
 //!
-//! **Policy lives here** (global FrameId axis). Backend adapters map Single
-//! [`crate::VideoRef`] / Playlist slots onto decode/open/present only.
+//! **Policy lives here** (global FrameId axis). Exact bitmaps = **slot** blit only.
+//! [`ExactLedger`] / densify_plan / wasm backend Exact-take path = **parked** for
+//! next Covered-on-VT slice (do not write Exact bitmaps here).
 //! UI binding remains [`crate::TimelineRef`].
-//!
-//! Residency ledger: Exact AimWindow + Covered on timeline FrameIds.
-//! Densify plan + host kick; slots stay decode backends (take → ledger).
 //! Design: `.ai/architecture.md` § Virtual Timeline.
 //! **no equivalent** (scrub / playlist composition local — not a mediabunny port).
 

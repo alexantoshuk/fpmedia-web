@@ -1,8 +1,8 @@
-//! Sole Exact / Covered residency on the virtual timeline axis (global FrameId).
+//! Timeline residency helpers (global FrameId) — **parked** Exact AimWindow + Covered set.
 //!
-//! One [`AimWindow`] — never 2× dual-slot. Slots decode into this ledger; they do
-//! not own Exact policy. PresentHit = [`Self::has_exact`].
-//! Design: `.ai/architecture.md` § Virtual Timeline.
+//! Shipped Exact = slot `ScrubBlitLru` (PresentHit = slot blit). This type stays for
+//! the next Covered-on-VT slice; do not dual-write Exact bitmaps here.
+//! Design: `.ai/architecture.md` § Virtual Timeline / `state.md` Next.
 //! **no equivalent** (scrub local).
 
 use std::collections::BTreeSet;

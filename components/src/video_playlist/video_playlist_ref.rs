@@ -63,10 +63,10 @@ pub struct VideoPlaylistRef {
     pub(crate) seam_warm_for: StoredValue<Option<u32>, LocalStorage>,
     /// Host cut/wrap seam phase — RwSignal so EOF Effect re-runs when Idle.
     pub(crate) seam_phase: RwSignal<super::loop_seam::SeamPhase>,
-    /// VT Exact ledger (global FrameIds across clips).
+    /// Parked VT ledger handle (Covered-on-VT next; Exact write unused).
     pub(crate) exact_ledger:
         StoredValue<Option<crate::virtual_timeline::LedgerHandle>, LocalStorage>,
-    /// Bumped when VT Exact ledger mutates — TimelineMeta Exact strip subscribes.
+    /// Epoch for future VT Covered/Exact strip — unused while strip = slot remap.
     pub exact_residency_epoch: RwSignal<u64>,
 }
 
@@ -122,18 +122,17 @@ impl VideoPlaylistRef {
         }
     }
 
-    /// VT Exact ledger for this playlist timeline.
+    /// Parked VT ledger (see module docs).
     pub fn exact_ledger(self) -> Option<crate::virtual_timeline::LedgerHandle> {
         self.exact_ledger.get_value()
     }
 
-    /// Notify Exact strip that the VT ledger changed.
     pub fn bump_exact_residency(self) {
         self.exact_residency_epoch
             .update(|n| *n = n.wrapping_add(1));
     }
 
-    /// Clear Exact ledger (new open / close).
+    /// Reset parked VT ledger on open/close.
     pub fn reset_exact_ledger(self) {
         if let Some(h) = self.exact_ledger.get_value() {
             let mut led = h.borrow_mut();

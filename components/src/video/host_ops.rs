@@ -210,6 +210,12 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
             let r = match plan {
                 ExactSettlePlan::PresentHit => {
                     if p.try_present_scrub_exact(local) {
+                        // `prepare_scrub_settle` latched ExactHold; skipping
+                        // `scrub_to` would leave hold stuck → densify exits /
+                        // latch-only and Pause strip stops growing. EndExact
+                        // before arm (dwell cache-hit never BeginExact).
+                        // **no equivalent** (scrub local).
+                        p.clear_densify_hold();
                         Ok(())
                     } else {
                         p.scrub_to(local, true).await

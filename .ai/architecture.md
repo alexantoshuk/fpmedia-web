@@ -94,12 +94,13 @@ Scrubber / HoverThumb / TimelineMeta / demo
 
 | Piece | Rule |
 | ----- | ---- |
-| Policy home | `components/src/virtual_timeline/` — settle law + resolve (axis). Densify plan/orchestrate kept for later cut-aware fill — **not** residency store |
+| Policy home | `components/src/virtual_timeline/` — settle law + resolve (axis). Densify plan + ExactLedger Exact-take = **parked** (Covered-on-VT next) — not a live Exact store |
 | UI binding | **Shipped:** [`TimelineRef`](../components/src/timeline.rs) — scrub/hover/strip domain. Covered+Exact = remapped **slot** pipeline marks |
 | Backend | Decode/open/present + densify Exact/Covered in slot blit + map timeline↔local. Single = identity; Playlist = Σ map + 2-slot |
-| Exact residency | **Slot `ScrubBlitLru` only** (one store). PresentHit = resolve → `has_scrub_exact_blit`. No bitmap ledger / take / clone mirror. Anti-pattern: SoftPark; dual Exact stores |
-| Densify path | Engine `next_gap` on live (`vt_densify_authority=false`). Idle **park** (`park_scrub_cache` — densify off, keep Exact). Off wipe only on media replace / user Scrub Off. Playlist strip remaps live (+ idle Exact/Covered if any) |
-| Later on VT | Play intent, LoopZone, CutWindow as views on the same axis — not separate Exact machines |
+| Exact residency | **Slot `ScrubBlitLru` only** (one store per slot; playlist ≤2× VRAM wallets). PresentHit = `has_scrub_exact_blit`. No bitmap ledger write. Anti-pattern: SoftPark; dual Exact *stores as truth* |
+| Densify path | Engine `next_gap` on live (`vt_densify_authority=false`). Idle **park** (densify off, keep Exact/Covered). Off wipe only on media replace / user Scrub Off. Strip remaps live (+ idle if any) |
+| Exact VRAM | One `blit_mib` (512) for Short/Long; frame count from canvas. All-Intra densify off |
+| Later on VT | **Covered sole on VT** (survive clip leave); then Play intent / LoopZone / CutWindow on the same axis |
 | Readout | `[i]` stays clip-local (`product.md`); scrub/Exact/play/loop axis = global |
 
 ## Playlist composition (agreed)
@@ -116,7 +117,7 @@ Scrubber / HoverThumb / TimelineMeta / demo
 | Strip / tip domain | One owner: `TimelineRef` (playlist units = **global frames**). Gesture / tip / hover / zebra / `<TimelineMeta>` all use it. `strip_video()` → live slot for Keyframes/Fetch interest; Covered+Exact from slot blit via `strip_ready_marks`. Meta re-leases on `strip_video_key` change — **never** remount `<Scrubber>` on live swap. Mirror live→`playhead`/`pos` when not `scrubbing` (Play + paused step/seek; scrub gesture owns aim) |
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute/rate** + **`playing` intent**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
 | Seam | **`LoopOwner`:** zone ⊆ live → `Engine` (`sync_live_loop_from_playlist` → `LoopSeam`); else `Host` → `promote_idle_at` / `wrap_to_loop_in`. Host cut/wrap latched by **`SeamPhase`** (not a bool). Densify-free seam paint via `seek_frame_with(..., false)`. Playlist `playing` stays true across slot `pause_hard` / EOF until pause, terminal end, or seam error — do not mirror live `VideoRef::playing` for chrome. |
-| Host promote policy | **`PromoteLead`** (`Origin` @0 / `Mid` @`loop_in`): idle **main** `SeamHold` before wall; promote → PlayPrime **release**. `seek_to_pos(then_play)`: Play → SeamHold; pause/goto → `prepare_seam_at` + `seek_frame` until VT ledger PresentHit — never leave SeamHold densify-blocked. Single/Engine loop: **2nd HW** `LoopPlayWarm` (SW stash fallback). Port map: [below](#loopseam-vs-host-promote). |
+| Host promote policy | **`PromoteLead`** (`Origin` @0 / `Mid` @`loop_in`): idle **main** `SeamHold` before wall; promote → PlayPrime **release**. `seek_to_pos(then_play)`: Play → SeamHold; pause/goto → slot Exact PresentHit or `prepare_seam_at` + `seek_frame` — never leave SeamHold densify-blocked. Single/Engine loop: **2nd HW** `LoopPlayWarm` (SW stash fallback). Port map: [below](#loopseam-vs-host-promote). |
 | Host prewarm schedule | **`seam_warm_schedule`**: `LoopOwner` + zone + media time → `SeamWarmTarget` (`PromoteLead` + idle). Kick → `kick_arm_seam_hold` when `SeamPhase::Idle` and owner ≠ `Engine`. Priority: Host zone wall → near clip-EOF next/`loop_in`. |
 | Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
 | Idle neighbor | Next clip; on last + playlist **loop** → **0** (wrap origin-stash target); else previous. `idle_neighbor` / `set_loop` re-preload |
@@ -371,7 +372,7 @@ Local invention (no mediabunny CanvasSink densify equivalent). Unit of work = on
 
 **Scrub densify / thumb** (`create_scrub` / `create_thumb`): always `PlayPolicy::hd()` knobs + explicit `prefer-software` so densify never dual-HW poisons main (`no-preference` can still grab HW). Soft-drag does **not** use this slot. `optimizeForLatency` = false for VOD.
 
-**`ScrubPolicy`** (from `GopProfile`): `densify` / `blit_mib` / edge margins (`scrub_cache_mib` = legacy meter only; Covered uncapped). Soft-drag: interim blit + main-HW nearest-key chase (Exact = dwell/settle on main). Pause densify PreferSoftware when `densify` on; All-Intra `densify` off (1-frame GOP fill wastes CPU).
+**`ScrubPolicy`** (from `GopProfile`): `densify` on/off + edge margins; **one** Exact `blit_mib` (512) for Short/Long — frame count from canvas only (`scrub_blit_frame_budget`). All-Intra: `densify` off (soft-drag interim blit still sized). `scrub_cache_mib` = legacy meter; Covered uncapped. Soft-drag: interim blit + main-HW nearest-key chase. Pause densify PreferSoftware when `densify` on.
 
 **`SettlePolicy`** (clip-invariant defaults): densify yield `250+250 ms`, `gop_sample_lead` 8…24, index warm leads (`play_index_lead` also feeds the Play iterator). Soft-cold / poison are named recovery helpers, not policy fields. Do not retune Settle when changing Play Uhd or Scrub MiB.
 

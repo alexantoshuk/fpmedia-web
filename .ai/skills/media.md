@@ -43,6 +43,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Playlist Exact wiped on promote / empty after cross-clip | demote `park_scrub_cache` | Idle park (keep Exact); live On before prepare/settle (Off gates ingest). Off wipe only on media replace / user Scrub Off. **no equivalent** |
 | Exact confetti / strip ignores densify | strip ↔ slot blit | Exact only in slot; strip remaps pipeline marks — no take/ledger mirror. **no equivalent** |
 | Exact vanishes on dwell / scrub Up | `scrub_gesture` + orphan defer | Clear gesture in `prepare_scrub_settle`; densify orphan-evict only after first GOP (keep soft-drag trail). **no equivalent** |
+| Scrub Up PresentHit: Exact stops growing / holes stick | `clear_densify_hold` after present | `prepare_scrub_settle` → ExactHold; PresentHit skips `scrub_to` EndExact — must clear hold before `arm_scrub_densify_after_exact`. **no equivalent** |
 | Covered/Exact strip live-only | `strip_ready_marks` | Remap live (+ idle Exact/Covered if present). Cut fill = later idle-edge densify. **no equivalent** |
 | Dual next_gap / VT densify hang | `vt_densify_authority=false` | Pause fill = engine `next_gap` on live only. **no equivalent** |
 | Hover Exact never after dwell (key stuck) | `may_start_hover_aim_decode` / `<HoverThumb>` | Pause Exact refine free after host 150 ms; do **not** global 800 ms floor without reschedule. Skip only `painted==aim`. Play: no aim |

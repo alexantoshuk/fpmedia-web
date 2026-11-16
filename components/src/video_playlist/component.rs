@@ -10,7 +10,7 @@ use wasm_bindgen_futures::spawn_local;
 use crate::Video;
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
-use super::host_zone::HostZoneOwner;
+use super::host_zone::{HostZoneOwner, is_soft_seam_cancel};
 use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, seam_trace, try_begin_seam};
 use super::plan::{
     HostOutsideCtx, HostOutsidePlan, PlayAtClipLastCtx, PlayAtClipLastPlan, SeamNextCtx, StepCtx,
@@ -517,6 +517,10 @@ pub fn VideoPlaylist(
                     if pl.open_gen.get_value() != epoch {
                         return;
                     }
+                    // Promote/ensure race cancel — not a sticky UI fault.
+                    if is_soft_seam_cancel(&e) {
+                        return;
+                    }
                     pl.error.set(Some(e));
                     pl.status.set("Seek failed.".into());
                 }
@@ -534,6 +538,9 @@ pub fn VideoPlaylist(
             spawn_local(async move {
                 if let Err(e) = seek_to_pos(pl, aim, epoch, false).await {
                     if pl.open_gen.get_value() != epoch {
+                        return;
+                    }
+                    if is_soft_seam_cancel(&e) {
                         return;
                     }
                     pl.error.set(Some(e));
