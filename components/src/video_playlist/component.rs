@@ -238,6 +238,7 @@ pub fn VideoPlaylist(
             let g = open_gen.get_value().wrapping_add(1);
             open_gen.set_value(g);
             playlist.ensure_idle_for.set_value(None);
+            playlist.cut_join_warm_for.set_value(None);
             playlist.scrub_cross_paused.set_value(false);
             g
         }
@@ -265,6 +266,7 @@ pub fn VideoPlaylist(
             playlist.scrubbing.set(false);
             playlist.scrub_resume.set(false);
             playlist.seam_warm_for.set_value(None);
+            playlist.cut_join_warm_for.set_value(None);
             end_seam(playlist);
             sources.set_value(Vec::new());
             error.set(None);

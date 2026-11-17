@@ -103,7 +103,7 @@ Host chrome / demo
 | Covered residency | **Sole on VT** (uncapped global markers). Densify gap-pick stays on slot `ScrubChunkStore`. Wipe VT Covered on close·open / user Scrub Off — **not** idle park/rebind |
 | Densify path | Engine `next_gap` on live (`vt_densify_authority=false`). Idle **park** (densify off, keep Exact). Off wipe = media replace / user Scrub Off (slot + VT Covered). Exact strip remaps live (+ idle Exact) |
 | Exact VRAM | One `blit_mib` (512) for Short/Long; frame count from canvas. All-Intra densify off |
-| Later on VT | Cut join PresentHit warm; then Play intent / LoopZone / CutWindow on the same axis |
+| Cut join Exact | **Shipped:** Pause one-shot Exact@join on idle (`prepare_seam_at` densify-free → park keep Exact) so Up PresentHit is common; kick-once per `(idle, join)` — not Move thrash / not soft-drag / not Play SeamHold. LoopZone uses SeamHold/`LoopPlayWarm` (not this). Later on VT: Play intent / LoopZone / CutWindow on the same axis |
 | Readout | `[i]` stays clip-local (`product.md`); scrub/Exact/play/loop axis = global |
 
 ## Playlist composition (agreed)
@@ -123,7 +123,7 @@ Host chrome / demo
 | Host promote policy | **`PromoteLead`** (`Origin` @0 / `Mid` @`loop_in`): idle **main** `SeamHold` before wall; promote → PlayPrime **release**. `seek_to_pos(then_play)`: Play → SeamHold; pause/goto → slot Exact PresentHit or `prepare_seam_at` + `seek_frame` — never leave SeamHold densify-blocked. Single/Engine loop: **2nd HW** `LoopPlayWarm` (SW stash fallback). Port map: [below](#loopseam-vs-host-promote). |
 | Host prewarm schedule | **`seam_warm_schedule`**: `LoopOwner` + zone + media time → `SeamWarmTarget` (`PromoteLead` + idle). Kick → `kick_arm_seam_hold` when `SeamPhase::Idle` and owner ≠ `Engine`. Priority: Host zone wall → near clip-EOF next/`loop_in`. |
 | Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
-| Idle neighbor | Play / seam: next clip; on last + playlist **loop** → **0**; else previous (`idle_neighbor` / `set_loop` re-preload). **Scrub:** `PlaylistModel::idle_neighbor_near_cut` — idle = other clip of the **nearest cut** (near 1\|2 → slots 1+2; near 2\|3 → 2+3), mid-clip hysteresis. Not scrub-dir; not cut-warm v1 playhead×margin thrash |
+| Idle neighbor | Play / seam: next clip; on last + playlist **loop** → **0**; else previous (`idle_neighbor` / `set_loop` re-preload). **Scrub:** `PlaylistModel::idle_neighbor_near_cut` — idle = other clip of the **nearest cut** (near 1\|2 → slots 1+2; near 2\|3 → 2+3), mid-clip hysteresis. Not scrub-dir; not cut-warm v1 playhead×margin thrash. **Pause Exact@join:** `cut_join_local` + `kick_cut_join_exact_warm` (see Cut join Exact above) |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
 
 ### Playlist host plans (slices A–F)

@@ -12,8 +12,8 @@ use super::host_zone::HostZoneOwner;
 use super::loop_seam::{loop_owner, seam_busy};
 use super::plan::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
 use super::slots::{
-    ensure_clip_on_idle, idle_neighbor, kick_ensure_idle, preload_idle, start_host_wrap,
-    try_promote_idle,
+    ensure_clip_on_idle, idle_neighbor, kick_cut_join_exact_warm, kick_ensure_idle, preload_idle,
+    start_host_wrap, try_promote_idle,
 };
 use super::source::PlaylistSource;
 use wasm_bindgen_futures::spawn_local;
@@ -64,6 +64,8 @@ pub struct VideoPlaylistRef {
     pub(crate) seam_warm_for: StoredValue<Option<u32>, LocalStorage>,
     /// In-flight [`super::slots::ensure_clip_on_idle`] target — coalesce Move stampede.
     pub(crate) ensure_idle_for: StoredValue<Option<u32>, LocalStorage>,
+    /// In-flight cut-join Exact warm `(idle_clip, join_local)` — one-shot coalesce.
+    pub(crate) cut_join_warm_for: StoredValue<Option<(u32, u32)>, LocalStorage>,
     /// Cross-clip scrub: outgoing hard-paused once per gesture (not every Move).
     pub(crate) scrub_cross_paused: StoredValue<bool, LocalStorage>,
     /// Host cut/wrap seam phase — RwSignal so EOF Effect re-runs when Idle.
@@ -120,6 +122,7 @@ impl VideoPlaylistRef {
             open_gen: StoredValue::new_local(0),
             seam_warm_for: StoredValue::new_local(None),
             ensure_idle_for: StoredValue::new_local(None),
+            cut_join_warm_for: StoredValue::new_local(None),
             scrub_cross_paused: StoredValue::new_local(false),
             seam_phase: RwSignal::new(super::loop_seam::SeamPhase::Idle),
             exact_ledger: StoredValue::new_local(
@@ -544,7 +547,10 @@ impl VideoPlaylistRef {
                 let epoch = self.open_gen.get_value();
                 spawn_local(async move {
                     preload_idle(self, neighbor, epoch).await;
+                    kick_cut_join_exact_warm(self);
                 });
+                // Drag may have opened idle while scrubbing blocked warm — retry on Up.
+                kick_cut_join_exact_warm(self);
             }
             ScrubUpPlan::CrossClipSeek { then_play } => {
                 if then_play {

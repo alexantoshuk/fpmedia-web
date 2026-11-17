@@ -78,6 +78,7 @@ pub(crate) fn idle_neighbor(model: &PlaylistModel, live_clip: u32, looping: bool
 /// Open `want` on idle when missing (coalesced). Scrub cut-proximity warm.
 pub(crate) fn kick_ensure_idle(pl: VideoPlaylistRef, want: u32) {
     if pl.idle_clip.get_untracked() == Some(want) && pl.idle_video().ready.get_untracked() {
+        kick_cut_join_exact_warm(pl);
         return;
     }
     if pl.ensure_idle_for.get_value() == Some(want) {
@@ -86,7 +87,87 @@ pub(crate) fn kick_ensure_idle(pl: VideoPlaylistRef, want: u32) {
     let epoch = pl.open_gen.get_value();
     wasm_bindgen_futures::spawn_local(async move {
         let _ = ensure_clip_on_idle(pl, want, epoch).await;
+        kick_cut_join_exact_warm(pl);
     });
+}
+
+/// Pause-only one-shot Exact@cut on idle so cross-clip Up can PresentHit.
+///
+/// On → densify-free [`VideoRef::prepare_seam_at`] (Exact ingest) → park (keep
+/// Exact). Kick-once per `(idle_clip, join)`; not every Move; not soft-drag;
+/// not Play SeamHold. **no equivalent** (playlist scrub local).
+pub(crate) fn kick_cut_join_exact_warm(pl: VideoPlaylistRef) {
+    if pl.playing.get_untracked() || pl.scrubbing.get_untracked() {
+        return;
+    }
+    let Some(idle_i) = pl.idle_clip.get_untracked() else {
+        return;
+    };
+    let live_i = pl.live_clip.get_untracked();
+    let Some(join) =
+        pl.model
+            .get_untracked()
+            .cut_join_local(live_i, idle_i, pl.looping.get_untracked())
+    else {
+        return;
+    };
+    let idle = pl.idle_video();
+    if !idle.ready.get_untracked() || idle.has_scrub_exact_blit(join) {
+        return;
+    }
+    if pl.cut_join_warm_for.get_value() == Some((idle_i, join)) {
+        return;
+    }
+    pl.cut_join_warm_for.set_value(Some((idle_i, join)));
+    let epoch = pl.open_gen.get_value();
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = warm_cut_join_exact(pl, idle_i, join, epoch).await;
+        if pl.cut_join_warm_for.get_value() == Some((idle_i, join)) {
+            pl.cut_join_warm_for.set_value(None);
+        }
+    });
+}
+
+async fn warm_cut_join_exact(
+    pl: VideoPlaylistRef,
+    idle_i: u32,
+    join: u32,
+    epoch: u64,
+) -> Result<(), String> {
+    if pl.open_gen.get_value() != epoch {
+        return Ok(());
+    }
+    if pl.playing.get_untracked() || pl.scrubbing.get_untracked() {
+        return Ok(());
+    }
+    if pl.idle_clip.get_untracked() != Some(idle_i) {
+        return Ok(());
+    }
+    let opening_is_a = !pl.live_is_a.get_untracked();
+    let idle = slot_is_a(pl, opening_is_a);
+    if !opening_still_idle(pl, opening_is_a) {
+        return Ok(());
+    }
+    if !idle.ready.get_untracked() || idle.has_scrub_exact_blit(join) {
+        return Ok(());
+    }
+    // Off parks block Exact ingest — On for one densify-free Exact, then park.
+    idle.set_scrub_cache_policy(ScrubCachePolicy::On);
+    idle.set_vt_densify_authority(false);
+    let prepared = idle.prepare_seam_at(join).await;
+    if let Some(r) = finish_if_opening_became_live(pl, opening_is_a, idle_i) {
+        return r;
+    }
+    if ensure_live_on(pl, idle_i) {
+        pl.apply_gain_to_slots();
+        return Ok(());
+    }
+    if pl.idle_clip.get_untracked() == Some(idle_i) && opening_still_idle(pl, opening_is_a) {
+        idle.park_scrub_cache();
+        idle.set_vt_densify_authority(false);
+    }
+    pl.apply_gain_to_slots();
+    prepared
 }
 
 /// Idle neighbor for LoopZone: sequential next while it starts before `zone_out`,
@@ -166,6 +247,7 @@ pub(crate) async fn ensure_clip_on_idle(
         return Ok(());
     }
     if pl.idle_clip.get_untracked() == Some(clip_index) && pl.idle_video().ready.get_untracked() {
+        kick_cut_join_exact_warm(pl);
         return Ok(());
     }
     // Coalesce Move stampede (2→1 reverse cut) — in-flight same clip: wait for ready.
@@ -181,6 +263,7 @@ pub(crate) async fn ensure_clip_on_idle(
             if pl.idle_clip.get_untracked() == Some(clip_index)
                 && pl.idle_video().ready.get_untracked()
             {
+                kick_cut_join_exact_warm(pl);
                 return Ok(());
             }
             if pl.ensure_idle_for.get_value() != Some(clip_index) {
@@ -194,6 +277,7 @@ pub(crate) async fn ensure_clip_on_idle(
         }
         if pl.idle_clip.get_untracked() == Some(clip_index) && pl.idle_video().ready.get_untracked()
         {
+            kick_cut_join_exact_warm(pl);
             return Ok(());
         }
     }
@@ -257,6 +341,7 @@ pub(crate) async fn ensure_clip_on_idle(
     clear_flight(pl, clip_index);
     // Open resets engine A/V — re-apply playlist-wide volume/mute/rate.
     pl.apply_gain_to_slots();
+    kick_cut_join_exact_warm(pl);
     Ok(())
 }
 
@@ -374,6 +459,7 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
         idle.set_vt_densify_authority(false);
     }
     pl.apply_gain_to_slots();
+    kick_cut_join_exact_warm(pl);
 }
 
 /// Make `aim.clip_index` live (swap or open) at `aim.local_frame`.

@@ -292,6 +292,42 @@ impl PlaylistModel {
         let next = clip_index.checked_add(1)?;
         (next < n).then_some(next)
     }
+
+    /// Local Exact aim on `idle_clip` at the cut shared with `live_clip`.
+    ///
+    /// Idle is next (or wrap→0) → `0`; previous (or wrap→last) → idle last frame.
+    /// Non-adjacent → `None`. Used by Pause cut-join PresentHit warm.
+    /// **no equivalent** (playlist scrub local).
+    pub fn cut_join_local(&self, live_clip: u32, idle_clip: u32, looping: bool) -> Option<u32> {
+        if live_clip == idle_clip {
+            return None;
+        }
+        let idle = self.clip(idle_clip as usize)?;
+        if idle.frame_count == 0 {
+            return None;
+        }
+        let next = self.next_clip_index(live_clip).or_else(|| {
+            if looping && self.len() > 1 {
+                Some(0)
+            } else {
+                None
+            }
+        });
+        if next == Some(idle_clip) {
+            return Some(0);
+        }
+        let prev = live_clip.checked_sub(1).or_else(|| {
+            if looping && self.len() > 1 {
+                Some(self.len().saturating_sub(1) as u32)
+            } else {
+                None
+            }
+        });
+        if prev == Some(idle_clip) {
+            return Some(idle.last_frame());
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -376,5 +412,22 @@ mod tests {
         assert_eq!(m.idle_neighbor_near_cut(1, 95, false, None), Some(2));
         assert_eq!(m.idle_neighbor_near_cut(1, 50, false, Some(0)), Some(0));
         assert_eq!(m.idle_neighbor_near_cut(1, 50, false, Some(2)), Some(2));
+    }
+
+    #[test]
+    fn cut_join_local_edges() {
+        let m = PlaylistModel::new(vec![
+            clip(100, 4.0, 25.0),
+            clip(50, 2.0, 25.0),
+            clip(80, 3.2, 25.0),
+        ]);
+        assert_eq!(m.cut_join_local(0, 1, false), Some(0));
+        assert_eq!(m.cut_join_local(1, 0, false), Some(99));
+        assert_eq!(m.cut_join_local(1, 2, false), Some(0));
+        assert_eq!(m.cut_join_local(2, 1, false), Some(49));
+        assert_eq!(m.cut_join_local(0, 2, false), None);
+        // Wrap: last→0 next join @0; 0→last prev join @last.
+        assert_eq!(m.cut_join_local(2, 0, true), Some(0));
+        assert_eq!(m.cut_join_local(0, 2, true), Some(79));
     }
 }
