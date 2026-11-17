@@ -68,10 +68,10 @@ pub struct VideoPlaylistRef {
     pub(crate) scrub_cross_paused: StoredValue<bool, LocalStorage>,
     /// Host cut/wrap seam phase — RwSignal so EOF Effect re-runs when Idle.
     pub(crate) seam_phase: RwSignal<super::loop_seam::SeamPhase>,
-    /// Parked VT ledger handle (Covered-on-VT next; Exact write unused).
+    /// VT ledger — Covered sole on VT; Exact write unused (slot blit).
     pub(crate) exact_ledger:
         StoredValue<Option<crate::virtual_timeline::LedgerHandle>, LocalStorage>,
-    /// Epoch for future VT Covered/Exact strip — unused while strip = slot remap.
+    /// Bumps when VT Covered changes (TimelineMeta Covered subscribe).
     pub exact_residency_epoch: RwSignal<u64>,
 }
 
@@ -129,7 +129,7 @@ impl VideoPlaylistRef {
         }
     }
 
-    /// Parked VT ledger (see module docs).
+    /// VT ledger (Covered sole; Exact AimWindow parked).
     pub fn exact_ledger(self) -> Option<crate::virtual_timeline::LedgerHandle> {
         self.exact_ledger.get_value()
     }
@@ -139,7 +139,15 @@ impl VideoPlaylistRef {
             .update(|n| *n = n.wrapping_add(1));
     }
 
-    /// Reset parked VT ledger on open/close.
+    /// Clear VT Covered only (user Scrub Off). Idle park must not call this.
+    pub fn clear_vt_covered(self) {
+        if let Some(h) = self.exact_ledger.get_value() {
+            h.borrow_mut().clear_covered();
+            self.bump_exact_residency();
+        }
+    }
+
+    /// Reset VT ledger on open/close — Covered + parked Exact values.
     pub fn reset_exact_ledger(self) {
         if let Some(h) = self.exact_ledger.get_value() {
             let mut led = h.borrow_mut();
@@ -151,6 +159,14 @@ impl VideoPlaylistRef {
                 .set_value(Some(crate::virtual_timeline::new_ledger_handle()));
         }
         self.bump_exact_residency();
+    }
+
+    /// Live (+ optional idle) scrub capability. Off wipes **playlist** VT Covered.
+    pub fn set_scrub_cache_policy(self, policy: fpmedia_web::ScrubCachePolicy) {
+        if matches!(policy, fpmedia_web::ScrubCachePolicy::Off) {
+            self.clear_vt_covered();
+        }
+        self.live_video().set_scrub_cache_policy(policy);
     }
 
     pub fn set_loop(self, on: bool) {

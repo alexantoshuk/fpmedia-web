@@ -96,13 +96,14 @@ Host chrome / demo
 | Piece | Rule |
 | ----- | ---- |
 | Transport facade | **Shipped:** [`MediaRef`](../components/src/media.rs) — shared play/pause/seek/goto/step/loop/gain over Video \| Playlist. Open, `[i]`/`PlaylistPos`, slot/engine knobs stay on concrete refs |
-| Policy home | `components/src/virtual_timeline/` — settle law + resolve (axis). Densify plan + ExactLedger Exact-take = **parked** (Covered-on-VT next) — not a live Exact store |
-| UI binding | **Shipped:** [`TimelineRef`](../components/src/timeline.rs) — scrub/hover/strip domain. Covered+Exact = remapped **slot** pipeline marks |
-| Backend | Decode/open/present + densify Exact/Covered in slot blit + map timeline↔local. Single = identity; Playlist = Σ map + 2-slot |
+| Policy home | `components/src/virtual_timeline/` — settle law + resolve (axis). Covered = [`ExactLedger`](../components/src/virtual_timeline/ledger.rs) global markers; Exact-take / densify orch = **parked** (not a live Exact store) |
+| UI binding | **Shipped:** [`TimelineRef`](../components/src/timeline.rs) — scrub/hover/strip domain. **Covered** = VT ledger; **Exact** = remapped slot blit (+ idle Exact) |
+| Backend | Decode/open/present + densify Exact/Covered in slot; host mirrors Covered → `note_covered(global)`. Single = identity; Playlist = Σ map + 2-slot |
 | Exact residency | **Slot `ScrubBlitLru` only** (one store per slot; playlist ≤2× VRAM wallets). PresentHit = `has_scrub_exact_blit`. No bitmap ledger write. Anti-pattern: SoftPark; dual Exact *stores as truth* |
-| Densify path | Engine `next_gap` on live (`vt_densify_authority=false`). Idle **park** (densify off, keep Exact/Covered). Off wipe only on media replace / user Scrub Off. Strip remaps live (+ idle if any) |
+| Covered residency | **Sole on VT** (uncapped global markers). Densify gap-pick stays on slot `ScrubChunkStore`. Wipe VT Covered on close·open / user Scrub Off — **not** idle park/rebind |
+| Densify path | Engine `next_gap` on live (`vt_densify_authority=false`). Idle **park** (densify off, keep Exact). Off wipe = media replace / user Scrub Off (slot + VT Covered). Exact strip remaps live (+ idle Exact) |
 | Exact VRAM | One `blit_mib` (512) for Short/Long; frame count from canvas. All-Intra densify off |
-| Later on VT | **Covered sole on VT** (survive clip leave); then Play intent / LoopZone / CutWindow on the same axis |
+| Later on VT | Cut join PresentHit warm; then Play intent / LoopZone / CutWindow on the same axis |
 | Readout | `[i]` stays clip-local (`product.md`); scrub/Exact/play/loop axis = global |
 
 ## Playlist composition (agreed)
@@ -111,12 +112,12 @@ Host chrome / demo
 
 | Piece | Rule |
 | ----- | ---- |
-| Slots | Exactly **2** `<Video>`: **live** (play / aim / Pause densify, policy On) + **idle** (preload neighbor; **park** densify off / keep Exact). Off wipe = media replace or user Scrub Off — not demote. Thumbs follow host `ThumbPolicy`. Exact lives in slot blit |
+| Slots | Exactly **2** `<Video>`: **live** (play / aim / Pause densify, policy On) + **idle** (preload neighbor; **park** densify off / keep Exact). Off wipe = media replace or user Scrub Off — not demote. Thumbs follow host `ThumbPolicy`. Exact = slot blit; Covered = VT |
 | Timeline axis | Global scrub = **Σ presentation frames**. Map `global_frame → (clip_index, local FrameId)` via clip frame offsets. Mixed fps = native rate per clip (no conform); bar cell = `width / Σ frames` |
 | Shared scrub handle | **Shipped:** `TimelineRef` — scrub/hover for `<Scrubber>` / `<HoverThumb>` (`VideoRef` / `VideoPlaylistRef` `as_timeline`). Units = frames (playlist = global frame). `VideoPlayer` / `<Video>` stay single-clip |
 | Playlist model + host | **Shipped:** `video_playlist` — model/`[i]`; `<VideoPlaylist>` / `VideoPlaylistRef` (2 slots, probe, play seam, seek/scrub/step rebind, frame-domain `TimelineRef`) |
 | Demo open | **Shipped:** multi-file picker + `;`-separated URLs → playlist; 1 source → `<Video>`; `[i]` position/go-to. Host CSS hides `.fpvideo-playlist-slot.is-idle` |
-| Strip / tip domain | One owner: `TimelineRef` (playlist units = **global frames**). Gesture / tip / hover / zebra / `<TimelineMeta>` all use it. `strip_video()` → live slot for Keyframes/Fetch interest; Covered+Exact from slot blit via `strip_ready_marks`. Meta re-leases on `strip_video_key` change — **never** remount `<Scrubber>` on live swap. Mirror live→`playhead`/`pos` when not `scrubbing` (Play + paused step/seek; scrub gesture owns aim) |
+| Strip / tip domain | One owner: `TimelineRef` (playlist units = **global frames**). Gesture / tip / hover / zebra / `<TimelineMeta>` all use it. `strip_video()` → live slot for Keyframes/Fetch interest; Covered = VT (`strip_covered_marks`); Exact via `strip_ready_marks`. Meta re-leases on `strip_video_key` change — **never** remount `<Scrubber>` on live swap. Mirror live→`playhead`/`pos` when not `scrubbing` (Play + paused step/seek; scrub gesture owns aim) |
 | Facade | Host sees one logical media (play/pause/seek/scrub/rate/step + **shared volume/mute/rate** + **`playing` intent**). Cross-clip: promote idle when ready, else settle/`seek_pos` opens + swaps. `VideoPlayer` unchanged (single-clip) |
 | Seam | **`LoopOwner`:** zone ⊆ live → `Engine` (`sync_live_loop_from_playlist` → `LoopSeam`); else `Host` → `promote_idle_at` / `wrap_to_loop_in`. Host cut/wrap latched by **`SeamPhase`** (not a bool). Densify-free seam paint via `seek_frame_with(..., false)`. Playlist `playing` stays true across slot `pause_hard` / EOF until pause, terminal end, or seam error — do not mirror live `VideoRef::playing` for chrome. |
 | Host promote policy | **`PromoteLead`** (`Origin` @0 / `Mid` @`loop_in`): idle **main** `SeamHold` before wall; promote → PlayPrime **release**. `seek_to_pos(then_play)`: Play → SeamHold; pause/goto → slot Exact PresentHit or `prepare_seam_at` + `seek_frame` — never leave SeamHold densify-blocked. Single/Engine loop: **2nd HW** `LoopPlayWarm` (SW stash fallback). Port map: [below](#loopseam-vs-host-promote). |

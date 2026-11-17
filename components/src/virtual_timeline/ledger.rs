@@ -1,8 +1,8 @@
-//! Timeline residency helpers (global FrameId) — **parked** Exact AimWindow + Covered set.
+//! Timeline residency helpers (global FrameId) — Covered sole on VT + parked Exact AimWindow.
 //!
-//! Shipped Exact = slot `ScrubBlitLru` (PresentHit = slot blit). This type stays for
-//! the next Covered-on-VT slice; do not dual-write Exact bitmaps here.
-//! Design: `.ai/architecture.md` § Virtual Timeline / `state.md` Next.
+//! Shipped Exact = slot `ScrubBlitLru` (PresentHit = slot blit). Covered markers live here
+//! (global FrameIds; strip survives clip leave). Do not dual-write Exact bitmaps.
+//! Design: `.ai/architecture.md` § Virtual Timeline.
 //! **no equivalent** (scrub local).
 
 use std::collections::BTreeSet;
@@ -246,13 +246,16 @@ mod tests {
     fn covered_uncapped_across_joins() {
         let mut led = ExactLedger::<u64>::new();
         led.note_covered_run(0, 9); // clip A
-        led.note_covered_run(10, 19); // clip B (global join)
+        led.note_covered_run(10, 19); // clip B (global join) — survives “leave” A
         assert!(led.has_covered(0));
         assert!(led.has_covered(9));
         assert!(led.has_covered(10));
         assert!(led.has_covered(19));
         assert_eq!(led.covered_frame_ids().len(), 20);
         assert_eq!(led.covered_ready_marks(), vec![(0, 19)]);
+        // Idle park must not clear — only session wipe (Scrub Off / close·open).
+        led.clear_covered();
+        assert!(led.covered_frame_ids().is_empty());
     }
 
     #[test]

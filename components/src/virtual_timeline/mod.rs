@@ -1,9 +1,9 @@
 //! Virtual Timeline — shared scrub settle / resolve (+ later play · LoopZone).
 //!
 //! **Policy lives here** (global FrameId axis). Exact bitmaps = **slot** blit only.
-//! [`ExactLedger`] / densify_plan / wasm backend Exact-take path = **parked** for
-//! next Covered-on-VT slice (do not write Exact bitmaps here).
-//! UI binding remains [`crate::TimelineRef`].
+//! Covered markers = **sole on VT** ([`ExactLedger::covered`] / strip). Densify gap-pick
+//! still uses slot `ScrubChunkStore`; host mirrors → `note_covered(global)`.
+//! UI binding: [`crate::TimelineRef`].
 //! Design: `.ai/architecture.md` § Virtual Timeline.
 //! **no equivalent** (scrub / playlist composition local — not a mediabunny port).
 
@@ -26,8 +26,6 @@ pub use scrub::{ExactSettlePlan, plan_exact_settle};
 
 #[cfg(target_arch = "wasm32")]
 pub use backend::{
-    LedgerHandle, TimelineExactLedger, import_exact, import_exact_from_player, new_ledger_handle,
-    plan_ledger_settle, present_ledger_exact, push_take_from_player, push_take_from_video_ref,
-    put_ledger_exact, retarget_ledger_aim, sync_vt_residents_to_player,
-    sync_vt_residents_to_video_ref,
+    LedgerHandle, TimelineExactLedger, new_ledger_handle, note_covered_from_locals,
+    note_covered_from_video_ref,
 };

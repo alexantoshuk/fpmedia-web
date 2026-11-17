@@ -8,9 +8,9 @@
 
 ### Handoff
 
-- **Branch:** `main` — VT=A Exact = slot blit; Up PresentHit EndExact; soft-cancel seek; one Exact `blit_mib=512`.
-- **OK in browser:** Pause Exact grow; scrub Up densify; gop5/12 vs Long same Exact frame budget at same stage.
-- **Parked debris (do not use):** VT Exact take/import/`push_take_*` / densify orch (`vt_densify_authority` stays false). Keep types for Covered-on-VT; strip Exact-write call sites later if unused after that slice.
+- **Branch:** `main` — Covered sole on VT; Exact = slot blit; playlist idle = nearest cut; Up PresentHit EndExact; one Exact `blit_mib=512`.
+- **OK in browser (prior):** Pause Exact grow; scrub Up densify; gop5/12 vs Long same Exact frame budget. **Verify:** Covered strip survives clip leave / reverse cut.
+- **Parked debris (do not use):** VT Exact take/import / densify orch (`vt_densify_authority` stays false). Exact-take backend helpers removed; VideoOps take/present knobs may still exist unused.
 - **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.
 - **Open (unchanged):** mobile LoopPlayWarm unverified. Residual light mobile pause on Host mid-zone LoopZone seam — later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional (unrelated).
@@ -23,14 +23,8 @@
 
 ### Playlist — Virtual Timeline
 
-1. **Covered sole on VT** (next plan)
-   - Sole Covered markers on VT global FrameIds; Exact stays slot blit (≤2 slot wallets OK for cut PresentHit).
-   - Densify → `note_covered(global)`; wipe Covered only on playlist/single close·open — **not** idle Off/rebind.
-   - `<TimelineMeta Covered>` reads VT; Exact strip stays slot remap.
-   - Reuse parked `ExactLedger.covered` / strip helpers; do **not** revive Exact bitmap ledger write.
-   - Docs: architecture VT table + glossary Covered; trim dead Exact-take exports if still unused after.
-2. **Cut join PresentHit warm** — neighbor Exact without Pause playhead thrash (cut-warm v1 pulled). After Covered-on-VT if strip no longer needs idle densify.
-3. **Later:** Thumbs VT; Play intent + LoopZone on VT axis.
+1. **Cut join PresentHit warm** — neighbor Exact without Pause playhead thrash (cut-warm v1 pulled). Covered strip no longer needs idle densify for dim green across cuts.
+2. **Later:** Thumbs VT; Play intent + LoopZone on VT axis.
 
 Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i]`; idle Fetch gray — parked; **gray strip = live buffer MiB** (not FetchMap-only — see Later).
 

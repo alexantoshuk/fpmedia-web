@@ -644,7 +644,8 @@ pub fn DemoPlayer() -> impl IntoView {
         };
         if use_playlist.get() {
             let _ = playlist.live_is_a.get();
-            playlist.live_video().set_scrub_cache_policy(policy);
+            // Playlist owns VT Covered — Off wipes session markers (not live slot ledger).
+            playlist.set_scrub_cache_policy(policy);
         } else {
             video.set_scrub_cache_policy(policy);
         }

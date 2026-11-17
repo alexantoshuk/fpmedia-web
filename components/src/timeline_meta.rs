@@ -117,14 +117,22 @@ pub fn TimelineMeta(
         }
 
         // Track pipeline / domain even when canvas NodeRef is not ready yet.
-        // Exact/Covered from slot blit via remapped ready_frames (not VT ledger).
+        // Exact/Keyframes/Fetch = slot remap; Covered = VT ledger (mirror then read).
         let pipe = video.pipeline.get();
+        // Idle Exact subscribe (playlist) lives inside strip_ready_marks.
+        let _ = timeline.playlist().map(|p| {
+            let _ = p.idle_clip.get();
+            let _ = p.live_is_a.get();
+        });
         let frame_count = timeline.strip_domain_len();
         let marks = pipe
             .as_ref()
             .map(|s| s.ready_frames.as_slice())
             .unwrap_or(&[]);
         let ready_marks = timeline.strip_ready_marks(marks);
+        timeline.mirror_covered_from_slots();
+        let _ = timeline.exact_residency_epoch().get();
+        let covered_marks = timeline.strip_covered_marks();
         let raw_fetch = pipe
             .as_ref()
             .map(|s| s.fetch_file_ranges.as_slice())
@@ -143,7 +151,7 @@ pub fn TimelineMeta(
                 width,
             ),
             TimelineMetaKind::Covered => cache_strip_runs_for_width(
-                &ready_marks,
+                &covered_marks,
                 ReadyFrameKind::Covered,
                 frame_count,
                 width,

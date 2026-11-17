@@ -72,10 +72,10 @@ pub struct VideoRef {
     /// Host mid-zone: next SeamHold release restarts PlayIter @aim.
     /// Cleared by PlayPrime. Full-axis joins leave false.
     seam_hold_restart_on_release: StoredValue<bool, LocalStorage>,
-    /// Parked VT ledger (Covered-on-VT next; Exact write unused).
+    /// VT ledger — Covered sole on VT; Exact write unused (slot blit).
     pub(crate) exact_ledger:
         StoredValue<Option<crate::virtual_timeline::LedgerHandle>, LocalStorage>,
-    /// Epoch for future VT strip — unused while Exact/Covered = slot remap.
+    /// Bumps when VT Covered changes (TimelineMeta Covered subscribe).
     pub exact_residency_epoch: RwSignal<u64>,
 }
 
@@ -192,18 +192,26 @@ impl VideoRef {
         }
     }
 
-    /// Parked VT ledger handle.
+    /// VT ledger handle (Covered sole; Exact AimWindow parked).
     pub fn exact_ledger(&self) -> Option<crate::virtual_timeline::LedgerHandle> {
         self.exact_ledger.get_value()
     }
 
-    /// Notify Exact strip that the VT ledger changed.
+    /// Notify Covered strip that the VT ledger changed.
     pub fn bump_exact_residency(&self) {
         self.exact_residency_epoch
             .update(|n| *n = n.wrapping_add(1));
     }
 
-    /// Clear Exact ledger (new open / close).
+    /// Clear VT Covered only (user Scrub Off). Idle park must not call this.
+    pub fn clear_vt_covered(&self) {
+        if let Some(h) = self.exact_ledger.get_value() {
+            h.borrow_mut().clear_covered();
+            self.bump_exact_residency();
+        }
+    }
+
+    /// Clear VT ledger (new open / close) — Covered + parked Exact values.
     pub fn reset_exact_ledger(&self) {
         if let Some(h) = self.exact_ledger.get_value() {
             let mut led = h.borrow_mut();
@@ -522,6 +530,10 @@ impl VideoRef {
     /// Runtime scrub-cache gate — persists across opens. `Off` (no scrub UI)
     /// closes the scrub decoder and drops Covered / Exact / gray fill.
     pub fn set_scrub_cache_policy(&self, policy: ScrubCachePolicy) {
+        // User Scrub Off: wipe VT Covered (session clear). Idle park must not use this.
+        if matches!(policy, ScrubCachePolicy::Off) {
+            self.clear_vt_covered();
+        }
         if let Some(set) = self.op(|o| &o.set_scrub_cache_policy) {
             set(policy);
         }
