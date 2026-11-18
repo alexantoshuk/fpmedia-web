@@ -859,6 +859,14 @@ pub fn Video(
         }) as Rc<dyn Fn() -> Vec<u32>>
     };
 
+    let scrub_fetch_playable_runs_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            ctx.with_player(|p| p.scrub_fetch_playable_runs())
+                .unwrap_or_default()
+        }) as Rc<dyn Fn() -> Vec<(u64, u64)>>
+    };
+
     let clone_scrub_exact_blit_fn = {
         let ctx = ctx.clone();
         Rc::new(move |frame: u32| {
@@ -1015,6 +1023,7 @@ pub fn Video(
         take_scrub_exact_blit: take_scrub_exact_blit_fn,
         scrub_exact_frame_ids: scrub_exact_frame_ids_fn,
         scrub_covered_frame_ids: scrub_covered_frame_ids_fn,
+        scrub_fetch_playable_runs: scrub_fetch_playable_runs_fn,
         clone_scrub_exact_blit: clone_scrub_exact_blit_fn,
         scrub_exact_capacity: scrub_exact_capacity_fn,
         set_vt_densify_authority: set_vt_densify_authority_fn,

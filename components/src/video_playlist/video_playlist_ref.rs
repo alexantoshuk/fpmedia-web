@@ -132,7 +132,7 @@ impl VideoPlaylistRef {
         }
     }
 
-    /// VT ledger (Covered sole; Exact AimWindow parked).
+    /// VT ledger (Covered + Fetch sole; Exact AimWindow parked).
     pub fn exact_ledger(self) -> Option<crate::virtual_timeline::LedgerHandle> {
         self.exact_ledger.get_value()
     }
@@ -143,6 +143,7 @@ impl VideoPlaylistRef {
     }
 
     /// Clear VT Covered only (user Scrub Off). Idle park must not call this.
+    /// Does **not** clear Fetch (bytes still playable).
     pub fn clear_vt_covered(self) {
         if let Some(h) = self.exact_ledger.get_value() {
             h.borrow_mut().clear_covered();
@@ -150,7 +151,7 @@ impl VideoPlaylistRef {
         }
     }
 
-    /// Reset VT ledger on open/close — Covered + parked Exact values.
+    /// Reset VT ledger on open/close — Covered + Fetch + parked Exact values.
     pub fn reset_exact_ledger(self) {
         if let Some(h) = self.exact_ledger.get_value() {
             let mut led = h.borrow_mut();

@@ -39,7 +39,7 @@ Demo colors are host-owned; meanings are product invariants (`product.md` § Pla
 
 ### Fetch (gray)
 
-**Playable / buffered-like:** each **FetchMap** byte window → one presentation span (min..max FrameId of overlapping samples), then soft-merge paint — not per-sample comb / not live WASM LRU. Closer to HTMLMediaElement `buffered`. Live MiB meter = separate Later (`state.md`).
+**Playable / buffered-like:** each **FetchMap** byte window → one presentation span (min..max FrameId of overlapping samples), then soft-merge paint — not per-sample comb / not live WASM LRU. Closer to HTMLMediaElement `buffered`. **Strip:** sole on VT global FrameIds (`ExactLedger` / `TimelineRef::strip_fetch_marks`); host mirrors live+idle slot runs → `note_fetch_run`; survives clip leave; wipe on close·open / media replace — **not** idle park, **not** user Scrub Off (bytes still playable). Slot FetchMap remains byte authority.
 
 ### Covered (dim green)
 

@@ -1,8 +1,9 @@
-//! Wasm adapters for [`super::ExactLedger`] ↔ slot Covered markers.
+//! Wasm adapters for [`super::ExactLedger`] ↔ slot Covered / Fetch markers.
 //!
-//! **Covered sole on VT:** densify stays on slot `ScrubChunkStore` for gap-pick;
-//! host mirrors local Covered → global [`ExactLedger::note_covered`] for the strip.
-//! Exact bitmaps stay in slot blit — do not revive Exact ledger write / take.
+//! **Covered + Fetch sole on VT:** densify stays on slot `ScrubChunkStore` for gap-pick;
+//! host mirrors local Covered → global [`ExactLedger::note_covered`] and playable Fetch
+//! → [`ExactLedger::note_fetch_run`] for the strip. Exact bitmaps stay in slot blit —
+//! do not revive Exact ledger write / take.
 //! **no equivalent** (composition local).
 
 use std::cell::RefCell;
@@ -48,6 +49,37 @@ pub fn note_covered_from_video_ref(
 ) -> bool {
     let ids = video.scrub_covered_frame_ids();
     note_covered_from_locals(ledger, ids.into_iter().map(u64::from), |local| {
+        u32::try_from(local).ok().and_then(&local_to_global)
+    })
+}
+
+/// Note slot playable Fetch runs into the ledger (global FrameIds). Returns if union grew.
+pub fn note_fetch_from_locals(
+    ledger: &mut TimelineExactLedger,
+    local_runs: impl IntoIterator<Item = (u64, u64)>,
+    local_to_global: impl Fn(u64) -> Option<u64>,
+) -> bool {
+    let mut changed = false;
+    for (lo, hi) in local_runs {
+        let Some(glo) = local_to_global(lo) else {
+            continue;
+        };
+        let Some(ghi) = local_to_global(hi) else {
+            continue;
+        };
+        changed |= ledger.note_fetch_run(glo, ghi);
+    }
+    changed
+}
+
+/// Same as [`note_fetch_from_locals`] via [`crate::VideoRef`] (Single / Playlist slot).
+pub fn note_fetch_from_video_ref(
+    ledger: &mut TimelineExactLedger,
+    video: &crate::VideoRef,
+    local_to_global: impl Fn(u32) -> Option<u64>,
+) -> bool {
+    let runs = video.scrub_fetch_playable_runs();
+    note_fetch_from_locals(ledger, runs, |local| {
         u32::try_from(local).ok().and_then(&local_to_global)
     })
 }

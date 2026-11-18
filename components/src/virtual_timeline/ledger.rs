@@ -1,6 +1,6 @@
-//! Timeline residency helpers (global FrameId) — Covered sole on VT + parked Exact AimWindow.
+//! Timeline residency helpers (global FrameId) — Covered + Fetch sole on VT + parked Exact AimWindow.
 //!
-//! Shipped Exact = slot `ScrubBlitLru` (PresentHit = slot blit). Covered markers live here
+//! Shipped Exact = slot `ScrubBlitLru` (PresentHit = slot blit). Covered + Fetch markers live here
 //! (global FrameIds; strip survives clip leave). Do not dual-write Exact bitmaps.
 //! Design: `.ai/architecture.md` § Virtual Timeline.
 //! **no equivalent** (scrub local).
@@ -20,11 +20,13 @@ pub struct PutExactOutcome<V> {
     pub refused: Option<V>,
 }
 
-/// Global Exact + Covered ledger for one open timeline session (Single or Playlist).
+/// Global Exact + Covered + Fetch ledger for one open timeline session (Single or Playlist).
 pub struct ExactLedger<V> {
     exact: AimWindow<V>,
     /// Uncapped Covered markers (gap / dim strip) in **global** FrameIds.
     covered: BTreeSet<FrameId>,
+    /// Inclusive playable Fetch runs in **global** FrameIds (interval-merged; dense OK).
+    fetch: Vec<(FrameId, FrameId)>,
 }
 
 impl<V> ExactLedger<V> {
@@ -38,6 +40,7 @@ impl<V> ExactLedger<V> {
         Self {
             exact: AimWindow::new(cap),
             covered: BTreeSet::new(),
+            fetch: Vec::new(),
         }
     }
 
@@ -167,15 +170,68 @@ impl<V> ExactLedger<V> {
         fpmedia_web::coalesce_frame_runs(self.covered.iter().copied())
     }
 
-    /// Drop all Exact values (caller releases) + clear Covered.
+    /// Merge an inclusive playable run. Returns `true` if the union grew.
+    /// Interval store (not per-frame) — playable spans are often dense. **no equivalent**.
+    pub fn note_fetch_run(&mut self, from: FrameId, to_inclusive: FrameId) -> bool {
+        let (lo, hi) = if from <= to_inclusive {
+            (from, to_inclusive)
+        } else {
+            (to_inclusive, from)
+        };
+        if self.fetch_covers(lo, hi) {
+            return false;
+        }
+        self.fetch.push((lo, hi));
+        self.fetch = merge_inclusive_runs(std::mem::take(&mut self.fetch));
+        true
+    }
+
+    /// `true` when `[lo, hi]` is already ⊆ some resident Fetch run.
+    pub fn fetch_covers(&self, lo: FrameId, hi: FrameId) -> bool {
+        self.fetch.iter().any(|&(a, b)| a <= lo && hi <= b)
+    }
+
+    /// Fetch strip runs in **global** FrameIds (already coalesced).
+    pub fn fetch_ready_marks(&self) -> Vec<(FrameId, FrameId)> {
+        self.fetch.clone()
+    }
+
+    /// Drop all Exact values (caller releases) + clear Covered + Fetch.
     pub fn take_all_exact(&mut self) -> Vec<(FrameId, V)> {
         self.covered.clear();
+        self.fetch.clear();
         self.exact.take_all().into_iter().collect()
     }
 
     pub fn clear_covered(&mut self) {
         self.covered.clear();
     }
+
+    /// Session wipe only (close·open / media replace) — not Scrub Off / not idle park.
+    pub fn clear_fetch(&mut self) {
+        self.fetch.clear();
+    }
+}
+
+/// Merge inclusive `[lo, hi]` runs (overlap or abut → one run).
+fn merge_inclusive_runs(mut runs: Vec<(FrameId, FrameId)>) -> Vec<(FrameId, FrameId)> {
+    if runs.is_empty() {
+        return runs;
+    }
+    runs.sort_by_key(|&(a, _)| a);
+    let mut out = Vec::with_capacity(runs.len());
+    let (mut lo, mut hi) = runs[0];
+    for &(a, b) in &runs[1..] {
+        if a <= hi.saturating_add(1) {
+            hi = hi.max(b);
+        } else {
+            out.push((lo, hi));
+            lo = a;
+            hi = b;
+        }
+    }
+    out.push((lo, hi));
+    out
 }
 
 impl<V> Default for ExactLedger<V> {
@@ -256,6 +312,22 @@ mod tests {
         // Idle park must not clear — only session wipe (Scrub Off / close·open).
         led.clear_covered();
         assert!(led.covered_frame_ids().is_empty());
+    }
+
+    #[test]
+    fn fetch_uncapped_across_joins_interval_merge() {
+        let mut led = ExactLedger::<u64>::new();
+        assert!(led.note_fetch_run(0, 9)); // clip A
+        assert!(led.note_fetch_run(10, 19)); // clip B abut → merge
+        assert_eq!(led.fetch_ready_marks(), vec![(0, 19)]);
+        assert!(!led.note_fetch_run(3, 12)); // already covered
+        assert!(led.note_fetch_run(30, 35));
+        assert_eq!(led.fetch_ready_marks(), vec![(0, 19), (30, 35)]);
+        // Scrub Off clears Covered only — Fetch survives until session wipe.
+        led.clear_covered();
+        assert_eq!(led.fetch_ready_marks(), vec![(0, 19), (30, 35)]);
+        led.clear_fetch();
+        assert!(led.fetch_ready_marks().is_empty());
     }
 
     #[test]

@@ -2,8 +2,8 @@
 //!
 //! Gesture helpers ([`crate::Scrubber`], [`crate::HoverThumb`], [`crate::TimelineMeta`])
 //! take [`TimelineRef`] as the scrub **domain**. Pipeline strips follow
-//! [`Self::strip_video`] (playlist → live slot); Exact/Keyframes/Fetch remap here;
-//! Covered reads VT ledger (sole). Meta does not special-case playlist.
+//! [`Self::strip_video`] (playlist → live slot); Exact/Keyframes remap here;
+//! Covered + Fetch read VT ledger (sole). Meta does not special-case playlist.
 //! Design: `.ai/architecture.md` § Playlist composition / Virtual Timeline; UX: `.ai/product.md`.
 
 use web_sys::HtmlCanvasElement;
@@ -16,7 +16,9 @@ use crate::VideoPlaylistRef;
 use crate::VideoRef;
 use crate::video_playlist::PlaylistPos;
 use crate::video_playlist::video_playlist_ref::ScrubPhase;
-use crate::virtual_timeline::{LedgerHandle, note_covered_from_video_ref};
+use crate::virtual_timeline::{
+    LedgerHandle, note_covered_from_video_ref, note_fetch_from_video_ref,
+};
 
 /// Scrub-domain handle: `playhead` / `frame_count` are discrete timeline units
 /// ([`VideoRef`]: presentation frames; [`VideoPlaylistRef`]: Σ presentation frames).
@@ -174,6 +176,54 @@ impl TimelineRef {
         }
     }
 
+    /// Mirror live (+ idle) slot playable Fetch → VT global runs. **no equivalent**.
+    pub fn mirror_fetch_from_slots(self) {
+        let Some(h) = self.exact_ledger() else {
+            return;
+        };
+        let changed = match self.inner {
+            TimelineInner::Video(v) => {
+                let mut led = h.borrow_mut();
+                note_fetch_from_video_ref(&mut led, &v, |local| Some(u64::from(local)))
+            }
+            TimelineInner::Playlist(p) => {
+                let model = p.model.get_untracked();
+                let mut led = h.borrow_mut();
+                let mut changed = false;
+                let live_clip = p.live_clip.get_untracked();
+                let live = if p.live_is_a.get_untracked() {
+                    p.slot_a
+                } else {
+                    p.slot_b
+                };
+                changed |= note_fetch_from_video_ref(&mut led, &live, |local| {
+                    model
+                        .global_frame_at(PlaylistPos::new(live_clip, local))
+                        .map(u64::from)
+                });
+                if let Some(idle_idx) = p.idle_clip.get_untracked() {
+                    let idle = if p.live_is_a.get_untracked() {
+                        p.slot_b
+                    } else {
+                        p.slot_a
+                    };
+                    changed |= note_fetch_from_video_ref(&mut led, &idle, |local| {
+                        model
+                            .global_frame_at(PlaylistPos::new(idle_idx, local))
+                            .map(u64::from)
+                    });
+                }
+                changed
+            }
+        };
+        if changed {
+            match self.inner {
+                TimelineInner::Video(v) => v.bump_exact_residency(),
+                TimelineInner::Playlist(p) => p.bump_exact_residency(),
+            }
+        }
+    }
+
     /// Covered strip marks from VT ledger (global FrameIds).
     pub fn strip_covered_marks(self) -> Vec<ReadyFrameMark> {
         let Some(h) = self.exact_ledger() else {
@@ -184,6 +234,14 @@ impl TimelineRef {
             .into_iter()
             .map(|(lo, hi)| ReadyFrameMark::run(lo, hi, ReadyFrameKind::Covered))
             .collect()
+    }
+
+    /// Fetch gray runs from VT ledger (global FrameIds). Survives clip leave.
+    pub fn strip_fetch_marks(self) -> Vec<(u64, u64)> {
+        let Some(h) = self.exact_ledger() else {
+            return Vec::new();
+        };
+        h.borrow().fetch_ready_marks()
     }
 
     /// Live pipeline ready marks → timeline units (identity for single-clip;
@@ -255,8 +313,8 @@ impl TimelineRef {
         }
     }
 
-    /// Playable local FrameId runs → timeline units (playlist: live clip remap).
-    /// Gray = buffered-like; sole-on-VT later. **no equivalent**.
+    /// Diagnostic: remap local playable runs → timeline units (live clip only).
+    /// Strip paint uses [`Self::strip_fetch_marks`] (VT sole). **no equivalent**.
     pub fn strip_fetch_playable_runs(self, runs: &[(u64, u64)]) -> Vec<(u64, u64)> {
         match self.inner {
             TimelineInner::Video(_) => runs.to_vec(),

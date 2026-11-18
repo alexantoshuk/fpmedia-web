@@ -4,9 +4,9 @@
 //! `.ai/product.md` § Element-layer helpers.
 //!
 //! Strip domain + live remap live on [`crate::TimelineRef`] (`strip_video` /
-//! `strip_ready_marks` / `strip_fetch_playable_runs`). Meta re-leases pipeline
-//! interest when [`TimelineRef::strip_video_key`] changes — no Scrubber remount,
-//! no dual-lease.
+//! `strip_ready_marks`; Covered + Fetch = VT sole). Meta re-leases pipeline
+//! interest when [`TimelineRef::strip_video_key`] changes — no Scrubber remount.
+//! Fetch also leases the idle slot so neighbor playable grows into VT.
 
 use leptos::html::Canvas;
 use leptos::prelude::*;
@@ -75,9 +75,11 @@ pub fn TimelineMeta(
 
     // Re-lease only when strip video identity changes (playlist live swap).
     let interest = StoredValue::new_local(None::<PipelineInterestLease>);
+    let idle_fetch_interest = StoredValue::new_local(None::<PipelineInterestLease>);
     let interest_key = StoredValue::new_local(None::<StripVideoKey>);
     on_cleanup(move || {
         interest.set_value(None);
+        idle_fetch_interest.set_value(None);
         interest_key.set_value(None);
     });
 
@@ -94,6 +96,7 @@ pub fn TimelineMeta(
         // **no equivalent** (playlist probe / strip host).
         if !timeline.ready.get() {
             interest.set_value(None);
+            idle_fetch_interest.set_value(None);
             interest_key.set_value(None);
             latch.update_value(|l| l.clear());
             if let Some(canvas) = canvas_ref.get() {
@@ -104,26 +107,50 @@ pub fn TimelineMeta(
 
         let Some(key) = timeline.strip_video_key() else {
             interest.set_value(None);
+            idle_fetch_interest.set_value(None);
             interest_key.set_value(None);
             return;
         };
         let Some(video) = timeline.strip_video() else {
             interest.set_value(None);
+            idle_fetch_interest.set_value(None);
             interest_key.set_value(None);
             return;
         };
         if interest_key.get_value() != Some(key) {
             interest.set_value(Some(video.lease_pipeline_plane(plane)));
+            // Fetch sole on VT: also lease idle so neighbor playable publishes.
+            if matches!(kind, TimelineMetaKind::Fetch) {
+                if let Some(p) = timeline.playlist() {
+                    let idle = if p.live_is_a.get_untracked() {
+                        p.slot_b
+                    } else {
+                        p.slot_a
+                    };
+                    idle_fetch_interest
+                        .set_value(Some(idle.lease_pipeline_plane(PipelinePlane::Fetch)));
+                } else {
+                    idle_fetch_interest.set_value(None);
+                }
+            } else {
+                idle_fetch_interest.set_value(None);
+            }
             interest_key.set_value(Some(key));
         }
 
         // Track pipeline / domain even when canvas NodeRef is not ready yet.
-        // Exact/Keyframes/Fetch = slot remap; Covered = VT ledger (mirror then read).
+        // Exact/Keyframes = slot remap; Covered + Fetch = VT ledger (mirror then read).
         let pipe = video.pipeline.get();
-        // Idle Exact subscribe (playlist) lives inside strip_ready_marks.
+        // Idle Exact / Fetch subscribe (playlist).
         let _ = timeline.playlist().map(|p| {
             let _ = p.idle_clip.get();
             let _ = p.live_is_a.get();
+            let idle = if p.live_is_a.get_untracked() {
+                p.slot_b
+            } else {
+                p.slot_a
+            };
+            let _ = idle.pipeline.get();
         });
         let frame_count = timeline.strip_domain_len();
         let marks = pipe
@@ -132,13 +159,10 @@ pub fn TimelineMeta(
             .unwrap_or(&[]);
         let ready_marks = timeline.strip_ready_marks(marks);
         timeline.mirror_covered_from_slots();
+        timeline.mirror_fetch_from_slots();
         let _ = timeline.exact_residency_epoch().get();
         let covered_marks = timeline.strip_covered_marks();
-        let raw_playable = pipe
-            .as_ref()
-            .map(|s| s.fetch_playable_runs.as_slice())
-            .unwrap_or(&[]);
-        let playable_runs = timeline.strip_fetch_playable_runs(raw_playable);
+        let playable_runs = timeline.strip_fetch_marks();
 
         let Some(canvas) = canvas_ref.get() else {
             return;

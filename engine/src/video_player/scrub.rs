@@ -340,6 +340,20 @@ impl VideoPlayer {
             .unwrap_or_default()
     }
 
+    /// Local playable Fetch runs (FetchMap → presentation spans) for VT mirror.
+    /// Same geometry as [`PipelineStats::fetch_playable_runs`]; no pipeline interest.
+    /// **no equivalent** (strip local).
+    pub fn scrub_fetch_playable_runs(&self) -> Vec<(FrameId, FrameId)> {
+        self.shared.fetch_map.playable_frame_runs(
+            self.shared
+                .track
+                .index()
+                .frames()
+                .iter()
+                .map(|e| (e.frame, e.offset, e.size)),
+        )
+    }
+
     /// Exact blit capacity (frames) — VT ledger should match (one AimWindow).
     pub fn scrub_exact_capacity(&self) -> usize {
         self.shared

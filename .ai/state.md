@@ -8,15 +8,15 @@
 
 ### Handoff
 
-- **Branch:** `main` — Covered sole on VT; Exact = slot blit; idle = nearest cut; Pause cut-join Exact@join warm; Fetch gray = playable FrameId runs; Up PresentHit EndExact; one Exact `blit_mib=512`.
-- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like).
-- **OK in browser:** Pause Exact grow; scrub Up densify; gop5/12 vs Long same Exact frame budget; cut-join Pause scrub 1↔2 / reverse — Up PresentHit at join; Covered strip survives clip leave / reverse cut. **Verify:** Fetch gray = per byte-window spans (no comb; URL/Blob grow as blocks).
+- **Branch:** `main` — Covered + Fetch sole on VT; Exact = slot blit; idle = nearest cut; Pause cut-join Exact@join warm; Fetch gray = playable FrameId runs; Up PresentHit EndExact; one Exact `blit_mib=512`.
+- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT (live+idle mirror; wipe close·open only).
+- **OK in browser:** Pause Exact grow; scrub Up densify; gop5/12 vs Long same Exact frame budget; cut-join Pause scrub 1↔2 / reverse — Up PresentHit at join; Covered + Fetch gray survive clip leave / reverse cut; Fetch playable spans (no comb; Blob/URL grow as blocks). Pages demo live (`alexantoshuk.github.io/fpmedia-web`).
 - **Parked debris (do not use):** VT Exact take/import / densify orch (`vt_densify_authority` stays false). Exact-take backend helpers removed; VideoOps take/present knobs may still exist unused.
 - **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.
 - **Open (unchanged):** mobile LoopPlayWarm unverified. Residual light mobile pause on Host mid-zone LoopZone seam — later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional (unrelated).
 - **Do not land:** `b8206d1`; `39d20a4`; cut-warm v1 (playhead×ensure thrash).
-- **Parked:** Pause densify pin-holes; idle Fetch gray.
+- **Parked:** Pause densify pin-holes.
 
 ---
 
@@ -26,7 +26,7 @@
 
 1. **Later on VT:** Thumbs; Play intent + LoopZone on the same axis.
 
-Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i]`; idle Fetch gray — parked; optional live MiB meter A→B→C — see Later.
+Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i]`.
 
 **Out of v1:** compare dual-visible.
 
@@ -43,20 +43,9 @@ Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. 
 1. **Deps unblock** — switch workspace `re_mp4` from git pin to crates.io when #35+#38 ship; `cargo package` dry-run.
 2. **Ship** — flip `publish`; CONTRIBUTING gates + e2e; lockstep publish order timecode → engine → components; GH Release notes; restore crates.io/docs.rs badges; drop this block from state.
 
-### Online demo (free static)
-
-Implementation in tree (Trunk `demo-player`, `.github/workflows/pages.yml`).
-
-- **Do:** enable Settings → Pages → Source: GitHub Actions; push/merge; confirm site loads WASM + Browse open.
-- **Out of scope:** public CORS / media proxy; sample buttons; large masters.
-- **Note:** private repo — Pages may need Pro; published URL is often world-readable. Local e2e URL probes: `npm run media:fetch` (testvideo v0.3.0 → `demo-player/public/media/`).
-
----
-
 ## Later
 
 - **Supplied open meta (unified)** — host/DB timing with media for both `<Video>` and `<VideoPlaylist>` (same shape; playlist = per-clip). Skip probe when meta present; `open_blob`/`open_url` / playlist probe stay fallback. Not current — do not land playlist-only `open_entries` first.
-- **Gray live MiB meter (optional)** — Fetch strip is now **playable/buffered-like** (not ever-fetched file-% / not WASM LRU). Separate Later if we want an occupancy meter: **A** residency API → **B** shared MiB across N byte sources (2 decode slots) → **C** optional paint sole on VT. No N players (`architecture.md` Progressive open / glossary § Fetch).
 - **CutWindow** — half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut. After LoopZone (shipped — `architecture.md` § LoopZone). Prefer after host seam machine (§2), else seams grow more flag soup. Not current priority.
 - Optional: harden Pause densify pin-holes on slow PreferSoftware (salvage + skip-bridge `put_chunk`; no Exact wipe) — only if strip cosmetics stop being acceptable (`product.md`).
 - Revisit seek Exact follow **without** wiping Exact on settle (densify yield / unbanned walk only — prove scrub still paints).

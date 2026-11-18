@@ -130,6 +130,8 @@ pub(crate) struct VideoOps {
     pub scrub_exact_frame_ids: Rc<dyn Fn() -> Vec<u32>>,
     /// Densify Covered marker FrameIds (local).
     pub scrub_covered_frame_ids: Rc<dyn Fn() -> Vec<u32>>,
+    /// Local playable Fetch runs for VT mirror (inclusive FrameId spans).
+    pub scrub_fetch_playable_runs: Rc<dyn Fn() -> Vec<(u64, u64)>>,
     /// Clone Exact blit for VT ledger (slot keeps its copy).
     pub clone_scrub_exact_blit: Rc<dyn Fn(u32) -> Option<web_sys::ImageBitmap>>,
     /// Slot Exact blit capacity (VT ledger matches).
@@ -192,18 +194,19 @@ impl VideoRef {
         }
     }
 
-    /// VT ledger handle (Covered sole; Exact AimWindow parked).
+    /// VT ledger handle (Covered + Fetch sole; Exact AimWindow parked).
     pub fn exact_ledger(&self) -> Option<crate::virtual_timeline::LedgerHandle> {
         self.exact_ledger.get_value()
     }
 
-    /// Notify Covered strip that the VT ledger changed.
+    /// Notify Covered/Fetch strip that the VT ledger changed.
     pub fn bump_exact_residency(&self) {
         self.exact_residency_epoch
             .update(|n| *n = n.wrapping_add(1));
     }
 
     /// Clear VT Covered only (user Scrub Off). Idle park must not call this.
+    /// Does **not** clear Fetch (bytes still playable).
     pub fn clear_vt_covered(&self) {
         if let Some(h) = self.exact_ledger.get_value() {
             h.borrow_mut().clear_covered();
@@ -211,7 +214,7 @@ impl VideoRef {
         }
     }
 
-    /// Clear VT ledger (new open / close) — Covered + parked Exact values.
+    /// Clear VT ledger (new open / close) — Covered + Fetch + parked Exact values.
     pub fn reset_exact_ledger(&self) {
         if let Some(h) = self.exact_ledger.get_value() {
             let mut led = h.borrow_mut();
@@ -597,6 +600,13 @@ impl VideoRef {
     /// Local Covered marker FrameIds.
     pub fn scrub_covered_frame_ids(&self) -> Vec<u32> {
         self.op(|o| &o.scrub_covered_frame_ids)
+            .map(|f| f())
+            .unwrap_or_default()
+    }
+
+    /// Local playable Fetch runs (inclusive) for VT strip mirror.
+    pub fn scrub_fetch_playable_runs(&self) -> Vec<(u64, u64)> {
+        self.op(|o| &o.scrub_fetch_playable_runs)
             .map(|f| f())
             .unwrap_or_default()
     }
