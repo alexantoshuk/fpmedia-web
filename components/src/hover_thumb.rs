@@ -15,7 +15,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::TimelineRef;
 use crate::VideoRef;
-use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
+use crate::helpers::{clear_hover_thumb_canvas, hover_thumb_left, hover_thumb_transform_css};
 use crate::scrubber::{HoverThumbApi, ScrubberCtx};
 
 /// Default max-edge box (larger side ≤ 160; smaller from aspect via `hover_thumb_dims`).
@@ -64,6 +64,9 @@ pub fn HoverThumb(
     // Declarative `style:transform` — not `el.style().set_property` (skills/leptos.md).
     let transform = RwSignal::new(String::new());
     let epoch = StoredValue::new_local(0u64);
+    // Last aim clip (single = Some(0)). Wipe only on clip change — same-clip miss
+    // keeps nearest / prior pixels until Exact.
+    let last_clip = StoredValue::new_local(None::<u32>);
     let root_class = class.unwrap_or_default();
 
     #[cfg(feature = "thumbs")]
@@ -86,6 +89,7 @@ pub fn HoverThumb(
     let hide: Rc<dyn Fn()> = Rc::new(move || {
         visible.set(false);
         frame.set(None);
+        last_clip.set_value(None);
         let e = epoch.get_value().wrapping_add(1);
         epoch.set_value(e);
         timeline.cancel_hover_thumb();
@@ -93,6 +97,8 @@ pub fn HoverThumb(
 
     let update: Rc<dyn Fn(f64, f64, u32)> = {
         let hide = Rc::clone(&hide);
+        #[cfg(feature = "thumbs")]
+        let throttled_paint_move = throttled_paint.clone();
         Rc::new(move |x: f64, track_width: f64, aim: u32| {
             #[cfg(not(feature = "thumbs"))]
             {
@@ -133,11 +139,17 @@ pub fn HoverThumb(
                 let Some(canvas) = canvas_ref.get_untracked() else {
                     return;
                 };
+                // Wipe only across playlist clip boundaries (not same-clip miss).
+                let clip = hover_aim_clip(timeline, aim);
+                if last_clip.get_value() != clip {
+                    clear_hover_thumb_canvas(&canvas);
+                    last_clip.set_value(clip);
+                }
                 if timeline.try_paint_hover_thumb(aim, canvas.clone(), width, height) {
                     return;
                 }
                 let scheduled_epoch = epoch.get_value();
-                throttled_paint((aim, canvas, width, height, scheduled_epoch));
+                throttled_paint_move((aim, canvas, width, height, scheduled_epoch));
             }
         })
     };
@@ -148,6 +160,42 @@ pub fn HoverThumb(
             if !timeline.ready.get() {
                 hide();
             }
+        }
+    });
+
+    // Playlist: after idle/live warm for an off-slot hover, re-paint current aim
+    // (pointer may be still — otherwise stale wipe stays empty forever).
+    #[cfg(feature = "thumbs")]
+    Effect::new({
+        let throttled_paint = throttled_paint.clone();
+        move |_| {
+            let Some(aim) = frame.get() else {
+                return;
+            };
+            if !visible.get() || !timeline.ready.get() {
+                return;
+            }
+            let Some(pl) = timeline.playlist() else {
+                return;
+            };
+            let _ = pl.live_clip.get();
+            let _ = pl.idle_clip.get();
+            let _ = pl.live_is_a.get();
+            let _ = pl.slot_a.ready.get();
+            let _ = pl.slot_b.ready.get();
+            let Some(canvas) = canvas_ref.get_untracked() else {
+                return;
+            };
+            let clip = hover_aim_clip(timeline, aim);
+            if last_clip.get_value() != clip {
+                clear_hover_thumb_canvas(&canvas);
+                last_clip.set_value(clip);
+            }
+            if timeline.try_paint_hover_thumb(aim, canvas.clone(), width, height) {
+                return;
+            }
+            let scheduled_epoch = epoch.get_value();
+            throttled_paint((aim, canvas, width, height, scheduled_epoch));
         }
     });
 
@@ -195,6 +243,18 @@ pub fn HoverThumb(
             />
             {children.map(|c| c())}
         </div>
+    }
+}
+
+/// Playlist clip for `aim` global/local unit; single-clip timeline → `Some(0)`.
+fn hover_aim_clip(timeline: TimelineRef, aim: u32) -> Option<u32> {
+    match timeline.playlist() {
+        Some(pl) => pl
+            .model
+            .get_untracked()
+            .at_global_frame(aim)
+            .map(|pos| pos.clip_index),
+        None => Some(0),
     }
 }
 

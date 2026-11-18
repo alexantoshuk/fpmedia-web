@@ -17,6 +17,8 @@ mod slots;
 #[cfg(target_arch = "wasm32")]
 mod source;
 #[cfg(target_arch = "wasm32")]
+mod thumbs;
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod video_playlist_ref;
 
 pub use model::{PlaylistClip, PlaylistModel};

@@ -744,8 +744,10 @@ pub fn Video(
                         // Exact frame hit → skip defer. Key/far interim still
                         // paints, but return false so host defers Exact refine
                         // (Pause floor; Play refuses aim decode).
+                        // Cold miss: keep last pixels (nearest stand-in) — do not
+                        // wipe to empty; clip-change wipe lives in `<HoverThumb>`.
                         Ok(Some(painted)) => p.hover_thumb_close_enough(aim, painted),
-                        _ => false,
+                        Ok(None) | Err(_) => false,
                     }
                 })
                 .unwrap_or(false)
@@ -888,6 +890,53 @@ pub fn Video(
         }) as Rc<dyn Fn(bool)>
     };
 
+    let set_vt_thumb_authority_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |on: bool| {
+            ctx.with_player(|p| p.set_vt_thumb_authority(on));
+        }) as Rc<dyn Fn(bool)>
+    };
+
+    let sync_frame_ids_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || {
+            ctx.with_player(|p| {
+                p.sync_frame_ids()
+                    .into_iter()
+                    .filter_map(|id| u32::try_from(id).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        }) as Rc<dyn Fn() -> Vec<u32>>
+    };
+
+    let thumb_max_thumbs_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move || ctx.with_player(|p| p.thumb_max_thumbs()).unwrap_or(256))
+            as Rc<dyn Fn() -> usize>
+    };
+
+    let thumb_has_key_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |key: u32| {
+            ctx.with_player(|p| p.thumb_has_key(u64::from(key)))
+                .unwrap_or(false)
+        }) as Rc<dyn Fn(u32) -> bool>
+    };
+
+    let fill_thumb_key_at_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |key: u32| {
+            let ctx = ctx.clone();
+            Box::pin(async move {
+                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
+                    return;
+                };
+                p.fill_thumb_key_at(u64::from(key)).await;
+            }) as super::BoxedLocalFut<()>
+        }) as super::LocalFutFnU32<()>
+    };
+
     let queue_vt_densify_target_fn = {
         let ctx = ctx.clone();
         Rc::new(move |frame: u32| {
@@ -1027,6 +1076,11 @@ pub fn Video(
         clone_scrub_exact_blit: clone_scrub_exact_blit_fn,
         scrub_exact_capacity: scrub_exact_capacity_fn,
         set_vt_densify_authority: set_vt_densify_authority_fn,
+        set_vt_thumb_authority: set_vt_thumb_authority_fn,
+        sync_frame_ids: sync_frame_ids_fn,
+        thumb_max_thumbs: thumb_max_thumbs_fn,
+        thumb_has_key: thumb_has_key_fn,
+        fill_thumb_key_at: fill_thumb_key_at_fn,
         queue_vt_densify_target: queue_vt_densify_target_fn,
         set_vt_exact_residents: set_vt_exact_residents_fn,
         scrub_plan_margins: scrub_plan_margins_fn,

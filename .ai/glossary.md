@@ -163,7 +163,7 @@ Standalone thumb / filmstrip generation product (`mediabunny:` `CanvasSink`). `o
 
 ### ThumbCache
 
-Residency store for `ThumbSink` bitmaps (separate from Exact blit / Covered markers). Eviction policy is thumb-specific today (GOP-oriented); aim-distance / binary-grid residency is open work (`state.md` Later).
+Residency store for `ThumbSink` bitmaps (separate from Exact blit / Covered markers). Playlist ≤2 sinks; Pause progressive next-key is VT (`plan_next_thumb_fill`). Plan ready = **open-slot bitmap** (ledger `note_thumb` is optional trail — not a substitute for pixels after rebind). Eviction: progressive rank. Design: `architecture.md` § Virtual Timeline Thumb progressive.
 
 ### ThumbPreview
 
@@ -185,7 +185,7 @@ Shared scrub/hover **UI** handle in `fpmedia-web-components` (`ready` / `playhea
 
 ### Virtual Timeline
 
-Shared **axis + settle/resolve** for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact bitmaps stay in slot blit; Covered markers sole on VT ledger. VT Exact-bitmap write path parked. Host transport: [`MediaRef`](#mediaref); UI strips via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
+Shared **axis + settle/resolve + Pause thumb progressive** for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact + thumb **bitmaps** stay in slot stores; Covered / Fetch / thumb **markers** sole on VT ledger. VT Exact-bitmap write path parked. Host transport: [`MediaRef`](#mediaref); UI strips via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
 
 ### PlaylistPos
 

@@ -185,6 +185,7 @@ impl VideoPlayer {
             scrub_epoch: Cell::new(0),
             densify: crate::SingleFlight::new(),
             vt_densify_authority: Cell::new(false),
+            vt_thumb_authority: Cell::new(false),
             vt_densify_target: Cell::new(None),
             vt_densify_banned: RefCell::new(std::collections::HashSet::new()),
             vt_exact_residents: RefCell::new(std::collections::HashSet::new()),

@@ -1,8 +1,9 @@
-//! Virtual Timeline — shared scrub settle / resolve (+ later play · LoopZone).
+//! Virtual Timeline — shared scrub settle / resolve (+ thumbs progressive; later play · LoopZone).
 //!
 //! **Policy lives here** (global FrameId axis). Exact bitmaps = **slot** blit only.
-//! Covered + Fetch markers = **sole on VT** ([`ExactLedger`] strip). Densify gap-pick
-//! still uses slot `ScrubChunkStore`; host mirrors → `note_covered` / `note_fetch_run`.
+//! Covered + Fetch + thumb **markers** = **sole on VT** ([`ExactLedger`]). Densify gap-pick
+//! still uses slot `ScrubChunkStore`; host mirrors → `note_covered` / `note_fetch_run` /
+//! `note_thumb`. Thumb bitmaps stay in slot ThumbCache (≤2 sinks).
 //! UI binding: [`crate::TimelineRef`].
 //! Design: `.ai/architecture.md` § Virtual Timeline.
 //! **no equivalent** (scrub / playlist composition local — not a mediabunny port).
@@ -12,6 +13,7 @@ mod ledger;
 mod orchestrate;
 mod resolve;
 mod scrub;
+mod thumb_plan;
 
 #[cfg(target_arch = "wasm32")]
 mod backend;
@@ -23,6 +25,10 @@ pub use orchestrate::{
 };
 pub use resolve::{BackendAim, resolve_playlist, resolve_single};
 pub use scrub::{ExactSettlePlan, plan_exact_settle};
+pub use thumb_plan::{
+    ThumbFillPlanInput, map_local_sync_keys_to_global, merge_global_sync_keys,
+    plan_next_thumb_fill, resolve_thumb_fill_playlist, resolve_thumb_fill_single,
+};
 
 #[cfg(target_arch = "wasm32")]
 pub use backend::{

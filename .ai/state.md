@@ -8,9 +8,9 @@
 
 ### Handoff
 
-- **Branch:** `main` — Covered + Fetch sole on VT; Exact = slot blit; idle = nearest cut; Pause cut-join Exact@join warm; Fetch gray = playable FrameId runs; Up PresentHit EndExact; one Exact `blit_mib=512`.
-- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT (live+idle mirror; wipe close·open only).
-- **OK in browser:** Pause Exact grow; scrub Up densify; gop5/12 vs Long same Exact frame budget; cut-join Pause scrub 1↔2 / reverse — Up PresentHit at join; Covered + Fetch gray survive clip leave / reverse cut; Fetch playable spans (no comb; Blob/URL grow as blocks). Pages demo live (`alexantoshuk.github.io/fpmedia-web`).
+- **Branch:** `main` — Covered + Fetch + thumb markers sole on VT; Exact/thumb bitmaps = slot; idle = nearest cut; Pause cut-join Exact@join warm; playlist Pause thumbs = VT `plan_next_thumb_fill` + `vt_thumb_authority` (open slots only; no ensure walk).
+- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; playlist Thumbs-on-VT progressive (≤2 sinks; hover wipe on clip change only).
+- **OK in browser:** Pause Exact grow; scrub Up densify; cut-join Pause scrub 1↔2 / reverse; Covered + Fetch gray survive clip leave; Pause thumbs progressive on open slots + hover Exact refine. Pages demo live (`alexantoshuk.github.io/fpmedia-web`).
 - **Parked debris (do not use):** VT Exact take/import / densify orch (`vt_densify_authority` stays false). Exact-take backend helpers removed; VideoOps take/present knobs may still exist unused.
 - **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.
 - **Open (unchanged):** mobile LoopPlayWarm unverified. Residual light mobile pause on Host mid-zone LoopZone seam — later.
@@ -24,7 +24,7 @@
 
 ### Playlist — Virtual Timeline
 
-1. **Later on VT:** Thumbs; Play intent + LoopZone on the same axis.
+1. **Later on VT:** Play intent + LoopZone on the same axis (Thumbs progressive shipped — same VT + ≤2 sinks).
 
 Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i]`.
 

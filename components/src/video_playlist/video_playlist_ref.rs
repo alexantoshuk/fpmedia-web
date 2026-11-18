@@ -1,5 +1,6 @@
 //! [`VideoPlaylistRef`] — host handle for a mounted [`super::VideoPlaylist`].
 
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use leptos::prelude::*;
@@ -75,6 +76,14 @@ pub struct VideoPlaylistRef {
         StoredValue<Option<crate::virtual_timeline::LedgerHandle>, LocalStorage>,
     /// Bumps when VT Covered changes (TimelineMeta Covered subscribe).
     pub exact_residency_epoch: RwSignal<u64>,
+    /// Per-clip sync FrameIds (local) for VT thumb progressive — survives idle rebind.
+    pub(crate) thumb_sync_keys: StoredValue<HashMap<u32, Vec<u64>>, LocalStorage>,
+    /// One VT progressive fill in flight (coalesce Effect kicks).
+    pub(crate) thumb_fill_inflight: StoredValue<bool, LocalStorage>,
+    /// Globals skipped after admit/cap refuse (must not spin; not “bitmap ready”).
+    pub(crate) thumb_fill_skip: StoredValue<HashSet<u64>, LocalStorage>,
+    /// Clips whose open-slot progressive walk finished this session (idle walk gate).
+    pub(crate) thumb_clips_done: StoredValue<HashSet<u32>, LocalStorage>,
 }
 
 #[derive(Clone)]
@@ -129,6 +138,10 @@ impl VideoPlaylistRef {
                 Some(crate::virtual_timeline::new_ledger_handle()),
             ),
             exact_residency_epoch: RwSignal::new(0),
+            thumb_sync_keys: StoredValue::new_local(HashMap::new()),
+            thumb_fill_inflight: StoredValue::new_local(false),
+            thumb_fill_skip: StoredValue::new_local(HashSet::new()),
+            thumb_clips_done: StoredValue::new_local(HashSet::new()),
         }
     }
 
@@ -586,6 +599,7 @@ impl VideoPlaylistRef {
             return;
         };
         let Some(video) = self.video_for_clip(pos.clip_index) else {
+            // Clip-change wipe is in `<HoverThumb>`; warm idle then re-paint Effect.
             self.warm_idle_for_clip(pos.clip_index);
             return;
         };

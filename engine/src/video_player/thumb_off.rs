@@ -1,6 +1,8 @@
 //! Feature `thumbs` off: same [`super::VideoPlayer`] thumb API as `thumb.rs`,
 //! every hover paint is a soft miss (`Cancelled`) and policy reads `Off`.
 
+use std::rc::Rc;
+
 use web_sys::HtmlCanvasElement;
 
 use crate::error::MediaError;
@@ -17,6 +19,26 @@ impl VideoPlayer {
     pub fn thumb_policy(&self) -> ThumbPolicy {
         ThumbPolicy::Off
     }
+
+    pub fn set_vt_thumb_authority(&self, _on: bool) {}
+
+    pub fn vt_thumb_authority(&self) -> bool {
+        false
+    }
+
+    pub fn sync_frame_ids(&self) -> Vec<FrameId> {
+        Vec::new()
+    }
+
+    pub fn thumb_max_thumbs(&self) -> usize {
+        0
+    }
+
+    pub fn thumb_has_key(&self, _key: FrameId) -> bool {
+        false
+    }
+
+    pub async fn fill_thumb_key_at(self: &Rc<Self>, _key: FrameId) {}
 
     pub(super) fn clear_thumbs(&self) {}
 

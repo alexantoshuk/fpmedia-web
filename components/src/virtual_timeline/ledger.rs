@@ -1,7 +1,8 @@
-//! Timeline residency helpers (global FrameId) — Covered + Fetch sole on VT + parked Exact AimWindow.
+//! Timeline residency helpers (global FrameId) — Covered + Fetch + thumb markers sole on VT + parked Exact AimWindow.
 //!
-//! Shipped Exact = slot `ScrubBlitLru` (PresentHit = slot blit). Covered + Fetch markers live here
-//! (global FrameIds; strip survives clip leave). Do not dual-write Exact bitmaps.
+//! Shipped Exact = slot `ScrubBlitLru` (PresentHit = slot blit). Covered + Fetch + Pause-thumb
+//! markers live here (global FrameIds; survive clip leave). Thumb **bitmaps** stay in slot
+//! ThumbCache — do not dual-write Exact/thumb bitmaps onto VT.
 //! Design: `.ai/architecture.md` § Virtual Timeline.
 //! **no equivalent** (scrub local).
 
@@ -20,13 +21,16 @@ pub struct PutExactOutcome<V> {
     pub refused: Option<V>,
 }
 
-/// Global Exact + Covered + Fetch ledger for one open timeline session (Single or Playlist).
+/// Global Exact + Covered + Fetch + thumb-marker ledger for one open timeline session.
 pub struct ExactLedger<V> {
     exact: AimWindow<V>,
     /// Uncapped Covered markers (gap / dim strip) in **global** FrameIds.
     covered: BTreeSet<FrameId>,
     /// Inclusive playable Fetch runs in **global** FrameIds (interval-merged; dense OK).
     fetch: Vec<(FrameId, FrameId)>,
+    /// Pause progressive thumb keys filled at least once this session (global FrameIds).
+    /// Bitmaps stay in slot ThumbCache; markers survive idle rebind / clip leave.
+    thumbs: BTreeSet<FrameId>,
 }
 
 impl<V> ExactLedger<V> {
@@ -41,6 +45,7 @@ impl<V> ExactLedger<V> {
             exact: AimWindow::new(cap),
             covered: BTreeSet::new(),
             fetch: Vec::new(),
+            thumbs: BTreeSet::new(),
         }
     }
 
@@ -196,10 +201,24 @@ impl<V> ExactLedger<V> {
         self.fetch.clone()
     }
 
-    /// Drop all Exact values (caller releases) + clear Covered + Fetch.
+    /// Record a Pause progressive thumb key (global). Returns `true` if new.
+    pub fn note_thumb(&mut self, global: FrameId) -> bool {
+        self.thumbs.insert(global)
+    }
+
+    pub fn has_thumb(&self, global: FrameId) -> bool {
+        self.thumbs.contains(&global)
+    }
+
+    pub fn thumb_frame_ids(&self) -> Vec<FrameId> {
+        self.thumbs.iter().copied().collect()
+    }
+
+    /// Drop all Exact values (caller releases) + clear Covered + Fetch + thumbs.
     pub fn take_all_exact(&mut self) -> Vec<(FrameId, V)> {
         self.covered.clear();
         self.fetch.clear();
+        self.thumbs.clear();
         self.exact.take_all().into_iter().collect()
     }
 
@@ -210,6 +229,11 @@ impl<V> ExactLedger<V> {
     /// Session wipe only (close·open / media replace) — not Scrub Off / not idle park.
     pub fn clear_fetch(&mut self) {
         self.fetch.clear();
+    }
+
+    /// Session wipe only (close·open / media replace) — not idle park / not Scrub Off.
+    pub fn clear_thumbs(&mut self) {
+        self.thumbs.clear();
     }
 }
 
@@ -328,6 +352,22 @@ mod tests {
         assert_eq!(led.fetch_ready_marks(), vec![(0, 19), (30, 35)]);
         led.clear_fetch();
         assert!(led.fetch_ready_marks().is_empty());
+    }
+
+    #[test]
+    fn thumb_markers_survive_clip_leave() {
+        let mut led = ExactLedger::<u64>::new();
+        assert!(led.note_thumb(0));
+        assert!(led.note_thumb(100)); // clip B global
+        assert!(!led.note_thumb(0));
+        assert!(led.has_thumb(0));
+        assert!(led.has_thumb(100));
+        assert_eq!(led.thumb_frame_ids(), vec![0, 100]);
+        // Idle rebind must not clear — only session wipe.
+        led.clear_covered();
+        assert!(led.has_thumb(0));
+        led.clear_thumbs();
+        assert!(led.thumb_frame_ids().is_empty());
     }
 
     #[test]

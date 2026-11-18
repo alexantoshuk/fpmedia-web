@@ -138,6 +138,16 @@ pub(crate) struct VideoOps {
     pub scrub_exact_capacity: Rc<dyn Fn() -> usize>,
     /// VT densify authority (gaps only from `queue_vt_densify_target`).
     pub set_vt_densify_authority: Rc<dyn Fn(bool)>,
+    /// VT Pause progressive thumbs (host `fill_thumb_key_at`; local schedule off).
+    pub set_vt_thumb_authority: Rc<dyn Fn(bool)>,
+    /// Local sync FrameIds for VT thumb plan.
+    pub sync_frame_ids: Rc<dyn Fn() -> Vec<u32>>,
+    /// ThumbCache cap for VT coarse budget.
+    pub thumb_max_thumbs: Rc<dyn Fn() -> usize>,
+    /// ThumbCache hit for local sync key.
+    pub thumb_has_key: Rc<dyn Fn(u32) -> bool>,
+    /// VT host: await one progressive key fill.
+    pub fill_thumb_key_at: LocalFutFnU32<()>,
     /// Queue one local densify target for VT-owned fill.
     pub queue_vt_densify_target: Rc<dyn Fn(u32)>,
     /// Local Exact ids already in VT ledger (densify skip after take).
@@ -628,6 +638,39 @@ impl VideoRef {
     pub fn set_vt_densify_authority(&self, on: bool) {
         if let Some(f) = self.op(|o| &o.set_vt_densify_authority) {
             f(on);
+        }
+    }
+
+    /// VT Pause progressive thumbs on/off (playlist host planner).
+    pub fn set_vt_thumb_authority(&self, on: bool) {
+        if let Some(f) = self.op(|o| &o.set_vt_thumb_authority) {
+            f(on);
+        }
+    }
+
+    /// Local sync FrameIds for VT thumb progressive planning.
+    pub fn sync_frame_ids(&self) -> Vec<u32> {
+        self.op(|o| &o.sync_frame_ids)
+            .map(|f| f())
+            .unwrap_or_default()
+    }
+
+    /// ThumbCache capacity (coarse budget).
+    pub fn thumb_max_thumbs(&self) -> usize {
+        self.op(|o| &o.thumb_max_thumbs).map(|f| f()).unwrap_or(256)
+    }
+
+    /// Whether ThumbCache holds local sync `key`.
+    pub fn thumb_has_key(&self, key: u32) -> bool {
+        self.op(|o| &o.thumb_has_key)
+            .map(|f| f(key))
+            .unwrap_or(false)
+    }
+
+    /// VT host: fill one progressive sync key (awaitable).
+    pub async fn fill_thumb_key_at(&self, key: u32) {
+        if let Some(f) = self.op(|o| &o.fill_thumb_key_at) {
+            f(key).await;
         }
     }
 

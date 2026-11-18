@@ -589,11 +589,47 @@ impl VideoPlayer {
         }
     }
 
+    /// Host VT owns Pause progressive (`fill_thumb_key_at`); local schedule off.
+    /// **no equivalent** (playlist VT local).
+    pub fn set_vt_thumb_authority(&self, on: bool) {
+        self.shared.vt_thumb_authority.set(on);
+    }
+
+    pub fn vt_thumb_authority(&self) -> bool {
+        self.shared.vt_thumb_authority.get()
+    }
+
+    /// Sync sample FrameIds for VT progressive planning (local).
+    pub fn sync_frame_ids(&self) -> Vec<FrameId> {
+        self.shared.track.index().sync_frame_ids()
+    }
+
+    /// ThumbCache cap used by this player's sink (default if not created yet).
+    pub fn thumb_max_thumbs(&self) -> usize {
+        self.thumb_sink_inner()
+            .map(|t| t.max_thumbs())
+            .unwrap_or(ThumbSinkOptions::default().max_thumbs)
+    }
+
+    /// Whether ThumbCache already holds sync key `key` at current hover dims.
+    pub fn thumb_has_key(&self, key: FrameId) -> bool {
+        let Some(thumbs) = self.thumb_sink_inner() else {
+            return false;
+        };
+        let meta = self.shared.track.metadata();
+        let (tw, th) = thumbs.thumb_dims(meta.width, meta.height);
+        thumbs.contains(key, key, tw, th)
+    }
+
     /// Kick Pause progressive key → ThumbCache fill (same 3rd decoder; hover wins).
     ///
     /// Pause/idle only ([`allows_thumb_key_fill`]). Suspended while hover active;
     /// stops forever once progressive hits cap / no candidates. Play: no fill.
+    /// No-op when [`Self::vt_thumb_authority`] — host calls [`Self::fill_thumb_key_at`].
     pub(super) fn schedule_thumb_key_fill(&self) {
+        if self.shared.vt_thumb_authority.get() {
+            return;
+        }
         if self.shared.is_disposed() || self.shared.scrub_bg_suspended() {
             return;
         }
@@ -614,6 +650,72 @@ impl VideoPlayer {
             return;
         }
         self.kick_thumb_key_fill();
+    }
+
+    /// VT host: decode one progressive sync key into ThumbCache (no local next-key).
+    ///
+    /// Awaits the one-key fill attempt. Host notes VT markers + re-plans.
+    /// **no equivalent** (playlist VT local). `mediabunny:` CanvasSink sparse fill.
+    pub async fn fill_thumb_key_at(self: &Rc<Self>, key: FrameId) {
+        if self.shared.is_disposed() || self.shared.scrub_bg_suspended() {
+            return;
+        }
+        if !allows_thumb_key_fill(self.shared.workload_hints()) {
+            return;
+        }
+        if !self.ensure_thumb_sink() {
+            return;
+        }
+        let Some(thumbs) = self.thumb_sink_inner() else {
+            return;
+        };
+        if thumbs.decode_blocked() || thumbs.hover_active() {
+            return;
+        }
+        // Wait briefly if hover/fill owns the worker (macrotask, not microtask spin).
+        if thumbs.is_busy() {
+            let wait_start = now_ms().unwrap_or(0.0);
+            loop {
+                sleep_ms(0).await;
+                if self.shared.is_disposed() || !allows_thumb_key_fill(self.shared.workload_hints())
+                {
+                    return;
+                }
+                if now_ms().unwrap_or(wait_start) - wait_start >= CLAIM_WAIT_MS {
+                    return;
+                }
+                let Some(t) = self.thumb_sink_inner() else {
+                    return;
+                };
+                if t.hover_active() {
+                    return;
+                }
+                if !t.is_busy() {
+                    break;
+                }
+            }
+        }
+        let Some(thumbs) = self.thumb_sink_inner() else {
+            return;
+        };
+        if !thumbs.claim_fill_key(key) {
+            return;
+        }
+        let shared = Rc::clone(&self.shared);
+        let sink = Rc::clone(&thumbs);
+        let yield_play = || {
+            shared.is_disposed()
+                || shared.scrub_bg_suspended()
+                || !allows_thumb_key_fill(shared.workload_hints())
+                || shared
+                    .thumb
+                    .try_borrow()
+                    .ok()
+                    .and_then(|s| s.as_ref().map(|t| t.hover_active()))
+                    .unwrap_or(false)
+        };
+        // One key only — host VT re-plans the next global target.
+        let _ = run_sparse_key_fill(sink, || None, yield_play).await;
     }
 
     pub(super) fn thumb_sink_inner(&self) -> Option<Rc<ThumbSink>> {

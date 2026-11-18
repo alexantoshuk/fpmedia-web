@@ -81,10 +81,15 @@ pub fn VideoPlaylist(
         idle.park_scrub_cache();
         idle.set_vt_densify_authority(false);
         live.set_vt_densify_authority(false);
+        // Re-assert after each slot open (open_source resets authority false).
+        idle.set_vt_thumb_authority(ready.get());
+        live.set_vt_thumb_authority(ready.get());
         if ready.get() {
             live.set_scrub_cache_policy(ScrubCachePolicy::On);
         }
     });
+
+    super::thumbs::install_vt_thumb_effects(playlist);
 
     // Mirror live presentation → playlist pos + global frame.
     // Playing + paused step/seek. Not while scrubbing (gesture owns aim).
@@ -268,6 +273,7 @@ pub fn VideoPlaylist(
             playlist.seam_warm_for.set_value(None);
             playlist.cut_join_warm_for.set_value(None);
             end_seam(playlist);
+            super::thumbs::clear_thumb_sync_keys(playlist);
             sources.set_value(Vec::new());
             error.set(None);
             status.set("Closed.".into());
@@ -346,6 +352,7 @@ pub fn VideoPlaylist(
                 }
 
                 playlist.reset_exact_ledger();
+                super::thumbs::clear_thumb_sync_keys(playlist);
                 status.set("Opening live clip…".into());
                 list[0].open_on(slot_a);
                 slot_a.set_scrub_cache_policy(ScrubCachePolicy::On);
@@ -358,6 +365,8 @@ pub fn VideoPlaylist(
                 }
                 slot_a.set_vt_densify_authority(false);
                 slot_b.set_vt_densify_authority(false);
+                slot_a.set_vt_thumb_authority(true);
+                slot_b.set_vt_thumb_authority(true);
 
                 match wait_ready(slot_a, epoch, open_gen).await {
                     Ok(_) => {

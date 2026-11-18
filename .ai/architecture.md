@@ -76,7 +76,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
 | Playlist = 2× `<Video>` composition (agreed) | Review playlist without N decoders / NLE in engine. See [Playlist composition](#playlist-composition-agreed). UX: `product.md`. Steps: `state.md`. |
-| Virtual Timeline policy over Single + Playlist | One Exact/scrub (later play·LoopZone) axis; backends decode-only. See [Virtual Timeline](#virtual-timeline-agreed). |
+| Virtual Timeline policy over Single + Playlist | One Exact/scrub/thumbs (later play·LoopZone) axis; backends decode-only. See [Virtual Timeline](#virtual-timeline-agreed). |
 
 ---
 
@@ -88,7 +88,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 Host chrome / demo
         → MediaRef (transport: play/pause/seek/goto/step/loop/gain)
         → TimelineRef (scrub/hover/strip; MediaRef::as_timeline)
-        → virtual_timeline (Exact settle / resolve; later play · LoopZone)
+        → virtual_timeline (Exact settle / resolve / thumb progressive; later play · LoopZone)
         → backend adapters (Single VideoRef | Playlist 2-slot pool)
         → VideoPlayer ×1 or ×2 (demux / decode / clock)
 ```
@@ -96,16 +96,17 @@ Host chrome / demo
 | Piece | Rule |
 | ----- | ---- |
 | Transport facade | **Shipped:** [`MediaRef`](../components/src/media.rs) — shared play/pause/seek/goto/step/loop/gain over Video \| Playlist. Open, `[i]`/`PlaylistPos`, slot/engine knobs stay on concrete refs |
-| Policy home | `components/src/virtual_timeline/` — settle law + resolve (axis). Covered = [`ExactLedger`](../components/src/virtual_timeline/ledger.rs) global markers; Exact-take / densify orch = **parked** (not a live Exact store) |
+| Policy home | `components/src/virtual_timeline/` — settle law + resolve + [`plan_next_thumb_fill`](../components/src/virtual_timeline/thumb_plan.rs). Covered/Fetch/thumb markers = [`ExactLedger`](../components/src/virtual_timeline/ledger.rs); Exact-take / densify orch = **parked** (not a live Exact store) |
 | UI binding | **Shipped:** [`TimelineRef`](../components/src/timeline.rs) — scrub/hover/strip domain. **Covered** + **Fetch** = VT ledger; **Exact** = remapped slot blit (+ idle Exact) |
 | Backend | Decode/open/present + densify Exact/Covered in slot; host mirrors Covered → `note_covered(global)`. Single = identity; Playlist = Σ map + 2-slot |
 | Exact residency | **Slot `ScrubBlitLru` only** (one store per slot; playlist ≤2× VRAM wallets). PresentHit = `has_scrub_exact_blit`. No bitmap ledger write. Anti-pattern: SoftPark; dual Exact *stores as truth* |
 | Covered residency | **Sole on VT** (uncapped global markers). Densify gap-pick stays on slot `ScrubChunkStore`. Wipe VT Covered on close·open / user Scrub Off — **not** idle park/rebind |
 | Fetch residency | **Sole on VT** (interval-merged global playable runs). Slot FetchMap = byte authority; host mirrors live+idle → `note_fetch_run`. Wipe on close·open / media replace — **not** idle park, **not** Scrub Off |
+| Thumb progressive | **Shipped (playlist):** same VT axis — `plan_next_thumb_fill` over **open live/idle only** (Σ duration for coarse). Never `ensure`/clip-walk for fill (open stampede → `open timed out`). Plan **ready** = slot bitmap (or admit-skip), not ledger-only `note_thumb`. ≤**2×** sinks; `vt_thumb_authority` + `fill_thumb_key_at`. Off-slot hover still warms idle. Single: engine-local progressive. **no equivalent** (filmstrip local) |
 | Densify path | Engine `next_gap` on live (`vt_densify_authority=false`). Idle **park** (densify off, keep Exact). Off wipe = media replace / user Scrub Off (slot + VT Covered). Exact strip remaps live (+ idle Exact) |
 | Exact VRAM | One `blit_mib` (512) for Short/Long; frame count from canvas. All-Intra densify off |
 | Cut join Exact | **Shipped:** Pause one-shot Exact@join on idle (`prepare_seam_at` densify-free → park keep Exact) so Up PresentHit is common; kick-once per `(idle, join)` — not Move thrash / not soft-drag / not Play SeamHold. LoopZone uses SeamHold/`LoopPlayWarm` (not this). Later on VT: Play intent / LoopZone / CutWindow on the same axis |
-| Readout | `[i]` stays clip-local (`product.md`); scrub/Exact/play/loop axis = global |
+| Readout | `[i]` stays clip-local (`product.md`); scrub/Exact/thumbs/play/loop axis = global |
 
 ## Playlist composition (agreed)
 
@@ -123,7 +124,7 @@ Host chrome / demo
 | Seam | **`LoopOwner`:** zone ⊆ live → `Engine` (`sync_live_loop_from_playlist` → `LoopSeam`); else `Host` → `promote_idle_at` / `wrap_to_loop_in`. Host cut/wrap latched by **`SeamPhase`** (not a bool). Densify-free seam paint via `seek_frame_with(..., false)`. Playlist `playing` stays true across slot `pause_hard` / EOF until pause, terminal end, or seam error — do not mirror live `VideoRef::playing` for chrome. |
 | Host promote policy | **`PromoteLead`** (`Origin` @0 / `Mid` @`loop_in`): idle **main** `SeamHold` before wall; promote → PlayPrime **release**. `seek_to_pos(then_play)`: Play → SeamHold; pause/goto → slot Exact PresentHit or `prepare_seam_at` + `seek_frame` — never leave SeamHold densify-blocked. Single/Engine loop: **2nd HW** `LoopPlayWarm` (SW stash fallback). Port map: [below](#loopseam-vs-host-promote). |
 | Host prewarm schedule | **`seam_warm_schedule`**: `LoopOwner` + zone + media time → `SeamWarmTarget` (`PromoteLead` + idle). Kick → `kick_arm_seam_hold` when `SeamPhase::Idle` and owner ≠ `Engine`. Priority: Host zone wall → near clip-EOF next/`loop_in`. |
-| Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot), same as Video pool — not N per clip, not one global sink. Hover/progressive → slot that owns the clip; third clip warms/rebinds idle |
+| Shared scrub / thumbs | One scrub gesture over playlist model. Thumbs: **at most two** `ThumbSink`s (one per slot) — not N / not one global sink. Pause progressive = **VT plan** across Σ (`video_playlist::thumbs`); hover still resolves global→slot (+ idle rebind). See [Virtual Timeline](#virtual-timeline-agreed) Thumb progressive |
 | Idle neighbor | Play / seam: next clip; on last + playlist **loop** → **0**; else previous (`idle_neighbor` / `set_loop` re-preload). **Scrub:** `PlaylistModel::idle_neighbor_near_cut` — idle = other clip of the **nearest cut** (near 1\|2 → slots 1+2; near 2\|3 → 2+3), mid-clip hysteresis. Not scrub-dir; not cut-warm v1 playhead×margin thrash. **Pause Exact@join:** `cut_join_local` + `kick_cut_join_exact_warm` (see Cut join Exact above) |
 | Compare (later) | Same 2-slot pool, both visible — not the playlist playhead model |
 

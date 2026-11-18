@@ -83,6 +83,8 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
             p.set_scrub_cache_policy(ctx.scrub_cache_policy.get());
             // Exact residency = slot blit; engine next_gap. VT = axis/settle only.
             p.set_vt_densify_authority(false);
+            // Playlist host turns thumb authority on after dual-slot open.
+            p.set_vt_thumb_authority(false);
             p.set_thumb_policy(ctx.thumb_policy.get());
             metadata.set(Some(p.metadata()));
             has_audio.set(p.has_audio());

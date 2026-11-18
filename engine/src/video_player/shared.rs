@@ -110,6 +110,10 @@ pub(super) struct Shared {
     /// When true, densify gaps come only from [`Self::vt_densify_target`] (VT
     /// planner) — never slot-local `next_gap`. **no equivalent** (VT local).
     pub(super) vt_densify_authority: Cell<bool>,
+    /// When true, Pause progressive thumbs are driven by the host VT planner
+    /// (`fill_thumb_key_at`) — local `schedule_thumb_key_fill` is a no-op.
+    /// **no equivalent** (playlist VT local).
+    pub(super) vt_thumb_authority: Cell<bool>,
     /// Queued local FrameId for VT densify (peek until success/ban/clear).
     pub(super) vt_densify_target: Cell<Option<FrameId>>,
     /// Soft-banned local FrameIds (GOP members) across VT fill tasks — avoids
