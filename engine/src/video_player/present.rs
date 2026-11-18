@@ -157,6 +157,16 @@ impl VideoPlayer {
 
         if want.fetch {
             out.fetch_file_ranges = self.shared.fetch_map.file_fractions(self.shared.file_size);
+            // Gray strip = per FetchMap byte window → presentation span (not
+            // per-sample comb / not linear file-%). **no equivalent** (strip local).
+            out.fetch_playable_runs = self.shared.fetch_map.playable_frame_runs(
+                self.shared
+                    .track
+                    .index()
+                    .frames()
+                    .iter()
+                    .map(|e| (e.frame, e.offset, e.size)),
+            );
         }
 
         out

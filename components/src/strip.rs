@@ -16,7 +16,7 @@ pub const COVERED_STRIP_COLOR: &str = "#1f5742";
 /// Bright Exact (full `#34d399`).
 pub const EXACT_STRIP_COLOR: &str = "#34d399";
 
-/// Gray FetchMap solid.
+/// Gray playable / buffered-like solid (FetchMap ∩ sample bytes).
 pub const FETCH_STRIP_COLOR: &str = "#6b7280";
 
 /// Yellow keyframe / sync ticks on the ready strip.
@@ -381,6 +381,7 @@ pub fn snap_pct_runs_to_px(segments: impl IntoIterator<Item = (f64, f64)>) -> Ve
 }
 
 /// File-byte fetch fractions (`0…1`) → continuous runs on `width` (min 1 px).
+/// Diagnostic path; strip paint prefers [`fetch_playable_runs_to_width`].
 pub fn fetch_strip_runs_for_width(ranges: &[(f32, f32)], width: f64) -> Vec<StripRun> {
     if ranges.is_empty() {
         return Vec::new();
@@ -389,6 +390,31 @@ pub fn fetch_strip_runs_for_width(ranges: &[(f32, f32)], width: f64) -> Vec<Stri
         ranges
             .iter()
             .map(|&(a, b)| (a as f64 * 100.0, b as f64 * 100.0)),
+        width,
+        1.0,
+    )
+}
+
+/// Playable FrameId runs → continuous gray strip on `width`.
+/// Soft-merges sub-pixel holes (`strip_merge_gap_frames`); min 1 px ticks.
+/// **no equivalent** (strip local).
+pub fn fetch_playable_runs_to_width(
+    runs: &[(FrameId, FrameId)],
+    frame_count: f64,
+    width: f64,
+) -> Vec<StripRun> {
+    let n = frame_count.max(1.0);
+    let gap = strip_merge_gap_frames((n - 1.0).max(0.0));
+    let merged = soft_merge_frame_runs(runs, gap);
+    if merged.is_empty() {
+        return Vec::new();
+    }
+    snap_pct_runs_to_width(
+        merged.iter().map(|&(lo, hi)| {
+            let start = (lo as f64 / n) * 100.0;
+            let end = ((hi as f64 + 1.0) / n) * 100.0;
+            (start, end)
+        }),
         width,
         1.0,
     )
@@ -566,6 +592,15 @@ mod tests {
     fn empty_strips_are_empty_runs() {
         assert!(ready_runs_to_width_px(&[], 10.0, 800).is_empty());
         assert!(fetch_strip_px_runs(&[]).is_empty());
+        assert!(fetch_playable_runs_to_width(&[], 100.0, 800.0).is_empty());
+    }
+
+    #[test]
+    fn fetch_playable_runs_paint_half_timeline() {
+        let runs = fetch_playable_runs_to_width(&[(0, 49)], 100.0, 800.0);
+        assert_eq!(runs.len(), 1);
+        assert!((runs[0].0 - 0.0).abs() < 1e-6);
+        assert!((runs[0].1 - 400.0).abs() < 1.0);
     }
 
     #[test]

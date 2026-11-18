@@ -39,7 +39,7 @@ Demo colors are host-owned; meanings are product invariants (`product.md` § Pla
 
 ### Fetch (gray)
 
-Bytes that have ever been fetched into the source cache plane. Backed by **FetchMap** (accumulate ever-fetched ranges — not a live LRU mirror of the byte cache). May soft-merge for paint; unrelated to decoded coverage.
+**Playable / buffered-like:** each **FetchMap** byte window → one presentation span (min..max FrameId of overlapping samples), then soft-merge paint — not per-sample comb / not live WASM LRU. Closer to HTMLMediaElement `buffered`. Live MiB meter = separate Later (`state.md`).
 
 ### Covered (dim green)
 
@@ -247,7 +247,7 @@ Abstract byte source + WASM-facing cache (quantum fills; do not `array_buffer()`
 
 ### FetchMap
 
-Accumulate map of fetched byte ranges → Fetch (gray) strip. Gap-fill is its own SingleFlight — never share densify’s flight.
+Accumulate map of fetched byte ranges. **URL:** download inserts. **Blob:** seed + prefetch `note_local_gray` only (not per-sample cache — avoids keyframe comb). Gray strip = `playable_frame_runs` (per byte window → presentation span). Gap-fill is its own SingleFlight — never share densify’s flight.
 
 ### ReadOrchestrator
 

@@ -55,8 +55,10 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Mobile `holds N/…ms` + audio micro-gaps while `held>0 · out 0` (false underrun) | `play_underrun_hold` / `PlayIter::has_ready_sample` | hold only when `nextFrame` empty **and** iterator has no ready sample **and** frame due — never on the present→`updateNextFrame` one-tick gap. `mediabunny: media-sink.ts mediaSamplesInRange queueNotEmpty`; media-player never holds the clock |
 | `flush/idle` pts=0 (All-Intra, mobile) | `run_key_cascade` / `force_prefer_software` | key inclusive after wipe; HW silent miss → sticky PreferSoftware; snap fed **before** finish_gop wipe. `mediabunny: media-sink prefer-software` |
 | Cold scrub freezes tab / Play deaf | soft settle + transport | `pending_cold_exact`; Settling+Play Preempt — `e2e/player.scrub.cold-open.spec.ts` |
-| Gray/green strip holes / blur | FetchMap + float 1 px canvas | gray may soft-merge; greens honest `f/n` — host: `skills/leptos.md` |
-| Gray holes never fill (pause/URL) | `schedule_fetchmap_gap_fill` + FetchMap accumulate | own `SingleFlight` (`gray_fill`); never share densify flight; URL accumulate |
+| Gray/green strip holes / blur | FetchMap playable runs + float 1 px canvas | gray = per byte-window span + soft-merge; greens honest `f/n` — host: `skills/leptos.md` |
+| Gray holes never fill (pause/URL) | `schedule_fetchmap_gap_fill` + FetchMap accumulate | own `SingleFlight` (`gray_fill`); never share densify flight; strip = `playable_frame_runs` |
+| Gray comb then solid left fill | `playable_frame_runs` / local FetchMap | one span per byte window; **local** sample inserts must not sync FetchMap (prefetch `note_local_gray` / seed only — AVC sync pepper). **no equivalent** |
+| Gray ≠ WASM 8 MiB / ≠ Covered | `playable_frame_runs` / glossary Fetch | buffered-like byte-window spans; not LRU meter; not densify Covered |
 | Gray fill floods drag / stays slow after | `scrub_gesture` + gray pace | drag: 1×quantum / 150 ms; idle: 2× / 16 ms; clear gesture on pipeline + `play` |
 | URL play ~0.6× / first-play lag | `CachedSource` sample miss | return `want` immediately; quantum fill bg |
 | Mobile local Play starves (`wait/s rd` high, `raf>50` ≈0) | `BlobSource` orch worker | one `blob.slice(pos).stream()` reader per worker, `FileSystem` prefetch; `arrayBuffer()` per read only on WebKit. `mediabunny: source.ts BlobSource._runWorker` |

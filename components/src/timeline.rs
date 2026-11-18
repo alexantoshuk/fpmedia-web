@@ -240,6 +240,7 @@ impl TimelineRef {
     }
 
     /// Live FetchMap file fractions → timeline bar fractions (playlist: clip window).
+    /// Diagnostic; strip paint uses [`Self::strip_fetch_playable_runs`].
     pub fn strip_fetch_ranges(self, ranges: &[(f32, f32)]) -> Vec<(f32, f32)> {
         match self.inner {
             TimelineInner::Video(_) => ranges.to_vec(),
@@ -250,6 +251,29 @@ impl TimelineRef {
                 let start = model.clip_start_frame(live_clip).unwrap_or(0);
                 let end = model.clip_end_frame(live_clip).unwrap_or(total);
                 fetch_ranges_in_clip_window(ranges, start, end, total)
+            }
+        }
+    }
+
+    /// Playable local FrameId runs → timeline units (playlist: live clip remap).
+    /// Gray = buffered-like; sole-on-VT later. **no equivalent**.
+    pub fn strip_fetch_playable_runs(self, runs: &[(u64, u64)]) -> Vec<(u64, u64)> {
+        match self.inner {
+            TimelineInner::Video(_) => runs.to_vec(),
+            TimelineInner::Playlist(p) => {
+                let live_clip = p.live_clip.get();
+                let model = p.model.get();
+                runs.iter()
+                    .filter_map(|&(lo, hi)| {
+                        let lo_f = u32::try_from(lo).ok()?;
+                        let hi_f = u32::try_from(hi).ok()?;
+                        let glo =
+                            u64::from(model.global_frame_at(PlaylistPos::new(live_clip, lo_f))?);
+                        let ghi =
+                            u64::from(model.global_frame_at(PlaylistPos::new(live_clip, hi_f))?);
+                        Some((glo, ghi))
+                    })
+                    .collect()
             }
         }
     }

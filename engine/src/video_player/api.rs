@@ -115,9 +115,13 @@ pub struct PipelineStats {
     pub ready_frames: Vec<ReadyFrameMark>,
     /// Keyframe spacing class (scrub budget / fill policy).
     pub gop_profile: GopProfile,
-    /// Bounded union of recent [`crate::CachedSource`] windows as file-size
-    /// fractions (`0..1`) for the demo gray strip (not densify — green below).
+    /// Coarse FetchMap file-size fractions (`0..1`) — diagnostic / e2e coverage.
+    /// Strip paint uses [`Self::fetch_playable_runs`].
     pub fetch_file_ranges: Vec<(f32, f32)>,
+    /// Playable presentation runs (per FetchMap byte window → min..max FrameId).
+    /// HTMLMediaElement `buffered`-like; not decode Covered/Exact. Soft-merge
+    /// for paint is host-side. **no equivalent** (strip local).
+    pub fetch_playable_runs: Vec<(FrameId, FrameId)>,
     /// Play iterator wait meters (last ~1 s); `None` outside a play session.
     pub play_waits: Option<PlayWaits>,
 }
@@ -145,6 +149,7 @@ impl Default for PipelineStats {
             ready_frames: Vec::new(),
             gop_profile: GopProfile::Long { median: 0, max: 0 },
             fetch_file_ranges: Vec::new(),
+            fetch_playable_runs: Vec::new(),
             play_waits: None,
         }
     }

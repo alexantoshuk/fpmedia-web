@@ -513,6 +513,12 @@ fn pipeline_stats_json(stats: Option<PipelineStats>) -> String {
         .map(|(a, b)| format!("[{a:.6},{b:.6}]"))
         .collect::<Vec<_>>()
         .join(",");
+    let playable = s
+        .fetch_playable_runs
+        .iter()
+        .map(|(lo, hi)| format!("[{lo},{hi}]"))
+        .collect::<Vec<_>>()
+        .join(",");
     let ready = s
         .ready_frames
         .iter()
@@ -552,7 +558,7 @@ fn pipeline_stats_json(stats: Option<PipelineStats>) -> String {
         None => "null".into(),
     };
     format!(
-        "{{\"fetch_file_ranges\":[{ranges}],\"ready_frames\":[{ready}],\"last_behind_ms\":{behind},\"underrun_holds\":{},\"underrun_hold_ms\":{:.3},\"frames_skipped\":{},\"held_len\":{held},\"decode_queue_size\":{dq},\"scrub_busy\":{},\"cache_frames\":{},\"cache_chunks\":{},\"cache_cap\":{},\"cache_no_gaps\":{},\"scrub_window_from\":{win_from},\"scrub_window_to\":{win_to},\"presentation_len\":{},\"presentation_cap\":{}}}",
+        "{{\"fetch_file_ranges\":[{ranges}],\"fetch_playable_runs\":[{playable}],\"ready_frames\":[{ready}],\"last_behind_ms\":{behind},\"underrun_holds\":{},\"underrun_hold_ms\":{:.3},\"frames_skipped\":{},\"held_len\":{held},\"decode_queue_size\":{dq},\"scrub_busy\":{},\"cache_frames\":{},\"cache_chunks\":{},\"cache_cap\":{},\"cache_no_gaps\":{},\"scrub_window_from\":{win_from},\"scrub_window_to\":{win_to},\"presentation_len\":{},\"presentation_cap\":{}}}",
         s.underrun_holds,
         s.underrun_hold_ms,
         s.frames_skipped,

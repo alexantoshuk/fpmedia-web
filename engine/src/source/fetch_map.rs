@@ -1,10 +1,15 @@
-//! Resident file-byte coverage for the demo scrubber gray strip.
+//! File-byte coverage for playable / gray strip planning.
 //!
-//! **Url + Blob/Memory:** accumulate fetched ranges (`note_window`) — gray =
-//! ever-fetched this session, not the current WASM LRU (URL eviction must not
-//! punch permanent holes). Blob quantum expand is prefetch-only (densify/scrub
-//! — not per-sample); Blob is already sliceable in JS.
-//! File offset → timeline % (not sample-accurate). mediabunny: no equivalent meter.
+//! **Url + Blob/Memory:** accumulate fetched ranges (`note_window`) — bytes
+//! available to demux/Play this session (HTMLMediaElement `buffered`-like), not
+//! the current WASM LRU (URL eviction must not punch permanent holes). Blob
+//! quantum expand is prefetch-only (densify/scrub — not per-sample); Blob is
+//! already sliceable in JS (`note_local_gray`).
+//!
+//! **Strip paint:** [`Self::playable_frame_runs`] maps each byte window → one
+//! presentation span (min..max FrameId of overlapping samples) so B-frame
+//! reorder does not paint a comb. [`Self::file_fractions`] = coarse file-%
+//! diagnostic. mediabunny: no scrubber meter equivalent.
 //!
 //! **Display soft-merge:** [`Self::file_fractions`] closes gaps ≤
 //! [`display_merge_gap`] so (1) fMP4 `moof` (~1 KiB) between resident `mdat`
@@ -13,6 +18,8 @@
 //! [`Self::interior_gaps`] stay exact (diagnostics / tests).
 
 use std::sync::Mutex;
+
+use crate::types::FrameId;
 
 /// Floor for gray-strip soft-merge (fMP4 `moof` between `mdat` is typically
 /// ≤2 KiB; 8 KiB leaves headroom without swallowing real unread islands on
@@ -145,7 +152,52 @@ impl FetchMap {
         gaps
     }
 
-    /// Coverage as fractions of `file_size` in `0.0..1.0` for the scrubber.
+    /// Gray strip runs: each FetchMap byte window → one presentation span.
+    ///
+    /// For every resident `[start, end)`, take min..max `frame` among samples
+    /// whose `[offset, offset+size)` **overlaps** that window (HTMLMediaElement
+    /// `buffered`-like: one bar per downloaded chunk — not per-sample comb from
+    /// B-frame reorder). Disjoint windows stay separate; abutting/overlapping
+    /// spans merge. Not decode Covered/Exact / not WASM LRU.
+    /// `samples`: `(frame, offset, size)`. **no equivalent** (strip local).
+    pub fn playable_frame_runs(
+        &self,
+        samples: impl IntoIterator<Item = (FrameId, u64, u64)>,
+    ) -> Vec<(FrameId, FrameId)> {
+        let samples: Vec<(FrameId, u64, u64)> = samples.into_iter().collect();
+        if samples.is_empty() {
+            return Vec::new();
+        }
+        let windows = self.windows();
+        if windows.is_empty() {
+            return Vec::new();
+        }
+        let mut runs: Vec<(FrameId, FrameId)> = Vec::new();
+        for &(ws, we) in &windows {
+            if we <= ws {
+                continue;
+            }
+            let mut lo: Option<FrameId> = None;
+            let mut hi: Option<FrameId> = None;
+            for &(frame, offset, size) in &samples {
+                if size == 0 {
+                    continue;
+                }
+                let se = offset.saturating_add(size);
+                // Overlap with the byte window (not full-cover — span paint).
+                if offset < we && se > ws {
+                    lo = Some(lo.map_or(frame, |l| l.min(frame)));
+                    hi = Some(hi.map_or(frame, |h| h.max(frame)));
+                }
+            }
+            if let (Some(a), Some(b)) = (lo, hi) {
+                runs.push((a, b.max(a)));
+            }
+        }
+        merge_inclusive_frame_runs(runs)
+    }
+
+    /// Coverage as fractions of `file_size` in `0.0..1.0` (diagnostic / e2e).
     /// Soft-merges holes ≤ [`display_merge_gap`], then snaps to an integer
     /// scrubber pixel so f32 noise / sub‑byte edges do not jitter the CSS stops.
     pub fn file_fractions(&self, file_size: u64) -> Vec<(f32, f32)> {
@@ -228,6 +280,26 @@ fn merge_touching(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64) {
     ranges.insert(i, (merged_start, merged_end));
 }
 
+/// Sort + merge inclusive FrameId runs that overlap or abut.
+fn merge_inclusive_frame_runs(mut runs: Vec<(FrameId, FrameId)>) -> Vec<(FrameId, FrameId)> {
+    if runs.is_empty() {
+        return runs;
+    }
+    runs.sort_by_key(|&(lo, _)| lo);
+    let mut out: Vec<(FrameId, FrameId)> = Vec::with_capacity(runs.len());
+    for (lo, hi) in runs {
+        let hi = hi.max(lo);
+        if let Some((_, prev_hi)) = out.last_mut()
+            && lo <= prev_hi.saturating_add(1)
+        {
+            *prev_hi = (*prev_hi).max(hi);
+            continue;
+        }
+        out.push((lo, hi));
+    }
+    out
+}
+
 /// Paint-time merge: close holes of at most `max_gap` bytes.
 fn soft_merge_windows(windows: &[(u64, u64)], max_gap: u64) -> Vec<(u64, u64)> {
     let mut out: Vec<(u64, u64)> = Vec::new();
@@ -273,6 +345,34 @@ mod tests {
         m.set_windows(&[(10_000_000, 10_000_000 + 4 * 1024 * 1024)]);
         assert_eq!(m.snapshot().len(), 1);
         assert_eq!(m.snapshot()[0].0, 10_000_000);
+    }
+
+    #[test]
+    fn playable_frame_runs_one_span_per_byte_window() {
+        let m = FetchMap::new();
+        m.note_window(100, 200);
+        // Same byte chunk → one presentation span (fills B-order holes).
+        let runs = m.playable_frame_runs([(0, 100, 50), (1, 180, 40), (2, 150, 20)]);
+        assert_eq!(runs, vec![(0, 2)]);
+    }
+
+    #[test]
+    fn playable_frame_runs_disjoint_windows_stay_split() {
+        let m = FetchMap::new();
+        m.set_windows(&[(100, 160), (500, 600)]);
+        // Mid presentation frame has no overlapping bytes — must not fill 0…10.
+        let runs = m.playable_frame_runs([(0, 100, 50), (5, 200, 50), (10, 500, 50)]);
+        assert_eq!(runs, vec![(0, 0), (10, 10)]);
+    }
+
+    #[test]
+    fn playable_frame_runs_b_order_not_comb() {
+        let m = FetchMap::new();
+        m.note_window(0, 1000);
+        // Decode/file order ≠ presentation — one window still one span.
+        let runs =
+            m.playable_frame_runs([(0, 0, 100), (5, 100, 100), (1, 200, 100), (2, 300, 100)]);
+        assert_eq!(runs, vec![(0, 5)]);
     }
 
     #[test]

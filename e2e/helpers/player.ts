@@ -20,6 +20,8 @@ export type ReadyFrameMarkJson = {
 /** Parsed `data-testid="pipeline-json"` payload from demo player UI. */
 export type PipelineJson = {
   fetch_file_ranges: [number, number][];
+  /** Inclusive playable FrameId runs (gray strip). */
+  fetch_playable_runs?: [number, number][];
   ready_frames: ReadyFrameMarkJson[];
   last_behind_ms: number | null;
   underrun_holds: number;
@@ -59,7 +61,14 @@ export function classifyFraction(
       return "covered";
     }
   }
-  if (inRanges(fraction, pipe.fetch_file_ranges)) return "gray";
+  const playable = pipe.fetch_playable_runs;
+  if (playable && playable.length > 0) {
+    for (const [lo, hi] of playable) {
+      if (frame >= lo && frame <= hi) return "gray";
+    }
+  } else if (inRanges(fraction, pipe.fetch_file_ranges)) {
+    return "gray";
+  }
   return "cold";
 }
 
@@ -81,7 +90,16 @@ export function pickZoneFraction(
   return hits[Math.floor(hits.length / 2)]!;
 }
 
-export function grayCoverageRatio(pipe: PipelineJson): number {
+export function grayCoverageRatio(pipe: PipelineJson, lastFrame?: number): number {
+  const playable = pipe.fetch_playable_runs;
+  if (playable && playable.length > 0 && lastFrame != null && lastFrame >= 0) {
+    const n = Math.max(1, lastFrame + 1);
+    let frames = 0;
+    for (const [lo, hi] of playable) {
+      frames += Math.max(0, hi - lo + 1);
+    }
+    return Math.min(1, frames / n);
+  }
   let covered = 0;
   for (const [a, b] of pipe.fetch_file_ranges) {
     covered += Math.max(0, b - a);
@@ -218,6 +236,7 @@ export class DemoPlayer {
     if (!raw || raw === "{}") {
       return {
         fetch_file_ranges: [],
+        fetch_playable_runs: [],
         ready_frames: [],
         last_behind_ms: null,
         underrun_holds: 0,

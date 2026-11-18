@@ -4,8 +4,9 @@
 //! `.ai/product.md` § Element-layer helpers.
 //!
 //! Strip domain + live remap live on [`crate::TimelineRef`] (`strip_video` /
-//! `strip_ready_marks` / `strip_fetch_ranges`). Meta re-leases pipeline interest
-//! when [`TimelineRef::strip_video_key`] changes — no Scrubber remount, no dual-lease.
+//! `strip_ready_marks` / `strip_fetch_playable_runs`). Meta re-leases pipeline
+//! interest when [`TimelineRef::strip_video_key`] changes — no Scrubber remount,
+//! no dual-lease.
 
 use leptos::html::Canvas;
 use leptos::prelude::*;
@@ -16,7 +17,7 @@ use crate::PipelinePlane;
 use crate::ReadyFrameKind;
 use crate::helpers::{
     COVERED_STRIP_COLOR, EXACT_STRIP_COLOR, FETCH_STRIP_COLOR, KEYFRAME_STRIP_COLOR,
-    StripPaintLatch, cache_strip_runs_for_width, fetch_strip_runs_for_width, paint_strip_canvas,
+    StripPaintLatch, cache_strip_runs_for_width, fetch_playable_runs_to_width, paint_strip_canvas,
     strip_canvas_buffer_width,
 };
 use crate::scrubber::ScrubberCtx;
@@ -25,7 +26,7 @@ use crate::timeline::StripVideoKey;
 /// Which residency / fetch plane to paint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimelineMetaKind {
-    /// Ever-fetched byte ranges (`FetchMap` fractions).
+    /// Playable ranges (FetchMap covers sample bytes — buffered-like).
     Fetch,
     /// Sync / keyframe positions (structural ticks).
     Keyframes,
@@ -133,17 +134,19 @@ pub fn TimelineMeta(
         timeline.mirror_covered_from_slots();
         let _ = timeline.exact_residency_epoch().get();
         let covered_marks = timeline.strip_covered_marks();
-        let raw_fetch = pipe
+        let raw_playable = pipe
             .as_ref()
-            .map(|s| s.fetch_file_ranges.as_slice())
+            .map(|s| s.fetch_playable_runs.as_slice())
             .unwrap_or(&[]);
-        let fetch_ranges = timeline.strip_fetch_ranges(raw_fetch);
+        let playable_runs = timeline.strip_fetch_playable_runs(raw_playable);
 
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
         let cand = match kind {
-            TimelineMetaKind::Fetch => fetch_strip_runs_for_width(&fetch_ranges, width),
+            TimelineMetaKind::Fetch => {
+                fetch_playable_runs_to_width(&playable_runs, frame_count, width)
+            }
             TimelineMetaKind::Keyframes => cache_strip_runs_for_width(
                 &ready_marks,
                 ReadyFrameKind::Keyframes,

@@ -12,10 +12,10 @@
 //!   more than mediabunny’s 64 MiB — high-RTT `/proxy` thrash).
 //! - **Blob / Memory**: [`LOCAL_CACHE_BUDGET`] **8 MiB** — match mediabunny
 //!   BlobSource size; **no** bg quantum / margin / multi-MiB WASM `prefetch`
-//!   (sample `want` only). Gray [`FetchMap`] **accumulates** on insert; quantum
-//!   expand is **prefetch-only** (densify/scrub) — per-sample expand rebuilt the
-//!   strip every NAL → flicker. Densify cold gate skips FetchMap for decode, but
-//!   still kicks `prefetch` so gray advances (`note_local_gray`).
+//!   (sample `want` only). Gray [`FetchMap`] advances via **seed** +
+//!   [`note_local_gray`] on `prefetch` only — **not** per-sample cache inserts
+//!   (AVC sync / warm would pepper keyframes → strip comb on large locals).
+//!   Densify cold gate still kicks `prefetch` so gray advances.
 //!
 //! Fill quantum 8 MiB (URL); sequential misses extend like
 //! `PREFETCH_PROFILES.network`; **hit-path** margin prefetch loads the next
@@ -299,12 +299,11 @@ fn margin_prefetch_job(
 
 /// Push cache residency into [`FetchMap`] for the gray scrubber strip.
 ///
-/// Always **accumulate** (`note_window`) for Url and local — gray = bytes
-/// fetched this session (product), not the current WASM LRU. Replacing with
-/// `set_windows` punched permanent holes when URL eviction dropped a window
-/// that nothing re-read. WASM cache still LRU-evicts; the meter does not.
-/// Local: want-only inserts stay sample-sized; quantum gray is prefetch-only
-/// (`mediabunny: BlobSource` is fully sliceable in JS).
+/// **URL:** accumulate on insert — downloaded bytes stay playable after WASM
+/// LRU eviction (`set_windows` used to punch permanent holes).
+/// **Local:** do **not** call this on sample misses — use [`note_local_gray`]
+/// from `prefetch` / [`CachedSource::seed_windows`] only (`mediabunny:
+/// BlobSource` is sliceable; sample sync would comb the strip).
 fn sync_fetch_map(fetch_map: &Option<Arc<FetchMap>>, state: &CacheState) {
     let Some(map) = fetch_map else {
         return;
@@ -643,10 +642,12 @@ impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
                     },
                     self.shared.budget,
                 );
-                sync_fetch_map(&self.shared.fetch_map, &state);
-                // Local gray expand is **prefetch-only** (densify / scrub kick) —
-                // per-sample note_local_gray during Play rebuilt the strip every
-                // NAL → flicker + soft-merge blur on ChG-class files.
+                // URL: mirror downloads into FetchMap. Local: sample inserts stay
+                // out of FetchMap (prefetch `note_local_gray` owns gray — else
+                // deferred AVC sync peppers keyframes across the bar).
+                if network {
+                    sync_fetch_map(&self.shared.fetch_map, &state);
+                }
                 // Finish the planned quantum behind the consumer (URL only).
                 if network
                     && fill_len > blocking
@@ -838,11 +839,15 @@ mod tests {
     }
 
     #[test]
-    fn fetch_map_mirrors_resident_windows() {
+    fn fetch_map_mirrors_resident_windows_on_network() {
         let data: Vec<u8> = (0u8..128).collect();
         let map = Arc::new(FetchMap::new());
-        let cached =
-            CachedSource::with_budget(CountingSource::new(data), 32, 256, Some(Arc::clone(&map)));
+        let cached = CachedSource::with_budget(
+            NetworkCounting(CountingSource::new(data)),
+            32,
+            256,
+            Some(Arc::clone(&map)),
+        );
 
         let _ = poll_ready(&cached, 0, 8).unwrap();
         assert!(map.file_fractions(128).is_empty());
@@ -852,6 +857,21 @@ mod tests {
         // Exact resident windows stay split; paint soft-merges sub‑pixel holes.
         assert_eq!(map.windows().len(), 2);
         assert_eq!(map.file_fractions(128).len(), 1);
+    }
+
+    #[test]
+    fn local_sample_miss_does_not_pepper_fetch_map() {
+        let data: Vec<u8> = (0u8..128).collect();
+        let map = Arc::new(FetchMap::new());
+        let cached =
+            CachedSource::with_budget(CountingSource::new(data), 32, 256, Some(Arc::clone(&map)));
+        let _ = poll_ready(&cached, 0, 20).unwrap();
+        let _ = poll_ready(&cached, 64, 20).unwrap();
+        assert!(
+            map.windows().is_empty(),
+            "local sample inserts must not comb FetchMap, wins={:?}",
+            map.windows()
+        );
     }
 
     #[test]
@@ -1045,8 +1065,8 @@ mod tests {
 
     #[test]
     fn local_sample_miss_does_not_expand_gray_quantum() {
-        // Play-path sample misses stay want-sized on FetchMap — quantum expand
-        // is prefetch-only (densify/scrub) to avoid every-NAL strip flicker.
+        // Local sample misses: WASM want-only + FetchMap untouched; quantum gray
+        // is prefetch `note_local_gray` only (no keyframe pepper / strip comb).
         let data = vec![7u8; MIN_LOAD + 4096];
         let map = Arc::new(FetchMap::new());
         let counting = CountingSource::new(data);
@@ -1062,10 +1082,10 @@ mod tests {
             100,
             "WASM must stay want-only"
         );
-        assert_eq!(
-            map.windows(),
-            vec![(0, 100)],
-            "sample miss must not quantum-expand gray (prefetch owns that)"
+        assert!(
+            map.windows().is_empty(),
+            "sample miss must not touch FetchMap, wins={:?}",
+            map.windows()
         );
         cached.prefetch(0, MIN_LOAD);
         assert!(
