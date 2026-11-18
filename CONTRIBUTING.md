@@ -25,6 +25,7 @@ Semantic format:
 - **State with the feature (hard):** if the commit ships work tracked in `.ai/state.md`, delete that bullet from state **before** committing and include the updated `state.md` in the **same** commit as the code. Do not leave a finished item in In progress / Next up / Later, and do not commit the feature without the state drop.
 - **Same-diff docs (hard):** shipped design / ownership / policy change → update canonical `.ai/` home (+ policy comments) in the **same** commit — see `AGENTS.md` § Documentation write gate → Same-diff freshness. Soft “include `.ai/` later” is not allowed. No long duplicate prose across product, architecture, and skills.
 - **Fix shape:** integrate into the real control flow (not a diagnosis bolt-on) and strip search debris before commit — see `AGENTS.md` § Commits → Before commit (fix).
+- **Agent on Windows / Cursor:** PowerShell HEREDOC, UTF-8 BOM subjects, injected `Co-authored-by` `<…>` redirects, and bare-bash author identity — see `AGENTS.md` § Commits → Windows / Cursor (do not restate).
 
 ### Pre-commit / pre-push gates
 

@@ -152,6 +152,7 @@ Comments that state **who owns decode**, HW vs PreferSoftware, densify on/off, m
 | Approve-before-edit / ask-before-commit | `AGENTS.md` | Do not restate |
 | Share common logic (unify siblings) | `product.md` § Share common logic | `AGENTS.md` § Sibling / shared-logic check — pointer only |
 | Fix commit hygiene (integrate, strip debris) | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |
+| Windows / Cursor agent `git commit` traps | `AGENTS.md` § Commits → Windows / Cursor | `CONTRIBUTING.md`: one-line pointer only |
 | Doc write gate / skill budgets / same-diff freshness / policy comments | `AGENTS.md` | Do not restate — `CONTRIBUTING.md`: one-line pointer only |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
@@ -224,6 +225,25 @@ Do **not** only “append to `media.md`” without choosing a canonical slot. Do
 **Ask first (hard):** never create a git commit unless the user explicitly asks (e.g. `commit`, `commi`, «закоммить», «сделай коммит»). Finishing a task, `go` / `ok` on an edit plan, or “impl …” is **not** consent to commit. Do not push unless asked.
 
 When the user does ask to commit: follow **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for message format, size limits, and mandatory pre-commit / pre-push gates (including `cargo clippy … -- -D warnings`). Do not restate those rules here.
+
+### Windows / Cursor — agent `git commit` (hard)
+
+This repo’s agent shell is often **PowerShell** on Windows; Cursor may also inject a `Co-authored-by: Cursor <…>` trailer into `git commit`. Do **not** retry the same failing pattern.
+
+| Trap | Symptom | Do instead |
+| ---- | ------- | ---------- |
+| Bash HEREDOC in PowerShell | parse errors / empty message | Never `$(cat <<'EOF')` from the PS prompt |
+| `Set-Content -Encoding UTF8` (or `utf8NoBOM` missing) | subject starts with `﻿feat` (BOM) | Write `.git/COMMIT_MSG_TMP.txt` with **Python** `open(..., encoding='utf-8')` (no BOM) or equivalent |
+| Trailer `<email>` on the PS/bash command line | `<` = redirect; `cursoragent@…: No such file`; even a PS line that *mentions* `git commit` may be rewritten | Never type the two-word sequence `` git`` + `` commit`` in the PowerShell command (Cursor injects `--trailer … <…>`). Write a `.sh` via **Write tool / Python file**, then `bash .git/do_commit.sh` only |
+| Bare `bash` commit script | `Author identity unknown` / empty ident | Set `GIT_AUTHOR_NAME` / `EMAIL` + `GIT_COMMITTER_*` from `git log -1` for that invocation only. **Never** `git config` user.* |
+| Stale “modified” flood after commit | status shows half the tree dirty, `git diff` empty | `git update-index --refresh` before panicking |
+
+**Recipe (when user asked to commit and gates are green):**
+
+1. `bash scripts/check.sh` (already green).
+2. Python → `.git/COMMIT_MSG_TMP.txt` (UTF-8, no BOM; subject + body per CONTRIBUTING).
+3. Bash script: export author/committer from `git log -1`, then `git commit -F .git/COMMIT_MSG_TMP.txt`; delete the tmp script + msg file; `git status` / `git log -1`.
+4. If amend is allowed (HEAD you just made, not pushed) only to fix a broken message (e.g. BOM) — same file/`-F` path.
 
 ### Before commit (fix) — integrate, don’t bolt on
 
