@@ -185,7 +185,7 @@ Shared scrub/hover **UI** handle in `fpmedia-web-components` (`ready` / `playhea
 
 ### Virtual Timeline
 
-Shared **axis + settle/resolve + Pause thumb progressive** for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact + thumb **bitmaps** stay in slot stores; Covered / Fetch / thumb **markers** sole on VT ledger. VT Exact-bitmap write path parked. Host transport: [`MediaRef`](#mediaref); UI strips via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
+Shared **axis + settle/resolve + Pause thumb progressive + LoopZone play plans** (wall / wrap-done / EOF / seam-next) for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact + thumb **bitmaps** stay in slot stores; Covered / Fetch / thumb **markers** sole on VT ledger. VT Exact-bitmap write path parked. Seam latch / wrap **exec** still playlist host. Host transport: [`MediaRef`](#mediaref); UI strips via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
 
 ### PlaylistPos
 
@@ -193,7 +193,7 @@ Position inside a playlist: **clip index** (0-based in the model; **1-based** `[
 
 ### LoopZone
 
-Half-open wrap range `[in, out)` when `looping` is on. Default = full file (single) or full playlist. Single `<Video>`: source FrameIds + engine wall/`LoopSeam`. Playlist: scrub **global frames**; wrap owner is [`LoopOwner`](#loopowner). **Goto** / Next / Prev / paused scrub ignore the zone; scrub-while-play resume is Play (outside → `loop_in`); only Play + wall wrap. API: `VideoRef` / `VideoPlaylistRef` `set_loop_zone` / `loop_zone`. Demo `[`/`]` + mask. UX: `product.md` § Loop zone. Design: `architecture.md` § LoopZone.
+Half-open wrap range `[in, out)` when `looping` is on. Default = full file (single) or full playlist. Single `<Video>`: source FrameIds + engine wall/`LoopSeam`. Playlist: scrub **global frames**; wrap owner is [`LoopOwner`](#loopowner). Wall geometry / outside-Play plans: VT `ZoneOwner` + `play_outside_zone` (playlist aliases `HostZoneOwner`). **Goto** / Next / Prev / paused scrub ignore the zone; scrub-while-play resume is Play (outside → `loop_in`); only Play + wall wrap. API: `VideoRef` / `VideoPlaylistRef` `set_loop_zone` / `loop_zone`. Demo `[`/`]` + mask. UX: `product.md` § Loop zone. Design: `architecture.md` § LoopZone / Virtual Timeline.
 
 ### LoopOwner
 

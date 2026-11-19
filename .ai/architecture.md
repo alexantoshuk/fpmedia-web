@@ -76,7 +76,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
 | Playlist = 2× `<Video>` composition (agreed) | Review playlist without N decoders / NLE in engine. See [Playlist composition](#playlist-composition-agreed). UX: `product.md`. Steps: `state.md`. |
-| Virtual Timeline policy over Single + Playlist | One Exact/scrub/thumbs (later play·LoopZone) axis; backends decode-only. See [Virtual Timeline](#virtual-timeline-agreed). |
+| Virtual Timeline policy over Single + Playlist | One Exact/scrub/thumbs/LoopZone-wall axis (seam exec still playlist; later full play·loop); backends decode-only. See [Virtual Timeline](#virtual-timeline-agreed). |
 
 ---
 
@@ -88,7 +88,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 Host chrome / demo
         → MediaRef (transport: play/pause/seek/goto/step/loop/gain)
         → TimelineRef (scrub/hover/strip; MediaRef::as_timeline)
-        → virtual_timeline (Exact settle / resolve / thumb progressive; later play · LoopZone)
+        → virtual_timeline (Exact settle / resolve / thumb progressive; LoopZone wall geometry; later seam exec)
         → backend adapters (Single VideoRef | Playlist 2-slot pool)
         → VideoPlayer ×1 or ×2 (demux / decode / clock)
 ```
@@ -96,7 +96,7 @@ Host chrome / demo
 | Piece | Rule |
 | ----- | ---- |
 | Transport facade | **Shipped:** [`MediaRef`](../components/src/media.rs) — shared play/pause/seek/goto/step/loop/gain over Video \| Playlist. Open, `[i]`/`PlaylistPos`, slot/engine knobs stay on concrete refs |
-| Policy home | `components/src/virtual_timeline/` — settle law + resolve + [`plan_next_thumb_fill`](../components/src/virtual_timeline/thumb_plan.rs). Covered/Fetch/thumb markers = [`ExactLedger`](../components/src/virtual_timeline/ledger.rs); Exact-take / densify orch = **parked** (not a live Exact store) |
+| Policy home | `components/src/virtual_timeline/` — settle law + resolve + [`plan_next_thumb_fill`](../components/src/virtual_timeline/thumb_plan.rs) + [`loop_zone`](../components/src/virtual_timeline/loop_zone.rs) wall geometry (`play_outside_zone` / `plan_scrub_up` / `plan_host_outside`). Covered/Fetch/thumb markers = [`ExactLedger`](../components/src/virtual_timeline/ledger.rs); Exact-take / densify orch = **parked** (not a live Exact store). Seam latch / wrap exec still playlist host |
 | UI binding | **Shipped:** [`TimelineRef`](../components/src/timeline.rs) — scrub/hover/strip domain. **Covered** + **Fetch** = VT ledger; **Exact** = remapped slot blit (+ idle Exact) |
 | Backend | Decode/open/present + densify Exact/Covered in slot; host mirrors Covered → `note_covered(global)`. Single = identity; Playlist = Σ map + 2-slot |
 | Exact residency | **Slot `ScrubBlitLru` only** (one store per slot; playlist ≤2× VRAM wallets). PresentHit = `has_scrub_exact_blit`. No bitmap ledger write. Anti-pattern: SoftPark; dual Exact *stores as truth* |
@@ -105,7 +105,8 @@ Host chrome / demo
 | Thumb progressive | **Shipped (playlist):** same VT axis — `plan_next_thumb_fill` over **open live/idle only** (Σ duration for coarse). Never `ensure`/clip-walk for fill (open stampede → `open timed out`). Plan **ready** = slot bitmap (or admit-skip), not ledger-only `note_thumb`. ≤**2×** sinks; `vt_thumb_authority` + `fill_thumb_key_at`. Off-slot hover still warms idle. Single: engine-local progressive. **no equivalent** (filmstrip local) |
 | Densify path | Engine `next_gap` on live (`vt_densify_authority=false`). Idle **park** (densify off, keep Exact). Off wipe = media replace / user Scrub Off (slot + VT Covered). Exact strip remaps live (+ idle Exact) |
 | Exact VRAM | One `blit_mib` (512) for Short/Long; frame count from canvas. All-Intra densify off |
-| Cut join Exact | **Shipped:** Pause one-shot Exact@join on idle (`prepare_seam_at` densify-free → park keep Exact) so Up PresentHit is common; kick-once per `(idle, join)` — not Move thrash / not soft-drag / not Play SeamHold. LoopZone uses SeamHold/`LoopPlayWarm` (not this). Later on VT: Play intent / LoopZone / CutWindow on the same axis |
+| Cut join Exact | **Shipped:** Pause one-shot Exact@join on idle (`prepare_seam_at` densify-free → park keep Exact) so Up PresentHit is common; kick-once per `(idle, join)` — not Move thrash / not soft-drag / not Play SeamHold. LoopZone uses SeamHold/`LoopPlayWarm` (not this). |
+| Play · LoopZone on VT | **Slices 1–2 shipped:** wall + scrub-Up/Play-outside + wrap-done / seam-next / EOF advance / Play@clip-last in [`loop_zone`](../components/src/virtual_timeline/loop_zone.rs) (`ZoneOwner`); playlist re-exports. Next/Prev step stays playlist (`PlaylistPos`). **Later:** seam latch exec / single LoopSeam adapter; then CutWindow |
 | Readout | `[i]` stays clip-local (`product.md`); scrub/Exact/thumbs/play/loop axis = global |
 
 ## Playlist composition (agreed)
@@ -134,14 +135,14 @@ Host chrome / demo
 
 | Event | Condition | Plan (cmds) |
 | ----- | --------- | ----------- |
-| Scrub Up resume + Host outside | `host_play_outside_zone` | preempt scrub → `start_host_wrap` (no Exact@outside) |
+| Scrub Up resume + Host outside | VT `play_outside_zone` / `plan_scrub_up` | preempt scrub → `start_host_wrap` (no Exact@outside) |
 | Scrub Up else | on live / cross-clip | `LiveSettle` / `CrossClipSeek` (± then_play) |
-| PlayPressed outside | `plan_host_outside` (past-out **without** wall-on-live gate) | Host → `start_host_wrap`; Engine → slot `play`; else clip-EOF / bare play |
-| Wall Effect outside while Playing | same plan with `past_out_needs_wall_on_live` | HostWrap only when `zone_last` on live; else EOF advance owns join |
-| WrapDone / seam Err | `plan_wrap_done` (`is_soft_seam_cancel`) | soft → `ResumeLiveKeepPlay`; hard → clear Play + error; epoch mismatch → Ignore |
-| Next / Prev | `plan_step` (no LoopZone) | mid → `LiveStep` + clear intent; edge → `GotoPos` (`goto_pos`); terminal → `ClearPlayIntent` |
-| Clip EOF advance | `plan_advance_ended` + `plan_seam_next_clip` | Wrap / Promote@0 / TerminalEnd; Effect still latches `try_begin_seam` before clear `ended` |
-| Play@clip-last (Host, inside zone) | `plan_play_at_clip_last` + `plan_seam_next_clip` | PromoteSeek@0 / HostWrap (mid-in parity with EOF) |
+| PlayPressed outside | VT `plan_host_outside` (past-out **without** wall-on-live gate) | Host → `start_host_wrap`; Engine → slot `play`; else clip-EOF / bare play |
+| Wall Effect outside while Playing | same VT plan with `past_out_needs_wall_on_live` | HostWrap only when `zone_last` on live; else EOF advance owns join |
+| WrapDone / seam Err | VT `plan_wrap_done` (`is_soft_seam_cancel`) | soft → `ResumeLiveKeepPlay`; hard → clear Play + error; epoch mismatch → Ignore |
+| Next / Prev | playlist `plan_step` (no LoopZone) | mid → `LiveStep` + clear intent; edge → `GotoPos` (`goto_pos`); terminal → `ClearPlayIntent` |
+| Clip EOF advance | VT `plan_advance_ended` + `plan_seam_next_clip` | Wrap / Promote@0 / TerminalEnd; Effect still latches `try_begin_seam` before clear `ended` |
+| Play@clip-last (Host, inside zone) | VT `plan_play_at_clip_last` + `plan_seam_next_clip` | PromoteSeek@0 / HostWrap (mid-in parity with EOF) |
 
 Soft cancel ≠ sticky UI error. User goto stays on ref (`goto_*` → `stop_play_for_goto` + seek). Internal `seek_*` does not stop Play. Traps: `skills/leptos.md`.
 

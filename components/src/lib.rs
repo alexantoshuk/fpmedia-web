@@ -3,7 +3,7 @@
 //! - [`video`] — frame-precise `<Video>` + [`VideoRef`]
 //! - [`media`] — shared [`MediaRef`] transport facade (Video / VideoPlaylist)
 //! - [`timeline`] — shared [`TimelineRef`] for scrub/hover (Video / VideoPlaylist)
-//! - [`virtual_timeline`] — VT policy (Exact settle / resolve; backends decode-only)
+//! - [`virtual_timeline`] — VT policy (Exact settle / resolve / thumbs / LoopZone wall; backends decode-only)
 //! - [`scrubber`] — headless `<Scrubber>` (gesture + context)
 //! - [`timeline_meta`] — `<TimelineMeta>` (one fetch/residency strip)
 //! - [`hover_thumb`] — `<HoverThumb>` (paint inside; host chrome via children)
