@@ -1,9 +1,16 @@
-//! Playlist loop ownership + seam phase — **no equivalent** (host local).
+//! Playlist loop ownership + seam phase — signal I/O over VT reduce.
 //!
-//! Design: `.ai/architecture.md` § Playlist composition / State machines.
+//! Pure FSM / owner geometry: [`crate::virtual_timeline::loop_zone`].
+//! Async wrap / promote stay in [`super::slots`].
+//! Design: `.ai/architecture.md` § Playlist composition / Virtual Timeline.
 //! Vocab: `.ai/glossary.md` § LoopOwner / SeamPhase.
+//! **no equivalent** (host local).
 
 use leptos::prelude::*;
+
+use crate::virtual_timeline::{
+    seam_ensure_preparing as vt_seam_ensure_preparing, seam_try_begin, zone_owner_from_spans,
+};
 
 use super::video_playlist_ref::VideoPlaylistRef;
 
@@ -16,32 +23,9 @@ pub(crate) fn seam_trace(msg: &str) {
     }
 }
 
-/// Who arms LoopZone wrap for the current playlist zone vs live clip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LoopOwner {
-    /// Playlist `looping` off.
-    Off,
-    /// Zone ⊆ live clip → engine `LoopSeam` on the live `<Video>`.
-    Engine,
-    /// Cross-clip / multi-clip wall → host `promote_idle_at` / `wrap_to_loop_in`.
-    Host,
-}
-
-/// Host playlist seam in flight (cut promote or LoopZone wrap).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum SeamPhase {
-    #[default]
-    Idle,
-    Preparing,
-    Swapping,
-    Playing,
-}
-
-impl SeamPhase {
-    pub(crate) fn is_busy(self) -> bool {
-        !matches!(self, Self::Idle)
-    }
-}
+pub(crate) use crate::virtual_timeline::SeamPhase;
+/// Alias of VT [`crate::virtual_timeline::ZoneOwner`] (playlist vocab).
+pub(crate) use crate::virtual_timeline::ZoneOwner as LoopOwner;
 
 /// Derive ownership from playlist `looping` + global zone vs live clip span.
 /// Does **not** read slot `Video.looping` (that is a sync side-effect).
@@ -58,11 +42,7 @@ pub(crate) fn loop_owner(pl: VideoPlaylistRef) -> LoopOwner {
     let Some(clip_end) = model.clip_end_frame(live_i) else {
         return LoopOwner::Host;
     };
-    if zone_in >= clip_start && zone_out <= clip_end && zone_out > zone_in {
-        LoopOwner::Engine
-    } else {
-        LoopOwner::Host
-    }
+    zone_owner_from_spans(true, zone_in, zone_out, clip_start, clip_end)
 }
 
 pub(crate) fn seam_phase(pl: VideoPlaylistRef) -> SeamPhase {
@@ -79,20 +59,20 @@ pub(crate) fn set_seam_phase(pl: VideoPlaylistRef, phase: SeamPhase) {
 
 /// Idle → Preparing. False if a seam is already in flight.
 pub(crate) fn try_begin_seam(pl: VideoPlaylistRef) -> bool {
-    if pl.seam_phase.get_untracked().is_busy() {
+    let Some(next) = seam_try_begin(seam_phase(pl)) else {
         return false;
-    }
-    set_seam_phase(pl, SeamPhase::Preparing);
+    };
+    set_seam_phase(pl, next);
     true
 }
 
 /// Begin if Idle; stay if already Preparing; reject Swapping/Playing.
 pub(crate) fn ensure_seam_preparing(pl: VideoPlaylistRef) -> bool {
-    match pl.seam_phase.get_untracked() {
-        SeamPhase::Idle => try_begin_seam(pl),
-        SeamPhase::Preparing => true,
-        SeamPhase::Swapping | SeamPhase::Playing => false,
-    }
+    let Some(next) = vt_seam_ensure_preparing(seam_phase(pl)) else {
+        return false;
+    };
+    set_seam_phase(pl, next);
+    true
 }
 
 pub(crate) fn end_seam(pl: VideoPlaylistRef) {
@@ -104,16 +84,4 @@ pub(crate) fn end_seam(pl: VideoPlaylistRef) {
         seam_phase(pl)
     ));
     set_seam_phase(pl, SeamPhase::Idle);
-}
-
-pub(crate) use super::host_zone::HostZoneOwner;
-
-impl From<LoopOwner> for HostZoneOwner {
-    fn from(o: LoopOwner) -> Self {
-        match o {
-            LoopOwner::Off => HostZoneOwner::Off,
-            LoopOwner::Engine => HostZoneOwner::Engine,
-            LoopOwner::Host => HostZoneOwner::Host,
-        }
-    }
 }

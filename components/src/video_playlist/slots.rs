@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
-use super::host_zone::{HostZoneOwner, is_soft_seam_cancel};
+use super::host_zone::is_soft_seam_cancel;
 use super::loop_seam::{
     LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, seam_trace,
     set_seam_phase, try_begin_seam,
@@ -1044,7 +1044,7 @@ pub(crate) async fn advance_after_ended(
         let seam_next = seam_next_clip(pl, from_clip);
         let plan = plan_advance_ended(AdvanceEndedCtx {
             live_still_from_clip: pl.live_clip.get_untracked() == from_clip,
-            owner: HostZoneOwner::from(loop_owner(pl)),
+            owner: loop_owner(pl),
             zone_full,
             zone_out,
             clip_end: model.clip_end_frame(from_clip).unwrap_or(0),

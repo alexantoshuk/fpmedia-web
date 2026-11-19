@@ -3,9 +3,10 @@
 //! Law lives in [`crate::virtual_timeline::loop_zone`]. Host still runs seams.
 //! **no equivalent**.
 
-// Re-export for wasm playlist host (`component` / `slots` / `video_playlist_ref`).
-// Native builds those modules out — VT owns the symbols + unit tests.
-#[cfg_attr(not(target_arch = "wasm32"), allow(unused_imports))]
+// Re-export for wasm playlist host. Native builds host modules out — VT owns
+// symbols + unit tests. `HostZoneOwner` = VT `ZoneOwner` (same as `LoopOwner`);
+// call sites may use either alias — keep both for vocab.
+#[allow(unused_imports)]
 pub(crate) use crate::virtual_timeline::{
     AdvanceEndedCtx, AdvanceEndedPlan, HostOutsideCtx, HostOutsidePlan, PlayAtClipLastCtx,
     PlayAtClipLastPlan, ScrubUpCtx, ScrubUpPlan, SeamNextCtx, WrapDonePlan,

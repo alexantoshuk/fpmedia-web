@@ -185,7 +185,7 @@ Shared scrub/hover **UI** handle in `fpmedia-web-components` (`ready` / `playhea
 
 ### Virtual Timeline
 
-Shared **axis + settle/resolve + Pause thumb progressive + LoopZone play plans** (wall / wrap-done / EOF / seam-next) for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact + thumb **bitmaps** stay in slot stores; Covered / Fetch / thumb **markers** sole on VT ledger. VT Exact-bitmap write path parked. Seam latch / wrap **exec** still playlist host. Host transport: [`MediaRef`](#mediaref); UI strips via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
+Shared **axis + settle/resolve + Pause thumb progressive + LoopZone play plans** (wall / wrap-done / EOF / seam-next + pure `SeamPhase` / `zone_owner_from_spans`) for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact + thumb **bitmaps** stay in slot stores; Covered / Fetch / thumb **markers** sole on VT ledger. VT Exact-bitmap write path parked. Async wrap / promote **exec** still playlist host. Host transport: [`MediaRef`](#mediaref); UI strips via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
 
 ### PlaylistPos
 
@@ -197,11 +197,11 @@ Half-open wrap range `[in, out)` when `looping` is on. Default = full file (sing
 
 ### LoopOwner
 
-Playlist: who arms LoopZone wrap for the current global zone vs live clip — `Off` / `Engine` (zone ⊆ live → engine `LoopSeam`) / `Host` (cross-clip wall → `wrap_to_loop_in` / `promote_idle_at`). Derived from geometry + playlist `looping`; never by reading slot `Video.looping`. Design: `architecture.md` § State machines / Playlist.
+Playlist alias of VT `ZoneOwner`: who arms LoopZone wrap for the current global zone vs live clip — `Off` / `Engine` (zone ⊆ live → engine `LoopSeam`) / `Host` (cross-clip wall → `wrap_to_loop_in` / `promote_idle_at`). Law: `zone_owner_from_spans`; never by reading slot `Video.looping`. Design: `architecture.md` § State machines / Playlist.
 
 ### SeamPhase
 
-Playlist host seam latch: `Idle` / `Preparing` / `Swapping` / `Playing` (`RwSignal` so EOF Effect re-runs when Idle). Cut promote and LoopZone wrap share it so dual wrap is unrepresentable. Design: `architecture.md` § State machines.
+VT pure seam latch FSM (`Idle` / `Preparing` / `Swapping` / `Playing`); playlist holds it in an `RwSignal` so EOF Effect re-runs when Idle. Cut promote and LoopZone wrap share it so dual wrap is unrepresentable. Transitions: `seam_try_begin` / `seam_ensure_preparing`. Design: `architecture.md` § State machines.
 
 ### Playlist
 

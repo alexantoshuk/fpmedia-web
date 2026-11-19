@@ -1,8 +1,8 @@
 //! Virtual Timeline — LoopZone wall + Play/scrub-outside + seam-next / wrap-done
-//! (slices 1–2).
+//! + SeamPhase FSM (slices 1–3).
 //!
-//! Pure global-axis law. Playlist host still executes seams (`SeamPhase` /
-//! `wrap_to_loop_in` / promote). Next/Prev step plans stay playlist-local
+//! Pure global-axis law. Playlist host still **executes** seams (`wrap_to_loop_in`
+//! / promote + signal I/O). Next/Prev step plans stay playlist-local
 //! (`PlaylistPos`).
 //! Design: `.ai/architecture.md` § Virtual Timeline / Playlist host plans.
 //! **no equivalent** (playlist / scrub local).
@@ -16,6 +16,60 @@ pub enum ZoneOwner {
     Engine,
     /// Cross-clip / multi-clip wall → host promote / wrap.
     Host,
+}
+
+/// Host playlist seam in flight (cut promote or LoopZone wrap).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SeamPhase {
+    #[default]
+    Idle,
+    Preparing,
+    Swapping,
+    Playing,
+}
+
+impl SeamPhase {
+    pub fn is_busy(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+/// Derive owner from looping + global zone vs live clip half-open span `[start, end)`.
+///
+/// Does not read slot `Video.looping` — that is a sync side-effect on the host.
+pub fn zone_owner_from_spans(
+    looping: bool,
+    zone_in: u32,
+    zone_out: u32,
+    clip_start: u32,
+    clip_end: u32,
+) -> ZoneOwner {
+    if !looping {
+        return ZoneOwner::Off;
+    }
+    if zone_in >= clip_start && zone_out <= clip_end && zone_out > zone_in {
+        ZoneOwner::Engine
+    } else {
+        ZoneOwner::Host
+    }
+}
+
+/// Idle → Preparing. `None` if a seam is already in flight.
+pub fn seam_try_begin(phase: SeamPhase) -> Option<SeamPhase> {
+    if phase.is_busy() {
+        None
+    } else {
+        Some(SeamPhase::Preparing)
+    }
+}
+
+/// Begin if Idle; keep Preparing; reject Swapping/Playing (`None`).
+pub fn seam_ensure_preparing(phase: SeamPhase) -> Option<SeamPhase> {
+    match phase {
+        SeamPhase::Idle => seam_try_begin(phase),
+        SeamPhase::Preparing => Some(SeamPhase::Preparing),
+        SeamPhase::Swapping | SeamPhase::Playing => None,
+    }
 }
 
 /// Host scrub-while-play / Play wall: aim is outside the half-open zone
@@ -311,6 +365,47 @@ pub fn plan_play_at_clip_last(ctx: PlayAtClipLastCtx) -> PlayAtClipLastPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_owner_from_spans_table() {
+        // Zone ⊆ live [0, 200) → Engine.
+        assert_eq!(
+            zone_owner_from_spans(true, 10, 100, 0, 200),
+            ZoneOwner::Engine
+        );
+        // Cross-clip / wider than live → Host.
+        assert_eq!(zone_owner_from_spans(true, 0, 500, 0, 200), ZoneOwner::Host);
+        assert_eq!(
+            zone_owner_from_spans(false, 10, 100, 0, 200),
+            ZoneOwner::Off
+        );
+        // Empty / inverted zone → Host (not Engine).
+        assert_eq!(zone_owner_from_spans(true, 50, 50, 0, 200), ZoneOwner::Host);
+    }
+
+    #[test]
+    fn seam_phase_transitions() {
+        assert_eq!(seam_try_begin(SeamPhase::Idle), Some(SeamPhase::Preparing));
+        assert_eq!(seam_try_begin(SeamPhase::Preparing), None);
+        assert_eq!(seam_try_begin(SeamPhase::Swapping), None);
+        assert_eq!(seam_try_begin(SeamPhase::Playing), None);
+
+        assert_eq!(
+            seam_ensure_preparing(SeamPhase::Idle),
+            Some(SeamPhase::Preparing)
+        );
+        assert_eq!(
+            seam_ensure_preparing(SeamPhase::Preparing),
+            Some(SeamPhase::Preparing)
+        );
+        assert_eq!(seam_ensure_preparing(SeamPhase::Swapping), None);
+        assert_eq!(seam_ensure_preparing(SeamPhase::Playing), None);
+
+        assert!(!SeamPhase::Idle.is_busy());
+        assert!(SeamPhase::Preparing.is_busy());
+        assert!(SeamPhase::Swapping.is_busy());
+        assert!(SeamPhase::Playing.is_busy());
+    }
 
     #[test]
     fn play_outside_zone_table() {

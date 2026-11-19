@@ -9,7 +9,6 @@ use web_sys::HtmlCanvasElement;
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
-use super::host_zone::HostZoneOwner;
 use super::loop_seam::{loop_owner, seam_busy};
 use super::plan::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
 use super::slots::{
@@ -523,7 +522,7 @@ impl VideoPlaylistRef {
             global: global_frame,
             resume,
             aim_on_live,
-            owner: HostZoneOwner::from(loop_owner(self)),
+            owner: loop_owner(self),
             looping: self.looping.get_untracked(),
             zone_in,
             zone_out,

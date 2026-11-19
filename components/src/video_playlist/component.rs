@@ -10,7 +10,7 @@ use wasm_bindgen_futures::spawn_local;
 use crate::Video;
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
-use super::host_zone::{HostZoneOwner, is_soft_seam_cancel};
+use super::host_zone::is_soft_seam_cancel;
 use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, seam_trace, try_begin_seam};
 use super::plan::{
     HostOutsideCtx, HostOutsidePlan, PlayAtClipLastCtx, PlayAtClipLastPlan, SeamNextCtx, StepCtx,
@@ -174,7 +174,7 @@ pub fn VideoPlaylist(
             .at_global_frame(zone_last)
             .is_some_and(|p| p.clip_index == live_clip.get_untracked());
         let wall = plan_host_outside(HostOutsideCtx {
-            owner: HostZoneOwner::from(owner),
+            owner,
             looping: looping.get(),
             zone_in,
             zone_out,
@@ -433,7 +433,7 @@ pub fn VideoPlaylist(
             let g = playhead.get_untracked();
             let total = frame_count.get_untracked();
             match plan_host_outside(HostOutsideCtx {
-                owner: HostZoneOwner::from(loop_owner(playlist)),
+                owner: loop_owner(playlist),
                 looping: true,
                 zone_in,
                 zone_out,
