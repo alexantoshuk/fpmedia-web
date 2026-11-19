@@ -9,7 +9,7 @@
 ### Handoff
 
 - **Branch:** `main` — Covered + Fetch + thumb markers sole on VT; Exact/thumb bitmaps = slot; idle = nearest cut; Pause cut-join Exact@join warm; playlist Pause thumbs = VT `plan_next_thumb_fill` + `vt_thumb_authority` (open slots only; no ensure walk).
-- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; playlist Thumbs-on-VT progressive (≤2 sinks; hover wipe on clip change only).
+- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; playlist Thumbs-on-VT progressive (≤2 sinks; hover paint-first / no eager wipe).
 - **OK in browser:** Pause Exact grow; scrub Up densify; cut-join Pause scrub 1↔2 / reverse; Covered + Fetch gray survive clip leave; Pause thumbs progressive on open slots + hover Exact refine. Pages demo live (`alexantoshuk.github.io/fpmedia-web`).
 - **Parked debris (do not use):** VT Exact take/import / densify orch (`vt_densify_authority` stays false). Exact-take backend helpers removed; VideoOps take/present knobs may still exist unused.
 - **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.

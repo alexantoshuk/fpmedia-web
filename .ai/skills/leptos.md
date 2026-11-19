@@ -24,7 +24,7 @@
 | Playlist thumbs only densify live clip / empty far clips | VT `plan_next_thumb_fill` + `kick_vt_thumb_fill` (`video_playlist::thumbs`); `vt_thumb_authority`; ≤2 sinks; hover global→slot. **no equivalent** |
 | Playlist hover preview ≠ seek Exact at same tip | progressive **ready** = open-slot bitmap (not ledger-only `note_thumb`); refill after idle rebind; `note_thumb` only on real hit. **no equivalent** |
 | Playlist dead / `open timed out` after hover thumbs | VT progressive must **not** `ensure_clip_on_idle` / walk clips — fill open slots only; yield while `ensure_idle_for` set. **no equivalent** |
-| Hover tip shows other clip until click | wipe canvas only on **clip change** (`HoverThumb` `last_clip`); same-clip miss keeps nearest until Exact; playlist re-paint after idle warm. **no equivalent** |
+| Playlist hover empty tip / wrong clip until Exact | `<HoverThumb>` paint-first — never eager wipe; miss keeps prior/nearest until Exact; re-paint Effect after idle warm. Sink max box = hover 160². **no equivalent** |
 | Scrub 3rd clip shows 1st media | `swap_live_idle`: `idle_clip` = former live only; neighbor via `preload_idle` — never label aspirational clip |
 | Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap (global frames); mirror live→pos when not `scrubbing` (paused step OK; scrub owns aim) — `architecture.md` § Playlist |
 | Playlist scrub tip jumps on pointer-up | mirror: slot `playhead ≠ frame` → use playhead; skip while `pos.clip ≠ live` (CrossClipSeek); Up clears `scrubbing` only after aim set; `seek_to_pos` sets live playhead before preload await. **no equivalent** |

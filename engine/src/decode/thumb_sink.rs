@@ -28,9 +28,9 @@ use crate::policy::{
 };
 use crate::types::FrameId;
 
-/// Default hover box (matches `fpmedia_web_components` / `.fpvideo-thumb-preview`).
+/// Default hover box (matches `<HoverThumb>` / `.fpvideo-thumb-preview` max-edge 160).
 pub const DEFAULT_THUMB_MAX_W: u32 = 160;
-pub const DEFAULT_THUMB_MAX_H: u32 = 90;
+pub const DEFAULT_THUMB_MAX_H: u32 = 160;
 
 /// Options for [`ThumbSink`] (`mediabunny:` `CanvasSinkOptions` width/height).
 ///

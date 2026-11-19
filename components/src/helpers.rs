@@ -4,7 +4,6 @@
 
 pub use crate::strip::*;
 use fpmedia_web::VideoMetadata;
-use wasm_bindgen::JsCast;
 
 /// Playhead as a CSS width percentage of the scrubber (`0…100`).
 ///
@@ -102,22 +101,6 @@ pub fn hover_thumb_left(x: f64, track_width: f64, thumb_w: f64) -> f64 {
 /// CSS `transform` for compositor-side hover-thumb tracking (not `left`).
 pub fn hover_thumb_transform_css(left: f64) -> String {
     format!("translate3d({left}px, 0, 0)")
-}
-
-/// Wipe hover preview pixels (playlist **clip change** only — not same-clip miss).
-///
-/// Same-clip cold miss should keep nearest / prior pixels until Exact refine.
-/// Cross-clip stale paint → tip on B showed A's frame. **no equivalent**.
-pub fn clear_hover_thumb_canvas(dest: &web_sys::HtmlCanvasElement) {
-    let Ok(Some(obj)) = dest.get_context("2d") else {
-        return;
-    };
-    let Ok(ctx) = obj.dyn_into::<web_sys::CanvasRenderingContext2d>() else {
-        return;
-    };
-    let w = f64::from(dest.width());
-    let h = f64::from(dest.height());
-    ctx.clear_rect(0.0, 0.0, w, h);
 }
 
 /// Compact source line for demo / host status (`320×240 · 24 fps · …`).

@@ -744,8 +744,8 @@ pub fn Video(
                         // Exact frame hit → skip defer. Key/far interim still
                         // paints, but return false so host defers Exact refine
                         // (Pause floor; Play refuses aim decode).
-                        // Cold miss: keep last pixels (nearest stand-in) — do not
-                        // wipe to empty; clip-change wipe lives in `<HoverThumb>`.
+                        // Cold miss: keep last pixels (nearest stand-in) — host
+                        // must not wipe to empty (`<HoverThumb>` paint-first).
                         Ok(Some(painted)) => p.hover_thumb_close_enough(aim, painted),
                         Ok(None) | Err(_) => false,
                     }

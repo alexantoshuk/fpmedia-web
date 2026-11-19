@@ -599,7 +599,7 @@ impl VideoPlaylistRef {
             return;
         };
         let Some(video) = self.video_for_clip(pos.clip_index) else {
-            // Clip-change wipe is in `<HoverThumb>`; warm idle then re-paint Effect.
+            // Off-slot: keep prior pixels; warm idle then re-paint Effect.
             self.warm_idle_for_clip(pos.clip_index);
             return;
         };
