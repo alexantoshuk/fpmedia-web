@@ -13,6 +13,8 @@ mod component;
 #[cfg(target_arch = "wasm32")]
 mod loop_seam;
 #[cfg(target_arch = "wasm32")]
+mod loop_seam_exec;
+#[cfg(target_arch = "wasm32")]
 mod slots;
 #[cfg(target_arch = "wasm32")]
 mod source;

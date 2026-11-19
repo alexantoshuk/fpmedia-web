@@ -8,8 +8,8 @@
 
 ### Handoff
 
-- **Branch:** `main` — Covered + Fetch + thumb markers sole on VT; Exact/thumb bitmaps = slot; idle = nearest cut; Pause cut-join Exact@join warm; playlist Pause thumbs = VT `plan_next_thumb_fill` + `vt_thumb_authority` (open slots only; no ensure walk); VT LoopZone play plans slices 1–3 (`loop_zone` + SeamPhase FSM).
-- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; playlist Thumbs-on-VT progressive (≤2 sinks; hover paint-first / no eager wipe); VT LoopZone wall + wrap/EOF/seam-next + SeamPhase/`zone_owner_from_spans`.
+- **Branch:** `main` — Covered + Fetch + thumb markers sole on VT; Exact/thumb bitmaps = slot; idle = nearest cut; Pause cut-join Exact@join warm; playlist Pause thumbs = VT `plan_next_thumb_fill` + `vt_thumb_authority` (open slots only; no ensure walk); VT LoopZone + SeamPhase FSM; Host wrap exec = `loop_seam_exec`.
+- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; playlist Thumbs-on-VT progressive (≤2 sinks; hover paint-first / no eager wipe); VT LoopZone wall + wrap/EOF/seam-next + SeamPhase/`zone_owner_from_spans`; Host LoopSeam adapter (`loop_seam_exec`).
 - **OK in browser:** Pause Exact grow; scrub Up densify; cut-join Pause scrub 1↔2 / reverse; Covered + Fetch gray survive clip leave; Pause thumbs progressive on open slots + hover Exact refine. Pages demo live (`alexantoshuk.github.io/fpmedia-web`).
 - **Parked debris (do not use):** VT Exact take/import / densify orch (`vt_densify_authority` stays false). Exact-take backend helpers removed; VideoOps take/present knobs may still exist unused.
 - **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.
@@ -24,7 +24,7 @@
 
 ### Playlist — Virtual Timeline
 
-1. **VT Play · LoopZone:** slices 1–3 shipped (`loop_zone` wall/wrap/EOF + pure SeamPhase FSM; playlist `loop_seam` = signal I/O). **Next:** async wrap/promote → single LoopSeam adapter. Thumbs progressive already on VT.
+1. **VT Play · LoopZone:** shipped (VT law + SeamPhase; Host exec = `loop_seam_exec` / `start_host_wrap`). **Next:** CutWindow (after seam machine). Thumbs progressive already on VT.
 
 Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i]`.
 

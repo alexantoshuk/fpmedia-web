@@ -1,5 +1,5 @@
 //! Virtual Timeline — shared scrub settle / resolve (+ thumbs progressive;
-//! LoopZone wall / wrap/EOF + SeamPhase FSM slices 1–3; later single LoopSeam adapter).
+//! LoopZone wall / wrap/EOF + SeamPhase FSM; Host wrap exec = playlist `loop_seam_exec`).
 //!
 //! **Policy lives here** (global FrameId axis). Exact bitmaps = **slot** blit only.
 //! Covered + Fetch + thumb **markers** = **sole on VT** ([`ExactLedger`]). Densify gap-pick

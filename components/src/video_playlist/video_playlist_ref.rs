@@ -10,10 +10,11 @@ use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
 use super::loop_seam::{loop_owner, seam_busy};
+use super::loop_seam_exec::start_host_wrap;
 use super::plan::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
 use super::slots::{
     ensure_clip_on_idle, idle_neighbor, kick_cut_join_exact_warm, kick_ensure_idle, preload_idle,
-    start_host_wrap, try_promote_idle,
+    try_promote_idle,
 };
 use super::source::PlaylistSource;
 use wasm_bindgen_futures::spawn_local;

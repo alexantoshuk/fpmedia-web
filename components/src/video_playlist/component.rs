@@ -12,13 +12,13 @@ use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
 use super::host_zone::is_soft_seam_cancel;
 use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, seam_trace, try_begin_seam};
+use super::loop_seam_exec::{advance_after_ended, note_host_seam_err, start_host_wrap};
 use super::plan::{
     HostOutsideCtx, HostOutsidePlan, PlayAtClipLastCtx, PlayAtClipLastPlan, SeamNextCtx, StepCtx,
     StepDir, StepPlan, plan_host_outside, plan_play_at_clip_last, plan_seam_next_clip, plan_step,
 };
 use super::slots::{
-    advance_after_ended, maybe_kick_idle_seam_warm, note_host_seam_err, seek_to_pos,
-    start_host_wrap, sync_live_loop_from_playlist, wait_ready,
+    maybe_kick_idle_seam_warm, seek_to_pos, sync_live_loop_from_playlist, wait_ready,
 };
 use super::source::PlaylistSource;
 use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};

@@ -1,7 +1,7 @@
 //! Playlist loop ownership + seam phase — signal I/O over VT reduce.
 //!
 //! Pure FSM / owner geometry: [`crate::virtual_timeline::loop_zone`].
-//! Async wrap / promote stay in [`super::slots`].
+//! Async wrap / promote: [`super::loop_seam_exec`].
 //! Design: `.ai/architecture.md` § Playlist composition / Virtual Timeline.
 //! Vocab: `.ai/glossary.md` § LoopOwner / SeamPhase.
 //! **no equivalent** (host local).

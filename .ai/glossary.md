@@ -185,7 +185,7 @@ Shared scrub/hover **UI** handle in `fpmedia-web-components` (`ready` / `playhea
 
 ### Virtual Timeline
 
-Shared **axis + settle/resolve + Pause thumb progressive + LoopZone play plans** (wall / wrap-done / EOF / seam-next + pure `SeamPhase` / `zone_owner_from_spans`) for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact + thumb **bitmaps** stay in slot stores; Covered / Fetch / thumb **markers** sole on VT ledger. VT Exact-bitmap write path parked. Async wrap / promote **exec** still playlist host. Host transport: [`MediaRef`](#mediaref); UI strips via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
+Shared **axis + settle/resolve + Pause thumb progressive + LoopZone play plans** (wall / wrap-done / EOF / seam-next + pure `SeamPhase` / `zone_owner_from_spans`) for Single `<Video>` and `<VideoPlaylist>` (global FrameId). Exact + thumb **bitmaps** stay in slot stores; Covered / Fetch / thumb **markers** sole on VT ledger. VT Exact-bitmap write path parked. Host wrap/promote/EOF **exec** = playlist `loop_seam_exec` (not VT). Host transport: [`MediaRef`](#mediaref); UI strips via [`TimelineRef`](#timelineref). Module: `fpmedia_web_components::virtual_timeline`. Design: `architecture.md` § Virtual Timeline.
 
 ### PlaylistPos
 
@@ -201,7 +201,7 @@ Playlist alias of VT `ZoneOwner`: who arms LoopZone wrap for the current global 
 
 ### SeamPhase
 
-VT pure seam latch FSM (`Idle` / `Preparing` / `Swapping` / `Playing`); playlist holds it in an `RwSignal` so EOF Effect re-runs when Idle. Cut promote and LoopZone wrap share it so dual wrap is unrepresentable. Transitions: `seam_try_begin` / `seam_ensure_preparing`. Design: `architecture.md` § State machines.
+VT pure seam latch FSM (`Idle` / `Preparing` / `Swapping` / `Playing`); playlist holds it in an `RwSignal` so EOF Effect re-runs when Idle. Cut promote and LoopZone wrap share it so dual wrap is unrepresentable. Transitions: `seam_try_begin` / `seam_ensure_preparing`. Async Host exec: `loop_seam_exec` (`start_host_wrap`). Design: `architecture.md` § State machines / LoopSeam vs host promote.
 
 ### Playlist
 
