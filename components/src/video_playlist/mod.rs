@@ -17,7 +17,7 @@ mod loop_seam_exec;
 #[cfg(target_arch = "wasm32")]
 mod slots;
 #[cfg(target_arch = "wasm32")]
-mod source;
+pub(crate) mod source;
 #[cfg(target_arch = "wasm32")]
 mod thumbs;
 #[cfg(target_arch = "wasm32")]

@@ -2,9 +2,8 @@
 //! LoopZone wall / wrap/EOF + SeamPhase FSM; Host wrap exec = playlist `loop_seam_exec`).
 //!
 //! **Policy lives here** (global FrameId axis). Exact bitmaps = **slot** blit only.
-//! Covered + Fetch + thumb **markers** = **sole on VT** ([`ExactLedger`]). Densify gap-pick
-//! still uses slot `ScrubChunkStore`; host mirrors → `note_covered` / `note_fetch_run` /
-//! `note_thumb`. Thumb bitmaps stay in slot ThumbCache (≤2 sinks).
+//! Covered + Fetch + thumb **markers** = ledger; thumb **bitmaps** = [`VtThumbCache`]
+//! (1 producer — not slot-bound). Densify gap-pick still uses slot `ScrubChunkStore`.
 //! UI binding: [`crate::TimelineRef`].
 //! Design: `.ai/architecture.md` § Virtual Timeline.
 //! **no equivalent** (scrub / playlist composition local — not a mediabunny port).
@@ -19,6 +18,10 @@ mod thumb_plan;
 
 #[cfg(target_arch = "wasm32")]
 mod backend;
+#[cfg(all(target_arch = "wasm32", feature = "thumbs"))]
+mod thumb_cache;
+#[cfg(all(target_arch = "wasm32", feature = "thumbs"))]
+mod thumb_producer;
 
 pub use densify_plan::{DensifyPlanInput, plan_next_densify_gap};
 pub use ledger::{ExactLedger, PutExactOutcome};
@@ -43,4 +46,10 @@ pub use thumb_plan::{
 pub use backend::{
     LedgerHandle, TimelineExactLedger, new_ledger_handle, note_covered_from_locals,
     note_covered_from_video_ref, note_fetch_from_locals, note_fetch_from_video_ref,
+};
+#[cfg(all(target_arch = "wasm32", feature = "thumbs"))]
+pub use thumb_cache::{ThumbCacheHandle, VT_THUMB_MAX, VtThumbCache, new_thumb_cache_handle};
+#[cfg(all(target_arch = "wasm32", feature = "thumbs"))]
+pub use thumb_producer::{
+    ProducerHandle, ThumbProducer, new_producer_handle, rank_for_global_key, try_paint_vt,
 };

@@ -621,6 +621,25 @@ impl VideoPlayer {
         thumbs.contains(key, key, tw, th)
     }
 
+    /// Clone a cached thumb bitmap for VT wallet import (slot keeps its copy).
+    /// **no equivalent** (VT local).
+    pub fn clone_thumb_bitmap(
+        &self,
+        frame: FrameId,
+        max_w: u32,
+        max_h: u32,
+    ) -> Option<web_sys::ImageBitmap> {
+        if !self.ensure_thumb_sink() {
+            return None;
+        }
+        let thumbs = self.thumb_sink_inner()?;
+        thumbs.note_size(max_w, max_h);
+        let meta = self.shared.track.metadata();
+        let (tw, th) = thumbs.thumb_dims(meta.width, meta.height);
+        let key = thumbs.store_key(frame);
+        thumbs.with_bitmap(key, frame, tw, th, web_sys::ImageBitmap::clone)
+    }
+
     /// Kick Pause progressive key → ThumbCache fill (same 3rd decoder; hover wins).
     ///
     /// Pause/idle only ([`allows_thumb_key_fill`]). Suspended while hover active;

@@ -924,6 +924,14 @@ pub fn Video(
         }) as Rc<dyn Fn(u32) -> bool>
     };
 
+    let clone_thumb_bitmap_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |key: u32, max_w: u32, max_h: u32| {
+            ctx.with_player(|p| p.clone_thumb_bitmap(u64::from(key), max_w, max_h))
+                .flatten()
+        }) as Rc<dyn Fn(u32, u32, u32) -> Option<web_sys::ImageBitmap>>
+    };
+
     let fill_thumb_key_at_fn = {
         let ctx = ctx.clone();
         Rc::new(move |key: u32| {
@@ -1080,6 +1088,7 @@ pub fn Video(
         sync_frame_ids: sync_frame_ids_fn,
         thumb_max_thumbs: thumb_max_thumbs_fn,
         thumb_has_key: thumb_has_key_fn,
+        clone_thumb_bitmap: clone_thumb_bitmap_fn,
         fill_thumb_key_at: fill_thumb_key_at_fn,
         queue_vt_densify_target: queue_vt_densify_target_fn,
         set_vt_exact_residents: set_vt_exact_residents_fn,

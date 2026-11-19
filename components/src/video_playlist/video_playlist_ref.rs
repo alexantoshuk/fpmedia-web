@@ -13,8 +13,7 @@ use super::loop_seam::{loop_owner, seam_busy};
 use super::loop_seam_exec::start_host_wrap;
 use super::plan::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
 use super::slots::{
-    ensure_clip_on_idle, idle_neighbor, kick_cut_join_exact_warm, kick_ensure_idle, preload_idle,
-    try_promote_idle,
+    idle_neighbor, kick_cut_join_exact_warm, kick_ensure_idle, preload_idle, try_promote_idle,
 };
 use super::source::PlaylistSource;
 use wasm_bindgen_futures::spawn_local;
@@ -84,6 +83,16 @@ pub struct VideoPlaylistRef {
     pub(crate) thumb_fill_skip: StoredValue<HashSet<u64>, LocalStorage>,
     /// Clips whose open-slot progressive walk finished this session (idle walk gate).
     pub(crate) thumb_clips_done: StoredValue<HashSet<u32>, LocalStorage>,
+    /// VT global thumb bitmap wallet (≤1 producer). Feature `thumbs`.
+    #[cfg(feature = "thumbs")]
+    pub(crate) thumb_cache:
+        StoredValue<Option<crate::virtual_timeline::ThumbCacheHandle>, LocalStorage>,
+    /// One PreferSoftware thumb producer (not play idle).
+    #[cfg(feature = "thumbs")]
+    pub(crate) thumb_producer:
+        StoredValue<Option<crate::virtual_timeline::ProducerHandle>, LocalStorage>,
+    /// Bumps when VT thumb bitmaps change (HoverThumb re-paint).
+    pub thumb_residency_epoch: RwSignal<u64>,
 }
 
 #[derive(Clone)]
@@ -142,7 +151,21 @@ impl VideoPlaylistRef {
             thumb_fill_inflight: StoredValue::new_local(false),
             thumb_fill_skip: StoredValue::new_local(HashSet::new()),
             thumb_clips_done: StoredValue::new_local(HashSet::new()),
+            #[cfg(feature = "thumbs")]
+            thumb_cache: StoredValue::new_local(Some(
+                crate::virtual_timeline::new_thumb_cache_handle(),
+            )),
+            #[cfg(feature = "thumbs")]
+            thumb_producer: StoredValue::new_local(Some(
+                crate::virtual_timeline::new_producer_handle(),
+            )),
+            thumb_residency_epoch: RwSignal::new(0),
         }
+    }
+
+    pub fn bump_thumb_residency(self) {
+        self.thumb_residency_epoch
+            .update(|n| *n = n.wrapping_add(1));
     }
 
     /// VT ledger (Covered + Fetch sole; Exact AimWindow parked).
@@ -176,6 +199,22 @@ impl VideoPlaylistRef {
                 .set_value(Some(crate::virtual_timeline::new_ledger_handle()));
         }
         self.bump_exact_residency();
+        #[cfg(feature = "thumbs")]
+        {
+            if let Some(c) = self.thumb_cache.get_value() {
+                c.borrow_mut().clear();
+            } else {
+                self.thumb_cache
+                    .set_value(Some(crate::virtual_timeline::new_thumb_cache_handle()));
+            }
+            if let Some(p) = self.thumb_producer.get_value() {
+                p.cancel();
+            } else {
+                self.thumb_producer
+                    .set_value(Some(crate::virtual_timeline::new_producer_handle()));
+            }
+            self.bump_thumb_residency();
+        }
     }
 
     /// Live (+ optional idle) scrub capability. Off wipes **playlist** VT Covered.
@@ -595,15 +634,33 @@ impl VideoPlaylistRef {
         max_w: u32,
         max_h: u32,
     ) {
+        if self.try_paint_hover_thumb(global_frame, dest.clone(), max_w, max_h) {
+            return;
+        }
         let Some(pos) = self.model.get_untracked().at_global_frame(global_frame) else {
             return;
         };
-        let Some(video) = self.video_for_clip(pos.clip_index) else {
-            // Off-slot: keep prior pixels; warm idle then re-paint Effect.
-            self.warm_idle_for_clip(pos.clip_index);
+        // On-slot Pause: slot Exact refine, then import into VT.
+        if let Some(video) = self.video_for_clip(pos.clip_index) {
+            video.paint_hover_thumb(pos.local_frame, dest, max_w, max_h);
+            #[cfg(feature = "thumbs")]
+            if let Some(bmp) = video.clone_thumb_bitmap(pos.local_frame, max_w, max_h)
+                && let Some(cache) = self.thumb_cache.get_value()
+            {
+                let tw = bmp.width().max(1);
+                let th = bmp.height().max(1);
+                if cache
+                    .borrow_mut()
+                    .put(u64::from(global_frame), bmp, tw, th, u16::MAX)
+                {
+                    self.bump_thumb_residency();
+                }
+            }
             return;
-        };
-        video.paint_hover_thumb(pos.local_frame, dest, max_w, max_h);
+        }
+        // Off-slot: producer fill (Pause only) — never steal play idle.
+        #[cfg(feature = "thumbs")]
+        super::thumbs::kick_hover_fill(self, global_frame, max_w, max_h);
     }
 
     pub(crate) fn try_paint_hover_thumb(
@@ -613,11 +670,27 @@ impl VideoPlaylistRef {
         max_w: u32,
         max_h: u32,
     ) -> bool {
+        #[cfg(feature = "thumbs")]
+        if let Some(cache) = self.thumb_cache.get_value() {
+            let c = cache.borrow();
+            // Prefer exact size; fall back to any stored size for interim.
+            if crate::virtual_timeline::try_paint_vt(
+                &c,
+                u64::from(global_frame),
+                &dest,
+                max_w,
+                max_h,
+                0,
+            )
+            .is_some()
+            {
+                return true;
+            }
+        }
         let Some(pos) = self.model.get_untracked().at_global_frame(global_frame) else {
             return false;
         };
         let Some(video) = self.video_for_clip(pos.clip_index) else {
-            self.warm_idle_for_clip(pos.clip_index);
             return false;
         };
         video.try_paint_hover_thumb(pos.local_frame, dest, max_w, max_h)
@@ -626,6 +699,11 @@ impl VideoPlaylistRef {
     pub(crate) fn cancel_hover_thumb(self) {
         self.slot_a.cancel_hover_thumb();
         self.slot_b.cancel_hover_thumb();
+        #[cfg(feature = "thumbs")]
+        if let Some(p) = self.thumb_producer.get_value() {
+            // Do not cancel producer epoch on every leave — only clear slot hover.
+            let _ = p;
+        }
     }
 
     /// Slot that owns `clip_index`, if already open on live or idle.
@@ -637,17 +715,6 @@ impl VideoPlaylistRef {
             return Some(self.idle_video());
         }
         None
-    }
-
-    /// Hover/scrub over a clip not on either slot — open it on idle (same as cut drag).
-    fn warm_idle_for_clip(self, clip_index: u32) {
-        if self.idle_clip.get_untracked() == Some(clip_index) {
-            return;
-        }
-        let epoch = self.open_gen.get_value();
-        spawn_local(async move {
-            let _ = ensure_clip_on_idle(self, clip_index, epoch).await;
-        });
     }
 }
 

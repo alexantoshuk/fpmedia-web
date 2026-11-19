@@ -156,8 +156,8 @@ pub fn HoverThumb(
         }
     });
 
-    // Playlist: after idle/live warm for an off-slot hover, re-paint current aim
-    // (pointer may be still — otherwise stale prior clip stays until click).
+    // Playlist: after VT thumb wallet / producer fill, re-paint current aim
+    // (pointer may be still — otherwise stale prior stays until move).
     #[cfg(feature = "thumbs")]
     Effect::new({
         let throttled_paint = throttled_paint.clone();
@@ -171,9 +171,8 @@ pub fn HoverThumb(
             let Some(pl) = timeline.playlist() else {
                 return;
             };
+            let _ = pl.thumb_residency_epoch.get();
             let _ = pl.live_clip.get();
-            let _ = pl.idle_clip.get();
-            let _ = pl.live_is_a.get();
             let _ = pl.slot_a.ready.get();
             let _ = pl.slot_b.ready.get();
             let Some(canvas) = canvas_ref.get_untracked() else {

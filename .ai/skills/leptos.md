@@ -21,10 +21,9 @@
 | e2e `openUrl` outside viewport / never ready | `DemoPlayer.openUrl` | demo chrome = `btn-load-url` + `prompt`; off-screen `url-input`/`btn-open-url` are not Playwright-clickable. Empty-URL seed → `openEmptyUrl` |
 | Gray vs green strips lie / blur | `<TimelineMeta>` + float `paint_strip_canvas` on `f/n·w` — UX: `product.md` |
 | Playlist load: gray fills then wipes | `<TimelineMeta>` holds paint until `timeline.ready` (probe open→close) |
-| Playlist thumbs only densify live clip / empty far clips | VT `plan_next_thumb_fill` + `kick_vt_thumb_fill` (`video_playlist::thumbs`); `vt_thumb_authority`; ≤2 sinks; hover global→slot. **no equivalent** |
-| Playlist hover preview ≠ seek Exact at same tip | progressive **ready** = open-slot bitmap (not ledger-only `note_thumb`); refill after idle rebind; `note_thumb` only on real hit. **no equivalent** |
-| Playlist dead / `open timed out` after hover thumbs | VT progressive must **not** `ensure_clip_on_idle` / walk clips — fill open slots only; yield while `ensure_idle_for` set. **no equivalent** |
-| Playlist hover empty tip / wrong clip until Exact | `<HoverThumb>` paint-first — never eager wipe; miss keeps prior/nearest until Exact; re-paint Effect after idle warm. Sink max box = hover 160². **no equivalent** |
+| Playlist thumbs empty far clips / only live densifies | VT `VtThumbCache` + `ThumbProducer` / `kick_vt_thumb_fill`; ready = VT hit; producer may open any clip via `open_mp4` (not idle). **no equivalent** |
+| Playlist hover / Play hitch when tip over far clip | hover must **not** `ensure_clip_on_idle` / `warm_idle_for_clip` — VT producer on Pause only; Play = cache/Exact bridge. **no equivalent** |
+| Playlist hover empty tip / wrong clip until fill | `<HoverThumb>` paint-first from VT; miss keeps prior; re-paint on `thumb_residency_epoch`. **no equivalent** |
 | Scrub 3rd clip shows 1st media | `swap_live_idle`: `idle_clip` = former live only; neighbor via `preload_idle` — never label aspirational clip |
 | Playlist Exact wrong X / scrub tip jitter | `TimelineRef::strip_*` remap (global frames); mirror live→pos when not `scrubbing` (paused step OK; scrub owns aim) — `architecture.md` § Playlist |
 | Playlist scrub tip jumps on pointer-up | mirror: slot `playhead ≠ frame` → use playhead; skip while `pos.clip ≠ live` (CrossClipSeek); Up clears `scrubbing` only after aim set; `seek_to_pos` sets live playhead before preload await. **no equivalent** |

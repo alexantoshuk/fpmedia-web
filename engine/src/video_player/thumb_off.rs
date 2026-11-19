@@ -30,6 +30,15 @@ impl VideoPlayer {
         Vec::new()
     }
 
+    pub fn clone_thumb_bitmap(
+        &self,
+        _frame: FrameId,
+        _max_w: u32,
+        _max_h: u32,
+    ) -> Option<web_sys::ImageBitmap> {
+        None
+    }
+
     pub fn thumb_max_thumbs(&self) -> usize {
         0
     }

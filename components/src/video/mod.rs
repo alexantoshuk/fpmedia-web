@@ -146,6 +146,8 @@ pub(crate) struct VideoOps {
     pub thumb_max_thumbs: Rc<dyn Fn() -> usize>,
     /// ThumbCache hit for local sync key.
     pub thumb_has_key: Rc<dyn Fn(u32) -> bool>,
+    /// Clone cached thumb bitmap for VT wallet (slot keeps copy).
+    pub clone_thumb_bitmap: Rc<dyn Fn(u32, u32, u32) -> Option<web_sys::ImageBitmap>>,
     /// VT host: await one progressive key fill.
     pub fill_thumb_key_at: LocalFutFnU32<()>,
     /// Queue one local densify target for VT-owned fill.
@@ -665,6 +667,17 @@ impl VideoRef {
         self.op(|o| &o.thumb_has_key)
             .map(|f| f(key))
             .unwrap_or(false)
+    }
+
+    /// Clone slot thumb bitmap for the VT wallet (slot keeps its copy).
+    pub fn clone_thumb_bitmap(
+        &self,
+        key: u32,
+        max_w: u32,
+        max_h: u32,
+    ) -> Option<web_sys::ImageBitmap> {
+        self.op(|o| &o.clone_thumb_bitmap)
+            .and_then(|f| f(key, max_w, max_h))
     }
 
     /// VT host: fill one progressive sync key (awaitable).

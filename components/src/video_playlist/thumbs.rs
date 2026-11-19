@@ -1,11 +1,10 @@
-//! Playlist Pause progressive thumbs on the same VT axis as scrub.
+//! Playlist Pause progressive thumbs on the VT bitmap wallet.
 //!
-//! Slot ThumbSink bitmaps stay ≤2. Progressive fills **only currently open**
-//! live/idle — never `ensure_clip_on_idle` / clip walk (that stampeded opens →
-//! `open timed out` after hover-around). Off-slot hover still warms idle via
-//! [`VideoPlaylistRef`] paint path. Plan **ready** = open-slot bitmap (or
-//! admit-skip). Local `schedule_thumb_key_fill` is off (`vt_thumb_authority`).
-//! **no equivalent** (filmstrip / scrub local).
+//! One PreferSoftware producer (`ThumbProducer`) fills [`VtThumbCache`] by
+//! global FrameId. Never `ensure_clip_on_idle` (that stole Play idle). On-slot
+//! clips reuse slot `fill_thumb_key_at` + clone into VT; off-slot → dedicated
+//! `open_mp4` track. Ready = VT cache hit. **no equivalent** (filmstrip local).
+//! Decode: `mediabunny:` CanvasSink.
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,12 +12,19 @@ use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::virtual_timeline::{
-    ThumbFillPlanInput, merge_global_sync_keys, plan_next_thumb_fill, resolve_thumb_fill_playlist,
+    ThumbFillPlanInput, merge_global_sync_keys, plan_next_thumb_fill, rank_for_global_key,
+    resolve_thumb_fill_playlist,
 };
+use fpmedia_web::{DEFAULT_THUMB_MAX_H, DEFAULT_THUMB_MAX_W, FrameId};
 
 use super::video_playlist_ref::VideoPlaylistRef;
 
-/// Refresh per-clip sync key cache from open live/idle slots.
+/// Default hover box for progressive decode size (matches `<HoverThumb>` props).
+fn thumb_box() -> (u32, u32) {
+    (DEFAULT_THUMB_MAX_W, DEFAULT_THUMB_MAX_H)
+}
+
+/// Refresh per-clip sync key cache from open live/idle **and** producer clip.
 pub(crate) fn refresh_thumb_sync_keys(pl: VideoPlaylistRef) {
     let mut cache = pl.thumb_sync_keys.get_value();
     let live_clip = pl.live_clip.get_untracked();
@@ -38,10 +44,19 @@ pub(crate) fn refresh_thumb_sync_keys(pl: VideoPlaylistRef) {
             }
         }
     }
+    #[cfg(feature = "thumbs")]
+    if let Some(prod) = pl.thumb_producer.get_value()
+        && let Some(clip) = prod.current_clip()
+    {
+        let keys = prod.sync_frame_ids();
+        if !keys.is_empty() {
+            cache.insert(clip, keys);
+        }
+    }
     pl.thumb_sync_keys.set_value(cache);
 }
 
-/// Kick one VT progressive step on open slots only. No-op while Play/scrub/ensure.
+/// Kick one VT progressive step (any clip via producer). No-op while Play/scrub.
 pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
     if !pl.ready.get_untracked() {
         return;
@@ -52,105 +67,170 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
     if pl.thumb_fill_inflight.get_value() {
         return;
     }
-    // Do not fight scrub/hover idle opens — that caused `open timed out`.
-    if pl.ensure_idle_for.get_value().is_some() {
-        return;
-    }
     if seam_busy_for_thumbs(pl) {
         return;
     }
-
-    refresh_thumb_sync_keys(pl);
-
-    let model = pl.model.get_untracked();
-    if model.is_empty() {
-        return;
-    }
-
-    let cache = pl.thumb_sync_keys.get_value();
-    let mut open_per_clip: Vec<(u32, Vec<u64>)> = Vec::with_capacity(2);
-    let live_clip = pl.live_clip.get_untracked();
-    if let Some(keys) = cache.get(&live_clip) {
-        open_per_clip.push((live_clip, keys.clone()));
-    }
-    if let Some(idle_idx) = pl.idle_clip.get_untracked()
-        && let Some(keys) = cache.get(&idle_idx)
+    #[cfg(not(feature = "thumbs"))]
     {
-        open_per_clip.push((idle_idx, keys.clone()));
-    }
-    if open_per_clip.is_empty() {
+        let _ = pl;
         return;
     }
-    let global_keys = merge_global_sync_keys(&model, &open_per_clip);
+    #[cfg(feature = "thumbs")]
+    {
+        let Some(cache_h) = pl.thumb_cache.get_value() else {
+            return;
+        };
+        let Some(prod_h) = pl.thumb_producer.get_value() else {
+            return;
+        };
 
-    let max_thumbs = pl
-        .live_video()
-        .thumb_max_thumbs()
-        .max(pl.idle_video().thumb_max_thumbs())
-        .max(1);
+        refresh_thumb_sync_keys(pl);
 
-    let skip = pl.thumb_fill_skip.get_value();
-    let ready = |g: u64| skip.contains(&g) || slot_thumb_ready(pl, g);
-
-    let input = ThumbFillPlanInput {
-        global_sync_keys: &global_keys,
-        duration_secs: model.total_duration_secs(),
-        max_thumbs,
-    };
-
-    let Some(global) = plan_next_thumb_fill(&input, ready) else {
-        return;
-    };
-    let Some(aim) = resolve_thumb_fill_playlist(&model, global) else {
-        return;
-    };
-    // Only fill if the clip is already on a slot — never open for progressive.
-    let Some(video) = video_for_clip(pl, aim.clip_index) else {
-        return;
-    };
-    if !video.ready.get_untracked() {
-        return;
-    }
-
-    pl.thumb_fill_inflight.set_value(true);
-    let epoch = pl.open_gen.get_value();
-    let local = aim.local;
-    spawn_local(async move {
-        video.fill_thumb_key_at(local).await;
-        if pl.open_gen.get_value() != epoch {
-            pl.thumb_fill_inflight.set_value(false);
+        let model = pl.model.get_untracked();
+        if model.is_empty() {
             return;
         }
-        if video.thumb_has_key(local) {
-            if let Some(h) = pl.exact_ledger() {
-                h.borrow_mut().note_thumb(global);
-            }
-        } else {
-            let mut skip = pl.thumb_fill_skip.get_value();
-            skip.insert(global);
-            pl.thumb_fill_skip.set_value(skip);
+
+        // Discover sync keys for clips we have not opened yet (one clip per kick).
+        let key_cache = pl.thumb_sync_keys.get_value();
+        let clip_count = model.len() as u32;
+        if let Some(missing) = (0..clip_count).find(|i| !key_cache.contains_key(i)) {
+            pl.thumb_fill_inflight.set_value(true);
+            let epoch = pl.open_gen.get_value();
+            spawn_local(async move {
+                let ok = prod_h.ensure_clip(pl, missing).await.is_ok();
+                if pl.open_gen.get_value() != epoch {
+                    pl.thumb_fill_inflight.set_value(false);
+                    return;
+                }
+                if ok {
+                    refresh_thumb_sync_keys(pl);
+                } else {
+                    let mut skip_clips = pl.thumb_clips_done.get_value();
+                    skip_clips.insert(missing);
+                    pl.thumb_clips_done.set_value(skip_clips);
+                }
+                pl.thumb_fill_inflight.set_value(false);
+                kick_vt_thumb_fill(pl);
+            });
+            return;
         }
-        pl.thumb_fill_inflight.set_value(false);
-        kick_vt_thumb_fill(pl);
-    });
-}
 
-fn seam_busy_for_thumbs(pl: VideoPlaylistRef) -> bool {
-    !matches!(
-        pl.seam_phase.get_untracked(),
-        super::loop_seam::SeamPhase::Idle
-    )
-}
+        let mut open_per_clip: Vec<(u32, Vec<u64>)> = Vec::with_capacity(key_cache.len());
+        for (clip, keys) in &key_cache {
+            open_per_clip.push((*clip, keys.clone()));
+        }
+        open_per_clip.sort_by_key(|(c, _)| *c);
+        let global_keys = merge_global_sync_keys(&model, &open_per_clip);
+        if global_keys.is_empty() {
+            return;
+        }
 
-fn slot_thumb_ready(pl: VideoPlaylistRef, global: u64) -> bool {
-    let model = pl.model.get_untracked();
-    let Some(pos) = model.at_global_frame(u32::try_from(global).unwrap_or(u32::MAX)) else {
-        return false;
-    };
-    if let Some(video) = video_for_clip(pl, pos.clip_index) {
-        return video.thumb_has_key(pos.local_frame);
+        let max_thumbs = cache_h.borrow().max_thumbs();
+        let skip = pl.thumb_fill_skip.get_value();
+        let ready = |g: u64| skip.contains(&g) || cache_h.borrow().has_any(g);
+
+        let input = ThumbFillPlanInput {
+            global_sync_keys: &global_keys,
+            duration_secs: model.total_duration_secs(),
+            max_thumbs,
+        };
+
+        let Some(global) = plan_next_thumb_fill(&input, ready) else {
+            return;
+        };
+        let Some(aim) = resolve_thumb_fill_playlist(&model, global) else {
+            return;
+        };
+
+        let rank = rank_for_global_key(
+            &global_keys,
+            global,
+            model.total_duration_secs(),
+            max_thumbs,
+        );
+        let (max_w, max_h) = thumb_box();
+        pl.thumb_fill_inflight.set_value(true);
+        let epoch = pl.open_gen.get_value();
+        spawn_local(async move {
+            let filled = fill_one(FillOne {
+                pl,
+                cache_h,
+                prod_h,
+                clip_index: aim.clip_index,
+                local: aim.local,
+                global,
+                max_w,
+                max_h,
+                rank,
+            })
+            .await;
+            if pl.open_gen.get_value() != epoch {
+                pl.thumb_fill_inflight.set_value(false);
+                return;
+            }
+            if filled {
+                if let Some(h) = pl.exact_ledger() {
+                    h.borrow_mut().note_thumb(global);
+                }
+                pl.bump_thumb_residency();
+            } else {
+                let mut skip = pl.thumb_fill_skip.get_value();
+                skip.insert(global);
+                pl.thumb_fill_skip.set_value(skip);
+            }
+            pl.thumb_fill_inflight.set_value(false);
+            kick_vt_thumb_fill(pl);
+        });
     }
-    false
+}
+
+#[cfg(feature = "thumbs")]
+struct FillOne {
+    pl: VideoPlaylistRef,
+    cache_h: crate::virtual_timeline::ThumbCacheHandle,
+    prod_h: crate::virtual_timeline::ProducerHandle,
+    clip_index: u32,
+    local: u32,
+    global: FrameId,
+    max_w: u32,
+    max_h: u32,
+    rank: u16,
+}
+
+#[cfg(feature = "thumbs")]
+async fn fill_one(args: FillOne) -> bool {
+    let FillOne {
+        pl,
+        cache_h,
+        prod_h,
+        clip_index,
+        local,
+        global,
+        max_w,
+        max_h,
+        rank,
+    } = args;
+    // On-slot: reuse slot PreferSoftware sink, then clone into VT.
+    if let Some(video) = video_for_clip(pl, clip_index)
+        && video.ready.get_untracked()
+    {
+        video.fill_thumb_key_at(local).await;
+        if let Some(bmp) = video.clone_thumb_bitmap(local, max_w, max_h) {
+            let (tw, th) = (bmp.width().max(1), bmp.height().max(1));
+            return cache_h.borrow_mut().put(global, bmp, tw, th, rank);
+        }
+    }
+    // Off-slot (or slot miss): dedicated producer open.
+    if prod_h.ensure_clip(pl, clip_index).await.is_err() {
+        return false;
+    }
+    matches!(
+        prod_h
+            .decode_into_vt(&cache_h, global, FrameId::from(local), max_w, max_h, rank)
+            .await,
+        Ok(true)
+    )
 }
 
 fn video_for_clip(pl: VideoPlaylistRef, clip_index: u32) -> Option<crate::VideoRef> {
@@ -163,7 +243,14 @@ fn video_for_clip(pl: VideoPlaylistRef, clip_index: u32) -> Option<crate::VideoR
     None
 }
 
-/// Wire Pause progressive: Effect kick when Pause / slots ready (no ensure walk).
+fn seam_busy_for_thumbs(pl: VideoPlaylistRef) -> bool {
+    !matches!(
+        pl.seam_phase.get_untracked(),
+        super::loop_seam::SeamPhase::Idle
+    )
+}
+
+/// Wire Pause progressive: Effect kick when Pause / slots ready.
 pub(crate) fn install_vt_thumb_effects(pl: VideoPlaylistRef) {
     Effect::new(move |_| {
         let ready = pl.ready.get();
@@ -182,7 +269,7 @@ pub(crate) fn install_vt_thumb_effects(pl: VideoPlaylistRef) {
     });
 }
 
-/// Clear sync-key cache on playlist close/open.
+/// Clear sync-key cache + VT thumb wallet on playlist close/open.
 pub(crate) fn clear_thumb_sync_keys(pl: VideoPlaylistRef) {
     pl.thumb_sync_keys.set_value(HashMap::new());
     pl.thumb_fill_inflight.set_value(false);
@@ -191,4 +278,66 @@ pub(crate) fn clear_thumb_sync_keys(pl: VideoPlaylistRef) {
     if let Some(h) = pl.exact_ledger() {
         h.borrow_mut().clear_thumbs();
     }
+    #[cfg(feature = "thumbs")]
+    {
+        if let Some(c) = pl.thumb_cache.get_value() {
+            c.borrow_mut().clear();
+        }
+        if let Some(p) = pl.thumb_producer.get_value() {
+            p.cancel();
+        }
+        pl.bump_thumb_residency();
+    }
+}
+
+/// Hover: schedule producer fill for off-slot aim (Pause only). Never steals idle.
+#[cfg(feature = "thumbs")]
+pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u32, max_h: u32) {
+    if pl.playing.get_untracked() || pl.scrubbing.get_untracked() {
+        return;
+    }
+    if pl.thumb_fill_inflight.get_value() {
+        return;
+    }
+    let Some(pos) = pl.model.get_untracked().at_global_frame(global_frame) else {
+        return;
+    };
+    let Some(cache_h) = pl.thumb_cache.get_value() else {
+        return;
+    };
+    let Some(prod_h) = pl.thumb_producer.get_value() else {
+        return;
+    };
+    if cache_h.borrow().has_any(u64::from(global_frame)) {
+        return;
+    }
+    pl.thumb_fill_inflight.set_value(true);
+    let epoch = pl.open_gen.get_value();
+    let global = FrameId::from(global_frame);
+    let local = pos.local_frame;
+    let clip = pos.clip_index;
+    spawn_local(async move {
+        let rank = u16::MAX; // hover Exact refine band
+        let filled = fill_one(FillOne {
+            pl,
+            cache_h,
+            prod_h,
+            clip_index: clip,
+            local,
+            global,
+            max_w,
+            max_h,
+            rank,
+        })
+        .await;
+        if pl.open_gen.get_value() == epoch && filled {
+            if let Some(h) = pl.exact_ledger() {
+                h.borrow_mut().note_thumb(global);
+            }
+            pl.bump_thumb_residency();
+        }
+        if pl.open_gen.get_value() == epoch {
+            pl.thumb_fill_inflight.set_value(false);
+        }
+    });
 }

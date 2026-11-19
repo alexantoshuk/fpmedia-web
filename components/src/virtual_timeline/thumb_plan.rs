@@ -1,7 +1,7 @@
 //! VT Pause progressive thumb next-key (global FrameId axis).
 //!
-//! Bitmaps stay in slot [`fpmedia_web`] ThumbCache; this plans *which* global
-//! sync key to fill next across Single (identity) or Playlist (Σ).
+//! Bitmaps = VT [`super::VtThumbCache`]; this plans *which* global sync key to
+//! fill next across Single (identity) or Playlist (Σ).
 //! **no equivalent** (filmstrip / scrub local). Decode: `mediabunny:` CanvasSink.
 
 use fpmedia_web::{FrameId, next_progressive_sync_key, thumb_progressive_coarse_count};
@@ -16,7 +16,7 @@ pub struct ThumbFillPlanInput<'a> {
     pub global_sync_keys: &'a [FrameId],
     /// Presentation duration of the whole timeline (playlist = Σ seconds).
     pub duration_secs: f64,
-    /// Slot ThumbCache cap (usually `DEFAULT_MAX_THUMBS`).
+    /// VT / sink thumb cap (usually `DEFAULT_MAX_THUMBS` / `VT_THUMB_MAX`).
     pub max_thumbs: usize,
 }
 

@@ -1,8 +1,8 @@
 //! Timeline residency helpers (global FrameId) — Covered + Fetch + thumb markers sole on VT + parked Exact AimWindow.
 //!
 //! Shipped Exact = slot `ScrubBlitLru` (PresentHit = slot blit). Covered + Fetch + Pause-thumb
-//! markers live here (global FrameIds; survive clip leave). Thumb **bitmaps** stay in slot
-//! ThumbCache — do not dual-write Exact/thumb bitmaps onto VT.
+//! markers live here (global FrameIds; survive clip leave). Thumb **bitmaps** =
+//! [`super::VtThumbCache`] (feature `thumbs`) — not slot ThumbCache / not Exact ledger write.
 //! Design: `.ai/architecture.md` § Virtual Timeline.
 //! **no equivalent** (scrub local).
 
@@ -29,7 +29,7 @@ pub struct ExactLedger<V> {
     /// Inclusive playable Fetch runs in **global** FrameIds (interval-merged; dense OK).
     fetch: Vec<(FrameId, FrameId)>,
     /// Pause progressive thumb keys filled at least once this session (global FrameIds).
-    /// Bitmaps stay in slot ThumbCache; markers survive idle rebind / clip leave.
+    /// Bitmaps = VT `VtThumbCache`; markers are optional trail / strip hints.
     thumbs: BTreeSet<FrameId>,
 }
 
