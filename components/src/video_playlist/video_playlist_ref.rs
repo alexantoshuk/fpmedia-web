@@ -7,6 +7,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
+use crate::virtual_timeline::{resolve_zone, store_zone};
 
 use super::host::PlaylistHost;
 use super::loop_seam::{loop_owner, seam_busy};
@@ -260,15 +261,11 @@ impl VideoPlaylistRef {
 
     /// Resolved half-open LoopZone in global frames.
     pub fn loop_zone(self) -> (u32, u32) {
-        let count = self.frame_count.get_untracked();
-        let in_f = self.loop_in.get_untracked();
-        let out_f = self.loop_out.get_untracked().unwrap_or(count);
-        if count == 0 {
-            return (0, 0);
-        }
-        let in_f = in_f.min(count.saturating_sub(1));
-        let out_f = out_f.min(count).max(in_f.saturating_add(1));
-        (in_f, out_f)
+        resolve_zone(
+            self.frame_count.get_untracked(),
+            self.loop_in.get_untracked(),
+            self.loop_out.get_untracked(),
+        )
     }
 
     /// Set half-open `[in, out)` in **global** presentation frames.
@@ -281,14 +278,9 @@ impl VideoPlaylistRef {
             super::slots::sync_live_loop_from_playlist(self);
             return;
         }
-        let in_f = in_frame.min(count.saturating_sub(1));
-        let out_f = out_frame.min(count).max(in_f.saturating_add(1));
-        self.loop_in.set(in_f);
-        if in_f == 0 && out_f == count {
-            self.loop_out.set(None);
-        } else {
-            self.loop_out.set(Some(out_f));
-        }
+        let zone = store_zone(count, in_frame, out_frame);
+        self.loop_in.set(zone.in_frame);
+        self.loop_out.set(zone.loop_out);
         super::slots::sync_live_loop_from_playlist(self);
         if self.looping.get_untracked() {
             self.repreload_idle_for_loop();

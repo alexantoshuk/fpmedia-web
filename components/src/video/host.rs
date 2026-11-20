@@ -21,6 +21,7 @@ use super::ctx::{HostCtx, KickDrain};
 use super::op_queue::{HostOp, OpenArgs};
 use super::open_url::resolve_url_source;
 use super::transport_apply::{dispatch_transport, note_transport};
+use crate::virtual_timeline::store_zone;
 
 /// Cloneable host for one mounted [`super::Video`] (cheap: `Rc`s + `Copy` signals).
 #[derive(Clone)]
@@ -244,20 +245,9 @@ impl VideoHost {
         let ctx = &self.ctx;
         let video = ctx.video;
         ctx.with_player(|p| p.set_loop_zone(u64::from(in_frame), u64::from(out_frame)));
-        let count = video.frame_count.get_untracked();
-        if count == 0 {
-            video.loop_in.set(0);
-            video.loop_out.set(None);
-        } else {
-            let in_f = in_frame.min(count.saturating_sub(1));
-            let out_f = out_frame.min(count).max(in_f.saturating_add(1));
-            video.loop_in.set(in_f);
-            if in_f == 0 && out_f == count {
-                video.loop_out.set(None);
-            } else {
-                video.loop_out.set(Some(out_f));
-            }
-        }
+        let zone = store_zone(video.frame_count.get_untracked(), in_frame, out_frame);
+        video.loop_in.set(zone.in_frame);
+        video.loop_out.set(zone.loop_out);
         ctx.sync_ui();
     }
 

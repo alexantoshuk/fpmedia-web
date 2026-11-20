@@ -24,6 +24,7 @@ use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
+use crate::virtual_timeline::{resolve_zone, store_zone};
 use host::VideoHost;
 
 /// Cloneable handle to a mounted [`Video`] — like a ref to an HTMLMediaElement.
@@ -373,36 +374,21 @@ impl VideoRef {
 
     /// Resolved half-open LoopZone (`out` follows `frame_count` when unset).
     pub fn loop_zone(&self) -> (u32, u32) {
-        let count = self.frame_count.get_untracked();
-        let in_f = self.loop_in.get_untracked();
-        let out_f = self.loop_out.get_untracked().unwrap_or(count);
-        if count == 0 {
-            return (0, 0);
-        }
-        let in_f = in_f.min(count.saturating_sub(1));
-        let out_f = out_f.min(count).max(in_f.saturating_add(1));
-        (in_f, out_f)
+        resolve_zone(
+            self.frame_count.get_untracked(),
+            self.loop_in.get_untracked(),
+            self.loop_out.get_untracked(),
+        )
     }
 
     /// Set half-open `[in_frame, out_frame)` while looping. Full file when
     /// `in_frame == 0` and `out_frame == frame_count` (or `out >= count`).
     pub fn set_loop_zone(&self, in_frame: u32, out_frame: u32) {
-        let count = self.frame_count.get_untracked();
-        let (in_f, out_f) = if count == 0 {
-            (0, 0)
-        } else {
-            let in_f = in_frame.min(count.saturating_sub(1));
-            let out_f = out_frame.min(count).max(in_f.saturating_add(1));
-            (in_f, out_f)
-        };
-        self.loop_in.set(in_f);
-        if out_f == 0 || (in_f == 0 && out_f == count) {
-            self.loop_out.set(None);
-        } else {
-            self.loop_out.set(Some(out_f));
-        }
+        let zone = store_zone(self.frame_count.get_untracked(), in_frame, out_frame);
+        self.loop_in.set(zone.in_frame);
+        self.loop_out.set(zone.loop_out);
         if let Some(host) = self.host() {
-            host.set_loop_zone(in_f, out_f);
+            host.set_loop_zone(zone.in_frame, zone.out_frame);
         }
     }
 

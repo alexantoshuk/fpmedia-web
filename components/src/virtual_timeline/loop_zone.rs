@@ -362,6 +362,43 @@ pub fn plan_play_at_clip_last(ctx: PlayAtClipLastCtx) -> PlayAtClipLastPlan {
     }
 }
 
+/// Clamp a half-open LoopZone `[in, out)` into `[0, count]` with `out > in`.
+///
+/// The one components-side copy of the clamp (`u32` signal axis); must match
+/// engine `LoopZone::normalize` (pinned by a table test). Empty clip → `(0, 0)`.
+pub fn clamp_zone(count: u32, in_frame: u32, out_frame: u32) -> (u32, u32) {
+    if count == 0 {
+        return (0, 0);
+    }
+    let in_f = in_frame.min(count - 1);
+    let out_f = out_frame.min(count).max(in_f + 1);
+    (in_f, out_f)
+}
+
+/// Zone as written to `loop_in` / `loop_out` signals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoredZone {
+    pub in_frame: u32,
+    pub out_frame: u32,
+    /// `None` = full axis (or empty clip) — `loop_out` signal stays unset.
+    pub loop_out: Option<u32>,
+}
+
+/// Clamp a requested zone and derive what the signals should store.
+pub fn store_zone(count: u32, in_frame: u32, out_frame: u32) -> StoredZone {
+    let (in_f, out_f) = clamp_zone(count, in_frame, out_frame);
+    let full = out_f == 0 || (in_f == 0 && out_f == count);
+    StoredZone {
+        in_frame: in_f,
+        out_frame: out_f,
+        loop_out: if full { None } else { Some(out_f) },
+    }
+}
+
+/// Resolve stored signals (`loop_out` unset = `count`) to a half-open zone.
+pub fn resolve_zone(count: u32, loop_in: u32, loop_out: Option<u32>) -> (u32, u32) {
+    clamp_zone(count, loop_in, loop_out.unwrap_or(count))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,5 +773,48 @@ mod tests {
                 seam_already_busy: false
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod zone_store_tests {
+    use super::*;
+    use fpmedia_web::LoopZone;
+
+    #[test]
+    fn clamp_zone_matches_engine_normalize() {
+        let counts = [0u32, 1, 2, 10, 100];
+        let probes = [0u32, 1, 2, 5, 9, 10, 11, 99, 100, 101, u32::MAX];
+        for &count in &counts {
+            for &a in &probes {
+                for &b in &probes {
+                    let (i, o) = clamp_zone(count, a, b);
+                    let z = LoopZone::normalize(a as u64, b as u64, count as u64);
+                    assert_eq!(
+                        (z.in_frame, z.out_frame),
+                        (i as u64, o as u64),
+                        "count={count} in={a} out={b}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn store_zone_full_axis_leaves_out_unset() {
+        assert_eq!(store_zone(10, 0, 10).loop_out, None);
+        assert_eq!(store_zone(10, 0, 99).loop_out, None);
+        assert_eq!(store_zone(0, 3, 5).loop_out, None);
+        assert_eq!(store_zone(10, 2, 10).loop_out, Some(10));
+        assert_eq!(store_zone(10, 0, 4).loop_out, Some(4));
+        assert_eq!(store_zone(10, 7, 7).loop_out, Some(8));
+    }
+
+    #[test]
+    fn resolve_zone_defaults_out_to_count() {
+        assert_eq!(resolve_zone(10, 0, None), (0, 10));
+        assert_eq!(resolve_zone(10, 3, Some(6)), (3, 6));
+        assert_eq!(resolve_zone(0, 3, None), (0, 0));
+        assert_eq!(resolve_zone(1, 0, None), (0, 1));
     }
 }

@@ -35,14 +35,13 @@ Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i
 
 Rules: `architecture.md` § Ownership & types. Each item leaves this list in the commit that ships it.
 
-1. **LoopZone** — one components resolve/store helper over `LoopZone::normalize` (5 hand-copied clamps).
-2. **Frame types** — `FrameRun` (inclusive span); `LocalFrame` / `GlobalFrame` at the playlist seam.
-3. **Engine helpers** — `Waiters`, `Epoch` / `Ticket`, `SingleFlight` guard, `PlayIter` guard.
-4. **`Shared` grouping** — `seam_release_aim` only; `ScrubDir` enum; `UnderrunStats`; `LoopSpec`; thumb box.
-5. **`VideoPlayer` = `Clone` handle** over `Rc<PlayerInner>` (keep `Drop` teardown verbatim on inner).
-6. **Source layer** — `Arc` / `Mutex` / `Send + Sync` → `Rc` / `RefCell`.
-7. **Playlist latches** — group `StoredValue` latches into two structs (no FSM).
-8. **Split `demo-player/src/player.rs`** (move-only).
+1. **Frame types** — `FrameRun` (inclusive span); `LocalFrame` / `GlobalFrame` at the playlist seam.
+2. **Engine helpers** — `Waiters`, `Epoch` / `Ticket`, `SingleFlight` guard, `PlayIter` guard.
+3. **`Shared` grouping** — `seam_release_aim` only; `ScrubDir` enum; `UnderrunStats`; `LoopSpec`; thumb box.
+4. **`VideoPlayer` = `Clone` handle** over `Rc<PlayerInner>` (keep `Drop` teardown verbatim on inner).
+5. **Source layer** — `Arc` / `Mutex` / `Send + Sync` → `Rc` / `RefCell`.
+6. **Playlist latches** — group `StoredValue` latches into two structs (no FSM).
+7. **Split `demo-player/src/player.rs`** (move-only).
 
 ### Publish crates (`0.1.0-alpha`)
 
