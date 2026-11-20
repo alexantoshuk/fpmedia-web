@@ -72,6 +72,7 @@ Before **any** write to the repo (code, config, docs, generated assets):
 1. **Describe the plan first** — short: what, where, why (files/symbols if known). Stop there.
 2. **Media changes:** plan must satisfy [Pre-edit gate (media)](#pre-edit-gate-media--hard-stop) (mediabunny cite or explicit no-equivalent).
 3. **Shared logic / UI chrome:** plan must satisfy [Sibling / shared-logic check](#sibling--shared-logic-check--hard-stop) (unify similar surfaces — do not cobble one).
+3b. **New pointer / `dyn` / frame-conversion fields:** plan must satisfy [Type / ownership check](#type--ownership-check--hard-stop).
 4. **`.ai/` / docs changes:** plan must satisfy [Documentation write gate](#documentation-write-gate--hard-stop) (canonical file + no duplicate prose).
 5. **Docs line (hard):** every plan that changes shipped behaviour / ownership / policy must name `docs:` — canonical slot(s) to update (`architecture.md` § … / `glossary.md` § … / skill triage / `product.md`), **or** `docs: none` + why (pure refactor, typo, probe-only). Omitting the line = incomplete plan — do not implement.
 6. **Do not start implementation** until the user explicitly approves **that plan** (e.g. `ok`, `go`, `да`, `approve` on the plan you just stated).
@@ -91,6 +92,10 @@ Before changing a surface that has **siblings** (same job elsewhere — UI or en
 3. **Refuse** a plan that only patches one surface when siblings will drift (e.g. re-anchor one menu while others stay on their triggers).
 
 UX / product home: [`product.md`](.ai/product.md) § Share common logic. Do not restate the essay here.
+
+## Type / ownership check — hard stop
+
+If a plan adds an `Rc` / `Cell` / `RefCell` / `StoredValue` field, `dyn`, `Arc` / `Mutex`, a closure in a host `*Ops` struct, or a `u32`↔`u64` frame conversion, it **must** name the existing handle / helper it reuses, **or** justify a new one against [`architecture.md`](.ai/architecture.md) § Ownership & types. Refuse a plan that adds one without either. Rules live there — do not restate them here.
 
 ## Skills index
 
@@ -150,6 +155,7 @@ Comments that state **who owns decode**, HW vs PreferSoftware, densify on/off, m
 | Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
 | Scrub UX / densify / soft-drag / Exact blit (no MB scrub) | `AGENTS.md` § Scrub is local | One-line pointer only — do not invent `mediabunny: … scrub` cites |
 | Approve-before-edit / human commits (agent prep only) | `AGENTS.md` | Do not restate |
+| Ownership / pointer / value-type conventions | `architecture.md` § Code rules → Ownership & types | `AGENTS.md` § Type / ownership check — gate only, no rule text |
 | Share common logic (unify siblings) | `product.md` § Share common logic | `AGENTS.md` § Sibling / shared-logic check — pointer only |
 | Fix commit hygiene (integrate, strip debris) | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |
 | Who runs `git commit` (human) / agent prep | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |

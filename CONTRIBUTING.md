@@ -33,7 +33,7 @@ Do **not** commit or open/update a PR until these pass locally. `cargo check` al
 
 While iterating on a change, prefer `cargo check` (and targeted crate checks). Do **not** run the full Clippy gate on every edit — reserve it for immediately before commit or PR.
 
-**Canonical gate script:** [`scripts/check.sh`](scripts/check.sh) (fmt / Clippy `-D warnings` incl. wasm targets / tests). CI [`check.yml`](.github/workflows/check.yml) and [`.githooks/pre-push`](.githooks/pre-push) both run it — do not fork the command list. Needs **bash** (Git Bash on Windows). Trunk build and e2e stay out of the script.
+**Canonical gate script:** [`scripts/check.sh`](scripts/check.sh) (fmt / Clippy `-D warnings` incl. wasm targets / tests). CI [`check.yml`](.github/workflows/check.yml) and [`.githooks/pre-push`](.githooks/pre-push) both run it — do not fork the command list. Needs **bash** (Git Bash on Windows). Includes [`scripts/ratchet.sh`](scripts/ratchet.sh) (ownership / type-debt counters may only go down; lower [`scripts/ratchet-baseline.txt`](scripts/ratchet-baseline.txt) in the same commit — `bash scripts/ratchet.sh --write`; rules: `architecture.md` § Ownership & types). Trunk build and e2e stay out of the script.
 
 **Install hooks (once per clone)** — makes the gates real (not docs-only):
 

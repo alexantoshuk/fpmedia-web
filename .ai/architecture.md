@@ -421,3 +421,15 @@ PCM sample-entry bodies are not in `re_mp4`’s `Unknown` payload — walk raw `
 - WebCodecs needs `web_sys_unstable_apis` (`.cargo/config.toml`).
 - **WebCodecs / media resources:** RAII owners + borrow helpers (`OwnedVideoFrame` / `AsVideoFrame`); **move into caches**, **borrow to draw**. Gotchas: `skills/media.md`.
 - **Mediabunny reference:** `AGENTS.md` Mediabunny-first — do not restate here.
+
+### Ownership & types
+
+Canonical home for ownership / pointer / primitive-type conventions (agent gate: `AGENTS.md` § Type / ownership check). Existing violations: `state.md` § Ownership / type debt.
+
+- **Single-threaded wasm:** `Rc` / `RefCell` / `Cell`. `Arc` / `Mutex` / `Send + Sync` only for real cross-thread use (Worker) — a fake `Send` bound guarantees nothing.
+- **`dyn` only for open sets:** `Closure<dyn FnMut>` (wasm-bindgen), public extension traits (`MediaSource`), composite cancel predicates `&dyn Fn() -> bool`. Closed set → `enum`. Host → component API = methods on the concrete handle, **not** a struct of `Rc<dyn Fn>`.
+- **One level of shared ownership:** no `Rc<RefCell<Option<Rc<T>>>>`. A handle = `Clone` over `Rc<Inner>`. Leptos: `StoredValue<T, LocalStorage>` instead of `StoredValue<Rc<RefCell<T>>>` when nothing borrows across `.await`.
+- **Value types over primitives:** no new bare span tuples (`(u64, u64)` / `(u32, u32)`) — named inclusive run / half-open range; LoopZone normalizes only via engine `LoopZone::normalize`; `enum` instead of `i8` or paired `bool`s; playlist local and global frames never share one signature.
+- **Fields that change together → one `Copy` struct** (illegal combos unrepresentable; see [State machines over flags](#state-machines-over-flags)).
+- **Release in `Drop`:** decoder, `SingleFlight` busy, waiters via guard / lease — not a manual call on every error branch (extends the RAII rule above).
+- **Same mechanism in ≥2 places → one shared helper** (`product.md` § Share common logic).

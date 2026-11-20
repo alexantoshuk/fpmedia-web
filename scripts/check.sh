@@ -10,6 +10,9 @@ cd "$ROOT"
 echo "check: fmt"
 cargo fmt --all -- --check
 
+echo "check: ratchet"
+bash scripts/ratchet.sh
+
 echo "check: clippy (engine)"
 cargo clippy -p fpmedia-web --all-targets --all-features -- -D warnings
 

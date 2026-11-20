@@ -31,6 +31,22 @@ Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i
 
 **Out of v1:** compare dual-visible.
 
+### Ownership / type debt
+
+Rules: `architecture.md` § Ownership & types. Each item leaves this list in the commit that ships it.
+
+1. **Play tick** — one `on_play_tick` for rAF + hidden-interval in `<Video>`.
+2. **`VideoOps` → `VideoHost`** — methods on a concrete host handle; drop ~50 `Rc<dyn Fn>` + `BoxedLocalFut`.
+3. **`VideoPlaylistOps` → `PlaylistHost`** + `live_video` / `idle_video` (tracked + untracked) replace inline `live_is_a` branches.
+4. **LoopZone** — one components resolve/store helper over `LoopZone::normalize` (5 hand-copied clamps).
+5. **Frame types** — `FrameRun` (inclusive span); `LocalFrame` / `GlobalFrame` at the playlist seam.
+6. **Engine helpers** — `Waiters`, `Epoch` / `Ticket`, `SingleFlight` guard, `PlayIter` guard.
+7. **`Shared` grouping** — `seam_release_aim` only; `ScrubDir` enum; `UnderrunStats`; `LoopSpec`; thumb box.
+8. **`VideoPlayer` = `Clone` handle** over `Rc<PlayerInner>` (keep `Drop` teardown verbatim on inner).
+9. **Source layer** — `Arc` / `Mutex` / `Send + Sync` → `Rc` / `RefCell`.
+10. **Playlist latches** — group `StoredValue` latches into two structs (no FSM).
+11. **Split `demo-player/src/player.rs`** (move-only).
+
 ### Publish crates (`0.1.0-alpha`)
 
 Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. Demo `demo-player` stays `publish = false`.
