@@ -357,6 +357,38 @@ impl TimelineRef {
         }
     }
 
+    /// Host thumb decode max box (shared by hover + Pause progressive).
+    pub fn thumb_max_size(self) -> (u32, u32) {
+        match self.inner {
+            TimelineInner::Video(v) => v.thumb_max_size(),
+            TimelineInner::Playlist(p) => p.thumb_max_size(),
+        }
+    }
+
+    /// Set thumb decode max box — see [`crate::VideoRef::set_thumb_max_size`].
+    pub fn set_thumb_max_size(self, max_w: u32, max_h: u32) {
+        match self.inner {
+            TimelineInner::Video(v) => v.set_thumb_max_size(max_w, max_h),
+            TimelineInner::Playlist(p) => p.set_thumb_max_size(max_w, max_h),
+        }
+    }
+
+    /// Reactive max width (HoverThumb canvas attrs).
+    pub fn thumb_max_w_signal(self) -> RwSignal<u32> {
+        match self.inner {
+            TimelineInner::Video(v) => v.thumb_max_w,
+            TimelineInner::Playlist(p) => p.thumb_max_w,
+        }
+    }
+
+    /// Reactive max height (HoverThumb canvas attrs).
+    pub fn thumb_max_h_signal(self) -> RwSignal<u32> {
+        match self.inner {
+            TimelineInner::Video(v) => v.thumb_max_h,
+            TimelineInner::Playlist(p) => p.thumb_max_h,
+        }
+    }
+
     pub fn paint_hover_thumb(self, unit: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32) {
         match self.inner {
             TimelineInner::Video(v) => v.paint_hover_thumb(unit, dest, max_w, max_h),

@@ -77,6 +77,10 @@ pub struct VideoRef {
         StoredValue<Option<crate::virtual_timeline::LedgerHandle>, LocalStorage>,
     /// Bumps when VT Covered changes (TimelineMeta Covered subscribe).
     pub exact_residency_epoch: RwSignal<u64>,
+    /// Host thumb decode box (max edge). Progressive + hover share this.
+    /// Default = engine `DEFAULT_THUMB_MAX_*` (160). See `product.md` § Hover thumbs.
+    pub thumb_max_w: RwSignal<u32>,
+    pub thumb_max_h: RwSignal<u32>,
 }
 
 #[derive(Clone)]
@@ -111,6 +115,8 @@ pub(crate) struct VideoOps {
     pub try_paint_hover_thumb: Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32) -> bool>,
     pub cancel_hover_thumb: Rc<dyn Fn()>,
     pub set_thumb_policy: Rc<dyn Fn(ThumbPolicy)>,
+    /// Apply max box to live ThumbSink (clear + note_size). Signals already set.
+    pub apply_thumb_max_size: Rc<dyn Fn(u32, u32)>,
     pub set_scrub_cache_policy: Rc<dyn Fn(ScrubCachePolicy)>,
     /// VT backend demote: densify off, keep Exact/Covered (not user Scrub Off wipe).
     pub park_scrub_cache: Rc<dyn Fn()>,
@@ -203,6 +209,30 @@ impl VideoRef {
                 Some(crate::virtual_timeline::new_ledger_handle()),
             ),
             exact_residency_epoch: RwSignal::new(0),
+            thumb_max_w: RwSignal::new(fpmedia_web::DEFAULT_THUMB_MAX_W),
+            thumb_max_h: RwSignal::new(fpmedia_web::DEFAULT_THUMB_MAX_H),
+        }
+    }
+
+    /// Thumb decode max box `(max_w, max_h)` — host API (hover + Pause progressive).
+    pub fn thumb_max_size(&self) -> (u32, u32) {
+        (
+            self.thumb_max_w.get_untracked().max(1),
+            self.thumb_max_h.get_untracked().max(1),
+        )
+    }
+
+    /// Set thumb decode max box. Clears cached thumbs so sizes do not mix.
+    pub fn set_thumb_max_size(&self, max_w: u32, max_h: u32) {
+        let w = max_w.max(1);
+        let h = max_h.max(1);
+        if self.thumb_max_w.get_untracked() == w && self.thumb_max_h.get_untracked() == h {
+            return;
+        }
+        self.thumb_max_w.set(w);
+        self.thumb_max_h.set(h);
+        if let Some(apply) = self.op(|o| &o.apply_thumb_max_size) {
+            apply(w, h);
         }
     }
 
@@ -540,6 +570,16 @@ impl VideoRef {
         if let Some(set) = self.op(|o| &o.set_thumb_policy) {
             set(policy);
         }
+    }
+
+    /// Convenience: current thumb max width (see [`Self::thumb_max_size`]).
+    pub fn thumb_max_w(&self) -> u32 {
+        self.thumb_max_size().0
+    }
+
+    /// Convenience: current thumb max height (see [`Self::thumb_max_size`]).
+    pub fn thumb_max_h(&self) -> u32 {
+        self.thumb_max_size().1
     }
 
     /// Runtime scrub-cache gate — persists across opens. `Off` (no scrub UI)

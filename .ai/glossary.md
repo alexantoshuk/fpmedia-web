@@ -163,7 +163,7 @@ Standalone thumb / filmstrip generation product (`mediabunny:` `CanvasSink`). `o
 
 ### ThumbCache
 
-Residency store for sized thumb `ImageBitmap`s (separate from Exact blit / Covered markers). **Playlist:** VT [`VtThumbCache`](../components/src/virtual_timeline/thumb_cache.rs) keyed by **global** FrameId + one PreferSoftware producer (not the 2 play/scrub slots). Slot `ThumbSink` may still decode on-slot then clone→VT / Exact-bridge. **Single:** engine `ThumbSink` local cache. Pause progressive next-key is VT (`plan_next_thumb_fill`); ready = VT (playlist) / slot (single) bitmap — ledger `note_thumb` is optional trail. Eviction: progressive rank. Design: `architecture.md` § Virtual Timeline Thumb progressive.
+Residency store for sized thumb `ImageBitmap`s (separate from Exact blit / Covered markers). Cap = `thumb_cache_frame_budget` @ `DEFAULT_THUMB_CACHE_MIB` (128) from host max box — not Exact `blit_mib`. **Playlist:** VT [`VtThumbCache`](../components/src/virtual_timeline/thumb_cache.rs) + one PreferSoftware producer. **Single:** engine `ThumbSink` local cache. Eviction: progressive rank. Design: `architecture.md` § Thumb ImageBitmap cap.
 
 ### ThumbPreview
 
@@ -225,7 +225,7 @@ One meta strip for a kind (`Fetch` / `Keyframes` / `Covered` / `Exact`): pipelin
 
 ### `<HoverThumb>`
 
-Hover filmstrip preview component: canvas **inside** the element; chrome via `children` / `class`. Wired under `<Scrubber>` or manual API. **Play and Pause only — not while scrubbing.** Must not drive densify or buffer strips. Engine client of `ThumbSink` / `ThumbCache`.
+Hover filmstrip preview component: canvas **inside** the element; chrome via `children` / `class`. Decode max box = host `set_thumb_max_size` / timeline signals (optional `width`/`height` seed once). Wired under `<Scrubber>` or manual API. **Play and Pause only — not while scrubbing.** Must not drive densify or buffer strips. Engine client of `ThumbSink` / `ThumbCache`.
 
 ### Pipeline (debug)
 

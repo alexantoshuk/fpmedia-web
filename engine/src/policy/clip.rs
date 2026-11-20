@@ -27,6 +27,13 @@ pub const BLIT_BYTES_PER_PIXEL: u64 = 4;
 pub const MIN_SCRUB_BLIT_FRAMES: usize = 24;
 /// Ceiling so tiny CSS buffers cannot explode GPU residency.
 pub const MAX_SCRUB_BLIT_FRAMES: usize = 192;
+/// Separate thumb/`ImageBitmap` wallet (not Exact `blit_mib`). Filmstrip local.
+/// Count = [`thumb_cache_frame_budget`] from host `max_w`×`max_h`.
+pub const DEFAULT_THUMB_CACHE_MIB: usize = 128;
+/// Floor so coarse Pause grid still fits under tiny wallets / large maxsize.
+pub const MIN_THUMB_CACHE_FRAMES: usize = 32;
+/// Ceiling so tiny maxsize cannot explode residency (thumbs ≠ Exact stage).
+pub const MAX_THUMB_CACHE_FRAMES: usize = 2048;
 /// Assumed bytes per pixel for a decoded frame (YUV 4:2:0 / NV12 planes).
 pub const DECODED_BYTES_PER_PIXEL_NUM: u64 = 3;
 pub const DECODED_BYTES_PER_PIXEL_DEN: u64 = 2;
@@ -558,6 +565,22 @@ pub fn scrub_blit_frame_budget(width: u32, height: u32, max_mib: usize) -> usize
     let by_bytes = (budget_bytes / per) as usize;
     by_bytes
         .clamp(MIN_SCRUB_BLIT_FRAMES, MAX_SCRUB_BLIT_FRAMES)
+        .max(1)
+}
+
+/// Thumb/`ImageBitmap` residency cap from host max box and thumb MiB wallet.
+///
+/// Same RGBA math as [`scrub_blit_frame_budget`], separate wallet + clamps
+/// (thumbs are small; default 160² @ 128 MiB ≫ old fixed 256). **no equivalent**
+/// (filmstrip local); `mediabunny:` CanvasSink sized + bounded pool spirit.
+pub fn thumb_cache_frame_budget(max_w: u32, max_h: u32, max_mib: usize) -> usize {
+    let w = max_w.max(1) as u64;
+    let h = max_h.max(1) as u64;
+    let per = (w * h * BLIT_BYTES_PER_PIXEL).max(1);
+    let budget_bytes = (max_mib as u64).saturating_mul(1024 * 1024);
+    let by_bytes = (budget_bytes / per) as usize;
+    by_bytes
+        .clamp(MIN_THUMB_CACHE_FRAMES, MAX_THUMB_CACHE_FRAMES)
         .max(1)
 }
 
@@ -1284,6 +1307,18 @@ mod tests {
         );
         // Historical 338 MiB ≈ SCRUB_BLIT_LRU at 1280×720 (alias still exported).
         assert_eq!(scrub_blit_frame_budget(1280, 720, 338), SCRUB_BLIT_LRU);
+    }
+
+    #[test]
+    fn thumb_cache_budget_scales_with_maxsize() {
+        let at_160 = thumb_cache_frame_budget(160, 160, DEFAULT_THUMB_CACHE_MIB);
+        let at_80 = thumb_cache_frame_budget(80, 80, DEFAULT_THUMB_CACHE_MIB);
+        let at_320 = thumb_cache_frame_budget(320, 320, DEFAULT_THUMB_CACHE_MIB);
+        assert!(at_80 > at_160);
+        assert!(at_160 > at_320);
+        assert!(at_160 > 256); // default box beats old fixed 256
+        assert!(at_80 <= MAX_THUMB_CACHE_FRAMES);
+        assert!(at_320 >= MIN_THUMB_CACHE_FRAMES);
     }
 
     #[test]

@@ -222,6 +222,22 @@ impl MediaRef {
             MediaInner::Playlist(p) => p.set_playback_rate(rate),
         }
     }
+
+    /// Thumb decode max box — see [`crate::VideoRef::thumb_max_size`].
+    pub fn thumb_max_size(self) -> (u32, u32) {
+        match self.inner {
+            MediaInner::Video(v) => v.thumb_max_size(),
+            MediaInner::Playlist(p) => p.thumb_max_size(),
+        }
+    }
+
+    /// Set thumb decode max box (hover + Pause progressive). Clears thumb caches.
+    pub fn set_thumb_max_size(self, max_w: u32, max_h: u32) {
+        match self.inner {
+            MediaInner::Video(v) => v.set_thumb_max_size(max_w, max_h),
+            MediaInner::Playlist(p) => p.set_thumb_max_size(max_w, max_h),
+        }
+    }
 }
 
 impl From<VideoRef> for MediaRef {

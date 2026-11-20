@@ -117,7 +117,11 @@ impl ThumbProducer {
             return Err("cancelled".into());
         }
         let track = opened.require_video().map_err(|e| e.to_string())?;
-        let sink = Rc::new(ThumbSink::new(Rc::new(track), ThumbSinkOptions::default()));
+        let (max_w, max_h) = pl.thumb_max_size();
+        let sink = Rc::new(ThumbSink::new(
+            Rc::new(track),
+            ThumbSinkOptions::for_max_box(max_w, max_h),
+        ));
         self.clip.set(Some(clip_index));
         *self.sink.borrow_mut() = Some(Rc::clone(&sink));
         Ok(sink)

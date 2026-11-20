@@ -49,6 +49,24 @@ impl VideoPlayer {
         }
     }
 
+    /// Host max decode box. Clears cached bitmaps so sizes do not mix; notes
+    /// size on the live sink (or next [`Self::ensure_thumb_sink`]).
+    pub fn set_thumb_max_size(&self, max_w: u32, max_h: u32) {
+        let w = max_w.max(1);
+        let h = max_h.max(1);
+        self.shared.thumb_max_w.set(w);
+        self.shared.thumb_max_h.set(h);
+        self.cancel_hover_thumb_inner(false);
+        self.clear_thumbs();
+        if let Ok(slot) = self.shared.thumb.try_borrow()
+            && let Some(thumbs) = slot.as_ref()
+        {
+            thumbs.note_size(w, h);
+        }
+        // Restart Pause progressive under the new box when allowed.
+        self.schedule_thumb_key_fill();
+    }
+
     /// Leased [`ThumbSink`] when policy is On (same instance hover/fill use).
     ///
     /// Hosts may also build a sink with [`ThumbSink::new`] without a player.
@@ -91,7 +109,10 @@ impl VideoPlayer {
         if slot.is_none() {
             *slot = Some(Rc::new(ThumbSink::new(
                 Rc::clone(&self.shared.track),
-                ThumbSinkOptions::default(),
+                ThumbSinkOptions::for_max_box(
+                    self.shared.thumb_max_w.get(),
+                    self.shared.thumb_max_h.get(),
+                ),
             )));
         }
         true

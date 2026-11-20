@@ -15,7 +15,7 @@ use std::rc::Rc;
 use web_sys::{HtmlCanvasElement, ImageBitmap};
 
 use super::canvas::canvas_2d;
-use super::frame_cache::{DEFAULT_MAX_THUMB_GOPS, DEFAULT_MAX_THUMBS, ThumbCache};
+use super::frame_cache::ThumbCache;
 use super::owned_video_frame::AsVideoFrame;
 use super::scrub_blit::{BlitCanvas, BlitCanvasSlot};
 use super::webcodecs::WebCodecsDecoder;
@@ -23,8 +23,8 @@ use crate::demux::Mp4VideoTrack;
 use crate::error::MediaError;
 use crate::model::bg_task::SingleFlight;
 use crate::policy::{
-    hover_thumb_dims, next_missing_sync_key, next_progressive_sync_key,
-    thumb_progressive_coarse_count, thumb_progressive_rank,
+    DEFAULT_THUMB_CACHE_MIB, hover_thumb_dims, next_missing_sync_key, next_progressive_sync_key,
+    thumb_cache_frame_budget, thumb_progressive_coarse_count, thumb_progressive_rank,
 };
 use crate::types::FrameId;
 
@@ -34,8 +34,8 @@ pub const DEFAULT_THUMB_MAX_H: u32 = 160;
 
 /// Options for [`ThumbSink`] (`mediabunny:` `CanvasSinkOptions` width/height).
 ///
-/// `max_gops` / `max_thumbs` are **local** residency (MB has canvas `poolSize` for
-/// iterator reuse — we keep sized bitmaps for hover/filmstrip).
+/// `max_thumbs` / `max_gops` from [`thumb_cache_frame_budget`] at `max_w`×`max_h`
+/// (MB `poolSize` is iterator reuse — we keep sized bitmaps).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThumbSinkOptions {
     pub max_w: u32,
@@ -44,14 +44,24 @@ pub struct ThumbSinkOptions {
     pub max_thumbs: usize,
 }
 
+impl ThumbSinkOptions {
+    /// Host max box → decode size + computed residency cap.
+    pub fn for_max_box(max_w: u32, max_h: u32) -> Self {
+        let max_w = max_w.max(1);
+        let max_h = max_h.max(1);
+        let cap = thumb_cache_frame_budget(max_w, max_h, DEFAULT_THUMB_CACHE_MIB);
+        Self {
+            max_w,
+            max_h,
+            max_gops: cap,
+            max_thumbs: cap,
+        }
+    }
+}
+
 impl Default for ThumbSinkOptions {
     fn default() -> Self {
-        Self {
-            max_w: DEFAULT_THUMB_MAX_W,
-            max_h: DEFAULT_THUMB_MAX_H,
-            max_gops: DEFAULT_MAX_THUMB_GOPS,
-            max_thumbs: DEFAULT_MAX_THUMBS,
-        }
+        Self::for_max_box(DEFAULT_THUMB_MAX_W, DEFAULT_THUMB_MAX_H)
     }
 }
 
@@ -157,8 +167,14 @@ impl ThumbSink {
     }
 
     pub fn note_size(&self, max_w: u32, max_h: u32) {
-        self.last_max_w.set(max_w.max(1));
-        self.last_max_h.set(max_h.max(1));
+        let w = max_w.max(1);
+        let h = max_h.max(1);
+        self.last_max_w.set(w);
+        self.last_max_h.set(h);
+        let cap = thumb_cache_frame_budget(w, h, DEFAULT_THUMB_CACHE_MIB);
+        if let Ok(mut cache) = self.cache.try_borrow_mut() {
+            cache.set_max_thumbs(cap);
+        }
     }
 
     pub fn last_size(&self) -> (u32, u32) {

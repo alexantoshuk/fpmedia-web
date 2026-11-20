@@ -8,7 +8,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use fpmedia_web::FrameId;
+use fpmedia_web::{
+    DEFAULT_THUMB_CACHE_MIB, DEFAULT_THUMB_MAX_H, DEFAULT_THUMB_MAX_W, FrameId,
+    thumb_cache_frame_budget,
+};
 use web_sys::ImageBitmap;
 
 /// Shared handle for one timeline session.
@@ -18,8 +21,14 @@ pub fn new_thumb_cache_handle() -> ThumbCacheHandle {
     Rc::new(RefCell::new(VtThumbCache::default()))
 }
 
-/// Default cap — matches engine `DEFAULT_MAX_THUMBS`.
-pub const VT_THUMB_MAX: usize = 256;
+/// Default cap at engine default max box / thumb MiB wallet.
+pub fn vt_thumb_max_default() -> usize {
+    thumb_cache_frame_budget(
+        DEFAULT_THUMB_MAX_W,
+        DEFAULT_THUMB_MAX_H,
+        DEFAULT_THUMB_CACHE_MIB,
+    )
+}
 
 struct VtThumbEntry {
     bitmap: ImageBitmap,
@@ -54,6 +63,16 @@ impl VtThumbCache {
 
     pub fn max_thumbs(&self) -> usize {
         self.max_thumbs
+    }
+
+    /// Resize cap from host max box / MiB budget; trim via rank eviction.
+    pub fn set_max_thumbs(&mut self, max_thumbs: usize) {
+        self.max_thumbs = max_thumbs.max(1);
+        while self.by_frame.len() > self.max_thumbs {
+            if !self.evict_one(0, None) {
+                break;
+            }
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -192,7 +211,7 @@ impl VtThumbCache {
 
 impl Default for VtThumbCache {
     fn default() -> Self {
-        Self::new(VT_THUMB_MAX)
+        Self::new(vt_thumb_max_default())
     }
 }
 

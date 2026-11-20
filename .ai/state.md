@@ -8,9 +8,9 @@
 
 ### Handoff
 
-- **Branch:** `main` — Covered + Fetch + thumb markers sole on VT; Exact bitmaps = slot; **playlist thumb bitmaps = VT `VtThumbCache` + 1 `ThumbProducer`** (not idle ensure); idle = nearest cut; Pause cut-join Exact@join warm; VT LoopZone + SeamPhase FSM; Host wrap exec = `loop_seam_exec`.
-- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; VT LoopZone wall + wrap/EOF/seam-next + SeamPhase/`zone_owner_from_spans`; Host LoopSeam adapter (`loop_seam_exec`).
-- **In this change:** playlist global thumb wallet + producer; hover no longer steals play idle. **Verify in browser:** many-clip Pause progressive across far clips; Play + hover far clips (no A/V hitch); Single hover unchanged.
+- **Branch:** `main` — Covered + Fetch + thumb markers sole on VT; Exact bitmaps = slot; **playlist thumb bitmaps = VT `VtThumbCache` + 1 `ThumbProducer`** (not idle ensure); idle = nearest cut; Pause cut-join Exact@join warm; VT LoopZone + SeamPhase FSM; Host wrap exec = `loop_seam_exec`; thumb max box = `set_thumb_max_size` (default 160²); ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB.
+- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; VT LoopZone wall + wrap/EOF/seam-next + SeamPhase/`zone_owner_from_spans`; Host LoopSeam adapter (`loop_seam_exec`); VT thumb wallet + producer (`60d955d`).
+- **In this change:** host `set_thumb_max_size` + computed thumb ImageBitmap cap (MiB÷box). **Verify:** change max size mid-session (caches resize); Pause progressive still fills; hover tip follows timeline max signals.
 - **OK in browser (prior):** Pause Exact grow; scrub Up densify; cut-join Pause scrub 1↔2 / reverse; Covered + Fetch gray survive clip leave. Pages demo live (`alexantoshuk.github.io/fpmedia-web`).
 - **Parked debris (do not use):** VT Exact take/import / densify orch (`vt_densify_authority` stays false). Exact-take backend helpers removed; VideoOps take/present knobs may still exist unused.
 - **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.

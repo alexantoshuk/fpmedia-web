@@ -15,13 +15,13 @@ use crate::virtual_timeline::{
     ThumbFillPlanInput, merge_global_sync_keys, plan_next_thumb_fill, rank_for_global_key,
     resolve_thumb_fill_playlist,
 };
-use fpmedia_web::{DEFAULT_THUMB_MAX_H, DEFAULT_THUMB_MAX_W, FrameId};
+use fpmedia_web::FrameId;
 
 use super::video_playlist_ref::VideoPlaylistRef;
 
-/// Default hover box for progressive decode size (matches `<HoverThumb>` props).
-fn thumb_box() -> (u32, u32) {
-    (DEFAULT_THUMB_MAX_W, DEFAULT_THUMB_MAX_H)
+/// Host thumb decode box (API [`VideoPlaylistRef::thumb_max_size`]).
+fn thumb_box(pl: VideoPlaylistRef) -> (u32, u32) {
+    pl.thumb_max_size()
 }
 
 /// Refresh per-clip sync key cache from open live/idle **and** producer clip.
@@ -149,7 +149,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
             model.total_duration_secs(),
             max_thumbs,
         );
-        let (max_w, max_h) = thumb_box();
+        let (max_w, max_h) = thumb_box(pl);
         pl.thumb_fill_inflight.set_value(true);
         let epoch = pl.open_gen.get_value();
         spawn_local(async move {

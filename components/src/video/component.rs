@@ -770,6 +770,13 @@ pub fn Video(
         }) as Rc<dyn Fn(fpmedia_web::ThumbPolicy)>
     };
 
+    let apply_thumb_max_size_fn = {
+        let ctx = ctx.clone();
+        Rc::new(move |max_w: u32, max_h: u32| {
+            ctx.with_player(|p| p.set_thumb_max_size(max_w, max_h));
+        }) as Rc<dyn Fn(u32, u32)>
+    };
+
     let set_scrub_cache_policy_fn = {
         let ctx = ctx.clone();
         Rc::new(move |policy: fpmedia_web::ScrubCachePolicy| {
@@ -1070,6 +1077,7 @@ pub fn Video(
         try_paint_hover_thumb: try_paint_hover_thumb_fn,
         cancel_hover_thumb: cancel_hover_thumb_fn,
         set_thumb_policy: set_thumb_policy_fn,
+        apply_thumb_max_size: apply_thumb_max_size_fn,
         set_scrub_cache_policy: set_scrub_cache_policy_fn,
         park_scrub_cache: park_scrub_cache_fn,
         has_scrub_exact_blit: has_scrub_exact_blit_fn,

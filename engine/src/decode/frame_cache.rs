@@ -11,12 +11,6 @@ use crate::residency::AimWindow;
 use crate::types::FrameId;
 use web_sys::ImageBitmap;
 
-/// Scrub/filmstrip keyframe GOPs retained (one sync-key slot each).
-/// Sized for Pause sparse fill (≥16 timeline keys + midpoint densify headroom).
-/// **no equivalent** — mediabunny `CanvasSink` `poolSize` is iterator reuse, not residency.
-pub const DEFAULT_MAX_THUMB_GOPS: usize = 256;
-pub const DEFAULT_MAX_THUMBS: usize = 256;
-
 /// Live scrub blit handles. Evict farthest from playhead (not classic LRU) so
 /// densify ahead cannot wipe just-presented frames (Prev stayed cold on long-GOP).
 pub struct ScrubBlitLru {
@@ -241,6 +235,14 @@ impl ThumbCache {
 
     pub fn max_thumbs(&self) -> usize {
         self.max_thumbs
+    }
+
+    /// Resize residency caps (host `set_thumb_max_size` / MiB budget). Trims via rank eviction.
+    pub fn set_max_thumbs(&mut self, max_thumbs: usize) {
+        let n = max_thumbs.max(1);
+        self.max_thumbs = n;
+        self.max_gops = n;
+        self.enforce_thumb_budget();
     }
 
     /// True when another distinct thumb / sync-key slot would hit caps.

@@ -48,7 +48,9 @@ pub use backend::{
     note_covered_from_video_ref, note_fetch_from_locals, note_fetch_from_video_ref,
 };
 #[cfg(all(target_arch = "wasm32", feature = "thumbs"))]
-pub use thumb_cache::{ThumbCacheHandle, VT_THUMB_MAX, VtThumbCache, new_thumb_cache_handle};
+pub use thumb_cache::{
+    ThumbCacheHandle, VtThumbCache, new_thumb_cache_handle, vt_thumb_max_default,
+};
 #[cfg(all(target_arch = "wasm32", feature = "thumbs"))]
 pub use thumb_producer::{
     ProducerHandle, ThumbProducer, new_producer_handle, rank_for_global_key, try_paint_vt,

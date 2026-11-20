@@ -93,6 +93,9 @@ pub struct VideoPlaylistRef {
         StoredValue<Option<crate::virtual_timeline::ProducerHandle>, LocalStorage>,
     /// Bumps when VT thumb bitmaps change (HoverThumb re-paint).
     pub thumb_residency_epoch: RwSignal<u64>,
+    /// Host thumb decode box (max edge). Progressive + hover share this.
+    pub thumb_max_w: RwSignal<u32>,
+    pub thumb_max_h: RwSignal<u32>,
 }
 
 #[derive(Clone)]
@@ -160,7 +163,39 @@ impl VideoPlaylistRef {
                 crate::virtual_timeline::new_producer_handle(),
             )),
             thumb_residency_epoch: RwSignal::new(0),
+            thumb_max_w: RwSignal::new(fpmedia_web::DEFAULT_THUMB_MAX_W),
+            thumb_max_h: RwSignal::new(fpmedia_web::DEFAULT_THUMB_MAX_H),
         }
+    }
+
+    /// Thumb decode max box `(max_w, max_h)` — host API (hover + Pause progressive).
+    pub fn thumb_max_size(self) -> (u32, u32) {
+        (
+            self.thumb_max_w.get_untracked().max(1),
+            self.thumb_max_h.get_untracked().max(1),
+        )
+    }
+
+    /// Set thumb decode max box. Clears VT + slot thumb caches so sizes do not mix;
+    /// recomputes ImageBitmap residency from MiB ÷ maxsize.
+    pub fn set_thumb_max_size(self, max_w: u32, max_h: u32) {
+        let w = max_w.max(1);
+        let h = max_h.max(1);
+        if self.thumb_max_w.get_untracked() == w && self.thumb_max_h.get_untracked() == h {
+            return;
+        }
+        self.thumb_max_w.set(w);
+        self.thumb_max_h.set(h);
+        self.slot_a.set_thumb_max_size(w, h);
+        self.slot_b.set_thumb_max_size(w, h);
+        #[cfg(feature = "thumbs")]
+        if let Some(cache) = self.thumb_cache.get_value() {
+            let cap =
+                fpmedia_web::thumb_cache_frame_budget(w, h, fpmedia_web::DEFAULT_THUMB_CACHE_MIB);
+            cache.borrow_mut().set_max_thumbs(cap);
+        }
+        super::thumbs::clear_thumb_sync_keys(self);
+        super::thumbs::kick_vt_thumb_fill(self);
     }
 
     pub fn bump_thumb_residency(self) {

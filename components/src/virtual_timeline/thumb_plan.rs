@@ -16,7 +16,7 @@ pub struct ThumbFillPlanInput<'a> {
     pub global_sync_keys: &'a [FrameId],
     /// Presentation duration of the whole timeline (playlist = Σ seconds).
     pub duration_secs: f64,
-    /// VT / sink thumb cap (usually `DEFAULT_MAX_THUMBS` / `VT_THUMB_MAX`).
+    /// VT / sink thumb cap (`thumb_cache_frame_budget` / `vt_thumb_max_default`).
     pub max_thumbs: usize,
 }
 

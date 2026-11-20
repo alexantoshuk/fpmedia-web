@@ -3,6 +3,8 @@
 //! Spec: `.ai/product.md` § Element-layer helpers. Auto-wires into parent
 //! [`crate::Scrubber`] when present. Manual [`crate::HoverThumbApi`] escape hatch OK.
 //!
+//! Decode max box = host API [`TimelineRef::thumb_max_size`] (same as Pause
+//! progressive). Optional `width` / `height` props seed that API once.
 //! Feature `thumbs` (default on): real paint. Soft stubs when off.
 //! Play+pause hover; scrubber hides while scrubbing. Paint coalesce: per-instance
 //! `leptos-use` trailing throttle. `mediabunny:` separate thumb `CanvasSink`.
@@ -18,9 +20,9 @@ use crate::VideoRef;
 use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
 use crate::scrubber::{HoverThumbApi, ScrubberCtx};
 
-/// Default max-edge box (larger side ≤ 160; smaller from aspect via `hover_thumb_dims`).
-pub const DEFAULT_HOVER_THUMB_MAX_W: u32 = 160;
-pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = 160;
+/// Default max-edge box (matches engine `DEFAULT_THUMB_MAX_*`).
+pub const DEFAULT_HOVER_THUMB_MAX_W: u32 = fpmedia_web::DEFAULT_THUMB_MAX_W;
+pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = fpmedia_web::DEFAULT_THUMB_MAX_H;
 
 /// Coalesce window before deferred Exact `paint_hover_thumb` (ms). This is the
 /// dwell delay — engine has no second global aim floor (that left Exact stuck).
@@ -37,6 +39,8 @@ pub struct HoverThumbCtx {
 ///
 /// Prefer nesting under [`crate::Scrubber`] (auto-wire). Optional [`api`] for a
 /// custom track. Optional [`timeline`] / [`video`] when not under a scrubber.
+/// Optional `width` / `height` seed [`TimelineRef::set_thumb_max_size`] once;
+/// canvas attrs follow the timeline signals (host CSS may stretch for display).
 #[component]
 pub fn HoverThumb(
     #[prop(optional)] video: Option<VideoRef>,
@@ -44,8 +48,12 @@ pub fn HoverThumb(
     /// Escape hatch / legacy wire-up — also filled when nested under [`crate::Scrubber`].
     #[prop(optional)]
     api: Option<StoredValue<Option<HoverThumbApi>, LocalStorage>>,
-    #[prop(default = DEFAULT_HOVER_THUMB_MAX_W)] width: u32,
-    #[prop(default = DEFAULT_HOVER_THUMB_MAX_H)] height: u32,
+    /// Seed host thumb max width (decode box). Omit → keep timeline API value.
+    #[prop(optional)]
+    width: Option<u32>,
+    /// Seed host thumb max height (decode box). Omit → keep timeline API value.
+    #[prop(optional)]
+    height: Option<u32>,
     #[prop(optional)] class: Option<String>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
@@ -54,6 +62,15 @@ pub fn HoverThumb(
         .or_else(|| video.map(VideoRef::as_timeline))
         .or_else(|| scrub_ctx.map(|c| c.timeline))
         .expect("HoverThumb needs timeline=…, video=…, or a parent <Scrubber>");
+
+    // Optional props seed the host API once (siblings share one box).
+    if width.is_some() || height.is_some() {
+        let (cur_w, cur_h) = timeline.thumb_max_size();
+        timeline.set_thumb_max_size(width.unwrap_or(cur_w), height.unwrap_or(cur_h));
+    }
+
+    let max_w_sig = timeline.thumb_max_w_signal();
+    let max_h_sig = timeline.thumb_max_h_signal();
 
     let frame = RwSignal::new(None::<u32>);
     let visible = RwSignal::new(false);
@@ -98,16 +115,7 @@ pub fn HoverThumb(
         Rc::new(move |x: f64, track_width: f64, aim: u32| {
             #[cfg(not(feature = "thumbs"))]
             {
-                let _ = (
-                    x,
-                    track_width,
-                    aim,
-                    &timeline,
-                    &hide,
-                    width,
-                    height,
-                    root_ref,
-                );
+                let _ = (x, track_width, aim, &timeline, &hide, root_ref);
                 return;
             }
             #[cfg(feature = "thumbs")]
@@ -116,11 +124,12 @@ pub fn HoverThumb(
                     hide();
                     return;
                 }
-                // Clamp by laid-out root (canvas + host chrome). Prop `width` is
-                // canvas max only — label can be wider; left edge still looked
-                // fine (clamp to 0) while the right overflowed by (real−prop).
-                // Hidden (`display:none`) → offsetWidth 0 → fall back to prop
-                // until the next move after `is-visible`.
+                let (width, height) = (
+                    max_w_sig.get_untracked().max(1),
+                    max_h_sig.get_untracked().max(1),
+                );
+                // Clamp by laid-out root (canvas + host chrome). Decode box is
+                // API max; CSS may stretch — use offsetWidth when visible.
                 let thumb_w = root_ref
                     .get_untracked()
                     .map(|el| f64::from(el.offset_width()))
@@ -175,6 +184,12 @@ pub fn HoverThumb(
             let _ = pl.live_clip.get();
             let _ = pl.slot_a.ready.get();
             let _ = pl.slot_b.ready.get();
+            let _ = max_w_sig.get();
+            let _ = max_h_sig.get();
+            let (width, height) = (
+                max_w_sig.get_untracked().max(1),
+                max_h_sig.get_untracked().max(1),
+            );
             let Some(canvas) = canvas_ref.get_untracked() else {
                 return;
             };
@@ -224,8 +239,8 @@ pub fn HoverThumb(
         >
             <canvas
                 node_ref=canvas_ref
-                width=width.to_string()
-                height=height.to_string()
+                width=move || max_w_sig.get().max(1).to_string()
+                height=move || max_h_sig.get().max(1).to_string()
                 aria-hidden="true"
             />
             {children.map(|c| c())}
@@ -238,15 +253,18 @@ pub fn HoverThumb(
 pub fn HoverThumbPreview(
     video: VideoRef,
     api: StoredValue<Option<HoverThumbApi>, LocalStorage>,
-    #[prop(default = DEFAULT_HOVER_THUMB_MAX_W)] max_w: u32,
-    #[prop(default = DEFAULT_HOVER_THUMB_MAX_H)] max_h: u32,
+    #[prop(optional)] max_w: Option<u32>,
+    #[prop(optional)] max_h: Option<u32>,
 ) -> impl IntoView {
+    // Seed host API (view props are optional u32 builders — not Option<_>).
+    if max_w.is_some() || max_h.is_some() {
+        let (cw, ch) = video.thumb_max_size();
+        video.set_thumb_max_size(max_w.unwrap_or(cw), max_h.unwrap_or(ch));
+    }
     view! {
         <HoverThumb
             video=video
             api=api
-            width=max_w
-            height=max_h
             class="fpvideo-thumb-preview".to_string()
         />
     }

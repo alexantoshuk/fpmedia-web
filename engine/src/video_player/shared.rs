@@ -97,6 +97,11 @@ pub(super) struct Shared {
     pub(super) thumb: RefCell<Option<Rc<ThumbSink>>>,
     #[cfg(feature = "thumbs")]
     pub(super) thumb_policy: Cell<ThumbPolicy>,
+    /// Host thumb decode max box (applied on sink create + [`VideoPlayer::set_thumb_max_size`]).
+    #[cfg(feature = "thumbs")]
+    pub(super) thumb_max_w: Cell<u32>,
+    #[cfg(feature = "thumbs")]
+    pub(super) thumb_max_h: Cell<u32>,
     /// Second decoder for background gap fill (does not steal main playback).
     pub(super) scrub_decoder: RefCell<Option<WebCodecsDecoder>>,
     /// `Off` → no scrub decoder / Covered / Exact / gray fill (host without scrub UI).

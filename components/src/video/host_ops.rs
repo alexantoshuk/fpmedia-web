@@ -86,6 +86,8 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
             // Playlist host turns thumb authority on after dual-slot open.
             p.set_vt_thumb_authority(false);
             p.set_thumb_policy(ctx.thumb_policy.get());
+            let (tw, th) = ctx.video.thumb_max_size();
+            p.set_thumb_max_size(tw, th);
             metadata.set(Some(p.metadata()));
             has_audio.set(p.has_audio());
             p.set_playback_rate(playback_rate.get_untracked());

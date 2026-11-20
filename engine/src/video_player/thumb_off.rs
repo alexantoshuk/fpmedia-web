@@ -16,6 +16,8 @@ impl VideoPlayer {
 
     pub fn set_thumb_policy(&self, _policy: ThumbPolicy) {}
 
+    pub fn set_thumb_max_size(&self, _max_w: u32, _max_h: u32) {}
+
     pub fn thumb_policy(&self) -> ThumbPolicy {
         ThumbPolicy::Off
     }
