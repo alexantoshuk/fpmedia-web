@@ -110,13 +110,7 @@ impl MediaRef {
     pub fn active_video(self) -> VideoRef {
         match self.inner {
             MediaInner::Video(v) => v,
-            MediaInner::Playlist(p) => {
-                if p.live_is_a.get() {
-                    p.slot_a
-                } else {
-                    p.slot_b
-                }
-            }
+            MediaInner::Playlist(p) => p.live_video_tracked(),
         }
     }
 

@@ -11,6 +11,9 @@ use super::op_queue::OpQueue;
 use super::session::FpsMeter;
 use super::transport_apply::{TransportHandle, note_transport, sync_playing_from_transport};
 
+/// Starts the op-queue drain loop (built in `<Video>`; needs `resume_raf`).
+pub(super) type KickDrain = Rc<dyn Fn()>;
+
 pub(super) type PlayerHandle = Rc<RefCell<Option<Rc<VideoPlayer>>>>;
 
 /// Player + queue + transport + UI signals. Clone is cheap (`Rc`s + `Copy`

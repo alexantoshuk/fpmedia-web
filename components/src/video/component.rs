@@ -3,9 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use fpmedia_web::{
-    BlobSource, MediaSource, OpenPhase, OpenSourceKind, PlayTick, TransportEvent, TransportState,
-};
+use fpmedia_web::{PlayTick, TransportEvent, VideoPlayer};
 use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
 use leptos_use::utils::Pausable;
@@ -15,16 +13,16 @@ use leptos_use::{
     use_resize_observer, use_throttle_fn_with_arg_and_options, use_timeout_fn,
 };
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{HtmlCanvasElement, VisibilityState};
+use web_sys::VisibilityState;
 
-use super::ctx::HostCtx;
+use super::VideoRef;
+use super::ctx::{HostCtx, KickDrain};
+use super::host::VideoHost;
 use super::host_ops::{SeekOrStep, run_open, run_play_prime, run_seek_or_step};
-use super::op_queue::{HostOp, OpQueue, OpenArgs};
-use super::open_url::resolve_url_source;
+use super::op_queue::{HostOp, OpQueue};
 use super::transport_apply::{
     dispatch_transport, enqueue_scrub_dwell_exact, new_transport, note_transport,
 };
-use super::{VideoOps, VideoRef};
 use fpmedia_web::timer::{next_animation_frame, now_ms};
 
 /// Soft-drag stillness → Exact aim while finger still down.
@@ -37,6 +35,60 @@ const SYNC_UI_MS: f64 = 100.0;
 const SCRUBBING_SYNC_UI_MS: f64 = 150.0;
 /// Hidden-tab present tick (`mediabunny: setInterval(render, 500)`).
 const HIDDEN_PLAY_TICK_MS: u64 = 500;
+
+/// One play-clock present tick — shared by the rAF driver and the hidden-tab
+/// interval (`mediabunny: setInterval(render, 500)`).
+fn on_play_tick(ctx: &HostCtx, p: &Rc<VideoPlayer>, last_play_ui_ms: &Cell<f64>) {
+    let VideoRef {
+        ended,
+        frame,
+        playhead,
+        timestamp,
+        fps,
+        error,
+        status,
+        ..
+    } = ctx.video;
+    match p.play_raf_tick() {
+        Ok(PlayTick::Skipped) => {}
+        Ok(PlayTick::Ended) => {
+            ended.set(true);
+            note_transport(ctx, TransportEvent::Ended);
+            ctx.stop_playback();
+            status.set("Ended.".into());
+        }
+        Ok(PlayTick::Presented { did_draw }) => {
+            // Publish frame/playhead every present — playlist LoopZone
+            // wall must not wait SYNC_UI_MS (~100ms) or EOF seams first.
+            let st = p.state();
+            let engine = st.frame.min(u64::from(u32::MAX)) as u32;
+            frame.set(engine);
+            playhead.set(engine);
+            timestamp.set(st.timestamp.seconds);
+            let now = now_ms();
+            if did_draw
+                && let Some(measured) = ctx.fps_meter.borrow_mut().note_present()
+                && now.is_some_and(|n| n - last_play_ui_ms.get() >= SYNC_UI_MS)
+            {
+                fps.set(Some(measured));
+            }
+            if let Some(n) = now
+                && n - last_play_ui_ms.get() >= SYNC_UI_MS
+            {
+                last_play_ui_ms.set(n);
+                ctx.sync_ui();
+            }
+        }
+        Ok(PlayTick::Failed(msg)) => {
+            error.set(Some(msg));
+            ctx.stop_playback();
+        }
+        Err(e) => {
+            error.set(Some(e.to_string()));
+            ctx.stop_playback();
+        }
+    }
+}
 
 /// Frame-precise media element (HTML `<video>` analog).
 ///
@@ -58,13 +110,6 @@ pub fn Video(
         ready,
         playing,
         looping,
-        ended,
-        frame,
-        playhead,
-        timestamp,
-        fps,
-        error,
-        status,
         ..
     } = video;
 
@@ -89,10 +134,7 @@ pub fn Video(
             let last_play_ui_ms = Rc::clone(&last_play_ui_ms);
             move |_| {
                 let HostCtx {
-                    player,
-                    fps_meter,
-                    transport,
-                    ..
+                    player, transport, ..
                 } = &ctx;
                 // Play path: engine present tick + UI throttle.
                 // Pause path: still tick so gap-fill strip marks update (fill is async).
@@ -131,45 +173,7 @@ pub fn Video(
                     return;
                 }
 
-                match p.play_raf_tick() {
-                    Ok(PlayTick::Skipped) => {}
-                    Ok(PlayTick::Ended) => {
-                        ended.set(true);
-                        note_transport(&ctx, TransportEvent::Ended);
-                        ctx.stop_playback();
-                        status.set("Ended.".into());
-                    }
-                    Ok(PlayTick::Presented { did_draw }) => {
-                        // Publish frame/playhead every present — playlist LoopZone
-                        // wall must not wait SYNC_UI_MS (~100ms) or EOF seams first.
-                        let st = p.state();
-                        let engine = st.frame.min(u64::from(u32::MAX)) as u32;
-                        frame.set(engine);
-                        playhead.set(engine);
-                        timestamp.set(st.timestamp.seconds);
-                        let now = now_ms();
-                        if did_draw
-                            && let Some(measured) = fps_meter.borrow_mut().note_present()
-                            && now.is_some_and(|n| n - last_play_ui_ms.get() >= SYNC_UI_MS)
-                        {
-                            fps.set(Some(measured));
-                        }
-                        if let Some(n) = now
-                            && n - last_play_ui_ms.get() >= SYNC_UI_MS
-                        {
-                            last_play_ui_ms.set(n);
-                            ctx.sync_ui();
-                        }
-                    }
-                    Ok(PlayTick::Failed(msg)) => {
-                        error.set(Some(msg));
-                        ctx.stop_playback();
-                    }
-                    Err(e) => {
-                        error.set(Some(e.to_string()));
-                        ctx.stop_playback();
-                    }
-                }
+                on_play_tick(&ctx, &p, &last_play_ui_ms);
             }
         },
         UseRafFnOptions::default().immediate(false),
@@ -208,43 +212,7 @@ pub fn Video(
                 if !p.play_session_live() {
                     return;
                 }
-                match p.play_raf_tick() {
-                    Ok(PlayTick::Skipped) => {}
-                    Ok(PlayTick::Ended) => {
-                        ended.set(true);
-                        note_transport(&ctx, TransportEvent::Ended);
-                        ctx.stop_playback();
-                        status.set("Ended.".into());
-                    }
-                    Ok(PlayTick::Presented { did_draw }) => {
-                        let st = p.state();
-                        let engine = st.frame.min(u64::from(u32::MAX)) as u32;
-                        frame.set(engine);
-                        playhead.set(engine);
-                        timestamp.set(st.timestamp.seconds);
-                        let now = now_ms();
-                        if did_draw
-                            && let Some(measured) = ctx.fps_meter.borrow_mut().note_present()
-                            && now.is_some_and(|n| n - last_play_ui_ms.get() >= SYNC_UI_MS)
-                        {
-                            fps.set(Some(measured));
-                        }
-                        if let Some(n) = now
-                            && n - last_play_ui_ms.get() >= SYNC_UI_MS
-                        {
-                            last_play_ui_ms.set(n);
-                            ctx.sync_ui();
-                        }
-                    }
-                    Ok(PlayTick::Failed(msg)) => {
-                        error.set(Some(msg));
-                        ctx.stop_playback();
-                    }
-                    Err(e) => {
-                        error.set(Some(e.to_string()));
-                        ctx.stop_playback();
-                    }
-                }
+                on_play_tick(&ctx, &p, &last_play_ui_ms);
             }
         },
         HIDDEN_PLAY_TICK_MS,
@@ -419,134 +387,7 @@ pub fn Video(
                     }
                 }
             });
-        }) as Rc<dyn Fn()>
-    };
-
-    let open_blob = {
-        let ctx = ctx.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move |blob: web_sys::Blob| {
-            let Some(canvas_el) = canvas_ref.get_untracked() else {
-                error.set(Some("canvas not mounted".into()));
-                status.set("Canvas missing — refresh the page.".into());
-                return;
-            };
-            let canvas: HtmlCanvasElement = canvas_el;
-            ctx.retire_clip();
-            let size_kb = (blob.size() as u64) / 1024;
-            status.set(OpenPhase::ProbingSource(OpenSourceKind::Progressive { size_kb }).label());
-            #[cfg(target_arch = "wasm32")]
-            web_sys::console::log_1(&format!("fpmedia-web: open_blob start ~{size_kb} KB").into());
-            let source: std::sync::Arc<dyn MediaSource> =
-                std::sync::Arc::new(BlobSource::new(blob));
-            if ctx.queue.enqueue(HostOp::Open(OpenArgs { source, canvas })) {
-                kick_drain();
-            }
-        }) as Rc<dyn Fn(web_sys::Blob)>
-    };
-
-    let open_url = {
-        let ctx = ctx.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move |url: String| {
-            let Some(canvas_el) = canvas_ref.get_untracked() else {
-                error.set(Some("canvas not mounted".into()));
-                status.set("Canvas missing — refresh the page.".into());
-                return;
-            };
-            let canvas: HtmlCanvasElement = canvas_el;
-            let url = url.trim().to_string();
-            if url.is_empty() {
-                error.set(Some("empty URL".into()));
-                status.set("Enter a URL to open.".into());
-                return;
-            }
-            ctx.retire_clip();
-            let fetch_id = ctx.queue.current_id();
-            // Do **not** latch `busy` across resolve — cancelled fetch used to
-            // leave busy=true forever when drain had already ended. `!ready`
-            // keeps Play disabled; Open enqueue sets busy for demux/seek.
-            // Cross-origin: host must pass a CORS-ok or same-origin URL.
-            status.set(OpenPhase::OpeningUrl { url: url.clone() }.label());
-            #[cfg(target_arch = "wasm32")]
-            web_sys::console::log_1(&format!("fpmedia-web: open_url start {url}").into());
-
-            let queue = ctx.queue.clone();
-            let kick_drain = Rc::clone(&kick_drain);
-            spawn_local(async move {
-                let opened = resolve_url_source(&url, |phase| status.set(phase.label())).await;
-                if !queue.is_current(fetch_id) {
-                    queue.sync_busy();
-                    return;
-                }
-                match opened {
-                    Ok(source) => {
-                        if queue.enqueue(HostOp::Open(OpenArgs { source, canvas })) {
-                            kick_drain();
-                        }
-                    }
-                    Err(e) => {
-                        queue.sync_busy();
-                        ready.set(false);
-                        error.set(Some(e.clone()));
-                        status.set("Open URL failed.".into());
-                        #[cfg(target_arch = "wasm32")]
-                        web_sys::console::error_1(&e.into());
-                    }
-                }
-            });
-        }) as Rc<dyn Fn(String)>
-    };
-
-    let dispatch = {
-        let ctx = ctx.clone();
-        let kick_drain = Rc::clone(&kick_drain);
-        Rc::new(move |event: TransportEvent| dispatch_transport(&ctx, &kick_drain, event))
-            as Rc<dyn Fn(TransportEvent)>
-    };
-    let play_fn = {
-        let ctx = ctx.clone();
-        let dispatch = Rc::clone(&dispatch);
-        Rc::new(move || {
-            if !ready.get_untracked() {
-                web_sys::console::log_1(&"fpmedia-web: play ignored (not ready)".into());
-                return;
-            }
-            // Play intent already on (Playing / scrub-while-play / resume-settle).
-            // Recover only stale `Playing` with a dead session — not Settling/Scrubbing
-            // resume (soft-hold clears live while intent stays). `product.md` § Play chrome.
-            let live = ctx
-                .player
-                .borrow()
-                .as_ref()
-                .is_some_and(|p| p.play_session_live());
-            let state = ctx.transport.state();
-            if state.ui_playing(live) {
-                if live {
-                    web_sys::console::log_1(&"fpmedia-web: play ignored (already playing)".into());
-                    return;
-                }
-                if matches!(state, TransportState::Playing) {
-                    web_sys::console::log_1(&"fpmedia-web: recover stale transport playing".into());
-                    ctx.stop_playback();
-                } else {
-                    web_sys::console::log_1(
-                        &"fpmedia-web: play ignored (play intent, session soft-held)".into(),
-                    );
-                    return;
-                }
-            }
-            if ctx.player.borrow().as_ref().is_none() {
-                web_sys::console::log_1(&"fpmedia-web: play ignored (no player)".into());
-                return;
-            }
-            dispatch(TransportEvent::PlayPressed);
-        }) as Rc<dyn Fn()>
-    };
-
-    let pause_fn = {
-        let dispatch = Rc::clone(&dispatch);
-        Rc::new(move || dispatch(TransportEvent::PausePressed)) as Rc<dyn Fn()>
+        }) as KickDrain
     };
 
     // Soft-drag stillness → Exact aim (same settle path as release; gesture stays).
@@ -567,65 +408,14 @@ pub fn Video(
         SCRUB_DWELL_EXACT_MS,
     );
 
-    // Pointer-down: Exact hit → paint once; miss → arm dwell settle.
-    let arm_scrub_dwell_down = {
-        let ctx = ctx.clone();
-        let start_scrub_dwell = start_scrub_dwell.clone();
-        let stop_scrub_dwell = stop_scrub_dwell.clone();
-        Rc::new(move |frame: u32| {
-            stop_scrub_dwell();
-            let hit = ctx
-                .with_player(|p| p.try_present_scrub_exact(u64::from(frame)))
-                .unwrap_or(false);
-            if hit {
-                return;
-            }
-            start_scrub_dwell(());
-        }) as Rc<dyn Fn(u32)>
-    };
-
-    // Pointer-move: never sync-present Exact — that raced throttled ScrubDrag on
-    // Exact-strip R→L (flicker + key стоп-кадр). Canvas = ScrubDrag; dwell Exact
-    // only after stillness when blit miss. **no equivalent** (scrub local).
-    let note_scrub_dwell_move = {
-        let ctx = ctx.clone();
-        let start_scrub_dwell = start_scrub_dwell.clone();
-        let stop_scrub_dwell = stop_scrub_dwell.clone();
-        Rc::new(move |frame: u32| {
-            stop_scrub_dwell();
-            let has = ctx
-                .with_player(|p| p.has_scrub_exact_blit(u64::from(frame)))
-                .unwrap_or(false);
-            if has {
-                return;
-            }
-            start_scrub_dwell(());
-        }) as Rc<dyn Fn(u32)>
-    };
-
-    let scrub_pointer_down_fn = {
-        let dispatch = Rc::clone(&dispatch);
-        let arm_scrub_dwell_down = Rc::clone(&arm_scrub_dwell_down);
-        Rc::new(move |frame: u32| {
-            dispatch(TransportEvent::PointerDown { frame });
-            arm_scrub_dwell_down(frame);
-        }) as Rc<dyn Fn(u32)>
-    };
-
-    let scrub_pointer_up_fn = {
-        let dispatch = Rc::clone(&dispatch);
-        let stop_scrub_dwell = stop_scrub_dwell.clone();
-        Rc::new(move |frame: u32| {
-            stop_scrub_dwell();
-            dispatch(TransportEvent::PointerUp { frame });
-        }) as Rc<dyn Fn(u32)>
-    };
-
     // Rate-limit scrub drag only — settle / release stays immediate via ScrubRelease.
     let scrub_pointer_move_throttled = {
-        let dispatch = Rc::clone(&dispatch);
+        let ctx = ctx.clone();
+        let kick_drain = Rc::clone(&kick_drain);
         use_throttle_fn_with_arg_and_options(
-            move |frame: u32| dispatch(TransportEvent::PointerMove { frame }),
+            move |frame: u32| {
+                dispatch_transport(&ctx, &kick_drain, TransportEvent::PointerMove { frame })
+            },
             SCRUB_DRAG_THROTTLE_MS,
             // trailing=false: a post-pointerup trailing drag can enqueue after
             // ScrubRelease and silently kill play.
@@ -633,495 +423,27 @@ pub fn Video(
         )
     };
 
-    let scrub_pointer_move_fn = {
-        let note_scrub_dwell_move = Rc::clone(&note_scrub_dwell_move);
-        Rc::new(move |target: u32| {
-            note_scrub_dwell_move(target);
-            scrub_pointer_move_throttled(target);
-        }) as Rc<dyn Fn(u32)>
-    };
-
-    let seek_frame_fn = {
-        let dispatch = Rc::clone(&dispatch);
-        Rc::new(move |frame: u32| dispatch(TransportEvent::SeekRequested { frame }))
-            as Rc<dyn Fn(u32)>
-    };
-    let seek_keyframe_fn = {
-        let dispatch = Rc::clone(&dispatch);
-        Rc::new(move |frame: u32| dispatch(TransportEvent::SeekKeyframeRequested { frame }))
-            as Rc<dyn Fn(u32)>
-    };
-    let step_fn = |forward: bool| {
-        let dispatch = Rc::clone(&dispatch);
-        Rc::new(move || dispatch(TransportEvent::StepRequested { forward })) as Rc<dyn Fn()>
-    };
-
-    let set_loop_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |on: bool| {
-            ctx.with_player(|p| p.set_loop(on));
-            ctx.sync_ui();
-        }) as Rc<dyn Fn(bool)>
-    };
-
-    let pause_hard_no_densify_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            // Leave Playing without SoftPause densify (not PausePressed).
-            note_transport(&ctx, TransportEvent::Ended);
-            ctx.with_player(|p| p.pause_hard_no_densify());
-            ctx.video.playing.set(false);
-            ctx.sync_ui();
-        }) as Rc<dyn Fn()>
-    };
-
-    let set_loop_zone_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |in_frame: u32, out_frame: u32| {
-            ctx.with_player(|p| p.set_loop_zone(u64::from(in_frame), u64::from(out_frame)));
-            let count = video.frame_count.get_untracked();
-            if count == 0 {
-                video.loop_in.set(0);
-                video.loop_out.set(None);
-            } else {
-                let in_f = in_frame.min(count.saturating_sub(1));
-                let out_f = out_frame.min(count).max(in_f.saturating_add(1));
-                video.loop_in.set(in_f);
-                if in_f == 0 && out_f == count {
-                    video.loop_out.set(None);
-                } else {
-                    video.loop_out.set(Some(out_f));
-                }
-            }
-            ctx.sync_ui();
-        }) as Rc<dyn Fn(u32, u32)>
-    };
-
-    let set_volume_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |v: f64| {
-            ctx.with_player(|p| p.set_volume(v));
-        }) as Rc<dyn Fn(f64)>
-    };
-
-    let set_muted_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |m: bool| {
-            ctx.with_player(|p| p.set_muted(m));
-        }) as Rc<dyn Fn(bool)>
-    };
-
-    let set_playback_rate_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |r: f64| {
-            ctx.with_player(|p| p.set_playback_rate(r));
-        }) as Rc<dyn Fn(f64)>
-    };
-
-    let paint_hover_thumb_fn = {
-        let ctx = ctx.clone();
-        Rc::new(
-            move |frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32| {
-                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
-                    return;
-                };
-                spawn_local(async move {
-                    let _ = p
-                        .paint_hover_thumb(u64::from(frame), &dest, max_w, max_h)
-                        .await;
-                });
-            },
-        ) as Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32)>
-    };
-
-    let try_paint_hover_thumb_fn = {
-        let ctx = ctx.clone();
-        Rc::new(
-            move |frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32| {
-                ctx.with_player(|p| {
-                    let aim = u64::from(frame);
-                    match p.try_paint_hover_thumb_cached(aim, &dest, max_w, max_h) {
-                        // Exact frame hit → skip defer. Key/far interim still
-                        // paints, but return false so host defers Exact refine
-                        // (Pause floor; Play refuses aim decode).
-                        // Cold miss: keep last pixels (nearest stand-in) — host
-                        // must not wipe to empty (`<HoverThumb>` paint-first).
-                        Ok(Some(painted)) => p.hover_thumb_close_enough(aim, painted),
-                        Ok(None) | Err(_) => false,
-                    }
-                })
-                .unwrap_or(false)
-            },
-        ) as Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32) -> bool>
-    };
-
-    let cancel_hover_thumb_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            ctx.with_player(|p| p.cancel_hover_thumb());
-        }) as Rc<dyn Fn()>
-    };
-
-    let set_thumb_policy_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |policy: fpmedia_web::ThumbPolicy| {
-            ctx.thumb_policy.set(policy);
-            ctx.with_player(|p| p.set_thumb_policy(policy));
-        }) as Rc<dyn Fn(fpmedia_web::ThumbPolicy)>
-    };
-
-    let apply_thumb_max_size_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |max_w: u32, max_h: u32| {
-            ctx.with_player(|p| p.set_thumb_max_size(max_w, max_h));
-        }) as Rc<dyn Fn(u32, u32)>
-    };
-
-    let set_scrub_cache_policy_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |policy: fpmedia_web::ScrubCachePolicy| {
-            ctx.scrub_cache_policy.set(policy);
-            ctx.with_player(|p| p.set_scrub_cache_policy(policy));
-        }) as Rc<dyn Fn(fpmedia_web::ScrubCachePolicy)>
-    };
-
-    let park_scrub_cache_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            // Capability Off without wipe — host signal stays Off so open re-apply
-            // does not clear parked Exact. User Scrub Off uses set_scrub_cache_policy.
-            ctx.scrub_cache_policy
-                .set(fpmedia_web::ScrubCachePolicy::Off);
-            ctx.with_player(|p| p.park_scrub_cache());
-        }) as Rc<dyn Fn()>
-    };
-
-    let has_scrub_exact_blit_fn = {
-        let ctx = ctx.clone();
+    let host = VideoHost::new(
+        ctx.clone(),
+        canvas_ref,
+        Rc::clone(&kick_drain),
+        Rc::new(move || start_scrub_dwell(())),
+        Rc::new(stop_scrub_dwell),
         Rc::new(move |frame: u32| {
-            ctx.with_player(|p| p.has_scrub_exact_blit(u64::from(frame)))
-                .unwrap_or(false)
-        }) as Rc<dyn Fn(u32) -> bool>
-    };
-
-    let try_present_scrub_exact_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |frame: u32| {
-            ctx.with_player(|p| p.try_present_scrub_exact(u64::from(frame)))
-                .unwrap_or(false)
-        }) as Rc<dyn Fn(u32) -> bool>
-    };
-
-    let arm_scrub_densify_after_exact_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |frame: u32| {
-            ctx.with_player(|p| p.arm_scrub_densify_after_exact(u64::from(frame)));
-        }) as Rc<dyn Fn(u32)>
-    };
-
-    let clear_densify_hold_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            ctx.with_player(|p| p.clear_densify_hold());
-        }) as Rc<dyn Fn()>
-    };
-
-    let present_image_bitmap_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |frame: u32, bitmap: &web_sys::ImageBitmap| {
-            ctx.with_player(|p| p.present_image_bitmap(u64::from(frame), bitmap).is_ok())
-                .unwrap_or(false)
-        }) as Rc<dyn Fn(u32, &web_sys::ImageBitmap) -> bool>
-    };
-
-    let take_scrub_exact_blit_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |frame: u32| {
-            ctx.with_player(|p| p.take_scrub_exact_blit(u64::from(frame)))
-                .flatten()
-        }) as Rc<dyn Fn(u32) -> Option<web_sys::ImageBitmap>>
-    };
-
-    let scrub_exact_frame_ids_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            ctx.with_player(|p| {
-                p.scrub_exact_frame_ids()
-                    .into_iter()
-                    .filter_map(|id| u32::try_from(id).ok())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-        }) as Rc<dyn Fn() -> Vec<u32>>
-    };
-
-    let scrub_covered_frame_ids_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            ctx.with_player(|p| {
-                p.scrub_covered_frame_ids()
-                    .into_iter()
-                    .filter_map(|id| u32::try_from(id).ok())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-        }) as Rc<dyn Fn() -> Vec<u32>>
-    };
-
-    let scrub_fetch_playable_runs_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            ctx.with_player(|p| p.scrub_fetch_playable_runs())
-                .unwrap_or_default()
-        }) as Rc<dyn Fn() -> Vec<(u64, u64)>>
-    };
-
-    let clone_scrub_exact_blit_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |frame: u32| {
-            ctx.with_player(|p| p.clone_scrub_exact_blit(u64::from(frame)))
-                .flatten()
-        }) as Rc<dyn Fn(u32) -> Option<web_sys::ImageBitmap>>
-    };
-
-    let scrub_exact_capacity_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || ctx.with_player(|p| p.scrub_exact_capacity()).unwrap_or(1))
-            as Rc<dyn Fn() -> usize>
-    };
-
-    let set_vt_densify_authority_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |on: bool| {
-            ctx.with_player(|p| p.set_vt_densify_authority(on));
-        }) as Rc<dyn Fn(bool)>
-    };
-
-    let set_vt_thumb_authority_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |on: bool| {
-            ctx.with_player(|p| p.set_vt_thumb_authority(on));
-        }) as Rc<dyn Fn(bool)>
-    };
-
-    let sync_frame_ids_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            ctx.with_player(|p| {
-                p.sync_frame_ids()
-                    .into_iter()
-                    .filter_map(|id| u32::try_from(id).ok())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-        }) as Rc<dyn Fn() -> Vec<u32>>
-    };
-
-    let thumb_max_thumbs_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || ctx.with_player(|p| p.thumb_max_thumbs()).unwrap_or(256))
-            as Rc<dyn Fn() -> usize>
-    };
-
-    let thumb_has_key_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |key: u32| {
-            ctx.with_player(|p| p.thumb_has_key(u64::from(key)))
-                .unwrap_or(false)
-        }) as Rc<dyn Fn(u32) -> bool>
-    };
-
-    let clone_thumb_bitmap_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |key: u32, max_w: u32, max_h: u32| {
-            ctx.with_player(|p| p.clone_thumb_bitmap(u64::from(key), max_w, max_h))
-                .flatten()
-        }) as Rc<dyn Fn(u32, u32, u32) -> Option<web_sys::ImageBitmap>>
-    };
-
-    let fill_thumb_key_at_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |key: u32| {
-            let ctx = ctx.clone();
-            Box::pin(async move {
-                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
-                    return;
-                };
-                p.fill_thumb_key_at(u64::from(key)).await;
-            }) as super::BoxedLocalFut<()>
-        }) as super::LocalFutFnU32<()>
-    };
-
-    let queue_vt_densify_target_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |frame: u32| {
-            ctx.with_player(|p| p.queue_vt_densify_target(u64::from(frame)));
-        }) as Rc<dyn Fn(u32)>
-    };
-
-    let set_vt_exact_residents_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |locals: Vec<u32>| {
-            ctx.with_player(|p| {
-                let ids: Vec<u64> = locals.into_iter().map(u64::from).collect();
-                p.set_vt_exact_residents(&ids);
-            });
-        }) as Rc<dyn Fn(Vec<u32>)>
-    };
-
-    let scrub_plan_margins_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            ctx.with_player(|p| p.scrub_plan_margins())
-                .unwrap_or((12, 6))
-        }) as Rc<dyn Fn() -> (u64, u64)>
-    };
-
-    let scrub_dir_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || ctx.with_player(|p| p.scrub_dir()).unwrap_or(0)) as Rc<dyn Fn() -> i8>
-    };
-
-    let vt_densify_banned_locals_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            ctx.with_player(|p| {
-                p.vt_densify_banned_locals()
-                    .into_iter()
-                    .filter_map(|id| u32::try_from(id).ok())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-        }) as Rc<dyn Fn() -> Vec<u32>>
-    };
-
-    let densify_inflight_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || ctx.with_player(|p| p.densify_inflight()).unwrap_or(false))
-            as Rc<dyn Fn() -> bool>
-    };
-
-    let warm_play_origin_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            let ctx = ctx.clone();
-            Box::pin(async move {
-                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
-                    return;
-                };
-                // Bytes + PreferSoftware origin stash (playlist seam / loop cousin).
-                let _ = p.warm_play_origin_bytes().await;
-                let _ = p.warm_play_origin_stash().await;
-            }) as super::BoxedLocalFut<()>
-        }) as super::LocalFutFn<()>
-    };
-
-    let prepare_seam_at_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |frame: u32| {
-            let ctx = ctx.clone();
-            Box::pin(async move {
-                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
-                    return Err("no player".into());
-                };
-                p.prepare_playlist_seam_at(u64::from(frame))
-                    .await
-                    .map_err(|e| e.to_string())
-            }) as super::BoxedLocalFut<Result<(), String>>
-        }) as super::LocalFutFnU32<Result<(), String>>
-    };
-
-    let arm_seam_hold_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move |frame: u32| {
-            let ctx = ctx.clone();
-            Box::pin(async move {
-                let Some(p) = ctx.player.borrow().as_ref().cloned() else {
-                    return Err("no player".into());
-                };
-                p.arm_playlist_seam_hold_at(u64::from(frame))
-                    .await
-                    .map_err(|e| e.to_string())
-            }) as super::BoxedLocalFut<Result<(), String>>
-        }) as super::LocalFutFnU32<Result<(), String>>
-    };
-
-    let close_fn = {
-        let ctx = ctx.clone();
-        Rc::new(move || {
-            ctx.retire_clip();
-            status.set("Closed.".into());
-        }) as Rc<dyn Fn()>
-    };
-
-    video.ops.set_value(Some(VideoOps {
-        open_blob,
-        open_url,
-        play: play_fn,
-        pause: pause_fn,
-        close: Rc::clone(&close_fn),
-        seek_frame: seek_frame_fn,
-        seek_keyframe: seek_keyframe_fn,
-        scrub_pointer_down: scrub_pointer_down_fn,
-        scrub_pointer_move: scrub_pointer_move_fn,
-        scrub_pointer_up: scrub_pointer_up_fn,
-        next_frame: step_fn(true),
-        previous_frame: step_fn(false),
-        set_loop: set_loop_fn,
-        set_loop_zone: set_loop_zone_fn,
-        pause_hard_no_densify: pause_hard_no_densify_fn,
-        set_volume: set_volume_fn,
-        set_muted: set_muted_fn,
-        set_playback_rate: set_playback_rate_fn,
-        paint_hover_thumb: paint_hover_thumb_fn,
-        try_paint_hover_thumb: try_paint_hover_thumb_fn,
-        cancel_hover_thumb: cancel_hover_thumb_fn,
-        set_thumb_policy: set_thumb_policy_fn,
-        apply_thumb_max_size: apply_thumb_max_size_fn,
-        set_scrub_cache_policy: set_scrub_cache_policy_fn,
-        park_scrub_cache: park_scrub_cache_fn,
-        has_scrub_exact_blit: has_scrub_exact_blit_fn,
-        try_present_scrub_exact: try_present_scrub_exact_fn,
-        arm_scrub_densify_after_exact: arm_scrub_densify_after_exact_fn,
-        clear_densify_hold: clear_densify_hold_fn,
-        present_image_bitmap: present_image_bitmap_fn,
-        take_scrub_exact_blit: take_scrub_exact_blit_fn,
-        scrub_exact_frame_ids: scrub_exact_frame_ids_fn,
-        scrub_covered_frame_ids: scrub_covered_frame_ids_fn,
-        scrub_fetch_playable_runs: scrub_fetch_playable_runs_fn,
-        clone_scrub_exact_blit: clone_scrub_exact_blit_fn,
-        scrub_exact_capacity: scrub_exact_capacity_fn,
-        set_vt_densify_authority: set_vt_densify_authority_fn,
-        set_vt_thumb_authority: set_vt_thumb_authority_fn,
-        sync_frame_ids: sync_frame_ids_fn,
-        thumb_max_thumbs: thumb_max_thumbs_fn,
-        thumb_has_key: thumb_has_key_fn,
-        clone_thumb_bitmap: clone_thumb_bitmap_fn,
-        fill_thumb_key_at: fill_thumb_key_at_fn,
-        queue_vt_densify_target: queue_vt_densify_target_fn,
-        set_vt_exact_residents: set_vt_exact_residents_fn,
-        scrub_plan_margins: scrub_plan_margins_fn,
-        scrub_dir: scrub_dir_fn,
-        vt_densify_banned_locals: vt_densify_banned_locals_fn,
-        densify_inflight: densify_inflight_fn,
-        warm_play_origin: warm_play_origin_fn,
-        prepare_seam_at: prepare_seam_at_fn,
-        arm_seam_hold: arm_seam_hold_fn,
-    }));
+            scrub_pointer_move_throttled(frame);
+        }),
+    );
+    video.host.set_value(Some(host));
 
     on_cleanup({
-        let ops = video.ops;
+        let host_cell = video.host;
         move || {
-            let close = ops
-                .try_with_value(|o| o.as_ref().map(|v| Rc::clone(&v.close)))
-                .flatten();
-            if let Some(close) = close {
-                close();
+            if let Some(host) = host_cell.try_with_value(|h| h.clone()).flatten() {
+                host.close();
             }
-            ops.set_value(None);
+            host_cell.set_value(None);
         }
     });
-
     // Public styling hooks (`fpvideo-*`) — host CSS / override via class props.
     let root_class = class.unwrap_or_else(|| "fpvideo-stage".into());
     let viewport_class = viewport_class.unwrap_or_else(|| "fpvideo-viewport".into());

@@ -8,7 +8,7 @@ use fpmedia_web::{TransportCmd, TransportEvent, TransportModel, TransportState, 
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
-use super::ctx::HostCtx;
+use super::ctx::{HostCtx, KickDrain};
 use super::host_ops::enqueue_seek_step;
 use super::op_queue::HostOp;
 
@@ -69,7 +69,7 @@ pub(super) fn sync_playing_from_transport(ctx: &HostCtx) {
 
 /// Run reduce + queue engine cmds. Playhead updates sync; engine work is serialized
 /// on one microtask drain (pointer Move is rate-limited in `<Video>` via leptos-use).
-pub(super) fn dispatch_transport(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, event: TransportEvent) {
+pub(super) fn dispatch_transport(ctx: &HostCtx, kick_drain: &KickDrain, event: TransportEvent) {
     let v = ctx.video;
     let engine_cmds = {
         let mut inner = ctx.transport.inner.borrow_mut();
@@ -99,7 +99,7 @@ pub(super) fn dispatch_transport(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, event
     schedule_cmd_drain(ctx, kick_drain);
 }
 
-fn schedule_cmd_drain(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>) {
+fn schedule_cmd_drain(ctx: &HostCtx, kick_drain: &KickDrain) {
     let transport = &ctx.transport;
     if transport.scheduled.get() {
         return;
@@ -123,7 +123,7 @@ fn schedule_cmd_drain(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>) {
     });
 }
 
-fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, cmd: TransportCmd) {
+fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &KickDrain, cmd: TransportCmd) {
     let HostCtx { queue, player, .. } = ctx;
     let playhead = ctx.video.playhead;
     match cmd {
@@ -213,7 +213,7 @@ fn leave_play_for_scrub(ctx: &HostCtx) -> Option<Rc<fpmedia_web::VideoPlayer>> {
     Some(p)
 }
 
-fn enqueue_scrub_drag(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, frame: u32) {
+fn enqueue_scrub_drag(ctx: &HostCtx, kick_drain: &KickDrain, frame: u32) {
     let Some(p) = leave_play_for_scrub(ctx) else {
         return;
     };
@@ -229,7 +229,7 @@ fn enqueue_scrub_drag(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, frame: u32) {
 
 fn enqueue_scrub_release(
     ctx: &HostCtx,
-    kick_drain: &Rc<dyn Fn()>,
+    kick_drain: &KickDrain,
     frame: u32,
     then_play: bool,
     settle_gen: u64,
@@ -251,7 +251,7 @@ fn enqueue_scrub_release(
 ///
 /// Cache-hit paints sync; miss runs the same settle path as pointer-up.
 /// **no equivalent** (scrub local).
-pub(super) fn enqueue_scrub_dwell_exact(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, frame: u32) {
+pub(super) fn enqueue_scrub_dwell_exact(ctx: &HostCtx, kick_drain: &KickDrain, frame: u32) {
     if !ctx.transport.is_scrubbing() {
         return;
     }

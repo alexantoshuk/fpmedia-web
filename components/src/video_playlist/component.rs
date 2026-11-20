@@ -1,46 +1,18 @@
 //! [`VideoPlaylist`] — two [`crate::Video`] slots (live + idle) over a playlist model.
 
-use std::rc::Rc;
-
 use fpmedia_web::ScrubCachePolicy;
-use fpmedia_web::timer::sleep_ms;
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::Video;
-use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
+use crate::video_playlist::PlaylistPos;
 
-use super::host_zone::is_soft_seam_cancel;
-use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy, seam_trace, try_begin_seam};
+use super::host::PlaylistHost;
+use super::loop_seam::{loop_owner, seam_busy, seam_trace, try_begin_seam};
 use super::loop_seam_exec::{advance_after_ended, note_host_seam_err, start_host_wrap};
-use super::plan::{
-    HostOutsideCtx, HostOutsidePlan, PlayAtClipLastCtx, PlayAtClipLastPlan, SeamNextCtx, StepCtx,
-    StepDir, StepPlan, plan_host_outside, plan_play_at_clip_last, plan_seam_next_clip, plan_step,
-};
-use super::slots::{
-    maybe_kick_idle_seam_warm, seek_to_pos, sync_live_loop_from_playlist, wait_ready,
-};
-use super::source::PlaylistSource;
-use super::video_playlist_ref::{VideoPlaylistOps, VideoPlaylistRef};
-
-/// Run [`StepPlan`] from Next/Prev chrome (clear intent / live step / goto).
-fn run_step_plan(pl: VideoPlaylistRef, plan: StepPlan) {
-    match plan {
-        StepPlan::LiveStep { dir } => {
-            pl.playing.set(false);
-            pl.scrub_resume.set(false);
-            match dir {
-                StepDir::Next => pl.live_video().next_frame(),
-                StepDir::Prev => pl.live_video().previous_frame(),
-            }
-        }
-        StepPlan::GotoPos { pos } => pl.goto_pos(pos),
-        StepPlan::ClearPlayIntent => {
-            pl.playing.set(false);
-            pl.scrub_resume.set(false);
-        }
-    }
-}
+use super::plan::{HostOutsideCtx, HostOutsidePlan, plan_host_outside};
+use super::slots::maybe_kick_idle_seam_warm;
+use super::video_playlist_ref::VideoPlaylistRef;
 
 /// Dual-slot playlist stage. Drive via [`VideoPlaylistRef`].
 ///
@@ -54,8 +26,6 @@ pub fn VideoPlaylist(
     let VideoPlaylistRef {
         ready,
         busy,
-        status,
-        error,
         ended,
         looping,
         model,
@@ -67,8 +37,6 @@ pub fn VideoPlaylist(
         live_is_a,
         slot_a,
         slot_b,
-        ops,
-        sources,
         open_gen,
         ..
     } = playlist;
@@ -76,8 +44,8 @@ pub fn VideoPlaylist(
     // Live densify On (engine next_gap); idle park (keep Exact). Exact = slot blit.
     // VT = axis/settle/remap only. **no equivalent** (VT local).
     Effect::new(move |_| {
-        let idle = if live_is_a.get() { slot_b } else { slot_a };
-        let live = if live_is_a.get() { slot_a } else { slot_b };
+        let live = playlist.live_video_tracked();
+        let idle = playlist.idle_video_tracked();
         idle.park_scrub_cache();
         idle.set_vt_densify_authority(false);
         live.set_vt_densify_authority(false);
@@ -108,7 +76,7 @@ pub fn VideoPlaylist(
         if pos.get_untracked().clip_index != clip {
             return;
         }
-        let live = if live_is_a.get() { slot_a } else { slot_b };
+        let live = playlist.live_video_tracked();
         let committed = live.frame.get();
         let aim = live.playhead.get();
         let local = if aim != committed { aim } else { committed };
@@ -155,7 +123,7 @@ pub fn VideoPlaylist(
         if !ready.get() || playlist.scrubbing.get() || seam_busy(playlist) {
             return;
         }
-        let live = if live_is_a.get() { slot_a } else { slot_b };
+        let live = playlist.live_video_tracked();
         let _ = live_clip.get();
         let _ = playlist.loop_in.get();
         let _ = playlist.loop_out.get();
@@ -225,7 +193,7 @@ pub fn VideoPlaylist(
         if !ready.get() {
             return;
         }
-        let live = if live_is_a.get() { slot_a } else { slot_b };
+        let live = playlist.live_video_tracked();
         if !live.playing.get() {
             return;
         }
@@ -238,419 +206,13 @@ pub fn VideoPlaylist(
         maybe_kick_idle_seam_warm(playlist);
     });
 
-    let bump_gen = Rc::new({
-        move || {
-            let g = open_gen.get_value().wrapping_add(1);
-            open_gen.set_value(g);
-            playlist.ensure_idle_for.set_value(None);
-            playlist.cut_join_warm_for.set_value(None);
-            playlist.scrub_cross_paused.set_value(false);
-            g
-        }
-    }) as Rc<dyn Fn() -> u64>;
-
-    let close_all = {
-        let bump_gen = Rc::clone(&bump_gen);
-        Rc::new(move || {
-            let _ = bump_gen();
-            slot_a.close();
-            slot_b.close();
-            ready.set(false);
-            busy.set(false);
-            ended.set(false);
-            playlist.playing.set(false);
-            model.set(PlaylistModel::default());
-            pos.set(PlaylistPos::new(0, 0));
-            playhead.set(0);
-            frame_count.set(0);
-            playlist.loop_in.set(0);
-            playlist.loop_out.set(None);
-            live_clip.set(0);
-            idle_clip.set(None);
-            live_is_a.set(true);
-            playlist.scrubbing.set(false);
-            playlist.scrub_resume.set(false);
-            playlist.seam_warm_for.set_value(None);
-            playlist.cut_join_warm_for.set_value(None);
-            end_seam(playlist);
-            super::thumbs::clear_thumb_sync_keys(playlist);
-            sources.set_value(Vec::new());
-            error.set(None);
-            status.set("Closed.".into());
-        }) as Rc<dyn Fn()>
-    };
-
-    let start_open = {
-        let close_all = Rc::clone(&close_all);
-        let bump_gen = Rc::clone(&bump_gen);
-        Rc::new(move |list: Vec<PlaylistSource>| {
-            if list.is_empty() {
-                error.set(Some("empty playlist".into()));
-                status.set("Add at least one file or URL.".into());
-                return;
-            }
-            close_all();
-            let epoch = bump_gen();
-            sources.set_value(list.clone());
-            busy.set(true);
-            ready.set(false);
-            error.set(None);
-            status.set(format!("Probing playlist (0/{})…", list.len()));
-
-            spawn_local(async move {
-                let mut clips = Vec::with_capacity(list.len());
-                // Probe every clip on slot_a (sequential open → metadata → close).
-                for (i, src) in list.iter().enumerate() {
-                    if open_gen.get_value() != epoch {
-                        return;
-                    }
-                    status.set(format!("Probing playlist ({}/{})…", i + 1, list.len()));
-                    slot_a.close();
-                    // Let retire settle one tick.
-                    sleep_ms(0).await;
-                    if open_gen.get_value() != epoch {
-                        return;
-                    }
-                    src.open_on(slot_a);
-                    match wait_ready(slot_a, epoch, open_gen).await {
-                        Ok(meta) => clips.push(PlaylistClip::from_meta(&meta)),
-                        Err(e) => {
-                            if open_gen.get_value() != epoch {
-                                return;
-                            }
-                            busy.set(false);
-                            ready.set(false);
-                            error.set(Some(e.clone()));
-                            status.set(format!("Probe failed at clip {}.", i + 1));
-                            slot_a.close();
-                            return;
-                        }
-                    }
-                }
-
-                if open_gen.get_value() != epoch {
-                    return;
-                }
-
-                let built = PlaylistModel::new(clips);
-                let total_frames = built.total_frame_count();
-                model.set(built);
-                frame_count.set(total_frames);
-                playlist.loop_in.set(0);
-                playlist.loop_out.set(None);
-                playhead.set(0);
-                pos.set(PlaylistPos::new(0, 0));
-                live_is_a.set(true);
-                live_clip.set(0);
-                idle_clip.set(if list.len() > 1 { Some(1) } else { None });
-
-                slot_a.close();
-                slot_b.close();
-                sleep_ms(0).await;
-                if open_gen.get_value() != epoch {
-                    return;
-                }
-
-                playlist.reset_exact_ledger();
-                super::thumbs::clear_thumb_sync_keys(playlist);
-                status.set("Opening live clip…".into());
-                list[0].open_on(slot_a);
-                slot_a.set_scrub_cache_policy(ScrubCachePolicy::On);
-                // ThumbPolicy: host Effect applies to both slots (do not force idle Off).
-
-                if list.len() > 1 {
-                    status.set("Opening idle clip…".into());
-                    list[1].open_on(slot_b);
-                    slot_b.park_scrub_cache();
-                }
-                slot_a.set_vt_densify_authority(false);
-                slot_b.set_vt_densify_authority(false);
-                slot_a.set_vt_thumb_authority(true);
-                slot_b.set_vt_thumb_authority(true);
-
-                match wait_ready(slot_a, epoch, open_gen).await {
-                    Ok(_) => {
-                        if open_gen.get_value() != epoch {
-                            return;
-                        }
-                        // Idle may still be opening — do not block ready on it.
-                        busy.set(false);
-                        ready.set(true);
-                        ended.set(false);
-                        playlist.apply_gain_to_slots();
-                        sync_live_loop_from_playlist(playlist);
-                        status.set(format!("Playlist ready · {} clip(s).", list.len()));
-                        error.set(None);
-                    }
-                    Err(e) => {
-                        if open_gen.get_value() != epoch {
-                            return;
-                        }
-                        busy.set(false);
-                        ready.set(false);
-                        error.set(Some(e));
-                        status.set("Live open failed.".into());
-                    }
-                }
-            });
-        }) as Rc<dyn Fn(Vec<PlaylistSource>)>
-    };
-
-    let open_blobs = {
-        let start_open = Rc::clone(&start_open);
-        Rc::new(move |blobs: Vec<web_sys::Blob>| {
-            let list = blobs.into_iter().map(PlaylistSource::Blob).collect();
-            start_open(list);
-        }) as Rc<dyn Fn(Vec<web_sys::Blob>)>
-    };
-
-    let open_urls = {
-        let start_open = Rc::clone(&start_open);
-        Rc::new(move |urls: Vec<String>| {
-            let list = urls
-                .into_iter()
-                .map(|u| u.trim().to_string())
-                .filter(|u| !u.is_empty())
-                .map(PlaylistSource::Url)
-                .collect::<Vec<_>>();
-            start_open(list);
-        }) as Rc<dyn Fn(Vec<String>)>
-    };
-
-    let play_fn = Rc::new(move || {
-        ended.set(false);
-        playlist.playing.set(true);
-        let live = if live_is_a.get_untracked() {
-            slot_a
-        } else {
-            slot_b
-        };
-        sync_live_loop_from_playlist(playlist);
-        // Host keeps slot `looping=false` — bare `live.play()` at clip/zone end
-        // snaps PlayPrime → local 0. Outside → `plan_host_outside`. **no equivalent**.
-        if looping.get_untracked() {
-            let (zone_in, zone_out) = playlist.loop_zone();
-            let g = playhead.get_untracked();
-            let total = frame_count.get_untracked();
-            match plan_host_outside(HostOutsideCtx {
-                owner: loop_owner(playlist),
-                looping: true,
-                zone_in,
-                zone_out,
-                total_frames: total,
-                global: g,
-                seam_busy: seam_busy(playlist),
-                past_out_needs_wall_on_live: false,
-                wall_on_live: false,
-            }) {
-                HostOutsidePlan::HostWrap { seam_already_busy } => {
-                    start_host_wrap(playlist, seam_already_busy);
-                    return;
-                }
-                HostOutsidePlan::EngineSlotPlay => {
-                    live.play();
-                    return;
-                }
-                HostOutsidePlan::NotOutside => {}
-            }
-            let clip_frames = live.frame_count.get_untracked();
-            let at_clip_last =
-                clip_frames > 0 && live.playhead.get_untracked() >= clip_frames.saturating_sub(1);
-            if at_clip_last && matches!(loop_owner(playlist), LoopOwner::Host) {
-                // Still inside zone but clip last — same next/mid-in law as EOF.
-                let cur = live_clip.get_untracked();
-                let model = playlist.model.get_untracked();
-                let zone_full = zone_in == 0 && zone_out == total;
-                let next_clip = model.next_clip_index(cur);
-                let next_start = next_clip
-                    .and_then(|n| model.clip_start_frame(n))
-                    .unwrap_or(0);
-                let zone_in_aim = model
-                    .at_global_frame(zone_in)
-                    .map(|p| (p.clip_index, p.local_frame));
-                let seam_next = plan_seam_next_clip(SeamNextCtx {
-                    cur,
-                    next_clip,
-                    next_start,
-                    zone_in_clip: zone_in_aim.map(|(c, _)| c),
-                    looping: true,
-                    zone_full,
-                    zone_out,
-                    clip_count: model.len() as u32,
-                });
-                match plan_play_at_clip_last(PlayAtClipLastCtx {
-                    zone_full,
-                    zone_in_aim,
-                    seam_next,
-                    seam_busy: seam_busy(playlist),
-                }) {
-                    PlayAtClipLastPlan::PromoteSeek { clip_index } => {
-                        let epoch = open_gen.get_value();
-                        let pl = playlist;
-                        let aim = PlaylistPos::new(clip_index, 0);
-                        spawn_local(async move {
-                            if let Err(e) = seek_to_pos(pl, aim, epoch, true).await {
-                                note_host_seam_err(pl, epoch, e, "Playlist seam failed.");
-                            }
-                        });
-                    }
-                    PlayAtClipLastPlan::HostWrap { seam_already_busy } => {
-                        start_host_wrap(playlist, seam_already_busy);
-                    }
-                }
-                return;
-            }
-        }
-        live.play();
-    }) as Rc<dyn Fn()>;
-
-    let pause_fn = Rc::new(move || {
-        playlist.playing.set(false);
-        let live = if live_is_a.get_untracked() {
-            slot_a
-        } else {
-            slot_b
-        };
-        live.pause();
-    }) as Rc<dyn Fn()>;
-
-    // Internal relocate ops — no facade stop. User chrome uses `goto_*` on the ref.
-    let seek_frame_fn = {
-        let pl = playlist;
-        Rc::new(move |global_frame: u32| {
-            if !ready.get_untracked() {
-                return;
-            }
-            let Some(aim) = model.get_untracked().at_global_frame(global_frame) else {
-                return;
-            };
-            let epoch = open_gen.get_value();
-            spawn_local(async move {
-                if let Err(e) = seek_to_pos(pl, aim, epoch, false).await {
-                    if pl.open_gen.get_value() != epoch {
-                        return;
-                    }
-                    // Promote/ensure race cancel — not a sticky UI fault.
-                    if is_soft_seam_cancel(&e) {
-                        return;
-                    }
-                    pl.error.set(Some(e));
-                    pl.status.set("Seek failed.".into());
-                }
-            });
-        }) as Rc<dyn Fn(u32)>
-    };
-
-    let seek_pos_fn = {
-        let pl = playlist;
-        Rc::new(move |aim: PlaylistPos| {
-            if !ready.get_untracked() {
-                return;
-            }
-            let epoch = open_gen.get_value();
-            spawn_local(async move {
-                if let Err(e) = seek_to_pos(pl, aim, epoch, false).await {
-                    if pl.open_gen.get_value() != epoch {
-                        return;
-                    }
-                    if is_soft_seam_cancel(&e) {
-                        return;
-                    }
-                    pl.error.set(Some(e));
-                    pl.status.set("Seek failed.".into());
-                }
-            });
-        }) as Rc<dyn Fn(PlaylistPos)>
-    };
-
-    // Goto/Next/Prev/paused scrub ignore LoopZone; scrub-while-play resume is
-    // Play (outside → loop_in). Zone is not a nav clamp. **no equivalent**.
-    // Next/Prev: [`plan_step`] → LiveStep / GotoPos / ClearPlayIntent.
-    let next_frame_fn = {
-        let pl = playlist;
-        Rc::new(move || {
-            if !ready.get_untracked() {
-                return;
-            }
-            ended.set(false);
-            let model = model.get_untracked();
-            let clip_i = pl.live_clip.get_untracked();
-            let local = pl.live_video().frame.get_untracked();
-            let Some(clip) = model.clip(clip_i as usize) else {
-                return;
-            };
-            let plan = plan_step(StepCtx {
-                dir: StepDir::Next,
-                clip_index: clip_i,
-                local_frame: local,
-                clip_last_frame: clip.last_frame(),
-                clip_count: model.len() as u32,
-                looping: looping.get_untracked(),
-                edge_target_local: 0,
-            });
-            run_step_plan(pl, plan);
-        }) as Rc<dyn Fn()>
-    };
-
-    let previous_frame_fn = {
-        let pl = playlist;
-        Rc::new(move || {
-            if !ready.get_untracked() {
-                return;
-            }
-            ended.set(false);
-            let model = model.get_untracked();
-            let clip_i = pl.live_clip.get_untracked();
-            let local = pl.live_video().frame.get_untracked();
-            let Some(clip) = model.clip(clip_i as usize) else {
-                return;
-            };
-            let edge_target_local = if local > 0 {
-                0
-            } else if clip_i > 0 {
-                model
-                    .clip((clip_i - 1) as usize)
-                    .map(|c| c.last_frame())
-                    .unwrap_or(0)
-            } else {
-                let last_i = model.len().saturating_sub(1);
-                model.clip(last_i).map(|c| c.last_frame()).unwrap_or(0)
-            };
-            let plan = plan_step(StepCtx {
-                dir: StepDir::Prev,
-                clip_index: clip_i,
-                local_frame: local,
-                clip_last_frame: clip.last_frame(),
-                clip_count: model.len() as u32,
-                looping: looping.get_untracked(),
-                edge_target_local,
-            });
-            run_step_plan(pl, plan);
-        }) as Rc<dyn Fn()>
-    };
-
-    ops.set_value(Some(VideoPlaylistOps {
-        open_blobs,
-        open_urls,
-        play: play_fn,
-        pause: pause_fn,
-        close: Rc::clone(&close_all),
-        seek_frame: seek_frame_fn,
-        seek_pos: seek_pos_fn,
-        next_frame: next_frame_fn,
-        previous_frame: previous_frame_fn,
-    }));
-
+    playlist.mounted.set_value(true);
     on_cleanup(move || {
-        let close = ops
-            .try_with_value(|o| o.as_ref().map(|v| Rc::clone(&v.close)))
-            .flatten();
-        if let Some(close) = close {
-            close();
+        if playlist.mounted.try_with_value(|m| *m).unwrap_or(false) {
+            PlaylistHost(playlist).close();
         }
-        ops.set_value(None);
+        playlist.mounted.set_value(false);
     });
-
     let root_class = class.unwrap_or_else(|| "fpvideo-playlist".into());
 
     view! {

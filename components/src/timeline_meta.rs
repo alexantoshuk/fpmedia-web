@@ -122,11 +122,7 @@ pub fn TimelineMeta(
             // Fetch sole on VT: also lease idle so neighbor playable publishes.
             if matches!(kind, TimelineMetaKind::Fetch) {
                 if let Some(p) = timeline.playlist() {
-                    let idle = if p.live_is_a.get_untracked() {
-                        p.slot_b
-                    } else {
-                        p.slot_a
-                    };
+                    let idle = p.idle_video();
                     idle_fetch_interest
                         .set_value(Some(idle.lease_pipeline_plane(PipelinePlane::Fetch)));
                 } else {
@@ -145,11 +141,7 @@ pub fn TimelineMeta(
         let _ = timeline.playlist().map(|p| {
             let _ = p.idle_clip.get();
             let _ = p.live_is_a.get();
-            let idle = if p.live_is_a.get_untracked() {
-                p.slot_b
-            } else {
-                p.slot_a
-            };
+            let idle = p.idle_video();
             let _ = idle.pipeline.get();
         });
         let frame_count = timeline.strip_domain_len();

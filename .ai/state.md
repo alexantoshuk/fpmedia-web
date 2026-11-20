@@ -12,7 +12,7 @@
 - **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; VT LoopZone wall + wrap/EOF/seam-next + SeamPhase/`zone_owner_from_spans`; Host LoopSeam adapter (`loop_seam_exec`); VT thumb wallet + producer (`60d955d`).
 - **In this change:** host `set_thumb_max_size` + computed thumb ImageBitmap cap (MiB÷box). **Verify:** change max size mid-session (caches resize); Pause progressive still fills; hover tip follows timeline max signals.
 - **OK in browser (prior):** Pause Exact grow; scrub Up densify; cut-join Pause scrub 1↔2 / reverse; Covered + Fetch gray survive clip leave. Pages demo live (`alexantoshuk.github.io/fpmedia-web`).
-- **Parked debris (do not use):** VT Exact take/import / densify orch (`vt_densify_authority` stays false). Exact-take backend helpers removed; VideoOps take/present knobs may still exist unused.
+- **Parked debris (do not use):** VT Exact take/import / densify orch (`vt_densify_authority` stays false). Exact-take backend helpers removed; `VideoHost` take/present methods may still exist unused.
 - **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.
 - **Open (unchanged):** mobile LoopPlayWarm unverified. Residual light mobile pause on Host mid-zone LoopZone seam — later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional (unrelated).
@@ -35,17 +35,14 @@ Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i
 
 Rules: `architecture.md` § Ownership & types. Each item leaves this list in the commit that ships it.
 
-1. **Play tick** — one `on_play_tick` for rAF + hidden-interval in `<Video>`.
-2. **`VideoOps` → `VideoHost`** — methods on a concrete host handle; drop ~50 `Rc<dyn Fn>` + `BoxedLocalFut`.
-3. **`VideoPlaylistOps` → `PlaylistHost`** + `live_video` / `idle_video` (tracked + untracked) replace inline `live_is_a` branches.
-4. **LoopZone** — one components resolve/store helper over `LoopZone::normalize` (5 hand-copied clamps).
-5. **Frame types** — `FrameRun` (inclusive span); `LocalFrame` / `GlobalFrame` at the playlist seam.
-6. **Engine helpers** — `Waiters`, `Epoch` / `Ticket`, `SingleFlight` guard, `PlayIter` guard.
-7. **`Shared` grouping** — `seam_release_aim` only; `ScrubDir` enum; `UnderrunStats`; `LoopSpec`; thumb box.
-8. **`VideoPlayer` = `Clone` handle** over `Rc<PlayerInner>` (keep `Drop` teardown verbatim on inner).
-9. **Source layer** — `Arc` / `Mutex` / `Send + Sync` → `Rc` / `RefCell`.
-10. **Playlist latches** — group `StoredValue` latches into two structs (no FSM).
-11. **Split `demo-player/src/player.rs`** (move-only).
+1. **LoopZone** — one components resolve/store helper over `LoopZone::normalize` (5 hand-copied clamps).
+2. **Frame types** — `FrameRun` (inclusive span); `LocalFrame` / `GlobalFrame` at the playlist seam.
+3. **Engine helpers** — `Waiters`, `Epoch` / `Ticket`, `SingleFlight` guard, `PlayIter` guard.
+4. **`Shared` grouping** — `seam_release_aim` only; `ScrubDir` enum; `UnderrunStats`; `LoopSpec`; thumb box.
+5. **`VideoPlayer` = `Clone` handle** over `Rc<PlayerInner>` (keep `Drop` teardown verbatim on inner).
+6. **Source layer** — `Arc` / `Mutex` / `Send + Sync` → `Rc` / `RefCell`.
+7. **Playlist latches** — group `StoredValue` latches into two structs (no FSM).
+8. **Split `demo-player/src/player.rs`** (move-only).
 
 ### Publish crates (`0.1.0-alpha`)
 

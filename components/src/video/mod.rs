@@ -5,6 +5,7 @@
 
 mod component;
 mod ctx;
+mod host;
 mod host_ops;
 mod op_queue;
 mod open_url;
@@ -19,18 +20,11 @@ pub use fpmedia_web::{
 };
 pub use pipeline_interest::{PipelineInterestLease, PipelinePlane};
 
-use std::future::Future;
-use std::pin::Pin;
-use std::rc::Rc;
-
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
-type BoxedLocalFut<T> = Pin<Box<dyn Future<Output = T>>>;
-type LocalFutFn<T> = Rc<dyn Fn() -> BoxedLocalFut<T>>;
-type LocalFutFnU32<T> = Rc<dyn Fn(u32) -> BoxedLocalFut<T>>;
-type PresentImageBitmapFn = Rc<dyn Fn(u32, &web_sys::ImageBitmap) -> bool>;
+use host::VideoHost;
 
 /// Cloneable handle to a mounted [`Video`] — like a ref to an HTMLMediaElement.
 #[derive(Clone, Copy)]
@@ -65,8 +59,8 @@ pub struct VideoRef {
     pub muted: RwSignal<bool>,
     /// Frame.io-style playback rate (forward 0.25–8).
     pub playback_rate: RwSignal<f64>,
-    /// Non-`Send` callbacks registered by the mounted [`Video`] component.
-    pub(crate) ops: StoredValue<Option<VideoOps>, LocalStorage>,
+    /// Non-`Send` host registered by the mounted [`Video`] component.
+    pub(crate) host: StoredValue<Option<VideoHost>, LocalStorage>,
     /// Refcounts for [`PipelineInterest`] planes (strips / debug meters).
     pipeline_interest_counts: StoredValue<pipeline_interest::InterestCounts, LocalStorage>,
     /// Host mid-zone: next SeamHold release restarts PlayIter @aim.
@@ -81,99 +75,6 @@ pub struct VideoRef {
     /// Default = engine `DEFAULT_THUMB_MAX_*` (160). See `product.md` § Hover thumbs.
     pub thumb_max_w: RwSignal<u32>,
     pub thumb_max_h: RwSignal<u32>,
-}
-
-#[derive(Clone)]
-pub(crate) struct VideoOps {
-    pub open_blob: Rc<dyn Fn(web_sys::Blob)>,
-    /// Host-layer URL open. Accepts `https:` / `http:` (HTTP Range via
-    /// [`fpmedia_web::UrlSource`] when the server supports it; full-download
-    /// fallback otherwise) and same-document `blob:`.
-    pub open_url: Rc<dyn Fn(String)>,
-    pub play: Rc<dyn Fn()>,
-    pub pause: Rc<dyn Fn()>,
-    /// Tear down the decode session and free caches (keeps the mounted canvas).
-    pub close: Rc<dyn Fn()>,
-    pub seek_frame: Rc<dyn Fn(u32)>,
-    /// Scrub-drag preview: nearest sync at/before frame (mediabunny `seekToKey`).
-    pub seek_keyframe: Rc<dyn Fn(u32)>,
-    pub scrub_pointer_down: Rc<dyn Fn(u32)>,
-    pub scrub_pointer_move: Rc<dyn Fn(u32)>,
-    pub scrub_pointer_up: Rc<dyn Fn(u32)>,
-    pub next_frame: Rc<dyn Fn()>,
-    pub previous_frame: Rc<dyn Fn()>,
-    pub set_loop: Rc<dyn Fn(bool)>,
-    /// Half-open `[in, out)` source frames while looping.
-    pub set_loop_zone: Rc<dyn Fn(u32, u32)>,
-    /// Cold stop without Covered/Exact fill (playlist seam / LoopZone wall).
-    pub pause_hard_no_densify: Rc<dyn Fn()>,
-    pub set_volume: Rc<dyn Fn(f64)>,
-    pub set_muted: Rc<dyn Fn(bool)>,
-    pub set_playback_rate: Rc<dyn Fn(f64)>,
-    /// Hover timeline thumb → paint into `dest` (ThumbSink / Exact read-only).
-    pub paint_hover_thumb: Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32)>,
-    pub try_paint_hover_thumb: Rc<dyn Fn(u32, HtmlCanvasElement, u32, u32) -> bool>,
-    pub cancel_hover_thumb: Rc<dyn Fn()>,
-    pub set_thumb_policy: Rc<dyn Fn(ThumbPolicy)>,
-    /// Apply max box to live ThumbSink (clear + note_size). Signals already set.
-    pub apply_thumb_max_size: Rc<dyn Fn(u32, u32)>,
-    pub set_scrub_cache_policy: Rc<dyn Fn(ScrubCachePolicy)>,
-    /// VT backend demote: densify off, keep Exact/Covered (not user Scrub Off wipe).
-    pub park_scrub_cache: Rc<dyn Fn()>,
-    /// Exact blit resident? (VT Exact-settle hit test).
-    pub has_scrub_exact_blit: Rc<dyn Fn(u32) -> bool>,
-    /// Present Exact blit when cached (VT PresentHit).
-    pub try_present_scrub_exact: Rc<dyn Fn(u32) -> bool>,
-    /// Arm Pause densify after Exact present (VT PresentHit settle).
-    pub arm_scrub_densify_after_exact: Rc<dyn Fn(u32)>,
-    /// End ExactHold without densify (PresentHit settle must clear before arm).
-    pub clear_densify_hold: Rc<dyn Fn()>,
-    /// Present VT ledger Exact bitmap onto this slot (`local` FrameId).
-    pub present_image_bitmap: PresentImageBitmapFn,
-    /// Take Exact blit for VT ledger import.
-    pub take_scrub_exact_blit: Rc<dyn Fn(u32) -> Option<web_sys::ImageBitmap>>,
-    /// Densify Exact FrameIds in the slot blit (local).
-    pub scrub_exact_frame_ids: Rc<dyn Fn() -> Vec<u32>>,
-    /// Densify Covered marker FrameIds (local).
-    pub scrub_covered_frame_ids: Rc<dyn Fn() -> Vec<u32>>,
-    /// Local playable Fetch runs for VT mirror (inclusive FrameId spans).
-    pub scrub_fetch_playable_runs: Rc<dyn Fn() -> Vec<(u64, u64)>>,
-    /// Clone Exact blit for VT ledger (slot keeps its copy).
-    pub clone_scrub_exact_blit: Rc<dyn Fn(u32) -> Option<web_sys::ImageBitmap>>,
-    /// Slot Exact blit capacity (VT ledger matches).
-    pub scrub_exact_capacity: Rc<dyn Fn() -> usize>,
-    /// VT densify authority (gaps only from `queue_vt_densify_target`).
-    pub set_vt_densify_authority: Rc<dyn Fn(bool)>,
-    /// VT Pause progressive thumbs (host `fill_thumb_key_at`; local schedule off).
-    pub set_vt_thumb_authority: Rc<dyn Fn(bool)>,
-    /// Local sync FrameIds for VT thumb plan.
-    pub sync_frame_ids: Rc<dyn Fn() -> Vec<u32>>,
-    /// ThumbCache cap for VT coarse budget.
-    pub thumb_max_thumbs: Rc<dyn Fn() -> usize>,
-    /// ThumbCache hit for local sync key.
-    pub thumb_has_key: Rc<dyn Fn(u32) -> bool>,
-    /// Clone cached thumb bitmap for VT wallet (slot keeps copy).
-    pub clone_thumb_bitmap: Rc<dyn Fn(u32, u32, u32) -> Option<web_sys::ImageBitmap>>,
-    /// VT host: await one progressive key fill.
-    pub fill_thumb_key_at: LocalFutFnU32<()>,
-    /// Queue one local densify target for VT-owned fill.
-    pub queue_vt_densify_target: Rc<dyn Fn(u32)>,
-    /// Local Exact ids already in VT ledger (densify skip after take).
-    pub set_vt_exact_residents: Rc<dyn Fn(Vec<u32>)>,
-    /// Scrub edge margins for VT densify plan.
-    pub scrub_plan_margins: Rc<dyn Fn() -> (u64, u64)>,
-    /// Scrub direction for VT densify plan.
-    pub scrub_dir: Rc<dyn Fn() -> i8>,
-    /// VT soft-banned local Exact FrameIds.
-    pub vt_densify_banned_locals: Rc<dyn Fn() -> Vec<u32>>,
-    /// Densify flight busy or pending.
-    pub densify_inflight: Rc<dyn Fn() -> bool>,
-    /// Playlist / loop: frame-0 byte + stash warm (joins PlayPrime at origin).
-    pub warm_play_origin: LocalFutFn<()>,
-    /// Idle: warm + paint `frame` before promote (0 = clip seam; mid = LoopZone in).
-    pub prepare_seam_at: LocalFutFnU32<Result<(), String>>,
-    /// Idle Play-ready: main PlayIter @ `frame` under `SeamHold` (playlist Host).
-    pub arm_seam_hold: LocalFutFnU32<Result<(), String>>,
 }
 
 impl VideoRef {
@@ -200,7 +101,7 @@ impl VideoRef {
             volume: RwSignal::new(1.0),
             muted: RwSignal::new(false),
             playback_rate: RwSignal::new(1.0),
-            ops: StoredValue::new_local(None),
+            host: StoredValue::new_local(None),
             pipeline_interest_counts: StoredValue::new_local(
                 pipeline_interest::InterestCounts::default(),
             ),
@@ -231,8 +132,8 @@ impl VideoRef {
         }
         self.thumb_max_w.set(w);
         self.thumb_max_h.set(h);
-        if let Some(apply) = self.op(|o| &o.apply_thumb_max_size) {
-            apply(w, h);
+        if let Some(host) = self.host() {
+            host.apply_thumb_max_size(w, h);
         }
     }
 
@@ -282,12 +183,10 @@ impl VideoRef {
         yes
     }
 
-    /// Clone one registered callback out of [`Self::ops`] (call it after the
-    /// store borrow ends — callbacks may re-enter `VideoRef`).
-    fn op<F: ?Sized>(&self, pick: impl FnOnce(&VideoOps) -> &Rc<F>) -> Option<Rc<F>> {
-        self.ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(pick(o))))
-            .flatten()
+    /// Clone the mounted host out of [`Self::host`] (call it after the store
+    /// borrow ends — host methods may re-enter `VideoRef`).
+    fn host(&self) -> Option<VideoHost> {
+        self.host.try_with_value(|h| h.clone()).flatten()
     }
 
     /// Clamp `frame` to the clip, clear `ended`, move the UI playhead there.
@@ -300,8 +199,8 @@ impl VideoRef {
     }
 
     pub fn open_blob(&self, blob: web_sys::Blob) {
-        if let Some(open) = self.op(|o| &o.open_blob) {
-            open(blob);
+        if let Some(host) = self.host() {
+            host.open_blob(blob);
         } else {
             self.status
                 .set("Video not mounted — hard-refresh the page.".into());
@@ -320,8 +219,8 @@ impl VideoRef {
     /// the host supplies). This crate does **not** rewrite URLs.
     pub fn open_url(&self, url: impl Into<String>) {
         let url = url.into();
-        if let Some(open) = self.op(|o| &o.open_url) {
-            open(url);
+        if let Some(host) = self.host() {
+            host.open_url(url);
         } else {
             self.status
                 .set("Video not mounted — hard-refresh the page.".into());
@@ -331,8 +230,8 @@ impl VideoRef {
 
     /// Drop the decode session (decoder + caches). Canvas stays mounted for a later open.
     pub fn close(&self) {
-        if let Some(close) = self.op(|o| &o.close) {
-            close();
+        if let Some(host) = self.host() {
+            host.close();
         }
     }
 
@@ -342,8 +241,8 @@ impl VideoRef {
         // is already cascading key→playhead; a Play-time seek cancels that work and
         // restarts the GOP (multi-second lag on long-GOP clips). PlayPrime
         // waits behind settle (or seeks only if still mismatched after).
-        if let Some(play) = self.op(|o| &o.play) {
-            play();
+        if let Some(host) = self.host() {
+            host.play();
         }
     }
 
@@ -354,8 +253,8 @@ impl VideoRef {
         // Already paused with playhead ≠ frame (scrub target): promote via seek.
         let was_playing = self.playing.get_untracked();
         let ph = self.playhead.get_untracked();
-        if let Some(pause) = self.op(|o| &o.pause) {
-            pause();
+        if let Some(host) = self.host() {
+            host.pause();
         }
         if !was_playing && self.frame.get_untracked() != ph {
             self.seek_frame(ph);
@@ -365,8 +264,8 @@ impl VideoRef {
     /// Internal relocate (transport seek). Prefer [`Self::goto_frame`] for UI chrome.
     pub fn seek_frame(&self, frame: u32) {
         let frame = self.aim(frame);
-        if let Some(seek) = self.op(|o| &o.seek_frame) {
-            seek(frame);
+        if let Some(host) = self.host() {
+            host.seek_frame(frame);
         }
     }
 
@@ -378,32 +277,32 @@ impl VideoRef {
     /// Fast scrub preview — snap to the nearest keyframe at or before `frame`.
     pub fn seek_keyframe(&self, frame: u32) {
         let frame = self.aim(frame);
-        if let Some(seek) = self.op(|o| &o.seek_keyframe) {
-            seek(frame);
+        if let Some(host) = self.host() {
+            host.seek_keyframe(frame);
         }
     }
 
     /// Timeline pointer down — transport FSM (`architecture.md` § State machines).
     pub fn scrub_pointer_down(&self, frame: u32) {
         let frame = self.aim(frame);
-        if let Some(f) = self.op(|o| &o.scrub_pointer_down) {
-            f(frame);
+        if let Some(host) = self.host() {
+            host.scrub_pointer_down(frame);
         }
     }
 
     /// Timeline pointer move while scrubbing.
     pub fn scrub_pointer_move(&self, frame: u32) {
         let frame = self.aim(frame);
-        if let Some(f) = self.op(|o| &o.scrub_pointer_move) {
-            f(frame);
+        if let Some(host) = self.host() {
+            host.scrub_pointer_move(frame);
         }
     }
 
     /// Timeline pointer up — settle (± resume play when scrub began while playing).
     pub fn scrub_pointer_up(&self, frame: u32) {
         let frame = self.aim(frame);
-        if let Some(f) = self.op(|o| &o.scrub_pointer_up) {
-            f(frame);
+        if let Some(host) = self.host() {
+            host.scrub_pointer_up(frame);
         }
     }
 
@@ -419,8 +318,8 @@ impl VideoRef {
         // Scrub/seek target still ahead/behind engine — promote via seek.
         let adjacent_aim = engine.saturating_add(1).min(max);
         if ph != engine && ph != adjacent_aim {
-            if let Some(seek) = self.op(|o| &o.seek_frame) {
-                seek(ph);
+            if let Some(host) = self.host() {
+                host.seek_frame(ph);
             }
             return;
         }
@@ -428,8 +327,8 @@ impl VideoRef {
             return;
         }
         self.playhead.set(adjacent_aim);
-        if let Some(next) = self.op(|o| &o.next_frame) {
-            next();
+        if let Some(host) = self.host() {
+            host.next_frame();
         }
     }
 
@@ -442,8 +341,8 @@ impl VideoRef {
 
         let adjacent_aim = engine.saturating_sub(1);
         if ph != engine && ph != adjacent_aim {
-            if let Some(seek) = self.op(|o| &o.seek_frame) {
-                seek(ph);
+            if let Some(host) = self.host() {
+                host.seek_frame(ph);
             }
             return;
         }
@@ -451,15 +350,15 @@ impl VideoRef {
             return;
         }
         self.playhead.set(adjacent_aim);
-        if let Some(prev) = self.op(|o| &o.previous_frame) {
-            prev();
+        if let Some(host) = self.host() {
+            host.previous_frame();
         }
     }
 
     pub fn set_loop(&self, on: bool) {
         self.looping.set(on);
-        if let Some(set_loop) = self.op(|o| &o.set_loop) {
-            set_loop(on);
+        if let Some(host) = self.host() {
+            host.set_loop(on);
         }
     }
 
@@ -467,8 +366,8 @@ impl VideoRef {
     pub fn pause_hard_no_densify(&self) {
         self.playing.set(false);
         self.ended.set(false);
-        if let Some(pause) = self.op(|o| &o.pause_hard_no_densify) {
-            pause();
+        if let Some(host) = self.host() {
+            host.pause_hard_no_densify();
         }
     }
 
@@ -502,31 +401,31 @@ impl VideoRef {
         } else {
             self.loop_out.set(Some(out_f));
         }
-        if let Some(set_zone) = self.op(|o| &o.set_loop_zone) {
-            set_zone(in_f, out_f);
+        if let Some(host) = self.host() {
+            host.set_loop_zone(in_f, out_f);
         }
     }
 
     pub fn set_volume(&self, volume: f64) {
         let v = volume.clamp(0.0, 1.0);
         self.volume.set(v);
-        if let Some(set_volume) = self.op(|o| &o.set_volume) {
-            set_volume(v);
+        if let Some(host) = self.host() {
+            host.set_volume(v);
         }
     }
 
     pub fn set_muted(&self, muted: bool) {
         self.muted.set(muted);
-        if let Some(set_muted) = self.op(|o| &o.set_muted) {
-            set_muted(muted);
+        if let Some(host) = self.host() {
+            host.set_muted(muted);
         }
     }
 
     pub fn set_playback_rate(&self, rate: f64) {
         let r = fpmedia_web::normalize_playback_rate(rate);
         self.playback_rate.set(r);
-        if let Some(set_rate) = self.op(|o| &o.set_playback_rate) {
-            set_rate(r);
+        if let Some(host) = self.host() {
+            host.set_playback_rate(r);
         }
     }
 
@@ -539,8 +438,8 @@ impl VideoRef {
     pub fn paint_hover_thumb(&self, frame: u32, dest: HtmlCanvasElement, max_w: u32, max_h: u32) {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
-        if let Some(paint) = self.op(|o| &o.paint_hover_thumb) {
-            paint(frame, dest, max_w, max_h);
+        if let Some(host) = self.host() {
+            host.paint_hover_thumb(frame, dest, max_w, max_h);
         }
     }
 
@@ -554,21 +453,21 @@ impl VideoRef {
     ) -> bool {
         let max = self.frame_count.get_untracked().saturating_sub(1);
         let frame = frame.min(max);
-        self.op(|o| &o.try_paint_hover_thumb)
-            .is_some_and(|paint| paint(frame, dest, max_w, max_h))
+        self.host()
+            .is_some_and(|host| host.try_paint_hover_thumb(frame, dest, max_w, max_h))
     }
 
     /// Abort in-flight hover thumb Exact downscale / hide race with scrub.
     pub fn cancel_hover_thumb(&self) {
-        if let Some(cancel) = self.op(|o| &o.cancel_hover_thumb) {
-            cancel();
+        if let Some(host) = self.host() {
+            host.cancel_hover_thumb();
         }
     }
 
     /// Runtime thumb sink gate — persists across opens. `Off` drops [`fpmedia_web::ThumbSink`].
     pub fn set_thumb_policy(&self, policy: ThumbPolicy) {
-        if let Some(set) = self.op(|o| &o.set_thumb_policy) {
-            set(policy);
+        if let Some(host) = self.host() {
+            host.set_thumb_policy(policy);
         }
     }
 
@@ -589,124 +488,122 @@ impl VideoRef {
         if matches!(policy, ScrubCachePolicy::Off) {
             self.clear_vt_covered();
         }
-        if let Some(set) = self.op(|o| &o.set_scrub_cache_policy) {
-            set(policy);
+        if let Some(host) = self.host() {
+            host.set_scrub_cache_policy(policy);
         }
     }
 
     /// VT backend demote / idle: abort densify, keep Exact + Covered.
     /// User Scrub Off still uses [`Self::set_scrub_cache_policy`].
     pub fn park_scrub_cache(&self) {
-        if let Some(park) = self.op(|o| &o.park_scrub_cache) {
-            park();
+        if let Some(host) = self.host() {
+            host.park_scrub_cache();
         }
     }
 
     /// True when Exact blit already holds `frame` (VT Exact-settle hit test).
     pub fn has_scrub_exact_blit(&self, frame: u32) -> bool {
-        self.op(|o| &o.has_scrub_exact_blit)
-            .map(|f| f(frame))
-            .unwrap_or(false)
+        self.host()
+            .is_some_and(|host| host.has_scrub_exact_blit(frame))
     }
 
     /// Present Exact blit for `frame` when cached. Returns whether painted.
     pub fn try_present_scrub_exact(&self, frame: u32) -> bool {
-        self.op(|o| &o.try_present_scrub_exact)
-            .map(|f| f(frame))
-            .unwrap_or(false)
+        self.host()
+            .is_some_and(|host| host.try_present_scrub_exact(frame))
     }
 
     /// Arm densify after Exact present (VT PresentHit settle).
     pub fn arm_scrub_densify_after_exact(&self, frame: u32) {
-        if let Some(arm) = self.op(|o| &o.arm_scrub_densify_after_exact) {
-            arm(frame);
+        if let Some(host) = self.host() {
+            host.arm_scrub_densify_after_exact(frame);
         }
     }
 
     /// Clear ExactHold without arming densify (playlist PresentHit settle).
     pub fn clear_densify_hold(&self) {
-        if let Some(clear) = self.op(|o| &o.clear_densify_hold) {
-            clear();
+        if let Some(host) = self.host() {
+            host.clear_densify_hold();
         }
     }
 
     /// Present a VT ledger Exact bitmap onto this slot.
     pub fn present_image_bitmap(&self, local: u32, bitmap: &web_sys::ImageBitmap) -> bool {
-        self.op(|o| &o.present_image_bitmap)
-            .map(|f| f(local, bitmap))
-            .unwrap_or(false)
+        self.host()
+            .is_some_and(|host| host.present_image_bitmap(local, bitmap))
     }
 
     /// Take Exact blit for import into the VT ledger.
     pub fn take_scrub_exact_blit(&self, local: u32) -> Option<web_sys::ImageBitmap> {
-        self.op(|o| &o.take_scrub_exact_blit).and_then(|f| f(local))
+        self.host()
+            .and_then(|host| host.take_scrub_exact_blit(local))
     }
 
     /// Local Exact FrameIds in the slot blit.
     pub fn scrub_exact_frame_ids(&self) -> Vec<u32> {
-        self.op(|o| &o.scrub_exact_frame_ids)
-            .map(|f| f())
+        self.host()
+            .map(|host| host.scrub_exact_frame_ids())
             .unwrap_or_default()
     }
 
     /// Local Covered marker FrameIds.
     pub fn scrub_covered_frame_ids(&self) -> Vec<u32> {
-        self.op(|o| &o.scrub_covered_frame_ids)
-            .map(|f| f())
+        self.host()
+            .map(|host| host.scrub_covered_frame_ids())
             .unwrap_or_default()
     }
 
     /// Local playable Fetch runs (inclusive) for VT strip mirror.
     pub fn scrub_fetch_playable_runs(&self) -> Vec<(u64, u64)> {
-        self.op(|o| &o.scrub_fetch_playable_runs)
-            .map(|f| f())
+        self.host()
+            .map(|host| host.scrub_fetch_playable_runs())
             .unwrap_or_default()
     }
 
     /// Clone Exact blit for VT ledger import.
     pub fn clone_scrub_exact_blit(&self, local: u32) -> Option<web_sys::ImageBitmap> {
-        self.op(|o| &o.clone_scrub_exact_blit)
-            .and_then(|f| f(local))
+        self.host()
+            .and_then(|host| host.clone_scrub_exact_blit(local))
     }
 
     /// Slot Exact capacity (frames).
     pub fn scrub_exact_capacity(&self) -> usize {
-        self.op(|o| &o.scrub_exact_capacity)
-            .map(|f| f())
+        self.host()
+            .map(|host| host.scrub_exact_capacity())
             .unwrap_or(1)
     }
 
     /// VT densify authority on/off.
     pub fn set_vt_densify_authority(&self, on: bool) {
-        if let Some(f) = self.op(|o| &o.set_vt_densify_authority) {
-            f(on);
+        if let Some(host) = self.host() {
+            host.set_vt_densify_authority(on);
         }
     }
 
     /// VT Pause progressive thumbs on/off (playlist host planner).
     pub fn set_vt_thumb_authority(&self, on: bool) {
-        if let Some(f) = self.op(|o| &o.set_vt_thumb_authority) {
-            f(on);
+        if let Some(host) = self.host() {
+            host.set_vt_thumb_authority(on);
         }
     }
 
     /// Local sync FrameIds for VT thumb progressive planning.
     pub fn sync_frame_ids(&self) -> Vec<u32> {
-        self.op(|o| &o.sync_frame_ids)
-            .map(|f| f())
+        self.host()
+            .map(|host| host.sync_frame_ids())
             .unwrap_or_default()
     }
 
     /// ThumbCache capacity (coarse budget).
     pub fn thumb_max_thumbs(&self) -> usize {
-        self.op(|o| &o.thumb_max_thumbs).map(|f| f()).unwrap_or(256)
+        self.host()
+            .map(|host| host.thumb_max_thumbs())
+            .unwrap_or(256)
     }
 
     /// Whether ThumbCache holds local sync `key`.
     pub fn thumb_has_key(&self, key: u32) -> bool {
-        self.op(|o| &o.thumb_has_key)
-            .map(|f| f(key))
-            .unwrap_or(false)
+        self.host().is_some_and(|host| host.thumb_has_key(key))
     }
 
     /// Clone slot thumb bitmap for the VT wallet (slot keeps its copy).
@@ -716,70 +613,67 @@ impl VideoRef {
         max_w: u32,
         max_h: u32,
     ) -> Option<web_sys::ImageBitmap> {
-        self.op(|o| &o.clone_thumb_bitmap)
-            .and_then(|f| f(key, max_w, max_h))
+        self.host()
+            .and_then(|host| host.clone_thumb_bitmap(key, max_w, max_h))
     }
 
     /// VT host: fill one progressive sync key (awaitable).
     pub async fn fill_thumb_key_at(&self, key: u32) {
-        if let Some(f) = self.op(|o| &o.fill_thumb_key_at) {
-            f(key).await;
+        if let Some(host) = self.host() {
+            host.fill_thumb_key_at(key).await;
         }
     }
 
     /// Queue local FrameId for VT densify fill task.
     pub fn queue_vt_densify_target(&self, local: u32) {
-        if let Some(f) = self.op(|o| &o.queue_vt_densify_target) {
-            f(local);
+        if let Some(host) = self.host() {
+            host.queue_vt_densify_target(local);
         }
     }
 
     /// Local Exact already in VT ledger — densify must not re-decode after take.
     pub fn set_vt_exact_residents(&self, locals: &[u32]) {
-        if let Some(f) = self.op(|o| &o.set_vt_exact_residents) {
-            f(locals.to_vec());
+        if let Some(host) = self.host() {
+            host.set_vt_exact_residents(locals);
         }
     }
 
     /// Scrub margins for [`crate::virtual_timeline::plan_next_densify_gap`].
     pub fn scrub_plan_margins(&self) -> (u64, u64) {
-        self.op(|o| &o.scrub_plan_margins)
-            .map(|f| f())
+        self.host()
+            .map(|host| host.scrub_plan_margins())
             .unwrap_or((12, 6))
     }
 
     pub fn scrub_dir(&self) -> i8 {
-        self.op(|o| &o.scrub_dir).map(|f| f()).unwrap_or(0)
+        self.host().map(|host| host.scrub_dir()).unwrap_or(0)
     }
 
     /// VT densify soft-ban locals (skip in timeline plan).
     pub fn vt_densify_banned_locals(&self) -> Vec<u32> {
-        self.op(|o| &o.vt_densify_banned_locals)
-            .map(|f| f())
+        self.host()
+            .map(|host| host.vt_densify_banned_locals())
             .unwrap_or_default()
     }
 
     pub fn densify_inflight(&self) -> bool {
-        self.op(|o| &o.densify_inflight)
-            .map(|f| f())
-            .unwrap_or(false)
+        self.host().is_some_and(|host| host.densify_inflight())
     }
 
     /// Fire-and-forget frame-0 byte + PreferSoftware stash warm (playlist
     /// near-EOF idle; joins PlayPrime origin stash hit).
     pub fn kick_warm_play_origin(&self) {
-        if let Some(make) = self.op(|o| &o.warm_play_origin) {
-            let fut = make();
+        if let Some(host) = self.host() {
             spawn_local(async move {
-                fut.await;
+                host.warm_play_origin().await;
             });
         }
     }
 
     /// Await frame-0 byte + origin stash warm (playlist seam before PlayPrime).
     pub async fn warm_play_origin(&self) {
-        if let Some(make) = self.op(|o| &o.warm_play_origin) {
-            make().await;
+        if let Some(host) = self.host() {
+            host.warm_play_origin().await;
         }
     }
 
@@ -790,8 +684,8 @@ impl VideoRef {
 
     /// Paint `frame` on this (idle) slot before LoopZone / playlist promote.
     pub async fn prepare_seam_at(&self, frame: u32) -> Result<(), String> {
-        if let Some(make) = self.op(|o| &o.prepare_seam_at) {
-            make(frame).await
+        if let Some(host) = self.host() {
+            host.prepare_seam_at(frame).await
         } else {
             Err("Video not mounted".into())
         }
@@ -799,18 +693,17 @@ impl VideoRef {
 
     /// Fire-and-forget [`Self::prepare_seam_at`] (near-wall idle warm).
     pub fn kick_prepare_seam_at(&self, frame: u32) {
-        if let Some(make) = self.op(|o| &o.prepare_seam_at) {
-            let fut = make(frame);
+        if let Some(host) = self.host() {
             spawn_local(async move {
-                let _ = fut.await;
+                let _ = host.prepare_seam_at(frame).await;
             });
         }
     }
 
     /// Idle Play-ready under `SeamHold` (playlist Host near-EOF / promote).
     pub async fn arm_seam_hold(&self, frame: u32) -> Result<(), String> {
-        if let Some(make) = self.op(|o| &o.arm_seam_hold) {
-            make(frame).await
+        if let Some(host) = self.host() {
+            host.arm_seam_hold(frame).await
         } else {
             Err("Video not mounted".into())
         }
@@ -818,10 +711,9 @@ impl VideoRef {
 
     /// Fire-and-forget [`Self::arm_seam_hold`].
     pub fn kick_arm_seam_hold(&self, frame: u32) {
-        if let Some(make) = self.op(|o| &o.arm_seam_hold) {
-            let fut = make(frame);
+        if let Some(host) = self.host() {
             spawn_local(async move {
-                let _ = fut.await;
+                let _ = host.arm_seam_hold(frame).await;
             });
         }
     }

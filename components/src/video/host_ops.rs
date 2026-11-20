@@ -6,12 +6,12 @@ use fpmedia_web::OpenPhase;
 use leptos::prelude::*;
 
 use super::VideoRef;
-use super::ctx::HostCtx;
+use super::ctx::{HostCtx, KickDrain};
 use super::op_queue::{HostOp, OpenArgs};
 use super::open_url::open_source_staged;
 use super::transport_apply::sync_playing_from_transport;
 
-pub(super) fn enqueue_seek_step(ctx: &HostCtx, kick_drain: &Rc<dyn Fn()>, op: HostOp) {
+pub(super) fn enqueue_seek_step(ctx: &HostCtx, kick_drain: &KickDrain, op: HostOp) {
     let HostCtx { queue, player, .. } = ctx;
     if player.borrow().as_ref().is_none() {
         return;

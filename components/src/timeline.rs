@@ -90,11 +90,7 @@ impl TimelineRef {
     pub fn strip_video(self) -> Option<VideoRef> {
         match self.inner {
             TimelineInner::Video(v) => Some(v),
-            TimelineInner::Playlist(p) => Some(if p.live_is_a.get() {
-                p.slot_a
-            } else {
-                p.slot_b
-            }),
+            TimelineInner::Playlist(p) => Some(p.live_video_tracked()),
         }
     }
 
@@ -143,22 +139,14 @@ impl TimelineRef {
                 let mut led = h.borrow_mut();
                 let mut changed = false;
                 let live_clip = p.live_clip.get_untracked();
-                let live = if p.live_is_a.get_untracked() {
-                    p.slot_a
-                } else {
-                    p.slot_b
-                };
+                let live = p.live_video();
                 changed |= note_covered_from_video_ref(&mut led, &live, |local| {
                     model
                         .global_frame_at(PlaylistPos::new(live_clip, local))
                         .map(u64::from)
                 });
                 if let Some(idle_idx) = p.idle_clip.get_untracked() {
-                    let idle = if p.live_is_a.get_untracked() {
-                        p.slot_b
-                    } else {
-                        p.slot_a
-                    };
+                    let idle = p.idle_video();
                     changed |= note_covered_from_video_ref(&mut led, &idle, |local| {
                         model
                             .global_frame_at(PlaylistPos::new(idle_idx, local))
@@ -191,22 +179,14 @@ impl TimelineRef {
                 let mut led = h.borrow_mut();
                 let mut changed = false;
                 let live_clip = p.live_clip.get_untracked();
-                let live = if p.live_is_a.get_untracked() {
-                    p.slot_a
-                } else {
-                    p.slot_b
-                };
+                let live = p.live_video();
                 changed |= note_fetch_from_video_ref(&mut led, &live, |local| {
                     model
                         .global_frame_at(PlaylistPos::new(live_clip, local))
                         .map(u64::from)
                 });
                 if let Some(idle_idx) = p.idle_clip.get_untracked() {
-                    let idle = if p.live_is_a.get_untracked() {
-                        p.slot_b
-                    } else {
-                        p.slot_a
-                    };
+                    let idle = p.idle_video();
                     changed |= note_fetch_from_video_ref(&mut led, &idle, |local| {
                         model
                             .global_frame_at(PlaylistPos::new(idle_idx, local))
@@ -275,11 +255,7 @@ impl TimelineRef {
                 };
                 let mut out = remap(live_clip, marks);
                 if let Some(idle_idx) = p.idle_clip.get() {
-                    let idle = if p.live_is_a.get() {
-                        p.slot_b
-                    } else {
-                        p.slot_a
-                    };
+                    let idle = p.idle_video_tracked();
                     // Subscribe idle pipeline so Exact grows on the neighbor clip.
                     let _ = idle.pipeline.get();
                     if let Some(pipe) = idle.pipeline.get_untracked() {

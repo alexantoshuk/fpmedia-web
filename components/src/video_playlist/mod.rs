@@ -11,6 +11,8 @@ mod position;
 #[cfg(target_arch = "wasm32")]
 mod component;
 #[cfg(target_arch = "wasm32")]
+mod host;
+#[cfg(target_arch = "wasm32")]
 mod loop_seam;
 #[cfg(target_arch = "wasm32")]
 mod loop_seam_exec;

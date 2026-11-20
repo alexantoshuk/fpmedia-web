@@ -1,7 +1,6 @@
 //! [`VideoPlaylistRef`] — host handle for a mounted [`super::VideoPlaylist`].
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 use leptos::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -9,6 +8,7 @@ use web_sys::HtmlCanvasElement;
 use crate::VideoRef;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
+use super::host::PlaylistHost;
 use super::loop_seam::{loop_owner, seam_busy};
 use super::loop_seam_exec::start_host_wrap;
 use super::plan::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
@@ -57,7 +57,8 @@ pub struct VideoPlaylistRef {
     pub(crate) scrub_resume: RwSignal<bool>,
     pub slot_a: VideoRef,
     pub slot_b: VideoRef,
-    pub(crate) ops: StoredValue<Option<VideoPlaylistOps>, LocalStorage>,
+    /// Set by the mounted [`super::VideoPlaylist`]; ops are no-ops / `not mounted` before.
+    pub(crate) mounted: StoredValue<bool, LocalStorage>,
     pub(crate) sources: StoredValue<Vec<PlaylistSource>, LocalStorage>,
     pub(crate) open_gen: StoredValue<u64, LocalStorage>,
     /// Clip index already kicked for near-EOF origin warm this lap (`None` = none).
@@ -98,19 +99,6 @@ pub struct VideoPlaylistRef {
     pub thumb_max_h: RwSignal<u32>,
 }
 
-#[derive(Clone)]
-pub(crate) struct VideoPlaylistOps {
-    pub open_blobs: Rc<dyn Fn(Vec<web_sys::Blob>)>,
-    pub open_urls: Rc<dyn Fn(Vec<String>)>,
-    pub play: Rc<dyn Fn()>,
-    pub pause: Rc<dyn Fn()>,
-    pub close: Rc<dyn Fn()>,
-    pub seek_frame: Rc<dyn Fn(u32)>,
-    pub seek_pos: Rc<dyn Fn(PlaylistPos)>,
-    pub next_frame: Rc<dyn Fn()>,
-    pub previous_frame: Rc<dyn Fn()>,
-}
-
 impl VideoPlaylistRef {
     pub fn new() -> Self {
         Self {
@@ -138,7 +126,7 @@ impl VideoPlaylistRef {
             scrub_resume: RwSignal::new(false),
             slot_a: VideoRef::new(),
             slot_b: VideoRef::new(),
-            ops: StoredValue::new_local(None),
+            mounted: StoredValue::new_local(false),
             sources: StoredValue::new_local(Vec::new()),
             open_gen: StoredValue::new_local(0),
             seam_warm_for: StoredValue::new_local(None),
@@ -365,31 +353,40 @@ impl VideoPlaylistRef {
         self.slot_b.set_playback_rate(r);
     }
 
+    /// Slot by liveness — `live_is_a` read untracked.
     pub fn live_video(self) -> VideoRef {
-        if self.live_is_a.get_untracked() {
-            self.slot_a
-        } else {
-            self.slot_b
-        }
+        self.slot_by_live(self.live_is_a.get_untracked())
     }
 
     pub fn idle_video(self) -> VideoRef {
-        if self.live_is_a.get_untracked() {
-            self.slot_b
-        } else {
-            self.slot_a
-        }
+        self.slot_by_live(!self.live_is_a.get_untracked())
     }
 
-    fn op<F: ?Sized>(&self, pick: impl FnOnce(&VideoPlaylistOps) -> &Rc<F>) -> Option<Rc<F>> {
-        self.ops
-            .try_with_value(|ops| ops.as_ref().map(|o| Rc::clone(pick(o))))
-            .flatten()
+    /// Like [`Self::live_video`] but subscribes to `live_is_a` (Effects / memos).
+    pub fn live_video_tracked(self) -> VideoRef {
+        self.slot_by_live(self.live_is_a.get())
+    }
+
+    pub fn idle_video_tracked(self) -> VideoRef {
+        self.slot_by_live(!self.live_is_a.get())
+    }
+
+    /// `true` → slot A, `false` → slot B.
+    fn slot_by_live(self, is_a: bool) -> VideoRef {
+        if is_a { self.slot_a } else { self.slot_b }
+    }
+
+    /// Host of the mounted component, if any (ops are no-ops before mount).
+    fn host(self) -> Option<PlaylistHost> {
+        self.mounted
+            .try_with_value(|m| *m)
+            .unwrap_or(false)
+            .then_some(PlaylistHost(self))
     }
 
     pub fn open_blobs(self, blobs: Vec<web_sys::Blob>) {
-        if let Some(open) = self.op(|o| &o.open_blobs) {
-            open(blobs);
+        if let Some(host) = self.host() {
+            host.open_blobs(blobs);
         } else {
             self.status
                 .set("VideoPlaylist not mounted — hard-refresh the page.".into());
@@ -398,8 +395,8 @@ impl VideoPlaylistRef {
     }
 
     pub fn open_urls(self, urls: Vec<String>) {
-        if let Some(open) = self.op(|o| &o.open_urls) {
-            open(urls);
+        if let Some(host) = self.host() {
+            host.open_urls(urls);
         } else {
             self.status
                 .set("VideoPlaylist not mounted — hard-refresh the page.".into());
@@ -410,37 +407,37 @@ impl VideoPlaylistRef {
     pub fn play(self) {
         self.ended.set(false);
         self.playing.set(true);
-        if let Some(play) = self.op(|o| &o.play) {
-            play();
+        if let Some(host) = self.host() {
+            host.play();
         }
     }
 
     pub fn pause(self) {
         self.playing.set(false);
-        if let Some(pause) = self.op(|o| &o.pause) {
-            pause();
+        if let Some(host) = self.host() {
+            host.pause();
         }
     }
 
     pub fn close(self) {
-        if let Some(close) = self.op(|o| &o.close) {
-            close();
+        if let Some(host) = self.host() {
+            host.close();
         }
     }
 
     /// Internal relocate on the global scrub axis. Prefer [`Self::goto_frame`] for UI.
     pub fn seek_frame(self, global_frame: u32) {
         self.ended.set(false);
-        if let Some(seek) = self.op(|o| &o.seek_frame) {
-            seek(global_frame);
+        if let Some(host) = self.host() {
+            host.seek_frame(global_frame);
         }
     }
 
     /// Internal relocate to a clip-local pos. Prefer [`Self::goto_pos`] for UI.
     pub fn seek_pos(self, pos: PlaylistPos) {
         self.ended.set(false);
-        if let Some(seek) = self.op(|o| &o.seek_pos) {
-            seek(pos);
+        if let Some(host) = self.host() {
+            host.seek_pos(pos);
         }
     }
 
@@ -468,14 +465,14 @@ impl VideoPlaylistRef {
     }
 
     pub fn next_frame(self) {
-        if let Some(next) = self.op(|o| &o.next_frame) {
-            next();
+        if let Some(host) = self.host() {
+            host.next_frame();
         }
     }
 
     pub fn previous_frame(self) {
-        if let Some(prev) = self.op(|o| &o.previous_frame) {
-            prev();
+        if let Some(host) = self.host() {
+            host.previous_frame();
         }
     }
 
