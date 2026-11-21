@@ -126,9 +126,9 @@ pub(super) fn next_gap_unbanned(
         for sign in [step, -step] {
             let delta = dist * sign;
             let cand = if delta >= 0 {
-                playhead.saturating_add(delta as u64)
+                playhead.saturating_add(delta as FrameId)
             } else {
-                playhead.saturating_sub((-delta) as u64)
+                playhead.saturating_sub((-delta) as FrameId)
             };
             if cand < walk_lo || cand > walk_hi {
                 continue;
@@ -149,11 +149,11 @@ pub(super) fn next_gap_unbanned(
 
 /// Frames to warm for Exact settle / PlayPrime: one GOP at `key`, clamped by
 /// [`crate::SettlePolicy`] (not a fixed 24).
-pub(super) fn gop_sample_lead(track: &Mp4VideoTrack, key: FrameId) -> u64 {
+pub(super) fn gop_sample_lead(track: &Mp4VideoTrack, key: FrameId) -> FrameId {
     let n = track
         .index()
         .gop_frame_ids(key)
-        .map(|ids| ids.len() as u64)
+        .map(|ids| FrameId::try_from(ids.len()).unwrap_or(FrameId::MAX))
         .unwrap_or(12);
     gop_sample_lead_frames(n)
 }

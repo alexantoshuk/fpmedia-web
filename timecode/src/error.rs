@@ -22,4 +22,6 @@ pub enum TimecodeError {
     MismatchedRates,
     #[error("resulting frame index is negative")]
     NegativeFrame,
+    #[error("resulting frame index exceeds u32::MAX")]
+    FrameOverflow,
 }

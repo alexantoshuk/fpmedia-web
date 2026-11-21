@@ -44,27 +44,27 @@ pub const MIN_SCRUB_CACHE_FRAMES: usize = 8;
 /// stays on [`MAX_SCRUB_BLIT_FRAMES`] / `blit_mib`.
 pub const MAX_SCRUB_CACHE_FRAMES: usize = 4096;
 /// Floor for [`ScrubPolicy::margin_left`] (timeline earlier / lower FrameId).
-pub const EDGE_MARGIN_LEFT_MIN: u64 = 8;
+pub const EDGE_MARGIN_LEFT_MIN: FrameId = 8;
 /// Ceiling for [`ScrubPolicy::margin_left`] — keep below ~¼ typical blit window.
-pub const EDGE_MARGIN_LEFT_MAX: u64 = 24;
+pub const EDGE_MARGIN_LEFT_MAX: FrameId = 24;
 /// Floor for [`ScrubPolicy::margin_right`] (timeline later / higher FrameId).
-pub const EDGE_MARGIN_RIGHT_MIN: u64 = 4;
+pub const EDGE_MARGIN_RIGHT_MIN: FrameId = 4;
 /// Covered-only densify edge margin (each side, frames) once Exact is idle.
 /// Independent of Exact blit cap / GOP soft-drag margins. **no equivalent** (scrub local).
-pub const COVERED_EDGE_MARGIN_FRAMES: u64 = 300;
+pub const COVERED_EDGE_MARGIN_FRAMES: FrameId = 300;
 /// Soft-drag / hover dir-bias max lag (frames). Prefer floor(forward) /
 /// ceil(backward) only while that side stays within this distance of aim; beyond
 /// it, take the closer side (cold Exact/Thumb holes). Keeps near-trail settle
 /// anti-reverse; **no equivalent** (scrub local).
-pub const SCRUB_DIR_BIAS_MAX_LAG_FRAMES: u64 = 16;
+pub const SCRUB_DIR_BIAS_MAX_LAG_FRAMES: FrameId = 16;
 
 /// Asymmetric edge margins from a GOP length hint (Short `len` / Long `median`).
 ///
 /// Left > right: densify fills a GOP from its keyframe forward, so expanding
 /// **behind** needs more lead time (near-edge frames of the prev GOP arrive
 /// last). Local invention (mediabunny: no equivalent).
-pub fn scrub_edge_margins(gop_hint: u32) -> (u64, u64) {
-    let left = u64::from(gop_hint).clamp(EDGE_MARGIN_LEFT_MIN, EDGE_MARGIN_LEFT_MAX);
+pub fn scrub_edge_margins(gop_hint: u32) -> (FrameId, FrameId) {
+    let left = gop_hint.clamp(EDGE_MARGIN_LEFT_MIN, EDGE_MARGIN_LEFT_MAX);
     let right = (left / 2).max(EDGE_MARGIN_RIGHT_MIN);
     (left, right)
 }
@@ -86,8 +86,8 @@ pub fn scrub_gap_fill_armed(
     playhead: FrameId,
     extent: Option<(FrameId, FrameId)>,
     last: FrameId,
-    margin_left: u64,
-    margin_right: u64,
+    margin_left: FrameId,
+    margin_right: FrameId,
 ) -> bool {
     if !no_gaps {
         return true;
@@ -533,7 +533,7 @@ pub fn estimated_decoded_frame_bytes(width: u32, height: u32) -> u64 {
 /// Whole short clips stay fully resident when they fit under the byte cap.
 /// Prefer [`VideoMetadata::scrub_cache_frame_budget`] (reads [`ScrubPolicy`]).
 pub fn scrub_cache_frame_budget(
-    frame_count: u64,
+    frame_count: FrameId,
     width: u32,
     height: u32,
     max_mib: usize,
@@ -691,9 +691,9 @@ pub struct ScrubPolicy {
     /// metadata/meters — not a live Covered store ceiling.
     pub scrub_cache_mib: usize,
     /// Re-arm densify within this many frames of extent **start** (earlier / left).
-    pub margin_left: u64,
+    pub margin_left: FrameId,
     /// Re-arm densify within this many frames of extent **end** (later / right).
-    pub margin_right: u64,
+    pub margin_right: FrameId,
 }
 
 impl ScrubPolicy {
@@ -814,14 +814,14 @@ pub const SETTLE_DENSIFY_YIELD_MS: f64 = 250.0;
 /// Densify yield retry after re-abort (ms).
 pub const SETTLE_DENSIFY_YIELD_RETRY_MS: f64 = 250.0;
 /// Floor for one-GOP sample warm on Exact settle / cold PlayPrime.
-pub const SETTLE_GOP_SAMPLE_LEAD_MIN: u64 = 8;
+pub const SETTLE_GOP_SAMPLE_LEAD_MIN: FrameId = 8;
 /// Ceiling for one-GOP sample warm (was fixed-24 stall on long/cold GOP).
-pub const SETTLE_GOP_SAMPLE_LEAD_MAX: u64 = 24;
+pub const SETTLE_GOP_SAMPLE_LEAD_MAX: FrameId = 24;
 /// Index / sample prefetch lead for PlayPrime + open warm (`mdat` frames).
 /// Shared with demux `warm_open_playback_bytes` — keep one number.
-pub const SETTLE_PLAY_INDEX_LEAD: u64 = 96;
+pub const SETTLE_PLAY_INDEX_LEAD: FrameId = 96;
 /// fMP4: max frames to *await* past current index on PlayPrime (rest bg).
-pub const SETTLE_PLAY_INDEX_AWAIT_BATCH: u64 = 48;
+pub const SETTLE_PLAY_INDEX_AWAIT_BATCH: FrameId = 48;
 /// Wall-clock wait for main decoder slot checkout (Chromium `setTimeout` clamp).
 pub const SETTLE_TAKE_DECODER_WAIT_MS: f64 = 5_000.0;
 
@@ -838,10 +838,10 @@ pub struct SettlePolicy {
     pub densify_yield_ms: f64,
     /// Second drain after re-abort (ms).
     pub densify_yield_retry_ms: f64,
-    pub gop_sample_lead_min: u64,
-    pub gop_sample_lead_max: u64,
-    pub play_index_lead: u64,
-    pub play_index_await_batch: u64,
+    pub gop_sample_lead_min: FrameId,
+    pub gop_sample_lead_max: FrameId,
+    pub play_index_lead: FrameId,
+    pub play_index_await_batch: FrameId,
     pub take_decoder_wait_ms: f64,
 }
 
@@ -861,7 +861,7 @@ impl Default for SettlePolicy {
 
 impl SettlePolicy {
     /// Clamp observed GOP length for Exact / PlayPrime sample warm.
-    pub fn clamp_gop_sample_lead(self, gop_len: u64) -> u64 {
+    pub fn clamp_gop_sample_lead(self, gop_len: FrameId) -> FrameId {
         gop_len.clamp(self.gop_sample_lead_min, self.gop_sample_lead_max)
     }
 }
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     fn next_missing_sync_key_nearest_unready() {
-        let keys = [0u64, 48, 96, 144];
+        let keys = [0u32, 48, 96, 144];
         assert_eq!(
             next_missing_sync_key(&keys, 100, |k| k == 96 || k == 48),
             Some(144)
@@ -1074,7 +1074,7 @@ mod tests {
 
     #[test]
     fn next_progressive_sync_key_coarse_then_farthest() {
-        let keys: Vec<u64> = (0..9).map(|i| i * 10).collect(); // 0,10,…,80
+        let keys: Vec<u32> = (0..9).map(|i| i * 10).collect(); // 0,10,…,80
         // Coarse 3 → indices 0, 4, 8 → frames 0, 40, 80.
         assert_eq!(next_progressive_sync_key(&keys, |_| false, 3), Some(0));
         assert_eq!(next_progressive_sync_key(&keys, |k| k == 0, 3), Some(40));
@@ -1092,7 +1092,7 @@ mod tests {
 
     #[test]
     fn thumb_progressive_rank_coarse_then_densify_order() {
-        let keys: Vec<u64> = (0..9).map(|i| i * 10).collect();
+        let keys: Vec<u32> = (0..9).map(|i| i * 10).collect();
         assert_eq!(thumb_progressive_rank(&keys, 0, 3), 0);
         assert_eq!(thumb_progressive_rank(&keys, 40, 3), 0);
         assert_eq!(thumb_progressive_rank(&keys, 80, 3), 0);
@@ -1115,8 +1115,8 @@ mod tests {
         // One side only.
         assert_eq!(nearer_gap_with_dir(0, None, Some(8), -1), Some(8));
         assert_eq!(nearer_gap_with_dir(5, Some(3), None, 1), Some(3));
-        let behind = 0u64.checked_sub(1);
-        let ahead = 7u64.checked_add(1).filter(|&a| a <= 100);
+        let behind = 0u32.checked_sub(1);
+        let ahead = 7u32.checked_add(1).filter(|&a| a <= 100);
         assert_eq!(nearer_gap_with_dir(0, behind, ahead, 0), Some(8));
     }
 
@@ -1266,7 +1266,7 @@ mod tests {
     #[test]
     fn scrub_gap_fill_armed_right_edge_slides_before_hard_edge() {
         // start==0: left margin must not arm (nowhere to expand behind).
-        let extent = Some((0u64, 40u64));
+        let extent = Some((0u32, 40u32));
         let last = 1000;
         assert!(scrub_gap_fill_armed(true, 38, extent, last, 8, 3));
         assert!(!scrub_gap_fill_armed(true, 20, extent, last, 8, 3));
@@ -1277,15 +1277,15 @@ mod tests {
     fn scrub_gap_fill_armed_idle_at_pinned_timeline_edges() {
         // Playhead at origin with window pinned to 0 — was thrash (expand ahead,
         // evict far end, repeat).
-        let at_start = Some((0u64, 50u64));
+        let at_start = Some((0u32, 50u32));
         assert!(!scrub_gap_fill_armed(true, 0, at_start, 200, 16, 8));
         assert!(!scrub_gap_fill_armed(true, 10, at_start, 200, 16, 8));
         // Still arm near the expandable right edge.
         assert!(scrub_gap_fill_armed(true, 45, at_start, 200, 16, 8));
 
         // Playhead at EOF with window pinned to last.
-        let last = 200u64;
-        let at_end = Some((150u64, last));
+        let last = 200u32;
+        let at_end = Some((150u32, last));
         assert!(!scrub_gap_fill_armed(true, last, at_end, last, 16, 8));
         assert!(!scrub_gap_fill_armed(true, 195, at_end, last, 16, 8));
         // Still arm near the expandable left edge.

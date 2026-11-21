@@ -13,7 +13,7 @@ When a term’s meaning changes in code, **edit or delete** the entry here in th
 
 ### FrameId
 
-Primary timeline position: a **presentation** frame index, 0-based. Not `time × fps`. Seek, step, scrub aim, strip paint, and densify gaps all speak FrameId. Demux may also track decode order; presentation order is what the user means by “frame N”.
+Primary timeline position: a **presentation** frame index, 0-based. Type `FrameId` = `u32` everywhere (width rule: `architecture.md` § Ownership & types). Not `time × fps`. Seek, step, scrub aim, strip paint, and densify gaps all speak FrameId. Demux may also track decode order; presentation order is what the user means by “frame N”.
 
 ### Aim
 

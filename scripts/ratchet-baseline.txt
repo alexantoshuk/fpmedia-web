@@ -2,4 +2,4 @@ rc_dyn_fn=15
 arc=80
 mutex=12
 shared_cells=44
-frame_casts=88
+frame_casts=30

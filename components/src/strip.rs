@@ -153,15 +153,18 @@ const STRIP_ASSUMED_SCRUBBER_PX: f64 = 800.0;
 
 /// Missing frames between inclusive runs that still paint as &lt;1 px on an
 /// ~800 px scrubber (`floor(max / 800)`; short clips → 0 = no soft-merge).
-pub fn strip_merge_gap_frames(max_frame: f64) -> u64 {
+pub fn strip_merge_gap_frames(max_frame: f64) -> FrameId {
     let max = max_frame.max(0.0);
-    (max / STRIP_ASSUMED_SCRUBBER_PX).floor() as u64
+    (max / STRIP_ASSUMED_SCRUBBER_PX).floor() as FrameId
 }
 
 /// Paint-only: merge inclusive `(lo, hi)` densify runs when the hole is ≤
 /// `max_gap` frames. Engine / densify geometry stays exact via
 /// [`fpmedia_web::coalesce_frame_runs`].
-pub fn soft_merge_frame_runs(runs: &[(FrameId, FrameId)], max_gap: u64) -> Vec<(FrameId, FrameId)> {
+pub fn soft_merge_frame_runs(
+    runs: &[(FrameId, FrameId)],
+    max_gap: FrameId,
+) -> Vec<(FrameId, FrameId)> {
     let mut out: Vec<(FrameId, FrameId)> = Vec::new();
     for &(start, end) in runs {
         let end = end.max(start);
@@ -444,7 +447,7 @@ pub fn fetch_strip_px_runs(ranges: &[(f32, f32)]) -> Vec<StripPxRun> {
 pub fn frame_runs_to_width(
     runs: &[(FrameId, FrameId)],
     frame_count: f64,
-    merge_gap: u64,
+    merge_gap: FrameId,
     width: f64,
 ) -> Vec<StripRun> {
     let n = frame_count.max(1.0);
@@ -467,7 +470,7 @@ pub fn frame_runs_to_width(
 pub fn frame_runs_to_width_px(
     runs: &[(FrameId, FrameId)],
     frame_count: f64,
-    merge_gap: u64,
+    merge_gap: FrameId,
     width_px: u16,
 ) -> Vec<StripPxRun> {
     let n = frame_count.max(1.0);
@@ -490,7 +493,7 @@ pub fn frame_runs_to_width_px(
 pub fn frame_runs_to_px(
     runs: &[(FrameId, FrameId)],
     frame_count: f64,
-    merge_gap: u64,
+    merge_gap: FrameId,
 ) -> Vec<StripPxRun> {
     frame_runs_to_width_px(
         runs,
@@ -646,8 +649,8 @@ mod tests {
         // longer band than the later coalesced run (capacity-looking trail).
         let max = 14_400.0;
         let w = 800u16;
-        let sparse = [(100u64, 100), (102, 102), (104, 104), (106, 106)];
-        let coalesced = [(100u64, 106)];
+        let sparse = [(100u32, 100), (102, 102), (104, 104), (106, 106)];
+        let coalesced = [(100u32, 106)];
         let sparse_px = ready_runs_to_width_px(&sparse, max, w);
         let solid_px = ready_runs_to_width_px(&coalesced, max, w);
         let sparse_w: u32 = sparse_px
@@ -673,7 +676,7 @@ mod tests {
 
     #[test]
     fn soft_merge_frame_runs_closes_subpixel_holes() {
-        let runs = [(0u64, 10), (15, 30), (100, 110)];
+        let runs = [(0u32, 10), (15, 30), (100, 110)];
         assert_eq!(
             soft_merge_frame_runs(&runs, 0),
             vec![(0, 10), (15, 30), (100, 110)]
@@ -789,7 +792,7 @@ mod tests {
         let mut unique = std::collections::BTreeSet::new();
         unique.insert(format!("{:?}", latch.accepted()));
         for i in 0..40 {
-            let end = if i % 2 == 0 { 399u64 } else { 409 };
+            let end = if i % 2 == 0 { 399u32 } else { 409 };
             let cand = ready_runs_to_width(&[(0, end)], 8000.0, wf);
             unique.insert(format!("{:?}", latch.resolve(&cand, w)));
         }
@@ -819,7 +822,7 @@ mod tests {
     #[test]
     fn ready_keeps_equal_step_hairlines() {
         // Continuous grid: single-frame marks stay as w/n hairlines (not dropped).
-        let far = [(0u64, 0), (100, 100)];
+        let far = [(0u32, 0), (100, 100)];
         let runs = ready_runs_to_width(&far, 8000.0, 800.0);
         assert_eq!(runs.len(), 2);
         assert!((runs[0].1 - runs[0].0 - 0.1).abs() < 1e-9);
@@ -851,7 +854,7 @@ mod tests {
         assert_eq!(frame_slot_floor_px(1, 3, 100), (34, 67));
         assert_eq!(frame_slot_floor_px(2, 3, 100), (67, 100));
         for x in 0..100u32 {
-            let frame = (u64::from(x) * 3 / 100) as u32;
+            let frame = x * 3 / 100;
             let (lo, hi) = frame_slot_floor_px(frame, 3, 100);
             assert!(x >= lo && x < hi, "x={x} frame={frame} slot=[{lo},{hi})");
         }

@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::types::FrameId;
+
 #[derive(Debug, Error)]
 pub enum MediaError {
     #[error("mp4 parse error: {0}")]
@@ -17,7 +19,7 @@ pub enum MediaError {
     UnsupportedCodec,
 
     #[error("frame {0} out of range (count={1})")]
-    FrameOutOfRange(u64, u64),
+    FrameOutOfRange(FrameId, FrameId),
 
     #[error("audio sample {0} out of range (count={1})")]
     AudioSampleOutOfRange(u64, u64),
@@ -26,7 +28,7 @@ pub enum MediaError {
     EmptyTrack,
 
     #[error("frame {0} has no duration")]
-    MissingFrameDuration(u64),
+    MissingFrameDuration(FrameId),
 
     #[error("webcodecs: {0}")]
     WebCodecs(String),

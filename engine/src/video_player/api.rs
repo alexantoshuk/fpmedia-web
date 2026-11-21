@@ -17,7 +17,7 @@ pub struct PlayerState {
     /// When true, playback wraps to [`crate::LoopZone::in_frame`] at zone end
     /// (HTML `<video loop>` + optional LoopZone).
     pub looping: bool,
-    pub frame_count: u64,
+    pub frame_count: FrameId,
 }
 
 /// Why a frame is marked ready on the demo timeline strip.

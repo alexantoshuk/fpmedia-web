@@ -29,7 +29,7 @@ pub struct NextGapDecision {
 /// Used for edge-arming **and** as a hard aim±band (uncapped Covered + `!no_gaps`
 /// otherwise walks the whole file). Not Exact blit cap / not GOP soft-drag.
 /// **no equivalent** (scrub local).
-pub fn covered_edge_margins() -> (u64, u64) {
+pub fn covered_edge_margins() -> (FrameId, FrameId) {
     let m = COVERED_EDGE_MARGIN_FRAMES.max(1);
     (m, m)
 }
@@ -116,7 +116,7 @@ pub fn cold_settle_commit_frame(aim: FrameId, indexed_count: FrameId) -> Option<
 }
 
 /// Warm-byte lead for Exact / PlayPrime: clamp GOP length by [`SettlePolicy`].
-pub fn gop_sample_lead_frames(gop_len: u64) -> u64 {
+pub fn gop_sample_lead_frames(gop_len: FrameId) -> FrameId {
     SettlePolicy::default().clamp_gop_sample_lead(gop_len)
 }
 
@@ -277,8 +277,8 @@ mod tests {
 
     #[test]
     fn densify_skip_bridge_lists_all_missing_markers() {
-        let gop = [10u64, 11, 12, 13, 14];
-        let resident = [10u64, 12, 14];
+        let gop = [10u32, 11, 12, 13, 14];
+        let resident = [10u32, 12, 14];
         let missing = densify_skip_bridge_ids(&gop, |id| resident.contains(&id));
         assert_eq!(missing, vec![11, 13]);
         assert!(densify_skip_bridge_ids(&gop, |_| true).is_empty());

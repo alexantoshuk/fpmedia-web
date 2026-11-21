@@ -747,7 +747,7 @@ impl VideoPlayer {
     }
 
     /// Scrub edge margins for VT [`plan_next_densify_gap`] (same as slot densify).
-    pub fn scrub_plan_margins(&self) -> (u64, u64) {
+    pub fn scrub_plan_margins(&self) -> (FrameId, FrameId) {
         let p = self.scrub_policy();
         (p.margin_left, p.margin_right)
     }

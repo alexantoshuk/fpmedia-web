@@ -69,7 +69,7 @@ impl<V> ExactLedger<V> {
     /// Drop Exact farther from aim than capacity radius (engine blit parity).
     /// Caller releases values. **no equivalent** (scrub local).
     pub fn take_orphans_beyond_aim(&mut self) -> Vec<(FrameId, V)> {
-        let radius = self.exact.max() as u64;
+        let radius = self.exact.max() as FrameId;
         self.exact.take_farther_than(radius)
     }
 
@@ -270,9 +270,9 @@ mod tests {
 
     #[test]
     fn one_cap_not_dual_slot() {
-        let mut led = ExactLedger::<u64>::with_capacity(4);
+        let mut led = ExactLedger::<u32>::with_capacity(4);
         led.set_aim(10);
-        for g in 8u64..=11 {
+        for g in 8u32..=11 {
             let out = led.put_exact(g, g);
             assert!(out.accepted, "insert {g}");
             assert!(out.replaced.is_none());
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn hit_miss_and_aim_evict() {
-        let mut led = ExactLedger::<u64>::with_capacity(3);
+        let mut led = ExactLedger::<u32>::with_capacity(3);
         led.set_aim(5);
         assert!(!led.has_exact(5));
         assert!(led.put_exact(5, 50).accepted);
@@ -309,7 +309,7 @@ mod tests {
         assert_eq!(led.exact_len(), 3);
 
         // Spread residents — insert near aim can evict the far end.
-        let mut led = ExactLedger::<u64>::with_capacity(3);
+        let mut led = ExactLedger::<u32>::with_capacity(3);
         led.set_aim(50);
         assert!(led.put_exact(0, 0).accepted);
         assert!(led.put_exact(50, 50).accepted);
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn covered_uncapped_across_joins() {
-        let mut led = ExactLedger::<u64>::new();
+        let mut led = ExactLedger::<u32>::new();
         led.note_covered_run(0, 9); // clip A
         led.note_covered_run(10, 19); // clip B (global join) — survives “leave” A
         assert!(led.has_covered(0));
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn fetch_uncapped_across_joins_interval_merge() {
-        let mut led = ExactLedger::<u64>::new();
+        let mut led = ExactLedger::<u32>::new();
         assert!(led.note_fetch_run(0, 9)); // clip A
         assert!(led.note_fetch_run(10, 19)); // clip B abut → merge
         assert_eq!(led.fetch_ready_marks(), vec![(0, 19)]);
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn thumb_markers_survive_clip_leave() {
-        let mut led = ExactLedger::<u64>::new();
+        let mut led = ExactLedger::<u32>::new();
         assert!(led.note_thumb(0));
         assert!(led.note_thumb(100)); // clip B global
         assert!(!led.note_thumb(0));
@@ -378,9 +378,9 @@ mod tests {
 
     #[test]
     fn exact_ready_marks_coalesce_global_runs() {
-        let mut led = ExactLedger::<u64>::with_capacity(16);
+        let mut led = ExactLedger::<u32>::with_capacity(16);
         led.set_aim(5);
-        for g in [1u64, 2, 3, 10, 11] {
+        for g in [1u32, 2, 3, 10, 11] {
             assert!(led.put_exact(g, g).accepted);
         }
         let runs = led.exact_ready_marks();
@@ -390,9 +390,9 @@ mod tests {
     /// Densify bulk sync must keep playhead aim fixed while inserting sorted ids.
     #[test]
     fn bulk_put_keeps_playhead_aim() {
-        let mut led = ExactLedger::<u64>::with_capacity(8);
+        let mut led = ExactLedger::<u32>::with_capacity(8);
         led.set_aim(50);
-        for g in 40u64..=47 {
+        for g in 40u32..=47 {
             assert!(led.put_exact(g, g).accepted, "insert {g}");
             assert_eq!(led.aim(), 50, "aim must not walk with insert id");
         }
@@ -405,7 +405,7 @@ mod tests {
     fn orphans_beyond_aim_drop_far_exact() {
         let mut led = ExactLedger::with_capacity(4);
         led.set_aim(0);
-        for i in 0..4u64 {
+        for i in 0..4u32 {
             assert!(led.put_exact(i, i).accepted);
         }
         led.set_aim(100);

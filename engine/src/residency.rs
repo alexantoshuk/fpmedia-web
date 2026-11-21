@@ -81,7 +81,7 @@ impl<V> AimWindow<V> {
     /// Used when the Exact plane is locally idle (no near gap / no `put`) so
     /// farthest-from-aim still runs — otherwise Covered-only densify leaves
     /// orphan bitmaps past a hole on the strip.
-    pub fn take_farther_than(&mut self, radius: u64) -> Vec<(FrameId, V)> {
+    pub fn take_farther_than(&mut self, radius: FrameId) -> Vec<(FrameId, V)> {
         let mut out = Vec::new();
         while let Some(far) = self.farthest_evictable(None) {
             if far.abs_diff(self.aim) <= radius {
@@ -148,7 +148,7 @@ impl<V> AimWindow<V> {
         self.max_dist_from(from).is_some_and(|far| far <= gap_dist)
     }
 
-    fn max_dist_from(&self, from: FrameId) -> Option<u64> {
+    fn max_dist_from(&self, from: FrameId) -> Option<FrameId> {
         let lo = self.keys().find(|&f| f != from)?;
         let hi = self.keys().rev().find(|&f| f != from)?;
         Some(lo.abs_diff(from).max(hi.abs_diff(from)))
@@ -178,8 +178,8 @@ impl<V> AimWindow<V> {
         playhead: FrameId,
         last: FrameId,
         dir: i8,
-        margin_left: u64,
-        margin_right: u64,
+        margin_left: FrameId,
+        margin_right: FrameId,
     ) -> Option<FrameId> {
         let playhead = playhead.min(last);
         if self.items.is_empty() {
@@ -192,7 +192,7 @@ impl<V> AimWindow<V> {
         let (run_lo, run_hi) = walk_run_bounds(&self.items, playhead);
         let solid_len = run_hi.saturating_sub(run_lo).saturating_add(1);
         let solid_at_cap =
-            at_cap && (solid_len as usize >= self.max || solid_len == self.items.len() as u64);
+            at_cap && (solid_len as usize >= self.max || solid_len == self.items.len() as FrameId);
         if solid_at_cap {
             let extent = Some((run_lo, run_hi));
             if !scrub_gap_fill_armed(true, playhead, extent, last, margin_left, margin_right) {
@@ -208,7 +208,7 @@ impl<V> AimWindow<V> {
         let no_gaps = extent.is_some_and(|(lo, hi)| {
             hi.saturating_sub(lo)
                 .saturating_add(1)
-                .eq(&(self.items.len() as u64))
+                .eq(&(self.items.len() as FrameId))
         });
         // At capacity a solid map must not expand without arming (same as above).
         if at_cap && no_gaps {
@@ -482,8 +482,8 @@ impl ScrubChunkStore {
         &self,
         playhead: FrameId,
         last: FrameId,
-        margin_left: u64,
-        margin_right: u64,
+        margin_left: FrameId,
+        margin_right: FrameId,
     ) -> bool {
         if !self.no_gaps() {
             return true;
@@ -600,7 +600,7 @@ impl ScrubChunkStore {
                 let solid = hi
                     .checked_sub(lo)
                     .and_then(|d| d.checked_add(1))
-                    .is_some_and(|n| n == self.window.len() as u64);
+                    .is_some_and(|n| n == self.window.len() as FrameId);
                 if solid && self.window.contains(self.playhead()) {
                     self.runs.set_solid_run(lo, hi);
                 }

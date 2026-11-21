@@ -3,7 +3,7 @@
 //! Scrubber strip pixel runs: [`crate::strip`] (re-exported here).
 
 pub use crate::strip::*;
-use fpmedia_web::VideoMetadata;
+use fpmedia_web::{FrameId, VideoMetadata};
 
 /// Playhead as a CSS width percentage of the scrubber (`0…100`).
 ///
@@ -127,7 +127,7 @@ pub fn format_metadata(meta: &VideoMetadata) -> String {
 
 /// SMPTE string for `frame` using embedded start (or zero) + rate from metadata.
 pub fn format_timecode_at(meta: &VideoMetadata, frame: u32) -> Option<String> {
-    meta.timecode_at(u64::from(frame)).map(|tc| tc.to_string())
+    meta.timecode_at(frame).map(|tc| tc.to_string())
 }
 
 /// Loose SMPTE from presentation `frame` + optional fps (`None` → 24).
@@ -199,10 +199,11 @@ pub fn parse_position(meta: &VideoMetadata, raw: &str) -> Option<u32> {
         return None;
     }
     let last = meta.frame_count.saturating_sub(1);
-    let clamp = |f: u64| -> u32 { f.min(last) as u32 };
+    // Wide user input (huge digit strings) saturates to last, never wraps.
+    let clamp_wide = |f: u64| -> FrameId { FrameId::try_from(f).map_or(last, |f| f.min(last)) };
 
     if let Ok(f) = s.parse::<u64>() {
-        return Some(clamp(f));
+        return Some(clamp_wide(f));
     }
 
     if let Some(rate) = meta.timecode_rate()
@@ -212,11 +213,11 @@ pub fn parse_position(meta: &VideoMetadata, raw: &str) -> Option<u32> {
             .timecode_start
             .unwrap_or_else(|| fpmedia_timecode::Timecode::from_frames(0, rate));
         if let Ok(frame) = tc.to_frame_from_start(start) {
-            return Some(clamp(frame));
+            return Some(frame.min(last));
         }
     }
 
-    parse_timecode_loose(s, loose_nominal_fps(meta)).map(clamp)
+    parse_timecode_loose(s, loose_nominal_fps(meta)).map(clamp_wide)
 }
 
 #[cfg(test)]
@@ -224,12 +225,12 @@ mod tests {
     use super::*;
     use fpmedia_web::{CodecConfig, GopProfile, VideoCodec, VideoMetadata};
 
-    fn meta_24fps(frames: u64) -> VideoMetadata {
+    fn meta_24fps(frames: FrameId) -> VideoMetadata {
         VideoMetadata {
             width: 1920,
             height: 1080,
             timescale: 24,
-            duration_ticks: frames,
+            duration_ticks: u64::from(frames),
             frame_count: frames,
             fps: Some(24.0),
             codec: CodecConfig {

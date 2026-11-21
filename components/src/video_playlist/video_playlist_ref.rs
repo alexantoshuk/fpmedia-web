@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use fpmedia_web::FrameId;
 use leptos::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -78,11 +79,11 @@ pub struct VideoPlaylistRef {
     /// Bumps when VT Covered changes (TimelineMeta Covered subscribe).
     pub exact_residency_epoch: RwSignal<u64>,
     /// Per-clip sync FrameIds (local) for VT thumb progressive — survives idle rebind.
-    pub(crate) thumb_sync_keys: StoredValue<HashMap<u32, Vec<u64>>, LocalStorage>,
+    pub(crate) thumb_sync_keys: StoredValue<HashMap<u32, Vec<FrameId>>, LocalStorage>,
     /// One VT progressive fill in flight (coalesce Effect kicks).
     pub(crate) thumb_fill_inflight: StoredValue<bool, LocalStorage>,
     /// Globals skipped after admit/cap refuse (must not spin; not “bitmap ready”).
-    pub(crate) thumb_fill_skip: StoredValue<HashSet<u64>, LocalStorage>,
+    pub(crate) thumb_fill_skip: StoredValue<HashSet<FrameId>, LocalStorage>,
     /// Clips whose open-slot progressive walk finished this session (idle walk gate).
     pub(crate) thumb_clips_done: StoredValue<HashSet<u32>, LocalStorage>,
     /// VT global thumb bitmap wallet (≤1 producer). Feature `thumbs`.
@@ -673,10 +674,7 @@ impl VideoPlaylistRef {
             {
                 let tw = bmp.width().max(1);
                 let th = bmp.height().max(1);
-                if cache
-                    .borrow_mut()
-                    .put(u64::from(global_frame), bmp, tw, th, u16::MAX)
-                {
+                if cache.borrow_mut().put(global_frame, bmp, tw, th, u16::MAX) {
                     self.bump_thumb_residency();
                 }
             }
@@ -698,15 +696,8 @@ impl VideoPlaylistRef {
         if let Some(cache) = self.thumb_cache.get_value() {
             let c = cache.borrow();
             // Prefer exact size; fall back to any stored size for interim.
-            if crate::virtual_timeline::try_paint_vt(
-                &c,
-                u64::from(global_frame),
-                &dest,
-                max_w,
-                max_h,
-                0,
-            )
-            .is_some()
+            if crate::virtual_timeline::try_paint_vt(&c, global_frame, &dest, max_w, max_h, 0)
+                .is_some()
             {
                 return true;
             }

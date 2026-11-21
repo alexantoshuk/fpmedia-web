@@ -185,15 +185,15 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
     let is_step = matches!(op, SeekOrStep::Step(_));
     let is_dwell = matches!(op, SeekOrStep::ScrubDwellExact(_));
     let result = match op {
-        SeekOrStep::Seek(target) => p.seek_frame(u64::from(target)).await,
-        SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(u64::from(target)).await,
-        SeekOrStep::ScrubDrag(target) => p.scrub_to(u64::from(target), false).await,
+        SeekOrStep::Seek(target) => p.seek_frame(target).await,
+        SeekOrStep::SeekKeyframe(target) => p.seek_keyframe(target).await,
+        SeekOrStep::ScrubDrag(target) => p.scrub_to(target, false).await,
         // Stillness Exact while finger down — same `scrub_to(settle)` as release,
         // transport stays Scrubbing. **no equivalent** (scrub local).
         SeekOrStep::ScrubDwellExact(target) => {
-            let r = p.scrub_to(u64::from(target), true).await;
+            let r = p.scrub_to(target, true).await;
             if r.is_ok() && queue.is_current(id) && !queue.has_pending_play() {
-                p.arm_scrub_densify_after_exact(u64::from(target));
+                p.arm_scrub_densify_after_exact(target);
             }
             r
         }
@@ -202,14 +202,14 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
         SeekOrStep::ScrubRelease {
             target,
             then_play: true,
-        } => p.prepare_play_from_scrub(u64::from(target)).map(|_| ()),
+        } => p.prepare_play_from_scrub(target).map(|_| ()),
         SeekOrStep::ScrubRelease {
             target,
             then_play: false,
         } => {
             // Exact in slot blit — PresentHit or scrub_to settle. **no equivalent**.
             use crate::virtual_timeline::{ExactSettlePlan, plan_exact_settle};
-            let local = u64::from(target);
+            let local = target;
             let plan = plan_exact_settle(p.has_scrub_exact_blit(local));
             let r = match plan {
                 ExactSettlePlan::PresentHit => {
@@ -264,7 +264,7 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
         && let Ok(borrow) = player.try_borrow()
         && let Some(p) = borrow.as_ref()
     {
-        let engine = p.state().frame.min(u32::MAX as u64) as u32;
+        let engine = p.state().frame;
         playhead.set(engine);
     }
     result.is_ok()
@@ -300,22 +300,16 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     // aim while engine committed the indexed prefix. Priming that aim blocked
     // OpQueue (`warm_sample_bytes` / mfra) and stuck Play `busy`. Snap to a
     // playable frame first (mediabunny: first samples before play).
-    let indexed_last = p
-        .indexed_frame_count()
-        .saturating_sub(1)
-        .min(u64::from(u32::MAX)) as u32;
-    let eng = p.state().frame.min(u64::from(u32::MAX)) as u32;
+    let indexed_last = p.indexed_frame_count().saturating_sub(1);
+    let eng = p.state().frame;
     let mut ph = playhead.get_untracked().min(indexed_last);
     // At zone/file end (or outside LoopZone while looping): snap to loop-in
     // (full axis → 0). Otherwise PlayPrime arms the clock on the last sample
     // and leaks ~½ s audio. mediabunny: media-player `play` at endTimestamp →
     // firstTimestamp. LoopZone: **no equivalent**.
     let zone = p.loop_zone();
-    let zone_in = zone.in_frame.min(u64::from(u32::MAX)) as u32;
-    let zone_last = zone
-        .out_frame
-        .saturating_sub(1)
-        .min(u64::from(indexed_last)) as u32;
+    let zone_in = zone.in_frame;
+    let zone_last = zone.out_frame.saturating_sub(1).min(indexed_last);
     if p.is_looping() {
         if ph >= zone_last || ph < zone_in {
             web_sys::console::log_1(&format!("fpmedia-web: play snap → loop_in {zone_in}").into());
@@ -383,7 +377,7 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
         }
     }
 
-    if p.state().frame != u64::from(ph) {
+    if p.state().frame != ph {
         web_sys::console::log_1(
             &format!(
                 "fpmedia-web: play sync seek {ph} (engine {})",
@@ -391,7 +385,7 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
             )
             .into(),
         );
-        match p.seek_frame(u64::from(ph)).await {
+        match p.seek_frame(ph).await {
             Ok(()) => {}
             Err(e) if e.is_cancelled() => return false,
             Err(e) => {

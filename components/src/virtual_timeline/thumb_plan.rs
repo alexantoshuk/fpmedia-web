@@ -52,14 +52,12 @@ pub fn map_local_sync_keys_to_global(
 
 /// Resolve a planned global thumb key onto a decode backend.
 pub fn resolve_thumb_fill_playlist(model: &PlaylistModel, global: FrameId) -> Option<BackendAim> {
-    let g = u32::try_from(global).ok()?;
-    super::resolve_playlist(model, g)
+    super::resolve_playlist(model, global)
 }
 
 /// Single-clip: global == local.
-pub fn resolve_thumb_fill_single(global: FrameId, frame_count: u32) -> Option<BackendAim> {
-    let g = u32::try_from(global).ok()?;
-    super::resolve_single(g, frame_count)
+pub fn resolve_thumb_fill_single(global: FrameId, frame_count: FrameId) -> Option<BackendAim> {
+    super::resolve_single(global, frame_count)
 }
 
 /// Merge per-clip local sync key lists into one sorted unique global list.

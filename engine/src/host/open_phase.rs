@@ -10,6 +10,8 @@
 
 use std::fmt;
 
+use crate::types::FrameId;
+
 /// Where the open path is probing bytes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenSourceKind {
@@ -89,7 +91,7 @@ pub enum OpenPhase {
     WarmingMediaBytes,
     WarmingAudioBytes,
     CreatingDecoder {
-        frames: u64,
+        frames: FrameId,
         has_audio: bool,
     },
     DecodingStart,

@@ -35,7 +35,7 @@ Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i
 
 Rules: `architecture.md` § Ownership & types. Each item leaves this list in the commit that ships it.
 
-1. **Frame types** — `FrameRun` (inclusive span); `LocalFrame` / `GlobalFrame` at the playlist seam.
+1. **Frame types** — `FrameRun` (inclusive span replacing `(FrameId, FrameId)` tuples); `LocalFrame` / `GlobalFrame` at the playlist seam.
 2. **Engine helpers** — `Waiters`, `Epoch` / `Ticket`, `SingleFlight` guard, `PlayIter` guard.
 3. **`Shared` grouping** — `seam_release_aim` only; `ScrubDir` enum; `UnderrunStats`; `LoopSpec`; thumb box.
 4. **`VideoPlayer` = `Clone` handle** over `Rc<PlayerInner>` (keep `Drop` teardown verbatim on inner).

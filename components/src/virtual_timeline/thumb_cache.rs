@@ -114,8 +114,8 @@ impl VtThumbCache {
         dir: i8,
     ) -> Option<(FrameId, &ImageBitmap, u32, u32)> {
         let _ = dir;
-        let pick = |require_size: bool| -> Option<(FrameId, u64)> {
-            let mut best: Option<(FrameId, u64)> = None;
+        let pick = |require_size: bool| -> Option<(FrameId, FrameId)> {
+            let mut best: Option<(FrameId, FrameId)> = None;
             for (&id, e) in &self.by_frame {
                 if require_size && !e.matches_size(width, height) {
                     continue;

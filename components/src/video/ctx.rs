@@ -58,8 +58,8 @@ impl HostCtx {
         };
         if let Some(p) = borrow.as_ref() {
             let st = p.state();
-            let engine = st.frame.min(u32::MAX as u64) as u32;
-            let count = st.frame_count.min(u32::MAX as u64) as u32;
+            let engine = st.frame;
+            let count = st.frame_count;
             let count_changed = v.frame_count.get_untracked() != count;
             v.frame.set(engine);
             v.frame_count.set(count);

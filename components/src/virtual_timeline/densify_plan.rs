@@ -28,8 +28,8 @@ pub struct DensifyPlanInput {
     /// Resident Covered timeline FrameIds.
     pub covered: BTreeSet<FrameId>,
     /// Exact edge margins (from `scrub_edge_margins` / ScrubPolicy).
-    pub margin_left: u64,
-    pub margin_right: u64,
+    pub margin_left: FrameId,
+    pub margin_right: FrameId,
     /// Scrub direction (−1 / 0 / +1).
     pub dir: i8,
     /// Stall aim — skip Exact retries at this aim (engine densify stall).
@@ -68,8 +68,8 @@ impl DensifyPlanInput {
         ledger: &super::ExactLedger<V>,
         aim: FrameId,
         timeline_last: FrameId,
-        margin_left: u64,
-        margin_right: u64,
+        margin_left: FrameId,
+        margin_right: FrameId,
         dir: i8,
     ) -> Self {
         Self {
@@ -162,7 +162,7 @@ fn covered_no_gaps(covered: &BTreeSet<FrameId>, extent: Option<(FrameId, FrameId
     };
     hi.saturating_sub(lo)
         .saturating_add(1)
-        .eq(&(covered.len() as u64))
+        .eq(&FrameId::try_from(covered.len()).unwrap_or(FrameId::MAX))
 }
 
 #[cfg(test)]

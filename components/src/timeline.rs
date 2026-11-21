@@ -10,6 +10,8 @@ use web_sys::HtmlCanvasElement;
 
 use leptos::prelude::*;
 
+use fpmedia_web::FrameId;
+
 use crate::ReadyFrameKind;
 use crate::ReadyFrameMark;
 use crate::VideoPlaylistRef;
@@ -132,7 +134,7 @@ impl TimelineRef {
         let changed = match self.inner {
             TimelineInner::Video(v) => {
                 let mut led = h.borrow_mut();
-                note_covered_from_video_ref(&mut led, &v, |local| Some(u64::from(local)))
+                note_covered_from_video_ref(&mut led, &v, Some)
             }
             TimelineInner::Playlist(p) => {
                 let model = p.model.get_untracked();
@@ -141,16 +143,12 @@ impl TimelineRef {
                 let live_clip = p.live_clip.get_untracked();
                 let live = p.live_video();
                 changed |= note_covered_from_video_ref(&mut led, &live, |local| {
-                    model
-                        .global_frame_at(PlaylistPos::new(live_clip, local))
-                        .map(u64::from)
+                    model.global_frame_at(PlaylistPos::new(live_clip, local))
                 });
                 if let Some(idle_idx) = p.idle_clip.get_untracked() {
                     let idle = p.idle_video();
                     changed |= note_covered_from_video_ref(&mut led, &idle, |local| {
-                        model
-                            .global_frame_at(PlaylistPos::new(idle_idx, local))
-                            .map(u64::from)
+                        model.global_frame_at(PlaylistPos::new(idle_idx, local))
                     });
                 }
                 changed
@@ -172,7 +170,7 @@ impl TimelineRef {
         let changed = match self.inner {
             TimelineInner::Video(v) => {
                 let mut led = h.borrow_mut();
-                note_fetch_from_video_ref(&mut led, &v, |local| Some(u64::from(local)))
+                note_fetch_from_video_ref(&mut led, &v, Some)
             }
             TimelineInner::Playlist(p) => {
                 let model = p.model.get_untracked();
@@ -181,16 +179,12 @@ impl TimelineRef {
                 let live_clip = p.live_clip.get_untracked();
                 let live = p.live_video();
                 changed |= note_fetch_from_video_ref(&mut led, &live, |local| {
-                    model
-                        .global_frame_at(PlaylistPos::new(live_clip, local))
-                        .map(u64::from)
+                    model.global_frame_at(PlaylistPos::new(live_clip, local))
                 });
                 if let Some(idle_idx) = p.idle_clip.get_untracked() {
                     let idle = p.idle_video();
                     changed |= note_fetch_from_video_ref(&mut led, &idle, |local| {
-                        model
-                            .global_frame_at(PlaylistPos::new(idle_idx, local))
-                            .map(u64::from)
+                        model.global_frame_at(PlaylistPos::new(idle_idx, local))
                     });
                 }
                 changed
@@ -217,7 +211,7 @@ impl TimelineRef {
     }
 
     /// Fetch gray runs from VT ledger (global FrameIds). Survives clip leave.
-    pub fn strip_fetch_marks(self) -> Vec<(u64, u64)> {
+    pub fn strip_fetch_marks(self) -> Vec<(FrameId, FrameId)> {
         let Some(h) = self.exact_ledger() else {
             return Vec::new();
         };
@@ -243,12 +237,8 @@ impl TimelineRef {
                         .iter()
                         .filter(|m| m.kind != ReadyFrameKind::Covered)
                         .filter_map(|m| {
-                            let lo_f = u32::try_from(m.frame).ok()?;
-                            let hi_f = u32::try_from(m.end).ok()?;
-                            let lo =
-                                u64::from(model.global_frame_at(PlaylistPos::new(clip, lo_f))?);
-                            let hi =
-                                u64::from(model.global_frame_at(PlaylistPos::new(clip, hi_f))?);
+                            let lo = model.global_frame_at(PlaylistPos::new(clip, m.frame))?;
+                            let hi = model.global_frame_at(PlaylistPos::new(clip, m.end))?;
                             Some(ReadyFrameMark::run(lo, hi, m.kind))
                         })
                         .collect()
@@ -291,7 +281,7 @@ impl TimelineRef {
 
     /// Diagnostic: remap local playable runs → timeline units (live clip only).
     /// Strip paint uses [`Self::strip_fetch_marks`] (VT sole). **no equivalent**.
-    pub fn strip_fetch_playable_runs(self, runs: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    pub fn strip_fetch_playable_runs(self, runs: &[(FrameId, FrameId)]) -> Vec<(FrameId, FrameId)> {
         match self.inner {
             TimelineInner::Video(_) => runs.to_vec(),
             TimelineInner::Playlist(p) => {
@@ -299,12 +289,8 @@ impl TimelineRef {
                 let model = p.model.get();
                 runs.iter()
                     .filter_map(|&(lo, hi)| {
-                        let lo_f = u32::try_from(lo).ok()?;
-                        let hi_f = u32::try_from(hi).ok()?;
-                        let glo =
-                            u64::from(model.global_frame_at(PlaylistPos::new(live_clip, lo_f))?);
-                        let ghi =
-                            u64::from(model.global_frame_at(PlaylistPos::new(live_clip, hi_f))?);
+                        let glo = model.global_frame_at(PlaylistPos::new(live_clip, lo))?;
+                        let ghi = model.global_frame_at(PlaylistPos::new(live_clip, hi))?;
                         Some((glo, ghi))
                     })
                     .collect()

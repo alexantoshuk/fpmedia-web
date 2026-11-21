@@ -79,7 +79,7 @@ struct Inner {
     decoder: RefCell<Option<WebCodecsDecoder>>,
     track: Rc<Mp4VideoTrack>,
     start_us: i64,
-    index_lead: u64,
+    index_lead: FrameId,
     pts_to_id: RefCell<PtsToFrameIds>,
     terminated: Cell<bool>,
     /// Pump fed every packet and flushed (or failed) — no further outputs.
@@ -109,7 +109,7 @@ impl PlayIter {
         decoder: WebCodecsDecoder,
         track: Rc<Mp4VideoTrack>,
         start: FrameId,
-        index_lead: u64,
+        index_lead: FrameId,
     ) -> Self {
         let start_us = track
             .index()

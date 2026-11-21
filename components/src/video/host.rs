@@ -8,7 +8,7 @@
 use std::rc::Rc;
 
 use fpmedia_web::{
-    BlobSource, MediaSource, OpenPhase, OpenSourceKind, ScrubCachePolicy, ThumbPolicy,
+    BlobSource, FrameId, MediaSource, OpenPhase, OpenSourceKind, ScrubCachePolicy, ThumbPolicy,
     TransportEvent, TransportState,
 };
 use leptos::html::Canvas;
@@ -208,7 +208,7 @@ impl VideoHost {
         (self.dwell_stop)();
         let hit = self
             .ctx
-            .with_player(|p| p.try_present_scrub_exact(u64::from(frame)))
+            .with_player(|p| p.try_present_scrub_exact(frame))
             .unwrap_or(false);
         if hit {
             return;
@@ -223,7 +223,7 @@ impl VideoHost {
         (self.dwell_stop)();
         let has = self
             .ctx
-            .with_player(|p| p.has_scrub_exact_blit(u64::from(target)))
+            .with_player(|p| p.has_scrub_exact_blit(target))
             .unwrap_or(false);
         if !has {
             (self.dwell_start)();
@@ -244,7 +244,7 @@ impl VideoHost {
     pub(crate) fn set_loop_zone(&self, in_frame: u32, out_frame: u32) {
         let ctx = &self.ctx;
         let video = ctx.video;
-        ctx.with_player(|p| p.set_loop_zone(u64::from(in_frame), u64::from(out_frame)));
+        ctx.with_player(|p| p.set_loop_zone(in_frame, out_frame));
         let zone = store_zone(video.frame_count.get_untracked(), in_frame, out_frame);
         video.loop_in.set(zone.in_frame);
         video.loop_out.set(zone.loop_out);
@@ -284,9 +284,7 @@ impl VideoHost {
             return;
         };
         spawn_local(async move {
-            let _ = p
-                .paint_hover_thumb(u64::from(frame), &dest, max_w, max_h)
-                .await;
+            let _ = p.paint_hover_thumb(frame, &dest, max_w, max_h).await;
         });
     }
 
@@ -299,7 +297,7 @@ impl VideoHost {
     ) -> bool {
         self.ctx
             .with_player(|p| {
-                let aim = u64::from(frame);
+                let aim = frame;
                 match p.try_paint_hover_thumb_cached(aim, &dest, max_w, max_h) {
                     // Exact frame hit → skip defer. Key/far interim still
                     // paints, but return false so host defers Exact refine
@@ -342,19 +340,19 @@ impl VideoHost {
 
     pub(crate) fn has_scrub_exact_blit(&self, frame: u32) -> bool {
         self.ctx
-            .with_player(|p| p.has_scrub_exact_blit(u64::from(frame)))
+            .with_player(|p| p.has_scrub_exact_blit(frame))
             .unwrap_or(false)
     }
 
     pub(crate) fn try_present_scrub_exact(&self, frame: u32) -> bool {
         self.ctx
-            .with_player(|p| p.try_present_scrub_exact(u64::from(frame)))
+            .with_player(|p| p.try_present_scrub_exact(frame))
             .unwrap_or(false)
     }
 
     pub(crate) fn arm_scrub_densify_after_exact(&self, frame: u32) {
         self.ctx
-            .with_player(|p| p.arm_scrub_densify_after_exact(u64::from(frame)));
+            .with_player(|p| p.arm_scrub_densify_after_exact(frame));
     }
 
     pub(crate) fn clear_densify_hold(&self) {
@@ -363,39 +361,29 @@ impl VideoHost {
 
     pub(crate) fn present_image_bitmap(&self, frame: u32, bitmap: &ImageBitmap) -> bool {
         self.ctx
-            .with_player(|p| p.present_image_bitmap(u64::from(frame), bitmap).is_ok())
+            .with_player(|p| p.present_image_bitmap(frame, bitmap).is_ok())
             .unwrap_or(false)
     }
 
     pub(crate) fn take_scrub_exact_blit(&self, frame: u32) -> Option<ImageBitmap> {
         self.ctx
-            .with_player(|p| p.take_scrub_exact_blit(u64::from(frame)))
+            .with_player(|p| p.take_scrub_exact_blit(frame))
             .flatten()
     }
 
     pub(crate) fn scrub_exact_frame_ids(&self) -> Vec<u32> {
         self.ctx
-            .with_player(|p| {
-                p.scrub_exact_frame_ids()
-                    .into_iter()
-                    .filter_map(|id| u32::try_from(id).ok())
-                    .collect::<Vec<_>>()
-            })
+            .with_player(|p| p.scrub_exact_frame_ids().into_iter().collect::<Vec<_>>())
             .unwrap_or_default()
     }
 
     pub(crate) fn scrub_covered_frame_ids(&self) -> Vec<u32> {
         self.ctx
-            .with_player(|p| {
-                p.scrub_covered_frame_ids()
-                    .into_iter()
-                    .filter_map(|id| u32::try_from(id).ok())
-                    .collect::<Vec<_>>()
-            })
+            .with_player(|p| p.scrub_covered_frame_ids().into_iter().collect::<Vec<_>>())
             .unwrap_or_default()
     }
 
-    pub(crate) fn scrub_fetch_playable_runs(&self) -> Vec<(u64, u64)> {
+    pub(crate) fn scrub_fetch_playable_runs(&self) -> Vec<(FrameId, FrameId)> {
         self.ctx
             .with_player(|p| p.scrub_fetch_playable_runs())
             .unwrap_or_default()
@@ -403,7 +391,7 @@ impl VideoHost {
 
     pub(crate) fn clone_scrub_exact_blit(&self, frame: u32) -> Option<ImageBitmap> {
         self.ctx
-            .with_player(|p| p.clone_scrub_exact_blit(u64::from(frame)))
+            .with_player(|p| p.clone_scrub_exact_blit(frame))
             .flatten()
     }
 
@@ -423,12 +411,7 @@ impl VideoHost {
 
     pub(crate) fn sync_frame_ids(&self) -> Vec<u32> {
         self.ctx
-            .with_player(|p| {
-                p.sync_frame_ids()
-                    .into_iter()
-                    .filter_map(|id| u32::try_from(id).ok())
-                    .collect::<Vec<_>>()
-            })
+            .with_player(|p| p.sync_frame_ids().into_iter().collect::<Vec<_>>())
             .unwrap_or_default()
     }
 
@@ -440,7 +423,7 @@ impl VideoHost {
 
     pub(crate) fn thumb_has_key(&self, key: u32) -> bool {
         self.ctx
-            .with_player(|p| p.thumb_has_key(u64::from(key)))
+            .with_player(|p| p.thumb_has_key(key))
             .unwrap_or(false)
     }
 
@@ -451,23 +434,19 @@ impl VideoHost {
         max_h: u32,
     ) -> Option<ImageBitmap> {
         self.ctx
-            .with_player(|p| p.clone_thumb_bitmap(u64::from(key), max_w, max_h))
+            .with_player(|p| p.clone_thumb_bitmap(key, max_w, max_h))
             .flatten()
     }
 
     pub(crate) fn queue_vt_densify_target(&self, frame: u32) {
-        self.ctx
-            .with_player(|p| p.queue_vt_densify_target(u64::from(frame)));
+        self.ctx.with_player(|p| p.queue_vt_densify_target(frame));
     }
 
     pub(crate) fn set_vt_exact_residents(&self, locals: &[u32]) {
-        self.ctx.with_player(|p| {
-            let ids: Vec<u64> = locals.iter().copied().map(u64::from).collect();
-            p.set_vt_exact_residents(&ids);
-        });
+        self.ctx.with_player(|p| p.set_vt_exact_residents(locals));
     }
 
-    pub(crate) fn scrub_plan_margins(&self) -> (u64, u64) {
+    pub(crate) fn scrub_plan_margins(&self) -> (FrameId, FrameId) {
         self.ctx
             .with_player(|p| p.scrub_plan_margins())
             .unwrap_or((12, 6))
@@ -479,12 +458,7 @@ impl VideoHost {
 
     pub(crate) fn vt_densify_banned_locals(&self) -> Vec<u32> {
         self.ctx
-            .with_player(|p| {
-                p.vt_densify_banned_locals()
-                    .into_iter()
-                    .filter_map(|id| u32::try_from(id).ok())
-                    .collect::<Vec<_>>()
-            })
+            .with_player(|p| p.vt_densify_banned_locals().into_iter().collect::<Vec<_>>())
             .unwrap_or_default()
     }
 
@@ -500,7 +474,7 @@ impl VideoHost {
         let Some(p) = self.ctx.player.borrow().as_ref().cloned() else {
             return;
         };
-        p.fill_thumb_key_at(u64::from(key)).await;
+        p.fill_thumb_key_at(key).await;
     }
 
     pub(crate) async fn warm_play_origin(&self) {
@@ -516,7 +490,7 @@ impl VideoHost {
         let Some(p) = self.ctx.player.borrow().as_ref().cloned() else {
             return Err("no player".into());
         };
-        p.prepare_playlist_seam_at(u64::from(frame))
+        p.prepare_playlist_seam_at(frame)
             .await
             .map_err(|e| e.to_string())
     }
@@ -525,7 +499,7 @@ impl VideoHost {
         let Some(p) = self.ctx.player.borrow().as_ref().cloned() else {
             return Err("no player".into());
         };
-        p.arm_playlist_seam_hold_at(u64::from(frame))
+        p.arm_playlist_seam_hold_at(frame)
             .await
             .map_err(|e| e.to_string())
     }

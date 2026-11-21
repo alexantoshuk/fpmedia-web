@@ -137,7 +137,7 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &KickDrain, cmd: TransportCmd) {
                     // Same as HardPause `stop_playback`: UI playhead lags ~100ms
                     // during play. Without this snap, PlayPrime seeks Exact on
                     // the stale aim and the soft-hold warm resume is wasted.
-                    let eng = p.state().frame.min(u64::from(u32::MAX)) as u32;
+                    let eng = p.state().frame;
                     if playhead.get_untracked() != eng {
                         web_sys::console::log_1(
                             &format!(
@@ -221,7 +221,7 @@ fn enqueue_scrub_drag(ctx: &HostCtx, kick_drain: &KickDrain, frame: u32) {
     // Densify off via `note_scrub_frame` — do **not** `cancel_ops` here: that
     // aborted in-flight main-HW key preview every ~50 ms. Settle / dwell still
     // `prepare_scrub_settle`. **no equivalent** (scrub local).
-    p.note_scrub_frame(u64::from(frame));
+    p.note_scrub_frame(frame);
     if ctx.queue.enqueue(HostOp::ScrubDrag(frame)) {
         kick_drain();
     }
@@ -237,7 +237,7 @@ fn enqueue_scrub_release(
     let Some(p) = leave_play_for_scrub(ctx) else {
         return;
     };
-    p.prepare_scrub_settle(u64::from(frame));
+    p.prepare_scrub_settle(frame);
     if ctx.queue.enqueue(HostOp::ScrubRelease {
         frame,
         then_play,
@@ -258,13 +258,13 @@ pub(super) fn enqueue_scrub_dwell_exact(ctx: &HostCtx, kick_drain: &KickDrain, f
     let Some(p) = leave_play_for_scrub(ctx) else {
         return;
     };
-    if p.try_present_scrub_exact(u64::from(frame)) {
+    if p.try_present_scrub_exact(frame) {
         // Already Exact under finger — skip settle churn; allow densify while still.
-        p.arm_scrub_densify_after_exact(u64::from(frame));
+        p.arm_scrub_densify_after_exact(frame);
         ctx.sync_ui();
         return;
     }
-    p.prepare_scrub_settle(u64::from(frame));
+    p.prepare_scrub_settle(frame);
     if ctx.queue.enqueue(HostOp::ScrubDwellExact(frame)) {
         kick_drain();
     }

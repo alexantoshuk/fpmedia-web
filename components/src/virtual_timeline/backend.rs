@@ -9,6 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use fpmedia_web::FrameId;
 use web_sys::ImageBitmap;
 
 use super::ExactLedger;
@@ -24,8 +25,8 @@ pub fn new_ledger_handle() -> LedgerHandle {
 /// Note slot Covered locals into the ledger (global FrameIds). Returns if any new.
 pub fn note_covered_from_locals(
     ledger: &mut TimelineExactLedger,
-    covered_local_ids: impl IntoIterator<Item = u64>,
-    local_to_global: impl Fn(u64) -> Option<u64>,
+    covered_local_ids: impl IntoIterator<Item = FrameId>,
+    local_to_global: impl Fn(FrameId) -> Option<FrameId>,
 ) -> bool {
     let mut changed = false;
     for local in covered_local_ids {
@@ -45,19 +46,17 @@ pub fn note_covered_from_locals(
 pub fn note_covered_from_video_ref(
     ledger: &mut TimelineExactLedger,
     video: &crate::VideoRef,
-    local_to_global: impl Fn(u32) -> Option<u64>,
+    local_to_global: impl Fn(FrameId) -> Option<FrameId>,
 ) -> bool {
     let ids = video.scrub_covered_frame_ids();
-    note_covered_from_locals(ledger, ids.into_iter().map(u64::from), |local| {
-        u32::try_from(local).ok().and_then(&local_to_global)
-    })
+    note_covered_from_locals(ledger, ids, local_to_global)
 }
 
 /// Note slot playable Fetch runs into the ledger (global FrameIds). Returns if union grew.
 pub fn note_fetch_from_locals(
     ledger: &mut TimelineExactLedger,
-    local_runs: impl IntoIterator<Item = (u64, u64)>,
-    local_to_global: impl Fn(u64) -> Option<u64>,
+    local_runs: impl IntoIterator<Item = (FrameId, FrameId)>,
+    local_to_global: impl Fn(FrameId) -> Option<FrameId>,
 ) -> bool {
     let mut changed = false;
     for (lo, hi) in local_runs {
@@ -76,10 +75,8 @@ pub fn note_fetch_from_locals(
 pub fn note_fetch_from_video_ref(
     ledger: &mut TimelineExactLedger,
     video: &crate::VideoRef,
-    local_to_global: impl Fn(u32) -> Option<u64>,
+    local_to_global: impl Fn(FrameId) -> Option<FrameId>,
 ) -> bool {
     let runs = video.scrub_fetch_playable_runs();
-    note_fetch_from_locals(ledger, runs, |local| {
-        u32::try_from(local).ok().and_then(&local_to_global)
-    })
+    note_fetch_from_locals(ledger, runs, local_to_global)
 }

@@ -84,8 +84,8 @@ impl LoopZone {
 pub fn eof_timeline_end(
     sample_end: f64,
     provisional_duration: f64,
-    indexed_len: u64,
-    frame_count: u64,
+    indexed_len: FrameId,
+    frame_count: FrameId,
 ) -> f64 {
     if indexed_len < frame_count {
         sample_end.max(provisional_duration)

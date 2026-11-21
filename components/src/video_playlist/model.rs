@@ -18,9 +18,8 @@ pub struct PlaylistClip {
 
 impl PlaylistClip {
     pub fn from_meta(meta: &VideoMetadata) -> Self {
-        let frame_count = u32::try_from(meta.frame_count).unwrap_or(u32::MAX);
         Self {
-            frame_count,
+            frame_count: meta.frame_count,
             duration_secs: meta.duration().seconds.max(0.0),
             fps: meta.fps,
         }

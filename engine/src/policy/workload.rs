@@ -16,6 +16,7 @@
 use std::fmt;
 
 use crate::model::engine_mode::EngineMode;
+use crate::types::FrameId;
 
 /// Background-work priority band (highest first for *yielding* bg work).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,15 +121,15 @@ pub const PLAY_THUMB_AIM_DECODE_MIN_MS: f64 = 800.0;
 /// so scrub/pause can breathe.
 pub fn fragment_backfill_should_idle_yield(
     mode: WorkloadMode,
-    ahead: u64,
+    ahead: FrameId,
     urgent: bool,
-    min_ahead: u64,
+    min_ahead: FrameId,
 ) -> bool {
     !(urgent || matches!(mode, WorkloadMode::Play) || ahead < min_ahead)
 }
 
 /// Default index lead before fragment backfill idle-yields (frames).
-pub const FRAGMENT_BACKFILL_IDLE_AHEAD: u64 = 240;
+pub const FRAGMENT_BACKFILL_IDLE_AHEAD: FrameId = 240;
 
 #[cfg(test)]
 mod tests {

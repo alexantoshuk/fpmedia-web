@@ -61,7 +61,7 @@ fn on_play_tick(ctx: &HostCtx, p: &Rc<VideoPlayer>, last_play_ui_ms: &Cell<f64>)
             // Publish frame/playhead every present — playlist LoopZone
             // wall must not wait SYNC_UI_MS (~100ms) or EOF seams first.
             let st = p.state();
-            let engine = st.frame.min(u64::from(u32::MAX)) as u32;
+            let engine = st.frame;
             frame.set(engine);
             playhead.set(engine);
             timestamp.set(st.timestamp.seconds);

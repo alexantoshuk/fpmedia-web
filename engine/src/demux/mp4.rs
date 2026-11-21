@@ -26,7 +26,7 @@ use crate::util::block_on;
 const PREFETCH_TILE_BYTES: u64 = (crate::source::GATE_LARGE_BYTES as u64) / 2;
 const PREFETCH_MAX_TILES: usize = 12;
 /// Nearby-frame seam warm: look this many presentation frames ahead.
-const SEAM_LOOKAHEAD_FRAMES: u64 = 32;
+const SEAM_LOOKAHEAD_FRAMES: FrameId = 32;
 const SEAM_PREFETCH_TILE_BYTES: usize = 1024 * 1024;
 /// PlayPrime / warm-ahead sample fill (`mediabunny: URLSource` min-load).
 const WARM_SAMPLE_TILE_BYTES: usize = 512 * 1024;
@@ -120,7 +120,7 @@ impl Mp4VideoTrack {
         self.index.borrow()
     }
 
-    pub fn frame_count(&self) -> u64 {
+    pub fn frame_count(&self) -> FrameId {
         self.metadata.borrow().frame_count
     }
 
@@ -148,8 +148,8 @@ impl Mp4VideoTrack {
     }
 
     /// How many frames are currently in the index (may be &lt; [`Self::frame_count`] while backfilling).
-    pub fn indexed_frame_count(&self) -> u64 {
-        self.index.borrow().len() as u64
+    pub fn indexed_frame_count(&self) -> FrameId {
+        self.index.borrow().frame_len()
     }
 
     /// True when fMP4 fragment tables are fully loaded (or file was never fragmented).
@@ -249,7 +249,7 @@ impl Mp4VideoTrack {
             // early bytes and left the next `mdat` cold.
             // mediabunny: ReadOrchestrator hole extend (gap) without cross-moof pack.
             crate::demux::coalesce::coalesce_sample_spans(
-                (from..to).filter_map(|i| index.get(i as u64).map(|e| (e.offset, e.size))),
+                (from..to).filter_map(|i| index.get(i as FrameId).map(|e| (e.offset, e.size))),
                 crate::demux::coalesce::SAMPLE_COALESCE_GAP,
             )
         };
@@ -281,7 +281,7 @@ impl Mp4VideoTrack {
             return;
         };
         let mut end = cur.offset.saturating_add(cur.size);
-        let last = (frame.saturating_add(SEAM_LOOKAHEAD_FRAMES)).min(index.len() as u64);
+        let last = (frame.saturating_add(SEAM_LOOKAHEAD_FRAMES)).min(index.frame_len());
         for f in frame.saturating_add(1)..last {
             let Some(n) = index.get(f) else {
                 break;
@@ -296,8 +296,8 @@ impl Mp4VideoTrack {
 
     /// Prefetch sample bytes from `from` through the lesser of indexed end /
     /// `from + lead` (Play entry / warm-ahead).
-    pub fn prefetch_samples_ahead(&self, from: FrameId, lead: u64) {
-        let indexed = self.index.borrow().len() as u64;
+    pub fn prefetch_samples_ahead(&self, from: FrameId, lead: FrameId) {
+        let indexed = self.index.borrow().frame_len();
         let to = indexed.min(from.saturating_add(lead)) as usize;
         self.kick_prefetch_samples(from as usize, to);
     }
@@ -306,8 +306,8 @@ impl Mp4VideoTrack {
     /// cache (or EOF). Used by PlayPrime so quick Play does not stall on the
     /// first cold `mdat` inside the warm index (`mediabunny: URLSource` min-load
     /// / worker fill before the sink runs dry).
-    pub async fn warm_sample_bytes(&self, from: FrameId, lead: u64) -> Result<(), MediaError> {
-        let indexed = self.index.borrow().len() as u64;
+    pub async fn warm_sample_bytes(&self, from: FrameId, lead: FrameId) -> Result<(), MediaError> {
+        let indexed = self.index.borrow().frame_len();
         let to = indexed.min(from.saturating_add(lead)) as usize;
         let from = from as usize;
         if from >= to {
@@ -316,7 +316,7 @@ impl Mp4VideoTrack {
         let spans = {
             let index = self.index.borrow();
             crate::demux::coalesce::coalesce_sample_spans(
-                (from..to).filter_map(|i| index.get(i as u64).map(|e| (e.offset, e.size))),
+                (from..to).filter_map(|i| index.get(i as FrameId).map(|e| (e.offset, e.size))),
                 crate::demux::coalesce::SAMPLE_COALESCE_GAP,
             )
         };
@@ -357,7 +357,7 @@ impl Mp4VideoTrack {
         let Some(need) = state.urgent_through else {
             return false;
         };
-        !state.complete && (self.index.borrow().len() as u64) <= need
+        !state.complete && (self.index.borrow().frame_len()) <= need
     }
 
     /// Scrubber length before remaining moofs load (`mediabunny: tfra` lookup times).
@@ -374,7 +374,9 @@ impl Mp4VideoTrack {
         let warm_dur = meta.duration_ticks;
 
         // Uniform fragment density (this plate: 120×GOP12 → exact 1440).
-        meta.frame_count = warm_frames.saturating_mul(total_moofs) / warm_moofs;
+        meta.frame_count =
+            FrameId::try_from(u64::from(warm_frames).saturating_mul(total_moofs) / warm_moofs)
+                .unwrap_or(FrameId::MAX);
 
         // Prefer last video `tfra` time + one warm-moof span (last entry is fragment
         // start, not EOF). Else scale warm duration by moof count.
@@ -436,7 +438,7 @@ impl Mp4VideoTrack {
             if state.complete {
                 return Ok((false, None));
             }
-            let indexed = self.index.borrow().len() as u64;
+            let indexed = self.index.borrow().frame_len();
             let urgent = state.urgent_through.is_some_and(|need| indexed <= need);
             // Play blocked past warm index (~frame 120 after first ×8 chunk): smaller
             // batches cross the playhead sooner (mediabunny: on-demand readFragment).
@@ -483,7 +485,7 @@ impl Mp4VideoTrack {
                 if complete {
                     let (fc, gop, duration_ticks, timescale) = {
                         let indexed = self.index.borrow();
-                        let fc = indexed.len() as u64;
+                        let fc = indexed.frame_len();
                         let gop = indexed.gop_profile();
                         let (duration_ticks, timescale) = indexed
                             .get(fc.saturating_sub(1))
@@ -511,7 +513,7 @@ impl Mp4VideoTrack {
                     state.complete = complete;
                     state.error = None;
                     if let Some(need) = state.urgent_through
-                        && (self.index.borrow().len() as u64) > need
+                        && (self.index.borrow().frame_len()) > need
                     {
                         state.urgent_through = None;
                     }
@@ -1003,7 +1005,7 @@ fn wrap_cached_playback(
 /// short (~warm moofs). Same lead as [`crate::SettlePolicy::play_index_lead`] /
 /// [`SETTLE_PLAY_INDEX_LEAD`].
 /// `mediabunny: src/source.ts` UrlSource min-load / worker fill — not whole-file before play.
-const OPEN_WARM_SAMPLE_LEAD: u64 = SETTLE_PLAY_INDEX_LEAD;
+const OPEN_WARM_SAMPLE_LEAD: FrameId = SETTLE_PLAY_INDEX_LEAD;
 
 /// Warm a short lead of video (+ audio) sample bytes, then return — rest of gray
 /// fills in the background via prefetch / play / scrub.
@@ -1158,7 +1160,7 @@ fn build_video_track(
     }
 
     let index = FrameIndex::from_entries(entries);
-    let frame_count = index.len() as u64;
+    let frame_count = index.frame_len();
     let gop_profile = index.gop_profile();
 
     let mut metadata = VideoMetadata {

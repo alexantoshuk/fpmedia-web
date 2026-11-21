@@ -5,8 +5,11 @@ use crate::policy::{
     GopProfile, PlayPolicy, ResolutionClass, ScrubPolicy, SettlePolicy, scrub_cache_frame_budget,
 };
 
-/// Zero-based presentation frame index.
-pub type FrameId = u64;
+/// Zero-based presentation frame index (`u32`: ~4.29 G frames ≈ 2 years @ 60 fps).
+///
+/// The one frame-axis width across engine, components and demo. Byte offsets,
+/// PTS and epochs stay `u64` / `i64`. `architecture.md` § Ownership & types.
+pub type FrameId = u32;
 
 /// Merge sorted unique frame ids into inclusive `[lo, hi]` runs.
 ///
@@ -78,7 +81,7 @@ pub struct VideoMetadata {
     pub timescale: u64,
     /// Track duration in timescale ticks.
     pub duration_ticks: u64,
-    pub frame_count: u64,
+    pub frame_count: FrameId,
     /// Average fps from duration/frame_count when available.
     /// Demux fills via [`Self::ensure_fps`] whenever ticks allow; `None` only if
     /// duration or frame_count is missing (unusable clip).
@@ -97,7 +100,7 @@ impl VideoMetadata {
     }
 
     /// Average fps from presentation length: `frame_count * timescale / duration_ticks`.
-    pub fn average_fps(frame_count: u64, timescale: u64, duration_ticks: u64) -> Option<f64> {
+    pub fn average_fps(frame_count: FrameId, timescale: u64, duration_ticks: u64) -> Option<f64> {
         if duration_ticks > 0 && frame_count > 0 && timescale > 0 {
             Some(frame_count as f64 * timescale as f64 / duration_ticks as f64)
         } else {
@@ -163,7 +166,7 @@ impl VideoMetadata {
     ///
     /// Hot path: `origin_frames + frame_id` then format — same math as
     /// [`fpmedia_timecode::Timecode::from_start`], without rebuilding the start value.
-    pub fn timecode_at(&self, frame_id: u64) -> Option<fpmedia_timecode::Timecode> {
+    pub fn timecode_at(&self, frame_id: FrameId) -> Option<fpmedia_timecode::Timecode> {
         let rate = self.timecode_rate()?;
         let abs = self
             .timecode_origin_frames()
@@ -263,9 +266,9 @@ mod tests {
     #[test]
     fn coalesce_frame_runs_merges_contiguous() {
         assert!(coalesce_frame_runs([] as [FrameId; 0]).is_empty());
-        assert_eq!(coalesce_frame_runs([3u64]), vec![(3, 3)]);
+        assert_eq!(coalesce_frame_runs([3u32]), vec![(3, 3)]);
         assert_eq!(
-            coalesce_frame_runs([0u64, 1, 2, 5, 6, 10]),
+            coalesce_frame_runs([0u32, 1, 2, 5, 6, 10]),
             vec![(0, 2), (5, 6), (10, 10)]
         );
     }

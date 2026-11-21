@@ -37,7 +37,7 @@ pub fn format_playlist_frames(pos: PlaylistPos, frame_count: u32) -> String {
 
 /// Timecode readout: `[1] 00:00:01:23 / 00:00:11:25` (current clip only).
 pub fn format_playlist_timecode(pos: PlaylistPos, meta: &VideoMetadata) -> String {
-    let last = last_frame_id(u32::try_from(meta.frame_count).unwrap_or(u32::MAX));
+    let last = last_frame_id(meta.frame_count);
     let now = format_timecode_at_loose(meta, pos.local_frame);
     let end = format_timecode_at_loose(meta, last);
     format!("[{}] {now} / {end}", pos.display_index())
@@ -105,14 +105,14 @@ pub fn parse_playlist_goto(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fpmedia_web::{CodecConfig, GopProfile, VideoCodec, VideoMetadata};
+    use fpmedia_web::{CodecConfig, FrameId, GopProfile, VideoCodec, VideoMetadata};
 
-    fn meta_24fps(frames: u64) -> VideoMetadata {
+    fn meta_24fps(frames: FrameId) -> VideoMetadata {
         VideoMetadata {
             width: 1920,
             height: 1080,
             timescale: 24,
-            duration_ticks: frames,
+            duration_ticks: u64::from(frames),
             frame_count: frames,
             fps: Some(24.0),
             codec: CodecConfig {

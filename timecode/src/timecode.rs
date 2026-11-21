@@ -44,12 +44,12 @@ impl Timecode {
     }
 
     /// Timecode for presentation `frame_id` counting from zero.
-    pub const fn from_zero(frame_id: u64, rate: FrameRate) -> Self {
+    pub const fn from_zero(frame_id: u32, rate: FrameRate) -> Self {
         Self::from_frames(frame_id as i64, rate)
     }
 
     /// Timecode for presentation `frame_id` relative to an embedded start.
-    pub fn from_start(frame_id: u64, start: Self) -> Self {
+    pub fn from_start(frame_id: u32, start: Self) -> Self {
         Self {
             total_frames: start.total_frames + frame_id as i64,
             rate: start.rate,
@@ -57,15 +57,15 @@ impl Timecode {
     }
 
     /// Presentation frame index from zero for this timecode.
-    pub fn to_zero_frame(&self) -> Result<u64, TimecodeError> {
+    pub fn to_zero_frame(&self) -> Result<u32, TimecodeError> {
         if self.total_frames < 0 {
             return Err(TimecodeError::NegativeFrame);
         }
-        Ok(self.total_frames as u64)
+        u32::try_from(self.total_frames).map_err(|_| TimecodeError::FrameOverflow)
     }
 
     /// Presentation frame index relative to `start` (same rate required).
-    pub fn to_frame_from_start(&self, start: Self) -> Result<u64, TimecodeError> {
+    pub fn to_frame_from_start(&self, start: Self) -> Result<u32, TimecodeError> {
         if self.rate != start.rate {
             return Err(TimecodeError::MismatchedRates);
         }
@@ -73,7 +73,7 @@ impl Timecode {
         if delta < 0 {
             return Err(TimecodeError::NegativeFrame);
         }
-        Ok(delta as u64)
+        u32::try_from(delta).map_err(|_| TimecodeError::FrameOverflow)
     }
 
     pub const fn total_frames(&self) -> i64 {

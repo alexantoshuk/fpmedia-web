@@ -32,7 +32,7 @@ pub(crate) fn refresh_thumb_sync_keys(pl: VideoPlaylistRef) {
     if live.ready.get_untracked() {
         let keys = live.sync_frame_ids();
         if !keys.is_empty() {
-            cache.insert(live_clip, keys.into_iter().map(u64::from).collect());
+            cache.insert(live_clip, keys);
         }
     }
     if let Some(idle_idx) = pl.idle_clip.get_untracked() {
@@ -40,7 +40,7 @@ pub(crate) fn refresh_thumb_sync_keys(pl: VideoPlaylistRef) {
         if idle.ready.get_untracked() {
             let keys = idle.sync_frame_ids();
             if !keys.is_empty() {
-                cache.insert(idle_idx, keys.into_iter().map(u64::from).collect());
+                cache.insert(idle_idx, keys);
             }
         }
     }
@@ -116,7 +116,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
             return;
         }
 
-        let mut open_per_clip: Vec<(u32, Vec<u64>)> = Vec::with_capacity(key_cache.len());
+        let mut open_per_clip: Vec<(u32, Vec<FrameId>)> = Vec::with_capacity(key_cache.len());
         for (clip, keys) in &key_cache {
             open_per_clip.push((*clip, keys.clone()));
         }
@@ -128,7 +128,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
 
         let max_thumbs = cache_h.borrow().max_thumbs();
         let skip = pl.thumb_fill_skip.get_value();
-        let ready = |g: u64| skip.contains(&g) || cache_h.borrow().has_any(g);
+        let ready = |g: FrameId| skip.contains(&g) || cache_h.borrow().has_any(g);
 
         let input = ThumbFillPlanInput {
             global_sync_keys: &global_keys,
@@ -308,7 +308,7 @@ pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u3
     let Some(prod_h) = pl.thumb_producer.get_value() else {
         return;
     };
-    if cache_h.borrow().has_any(u64::from(global_frame)) {
+    if cache_h.borrow().has_any(global_frame) {
         return;
     }
     pl.thumb_fill_inflight.set_value(true);

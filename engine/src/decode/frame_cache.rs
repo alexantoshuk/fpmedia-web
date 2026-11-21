@@ -52,7 +52,7 @@ impl ScrubBlitLru {
     /// when Exact near-gap is None (soft-drag holes kept the idle gate from firing).
     /// Not on drag `set_playhead`. Local (`mediabunny:` aim-sized pool).
     pub fn evict_far_from_aim_when_idle(&mut self) {
-        let radius = self.window.max() as u64;
+        let radius = self.window.max() as FrameId;
         for (_, bmp) in self.window.take_farther_than(radius) {
             bmp.close();
         }
@@ -101,8 +101,8 @@ impl ScrubBlitLru {
         playhead: FrameId,
         last: FrameId,
         dir: i8,
-        margin_left: u64,
-        margin_right: u64,
+        margin_left: FrameId,
+        margin_right: FrameId,
     ) -> Option<FrameId> {
         self.window
             .capped_next_gap(playhead, last, dir, margin_left, margin_right)
@@ -310,8 +310,8 @@ impl ThumbCache {
         height: u32,
         dir: i8,
     ) -> Option<(FrameId, FrameId)> {
-        let mut floor: Option<(FrameId, FrameId, u64)> = None;
-        let mut ceil: Option<(FrameId, FrameId, u64)> = None;
+        let mut floor: Option<(FrameId, FrameId, FrameId)> = None;
+        let mut ceil: Option<(FrameId, FrameId, FrameId)> = None;
         for (&key, gop) in &self.gops {
             for (&ts, thumb) in &gop.by_time {
                 if !thumb.matches_size(width, height) {
@@ -319,7 +319,7 @@ impl ThumbCache {
                 }
                 let frame = ts as FrameId;
                 let dist = frame.abs_diff(target);
-                let better = |best: &Option<(FrameId, FrameId, u64)>| match best {
+                let better = |best: &Option<(FrameId, FrameId, FrameId)>| match best {
                     None => true,
                     Some((_, _, d)) if dist < *d => true,
                     Some((bk, bf, d))

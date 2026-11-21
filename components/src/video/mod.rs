@@ -20,6 +20,7 @@ pub use fpmedia_web::{
 };
 pub use pipeline_interest::{PipelineInterestLease, PipelinePlane};
 
+use fpmedia_web::FrameId;
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
@@ -540,7 +541,7 @@ impl VideoRef {
     }
 
     /// Local playable Fetch runs (inclusive) for VT strip mirror.
-    pub fn scrub_fetch_playable_runs(&self) -> Vec<(u64, u64)> {
+    pub fn scrub_fetch_playable_runs(&self) -> Vec<(FrameId, FrameId)> {
         self.host()
             .map(|host| host.scrub_fetch_playable_runs())
             .unwrap_or_default()
@@ -625,7 +626,7 @@ impl VideoRef {
     }
 
     /// Scrub margins for [`crate::virtual_timeline::plan_next_densify_gap`].
-    pub fn scrub_plan_margins(&self) -> (u64, u64) {
+    pub fn scrub_plan_margins(&self) -> (FrameId, FrameId) {
         self.host()
             .map(|host| host.scrub_plan_margins())
             .unwrap_or((12, 6))

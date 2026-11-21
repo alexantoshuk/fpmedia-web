@@ -720,7 +720,7 @@ impl VideoPlayer {
     fn timeline_last_end(&self) -> Option<f64> {
         let track = &self.shared.track;
         let index = track.index();
-        let indexed = index.len() as u64;
+        let indexed = index.frame_len();
         if indexed == 0 {
             return None;
         }

@@ -123,6 +123,11 @@ impl FrameIndex {
         self.frames.is_empty()
     }
 
+    /// Sample count on the frame axis (saturates at FrameId::MAX).
+    pub fn frame_len(&self) -> FrameId {
+        FrameId::try_from(self.frames.len()).unwrap_or(FrameId::MAX)
+    }
+
     pub fn get(&self, frame: FrameId) -> Option<&FrameEntry> {
         self.frames.get(frame as usize)
     }
@@ -312,7 +317,7 @@ impl FrameIndex {
         if self.frames.is_empty() {
             return None;
         }
-        let mut best = 0u64;
+        let mut best: FrameId = 0;
         for entry in &self.frames {
             if entry.composition_timestamp().seconds <= seconds {
                 best = entry.frame;
