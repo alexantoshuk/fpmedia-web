@@ -2,7 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use re_mp4::{Mp4, StsdBoxContent, TrackKind, is_pcm_sample_entry};
 
@@ -45,7 +45,7 @@ impl AudioSampleEntry {
 /// open (`mediabunny: readFragment` grows tracks; we previously left audio at the
 /// warm-moof sample count → silence near frame ~24).
 pub struct Mp4AudioTrack {
-    source: RefCell<Arc<dyn MediaSource>>,
+    source: RefCell<Rc<dyn MediaSource>>,
     metadata: RefCell<AudioMetadata>,
     samples: RefCell<Vec<AudioSampleEntry>>,
     /// More moof audio may still arrive (warm open + bg backfill).
@@ -55,7 +55,7 @@ pub struct Mp4AudioTrack {
 impl Clone for Mp4AudioTrack {
     fn clone(&self) -> Self {
         Self {
-            source: RefCell::new(Arc::clone(&self.source.borrow())),
+            source: RefCell::new(Rc::clone(&self.source.borrow())),
             metadata: RefCell::new(self.metadata.borrow().clone()),
             samples: RefCell::new(self.samples.borrow().clone()),
             expect_more: Cell::new(self.expect_more.get()),
@@ -82,11 +82,11 @@ impl Mp4AudioTrack {
         self.samples.borrow().len() as u64
     }
 
-    pub fn source(&self) -> Arc<dyn MediaSource> {
-        Arc::clone(&self.source.borrow())
+    pub fn source(&self) -> Rc<dyn MediaSource> {
+        Rc::clone(&self.source.borrow())
     }
 
-    pub(crate) fn set_source(&self, source: Arc<dyn MediaSource>) {
+    pub(crate) fn set_source(&self, source: Rc<dyn MediaSource>) {
         *self.source.borrow_mut() = source;
     }
 
@@ -167,7 +167,7 @@ impl Mp4AudioTrack {
                     samples.len() as u64,
                 ))?
         };
-        let source = Arc::clone(&self.source.borrow());
+        let source = Rc::clone(&self.source.borrow());
         let data = source.read(entry.offset, entry.size as usize).await?;
         if data.len() != entry.size as usize {
             return Err(MediaError::Mp4(format!(
@@ -205,7 +205,7 @@ impl Mp4AudioTrack {
                 crate::demux::coalesce::SAMPLE_COALESCE_GAP,
             )
         };
-        let source = Arc::clone(&self.source.borrow());
+        let source = Rc::clone(&self.source.borrow());
         let mut filled = 0usize;
         for (start, end) in spans {
             let mut off = start;
@@ -232,7 +232,7 @@ impl Mp4AudioTrack {
 /// (`re_mp4` drops them on `StsdBoxContent::Unknown`). Optional for mfra deltas.
 pub(crate) fn build_audio_track(
     mp4: &Mp4,
-    source: Arc<dyn MediaSource>,
+    source: Rc<dyn MediaSource>,
     moov_bytes: Option<&[u8]>,
 ) -> Result<Option<Mp4AudioTrack>, MediaError> {
     let Some((track_id, track)) = mp4

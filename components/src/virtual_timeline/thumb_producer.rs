@@ -6,7 +6,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use fpmedia_web::{
     BlobSource, Epoch, FrameId, MediaSource, OpenMp4Options, ThumbSink, ThumbSinkOptions,
@@ -92,13 +91,13 @@ impl ThumbProducer {
             .flatten()
             .ok_or_else(|| format!("missing source for clip {}", clip_index + 1))?;
 
-        let media: Arc<dyn MediaSource> = match &src {
-            PlaylistSource::Blob(blob) => Arc::new(BlobSource::new(blob.clone())),
+        let media: Rc<dyn MediaSource> = match &src {
+            PlaylistSource::Blob(blob) => Rc::new(BlobSource::new(blob.clone())),
             PlaylistSource::Url(url) => {
                 let u = UrlSource::connect(url.clone())
                     .await
                     .map_err(|e| e.to_string())?;
-                Arc::new(u)
+                Rc::new(u)
             }
         };
         if !self.epoch.is_current(epoch) {

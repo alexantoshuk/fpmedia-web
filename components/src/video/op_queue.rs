@@ -12,7 +12,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use fpmedia_web::{MediaSource, apply_enqueue};
 use leptos::prelude::*;
@@ -20,7 +19,7 @@ use web_sys::HtmlCanvasElement;
 
 #[derive(Clone)]
 pub(crate) struct OpenArgs {
-    pub source: Arc<dyn MediaSource>,
+    pub source: Rc<dyn MediaSource>,
     pub canvas: HtmlCanvasElement,
 }
 

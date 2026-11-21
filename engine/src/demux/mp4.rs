@@ -3,6 +3,7 @@
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use re_mp4::{Mp4, TrackKind};
@@ -61,11 +62,11 @@ struct SyncVerify {
 /// offsets from the sample table (not stub-relative).
 #[derive(Clone)]
 pub struct Mp4VideoTrack {
-    source: Arc<dyn MediaSource>,
+    source: Rc<dyn MediaSource>,
     /// Uncached (or same as [`Self::source`]) reads for bitstream sync verify.
     /// After [`CachedSource`] attach, keep the raw inner here so deferred verify
     /// does not 8 MiB-prefetch every scattered key (GitHub/proxy 502 under scrub).
-    sync_source: Arc<dyn MediaSource>,
+    sync_source: Rc<dyn MediaSource>,
     /// ISOBMFF `tkhd` track id (for `tfra` provisional duration).
     track_id: u32,
     metadata: RefCell<VideoMetadata>,
@@ -81,7 +82,7 @@ pub struct Mp4VideoTrack {
 struct FragmentBackfillState {
     /// `None` while a chunk step holds the plan across `.await`.
     plan: Option<crate::demux::FragmentBackfillPlan>,
-    source: Arc<dyn MediaSource>,
+    source: Rc<dyn MediaSource>,
     complete: bool,
     started: bool,
     /// Bg wasm worker already spawned (avoid double-loop).
@@ -124,12 +125,12 @@ impl Mp4VideoTrack {
         self.metadata.borrow().frame_count
     }
 
-    pub fn source(&self) -> &Arc<dyn MediaSource> {
+    pub fn source(&self) -> &Rc<dyn MediaSource> {
         &self.source
     }
 
     /// Swap playback I/O to a cached wrapper; sync-verify keeps the previous source.
-    pub fn set_playback_source(&mut self, source: Arc<dyn MediaSource>) {
+    pub fn set_playback_source(&mut self, source: Rc<dyn MediaSource>) {
         self.source = source;
     }
 
@@ -164,7 +165,7 @@ impl Mp4VideoTrack {
     pub(crate) fn arm_fragment_backfill(
         &self,
         plan: crate::demux::FragmentBackfillPlan,
-        source: Arc<dyn MediaSource>,
+        source: Rc<dyn MediaSource>,
     ) {
         self.apply_provisional_fragment_length(&plan);
         *self.fragment_backfill.borrow_mut() = Some(FragmentBackfillState {
@@ -452,7 +453,7 @@ impl Mp4VideoTrack {
                 return Ok((true, None));
             };
             state.started = true;
-            (plan, Arc::clone(&state.source), moof_batch)
+            (plan, Rc::clone(&state.source), moof_batch)
         };
 
         match crate::demux::advance_mfra_backfill_n(source.as_ref(), &mut plan, moof_batch, |_| {})
@@ -464,7 +465,7 @@ impl Mp4VideoTrack {
                 // replace (`mediabunny: readFragment` grows the table).
                 // Fragment deltas: no full moov — PCM needs sound-desc from init
                 // open; AAC still works. Pass None (ulaw/alaw-only PCM fallback).
-                let audio = build_audio_track(&mp4, Arc::clone(&self.sync_source), None)?;
+                let audio = build_audio_track(&mp4, Rc::clone(&self.sync_source), None)?;
                 let new_entries = frame_entries_from_mp4(&mp4);
                 if new_entries.is_empty()
                     && audio
@@ -905,7 +906,7 @@ pub fn open_mp4_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
     let fetch_map = Arc::new(FetchMap::new());
     fetch_map.mark_full(bytes.len() as u64);
     let mp4 = Mp4::read_bytes(bytes.as_ref())?;
-    let source: Arc<dyn MediaSource> = Arc::new(MemorySource::new(bytes.clone()));
+    let source: Rc<dyn MediaSource> = Rc::new(MemorySource::new(bytes.clone()));
     let moov = crate::demux::timecode::find_moov_box(bytes.as_ref());
     let timecode_start = moov.and_then(|moov| {
         crate::demux::timecode::read_tmcd_start_sample_blocking(&mp4, moov, source.as_ref())
@@ -937,7 +938,7 @@ pub fn open_mp4_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
 ///
 /// `mediabunny: src/input.ts Input` — one entry over any source; caller picks tracks.
 pub async fn open_mp4(
-    source: Arc<dyn MediaSource>,
+    source: Rc<dyn MediaSource>,
     options: OpenMp4Options,
     mut progress: impl FnMut(OpenPhase),
 ) -> Result<OpenedMp4, MediaError> {
@@ -949,7 +950,7 @@ pub async fn open_mp4(
         resolve_timecode_start(&parsed.mp4, moov_bytes.as_deref(), source.as_ref()).await;
     let mut opened = build_opened(
         parsed.mp4,
-        Arc::clone(&source),
+        Rc::clone(&source),
         Arc::clone(&fetch_map),
         OpenMp4Options {
             verify_avc_sync: false,
@@ -959,7 +960,7 @@ pub async fn open_mp4(
         moov_bytes.as_deref(),
     )?;
     if let (Some(plan), Some(v)) = (parsed.backfill, opened.video.as_mut()) {
-        v.arm_fragment_backfill(plan, Arc::clone(&source));
+        v.arm_fragment_backfill(plan, Rc::clone(&source));
         if let Some(a) = opened.audio.as_ref() {
             a.set_expect_more_samples(true);
         }
@@ -975,7 +976,7 @@ pub async fn open_mp4(
     apply_avc_sync_option(opened.video.as_mut(), options, &mut progress).await?;
     let cached = wrap_cached_playback(source, fetch_map, parsed.cache_seed);
     if let Some(v) = opened.video.as_mut() {
-        v.set_playback_source(Arc::clone(&cached));
+        v.set_playback_source(Rc::clone(&cached));
         // Ready after a short lead — not the full index (progressive gray lock).
         warm_open_playback_bytes(v, opened.audio.as_ref(), &cached, &mut progress).await?;
     } else if let Some(a) = opened.audio.as_mut() {
@@ -989,13 +990,13 @@ pub async fn open_mp4(
 /// Budget follows [`CachedSource::with_fetch_map`]: Url → 512 MiB, Blob/Memory →
 /// 8 MiB (`mediabunny: src/source.ts BlobSource` `maxCacheSize` default).
 fn wrap_cached_playback(
-    source: Arc<dyn MediaSource>,
+    source: Rc<dyn MediaSource>,
     fetch_map: Arc<FetchMap>,
     cache_seed: Vec<(u64, Vec<u8>)>,
-) -> Arc<dyn MediaSource> {
+) -> Rc<dyn MediaSource> {
     let cached = CachedSource::with_fetch_map(source, fetch_map);
     cached.seed_windows(cache_seed);
-    Arc::new(cached)
+    Rc::new(cached)
 }
 
 /// Frames of `mdat` to await before UI Ready.
@@ -1012,7 +1013,7 @@ const OPEN_WARM_SAMPLE_LEAD: FrameId = SETTLE_PLAY_INDEX_LEAD;
 async fn warm_open_playback_bytes(
     video: &Mp4VideoTrack,
     audio: Option<&Mp4AudioTrack>,
-    cached: &Arc<dyn MediaSource>,
+    cached: &Rc<dyn MediaSource>,
     progress: &mut impl FnMut(OpenPhase),
 ) -> Result<(), MediaError> {
     let indexed = video.indexed_frame_count();
@@ -1025,7 +1026,7 @@ async fn warm_open_playback_bytes(
     progress(OpenPhase::WarmingMediaBytes);
     video.warm_sample_bytes(0, lead).await?;
     if let Some(a) = audio {
-        a.set_source(Arc::clone(cached));
+        a.set_source(Rc::clone(cached));
         progress(OpenPhase::WarmingAudioBytes);
         a.warm_bytes_through(warm_secs).await?;
     }
@@ -1054,13 +1055,13 @@ async fn resolve_timecode_start(
 
 fn build_opened(
     mp4: Mp4,
-    source: Arc<dyn MediaSource>,
+    source: Rc<dyn MediaSource>,
     fetch_map: Arc<FetchMap>,
     options: OpenMp4Options,
     timecode_start: Option<fpmedia_timecode::Timecode>,
     moov_bytes: Option<&[u8]>,
 ) -> Result<OpenedMp4, MediaError> {
-    let video = build_video_track(&mp4, Arc::clone(&source), options, timecode_start)?;
+    let video = build_video_track(&mp4, Rc::clone(&source), options, timecode_start)?;
     let audio = build_audio_track(&mp4, source, moov_bytes)?;
     Ok(OpenedMp4 {
         video,
@@ -1097,7 +1098,7 @@ fn frame_entries_from_mp4(mp4: &Mp4) -> Vec<FrameEntry> {
 
 fn build_video_track(
     mp4: &Mp4,
-    source: Arc<dyn MediaSource>,
+    source: Rc<dyn MediaSource>,
     options: OpenMp4Options,
     timecode_start: Option<fpmedia_timecode::Timecode>,
 ) -> Result<Option<Mp4VideoTrack>, MediaError> {
@@ -1181,7 +1182,7 @@ fn build_video_track(
     metadata.ensure_fps();
 
     Ok(Some(Mp4VideoTrack {
-        sync_source: Arc::clone(&source),
+        sync_source: Rc::clone(&source),
         source,
         track_id: track.track_id,
         metadata: RefCell::new(metadata),

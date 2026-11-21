@@ -16,12 +16,12 @@ use web_sys::{HtmlCanvasElement, Response};
 pub(super) async fn resolve_url_source(
     url: &str,
     on_status: impl Fn(OpenPhase),
-) -> Result<std::sync::Arc<dyn MediaSource>, String> {
+) -> Result<std::rc::Rc<dyn MediaSource>, String> {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("blob:") {
         on_status(OpenPhase::ProbingSource(OpenSourceKind::Blob));
         let blob = fetch_url_as_blob(url).await?;
-        return Ok(std::sync::Arc::new(BlobSource::new(blob)));
+        return Ok(std::rc::Rc::new(BlobSource::new(blob)));
     }
     if !(lower.starts_with("https:") || lower.starts_with("http:")) {
         return Err(format!(
@@ -51,7 +51,7 @@ pub(super) async fn resolve_url_source(
             on_status(OpenPhase::ProbingSource(OpenSourceKind::Progressive {
                 size_kb,
             }));
-            Ok(std::sync::Arc::new(src))
+            Ok(std::rc::Rc::new(src))
         }
         Err(e) if is_no_http_range(&e) => {
             // mediabunny: src/source.ts UrlSource — non-206 → sequential/full path;
@@ -72,7 +72,7 @@ pub(super) async fn resolve_url_source(
             on_status(OpenPhase::ProbingSource(OpenSourceKind::FullDownload {
                 size_label: format_byte_size(blob.size() as u64),
             }));
-            Ok(std::sync::Arc::new(BlobSource::new(blob)))
+            Ok(std::rc::Rc::new(BlobSource::new(blob)))
         }
         Err(e) => Err(e.to_string()),
     }
@@ -129,7 +129,7 @@ fn format_js_error(what: &str, err: &wasm_bindgen::JsValue) -> String {
 }
 
 pub(super) async fn open_source_staged(
-    source: std::sync::Arc<dyn MediaSource>,
+    source: std::rc::Rc<dyn MediaSource>,
     canvas: HtmlCanvasElement,
     on_status: impl Fn(OpenPhase),
 ) -> Result<VideoPlayer, String> {

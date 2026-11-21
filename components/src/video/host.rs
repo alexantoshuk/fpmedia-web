@@ -76,7 +76,7 @@ impl VideoHost {
         status.set(OpenPhase::ProbingSource(OpenSourceKind::Progressive { size_kb }).label());
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(&format!("fpmedia-web: open_blob start ~{size_kb} KB").into());
-        let source: std::sync::Arc<dyn MediaSource> = std::sync::Arc::new(BlobSource::new(blob));
+        let source: std::rc::Rc<dyn MediaSource> = std::rc::Rc::new(BlobSource::new(blob));
         if ctx.queue.enqueue(HostOp::Open(OpenArgs { source, canvas })) {
             (self.kick_drain)();
         }

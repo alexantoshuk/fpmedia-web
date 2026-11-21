@@ -49,7 +49,7 @@ type AbortMap = Arc<Mutex<HashMap<WorkerId, AbortController>>>;
 
 /// Ranged HTTP(S) byte source (progressive open without full download).
 ///
-/// Not [`Clone`] — share via [`std::sync::Arc`]. Drop disposes the orchestrator
+/// Not [`Clone`] — share via [`std::rc::Rc`]. Drop disposes the orchestrator
 /// (`mediabunny: src/source.ts` `UrlSource._dispose`).
 #[derive(Debug)]
 pub struct UrlSource {

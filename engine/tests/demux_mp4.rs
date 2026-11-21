@@ -1,7 +1,7 @@
 //! Integration tests: demux + frame index against short-GOP H.264 fixtures.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -16,7 +16,7 @@ use fpmedia_web::{determine_hevc_packet_type, hevc_nal_length_size};
 
 /// Progressive cached open, video only.
 async fn open_video_source(
-    source: Arc<dyn MediaSource>,
+    source: Rc<dyn MediaSource>,
     options: OpenMp4Options,
 ) -> Result<Mp4VideoTrack, fpmedia_web::MediaError> {
     open_mp4(source, options, |_| {}).await?.require_video()
@@ -166,7 +166,7 @@ fn progressive_source_open_matches_bytes_offsets() {
     }
     let bytes = std::fs::read(&path).expect("read");
     let full = open_mp4_path(&path).expect("full open");
-    let source: Arc<dyn fpmedia_web::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
+    let source: Rc<dyn fpmedia_web::MediaSource> = Rc::new(MemorySource::from_vec(bytes));
     let progressive = block_on(open_video_source(
         source,
         OpenMp4Options {
@@ -203,7 +203,7 @@ fn progressive_cached_open_seeds_fetch_map_at_file_head() {
     }
     let bytes = std::fs::read(&path).expect("read");
     let file_size = bytes.len() as u64;
-    let source: Arc<dyn fpmedia_web::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
+    let source: Rc<dyn fpmedia_web::MediaSource> = Rc::new(MemorySource::from_vec(bytes));
     let opened = block_on(open_mp4(
         source,
         OpenMp4Options {
@@ -287,7 +287,7 @@ fn assert_progressive_fmp4_matches_full(bytes: Vec<u8>) {
     let full = fpmedia_web::open_mp4_bytes(bytes.clone())
         .and_then(OpenedMp4::require_video)
         .expect("full open");
-    let source: Arc<dyn fpmedia_web::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
+    let source: Rc<dyn fpmedia_web::MediaSource> = Rc::new(MemorySource::from_vec(bytes));
     let progressive = block_on(open_video_source(
         source,
         OpenMp4Options {
@@ -335,7 +335,7 @@ fn progressive_fmp4_from_url() {
     );
 
     // Moof-only mfra path: many small reads (not one 41 MB dump into WASM).
-    let counted = Arc::new(CountingSource {
+    let counted = Rc::new(CountingSource {
         inner: MemorySource::from_vec(bytes.clone()),
         reads: AtomicUsize::new(0),
         max_len: AtomicUsize::new(0),
@@ -345,7 +345,7 @@ fn progressive_fmp4_from_url() {
     let demux_reads = std::cell::Cell::new(None);
     let t_open = Instant::now();
     let progressive = block_on(open_mp4(
-        counted.clone() as Arc<dyn MediaSource>,
+        counted.clone() as Rc<dyn MediaSource>,
         OpenMp4Options {
             verify_avc_sync: false,
             defer_avc_sync: false,
@@ -389,7 +389,7 @@ fn deferred_avc_sync_verify_on_demand() {
         return;
     }
     let bytes = std::fs::read(&path).expect("read");
-    let source: Arc<dyn fpmedia_web::MediaSource> = Arc::new(MemorySource::from_vec(bytes));
+    let source: Rc<dyn fpmedia_web::MediaSource> = Rc::new(MemorySource::from_vec(bytes));
     let track = block_on(open_video_source(
         source,
         OpenMp4Options {
@@ -612,8 +612,8 @@ fn demux_chg_pcm_master_progressive() {
         return;
     }
     let t0 = Instant::now();
-    let source: Arc<dyn MediaSource> =
-        Arc::new(NativeFileSource::open(&path).expect("open ChG file"));
+    let source: Rc<dyn MediaSource> =
+        Rc::new(NativeFileSource::open(&path).expect("open ChG file"));
     let opened = block_on(open_mp4(
         source,
         OpenMp4Options {

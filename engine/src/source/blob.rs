@@ -31,7 +31,7 @@ type ReaderMap = Arc<Mutex<HashMap<WorkerId, ReadableStreamDefaultReader>>>;
 
 /// Ranged reads from a browser [`Blob`] (including `File`).
 ///
-/// Not [`Clone`] — share via [`std::sync::Arc`]. Drop disposes the orchestrator.
+/// Not [`Clone`] — share via [`std::rc::Rc`]. Drop disposes the orchestrator.
 #[derive(Debug)]
 pub struct BlobSource {
     blob: Blob,

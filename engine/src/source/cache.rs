@@ -453,7 +453,7 @@ impl<S> CachedSource<S> {
     }
 }
 
-impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
+impl<S: MediaSource + 'static> CachedSource<S> {
     /// Arm + run ahead fill. On wasm, `spawn_local` so the hit path stays cold;
     /// on native, poll once (MemorySource completes inline — unit tests).
     fn kick_prefetch(&self, start: u64, len: usize) {
@@ -541,7 +541,7 @@ impl<S: MediaSource + Send + Sync + 'static> CachedSource<S> {
     }
 }
 
-impl<S: MediaSource + Send + Sync + 'static> MediaSource for CachedSource<S> {
+impl<S: MediaSource + 'static> MediaSource for CachedSource<S> {
     fn size(&self) -> u64 {
         self.inner.size()
     }

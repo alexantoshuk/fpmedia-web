@@ -44,7 +44,9 @@ pub type ReadFuture<'a> = Pin<Box<dyn Future<Output = Result<Bytes, MediaError>>
 ///
 /// Implementations must treat `offset` as file-absolute. Reads that extend past
 /// EOF return a truncated buffer (may be empty); out-of-range starts error.
-pub trait MediaSource: Send + Sync {
+///
+/// Single-threaded wasm: no `Send + Sync` (shared as `Rc<dyn MediaSource>`).
+pub trait MediaSource {
     /// Total size in bytes.
     fn size(&self) -> u64;
 
@@ -101,7 +103,7 @@ impl<T: MediaSource + ?Sized> MediaSource for &T {
     }
 }
 
-impl<T: MediaSource + ?Sized> MediaSource for std::sync::Arc<T> {
+impl<T: MediaSource + ?Sized> MediaSource for std::rc::Rc<T> {
     fn size(&self) -> u64 {
         (**self).size()
     }

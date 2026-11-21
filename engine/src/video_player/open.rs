@@ -44,7 +44,7 @@ impl VideoPlayer {
 
     /// Progressive open from a ranged [`crate::MediaSource`] (Blob / memory).
     pub async fn open_mp4_source(
-        source: std::sync::Arc<dyn crate::MediaSource>,
+        source: std::rc::Rc<dyn crate::MediaSource>,
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
         let opened = crate::open_mp4(
@@ -65,8 +65,8 @@ impl VideoPlayer {
         blob: web_sys::Blob,
         canvas: HtmlCanvasElement,
     ) -> Result<Self, MediaError> {
-        let source: std::sync::Arc<dyn crate::MediaSource> =
-            std::sync::Arc::new(crate::BlobSource::new(blob));
+        let source: std::rc::Rc<dyn crate::MediaSource> =
+            std::rc::Rc::new(crate::BlobSource::new(blob));
         Self::open_mp4_source(source, canvas).await
     }
 
