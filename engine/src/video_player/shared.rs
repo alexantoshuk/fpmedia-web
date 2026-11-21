@@ -52,6 +52,23 @@ pub(super) const STEP_BEHIND_CAP_PLAY: usize = 0;
 /// Exact trim on Play (YUV↔RGBA heuristic headroom).
 pub(super) const PLAY_EXACT_VRAM_VF_SLACK: usize = 4;
 
+/// Play underrun / lateness counters (read by [`super::PipelineStats`]), reset
+/// together on `play()`. Not here on purpose: the hold *timer*
+/// (`underrun_hold_since_ms`, clock FSM) and the tab-visible catch-up gate
+/// (`underrun_catchup_until_ms`) are not reset by `play()`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct UnderrunStats {
+    /// Frames dropped by multi-frame overdue catch-up.
+    pub(super) frames_skipped: u64,
+    /// Latest ms the presented frame was behind `media_time` (`None` = none yet).
+    pub(super) last_behind_ms: Option<f64>,
+    /// Play underrun holds (clock freeze edges) — diagnose ~0.9× realtime.
+    pub(super) holds: u64,
+    /// Accumulated wall ms spent with the media clock frozen for underrun
+    /// (finished holds only; the live hold is added by `underrun_hold_ms_now`).
+    pub(super) hold_ms: f64,
+}
+
 pub(super) struct QueuedFrame {
     pub(super) frame: FrameId,
     pub(super) video: OwnedVideoFrame,
@@ -164,12 +181,8 @@ pub(super) struct Shared {
     pub(super) engine: Cell<EngineModel>,
     pub(super) canvas: HtmlCanvasElement,
     pub(super) ctx: CanvasRenderingContext2d,
-    pub(super) frames_skipped: Cell<u64>,
-    pub(super) last_behind_ms: Cell<Option<f64>>,
-    /// Play underrun holds (clock freeze edges) — diagnose ~0.9× realtime.
-    pub(super) underrun_holds: Cell<u64>,
-    /// Accumulated wall ms spent with media clock frozen for underrun.
-    pub(super) underrun_hold_ms: Cell<f64>,
+    /// Play underrun counters; mutate via [`Self::update_underrun`].
+    pub(super) underrun: Cell<UnderrunStats>,
     /// `performance.now` when the current underrun hold started (`None` = not holding).
     pub(super) underrun_hold_since_ms: Cell<Option<f64>>,
     /// Timeline phase ([`ClockState`]) — run / stop / underrun / scrub hold.
@@ -248,6 +261,13 @@ impl Shared {
     #[inline]
     pub(super) fn scrub_bg_suspended(&self) -> bool {
         self.scrub_bg_suspended.get()
+    }
+
+    /// Read-modify-write [`UnderrunStats`] (single-threaded; `f` must not re-enter).
+    pub(super) fn update_underrun(&self, f: impl FnOnce(&mut UnderrunStats)) {
+        let mut stats = self.underrun.get();
+        f(&mut stats);
+        self.underrun.set(stats);
     }
 
     pub(super) fn state(&self) -> PlayerState {

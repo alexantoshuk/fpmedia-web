@@ -129,11 +129,9 @@ impl VideoPlayer {
             track.prefetch_samples_ahead(head, 120);
         }
         self.shared.playing.set(true);
-        self.shared.frames_skipped.set(0);
-        self.shared.last_behind_ms.set(None);
         self.apply_clock_event(ClockEvent::ResetForPlay);
-        self.shared.underrun_holds.set(0);
-        self.shared.underrun_hold_ms.set(0.0);
+        // Counters only — `underrun_hold_since_ms` / catch-up gate are not reset here.
+        self.shared.underrun.set(Default::default());
         // Do **not** schedule_thumb_key_fill here — Play: no thumb generation.
         // Progressive Pause fill resumes on Pause / scrub / hover leave.
     }

@@ -331,9 +331,9 @@ impl VideoPlayer {
                     break;
                 }
                 overdue += 1;
+                let behind_ms = ((t - ts) * 1000.0).max(0.0);
                 self.shared
-                    .last_behind_ms
-                    .set(Some(((t - ts) * 1000.0).max(0.0)));
+                    .update_underrun(|u| u.last_behind_ms = Some(behind_ms));
                 draw_frame_with_context(&self.shared.canvas, &self.shared.ctx, video.as_web_sys())?;
                 drop(video);
                 self.shared.commit_frame(id)?;
@@ -350,9 +350,9 @@ impl VideoPlayer {
             break;
         }
         if overdue > 1 {
-            self.shared
-                .frames_skipped
-                .set(self.shared.frames_skipped.get().saturating_add(overdue - 1));
+            self.shared.update_underrun(|u| {
+                u.frames_skipped = u.frames_skipped.saturating_add(overdue - 1)
+            });
             // Silent PlaybackClock: realign after multi-skip (ChG). AAC stays master.
             if self
                 .shared
@@ -1658,7 +1658,8 @@ impl VideoPlayer {
         }
         let lag_ms = ((media_time_secs - next.ts) * 1000.0).max(0.0);
         if lag_ms > 1.0 {
-            self.shared.last_behind_ms.set(Some(lag_ms));
+            self.shared
+                .update_underrun(|u| u.last_behind_ms = Some(lag_ms));
         }
         self.shared.commit_frame(next.frame)?;
         self.touch_playhead(next.frame);

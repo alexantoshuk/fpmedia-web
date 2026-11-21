@@ -112,9 +112,10 @@ impl VideoPlayer {
             out.held_len = held_len;
             out.decode_queue_size = decode_queue_size;
             out.play_waits = self.shared.play_iter.borrow().as_ref().map(|it| it.waits());
-            out.frames_skipped = self.shared.frames_skipped.get();
-            out.last_behind_ms = self.shared.last_behind_ms.get();
-            out.underrun_holds = self.shared.underrun_holds.get();
+            let underrun = self.shared.underrun.get();
+            out.frames_skipped = underrun.frames_skipped;
+            out.last_behind_ms = underrun.last_behind_ms;
+            out.underrun_holds = underrun.holds;
             out.underrun_hold_ms = self.underrun_hold_ms_now();
             out.scrub_busy = self.shared.densify.is_busy();
             out.gop_profile = self.shared.track.metadata_ref().gop_profile;

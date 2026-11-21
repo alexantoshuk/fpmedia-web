@@ -454,8 +454,7 @@ impl VideoPlayer {
             return;
         }
         self.shared
-            .underrun_holds
-            .set(self.shared.underrun_holds.get().saturating_add(1));
+            .update_underrun(|u| u.holds = u.holds.saturating_add(1));
         self.shared.underrun_hold_since_ms.set(now_ms());
     }
 
@@ -465,15 +464,13 @@ impl VideoPlayer {
         };
         if let Some(now) = now_ms() {
             let dt = (now - since).max(0.0);
-            self.shared
-                .underrun_hold_ms
-                .set(self.shared.underrun_hold_ms.get() + dt);
+            self.shared.update_underrun(|u| u.hold_ms += dt);
         }
     }
 
     /// Hold stats including an in-progress freeze (for live pipeline UI).
     pub(super) fn underrun_hold_ms_now(&self) -> f64 {
-        let mut total = self.shared.underrun_hold_ms.get();
+        let mut total = self.shared.underrun.get().hold_ms;
         if let (Some(since), Some(now)) = (self.shared.underrun_hold_since_ms.get(), now_ms()) {
             total += (now - since).max(0.0);
         }
