@@ -87,6 +87,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Rate / shuttle / JKL wrong | `normalize_playback_rate` / eof_wall | ≤4× WSOLA; >4 wall+mute; K pauses before 1× |
 | `RefCell already borrowed` | [RefCell](#refcell--wasm-re-entry) | bind then work; no borrow across await |
 | fMP4 / URL open hang / Range stampede | mfra warm + orch | moof-only parallel; never bulk 0..mfra; settle ≠ await full sync verify |
+| fMP4 page freezes, Chrome memory runs away (open + early seek) | `kick_fragment_backfill` / `fragment_backfill_should_idle_yield` | bg backfill loop must yield on a no-progress step (gotcha *fMP4 bg backfill spin*); `e2e/player.fetchmap.fmp4-gap.spec.ts` |
 | UI stuck (not decode) | `skills/leptos.md` | OpQueue / playing / spawn |
 
 **Probes (paths):** `e2e/player.smoke.spec.ts`, `e2e/player.matrix.spec.ts`, `e2e/player.play.long-gop.spec.ts`, `e2e/player.play.gop12-url-vs-local.spec.ts`, `e2e/player.play.residual.spec.ts`, `e2e/player.play.fmp4-warm-seam.spec.ts`, `e2e/player.scrub.cold-open.spec.ts`, `e2e/player.scrub.cold-resume.spec.ts`, `e2e/player.scrub.sticky-error.spec.ts`, `e2e/player.play.gray-first.spec.ts`, `e2e/player.stress.scrub-av.spec.ts`, `e2e/player.play.eof-loop.spec.ts`, `e2e/player.jkl.spec.ts`, `e2e/player.fetchmap.fmp4-gap.spec.ts`, `e2e/perf.scrub.*.spec.ts`, `e2e/perf.scrub.baseline.spec.ts`.
@@ -121,6 +122,7 @@ Design (caches, Play/Scrub/Settle policy, decode flow diagrams, audio clock): `a
 - **Clip switch zombies** → `MediaSource::dispose` / Drop abort orch; densify must not adopt epoch after `Shared.disposed`; stop audio + close PlaybackClock.
 - **Sample miss blocks Play** → URL/Blob return `want` (URL floors 0.5 MiB); quantum fill bg. Do not await 8 MiB on A/V path.
 - **fMP4 warm** → first moofs ready; chunked mfra backfill; adopt audio samples; provisional length from tfra; never bulk-read to mfra into WASM; settle must not `await_sync_verify_complete`.
+- **fMP4 bg backfill spin** → `ensure_frame_indexed` holds the mfra `plan` across its Range await, so a concurrent `run_fragment_backfill_step` returns `(true, None)` with no await. The bg loop (`kick_fragment_backfill`) must treat "index did not grow" as a yield (`fragment_backfill_should_idle_yield(.., progressed)`), even under Play / urgent, and not log — else a synchronous spin starves the holder (page freeze, GBs of log strings). `mediabunny: src/isobmff/isobmff-demuxer.ts readFragment` shares the in-flight `lastReadFragment` promise instead; we have no shared future, so yield + re-check.
 - **Lying sync / B-frames** → demote non-IDR/non-IRAP; index presentation order; cascade uses `decode_order`. Deferred verify + on-retrieve `ensure_key_verified`.
 - **re_mp4 QT mp4a v2 / PCM coalesce** → pin `rerun-io/re_mp4` git (#35/#38); crates.io 0.5.1 lacks both. Play PCM: `audio::pcm` + moov sound-desc (re_mp4 `Unknown` drops body).
 

@@ -283,6 +283,7 @@ impl VideoPlayer {
                     }
                     break;
                 }
+                let before = track.indexed_frame_count();
                 match track.run_fragment_backfill_step().await {
                     Ok((more, audio)) => {
                         let Some(shared) = weak.upgrade() else {
@@ -312,25 +313,31 @@ impl VideoPlayer {
                             );
                             break;
                         }
-                        web_sys::console::log_1(
-                            &format!(
-                                "fpmedia-web: fragment backfill chunk (indexed={}/{})",
-                                track.indexed_frame_count(),
-                                track.frame_count()
-                            )
-                            .into(),
-                        );
+                        let indexed = track.indexed_frame_count();
+                        // No progress = `ensure_frame_indexed` holds the plan; yield
+                        // (below) so it can finish — never spin or log.
+                        let progressed = indexed > before;
+                        if progressed {
+                            web_sys::console::log_1(
+                                &format!(
+                                    "fpmedia-web: fragment backfill chunk (indexed={}/{})",
+                                    indexed,
+                                    track.frame_count()
+                                )
+                                .into(),
+                            );
+                        }
                         // Keep index well ahead of the playhead; only idle-yield when
                         // paused/scrubbing with ≥240 frames of lead.
                         let mode = classify(shared.workload_hints());
                         let playhead = shared.frame.get();
-                        let indexed = track.indexed_frame_count();
                         let ahead = indexed.saturating_sub(playhead);
                         if !fragment_backfill_should_idle_yield(
                             mode,
                             ahead,
                             track.fragment_backfill_urgent(),
                             FRAGMENT_BACKFILL_IDLE_AHEAD,
+                            progressed,
                         ) {
                             continue;
                         }

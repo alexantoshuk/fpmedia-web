@@ -35,8 +35,6 @@ Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i
 
 Browser e2e (`skills/media.md` Triage) — run before committing engine playback / ownership refactors; `trunk serve` dev build works (wasm stack size is set in `.cargo/config.toml`). Failing, undiagnosed: `perf.scrub.settle`.
 
-**Next up — fMP4 bg backfill livelock (`player.fetchmap.fmp4-gap`, flaky; page freezes, Chrome memory runs away):** `VideoPlayer::kick_fragment_backfill` (`video_player/open.rs`) loops `run_fragment_backfill_step()`; when `ensure_frame_indexed` holds the plan the step returns `(true, None)` with no await, and under `urgent` / Play / `ahead < 240` the loop `continue`s without yielding → synchronous spin (log spam) that starves the task holding the plan. `ensure_frame_indexed` already yields on `len == before`; the bg loop needs the same no-progress yield. Needs a plan with a mediabunny cite.
-
 ### Publish crates (`0.1.0-alpha`)
 
 Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. Demo `demo-player` stays `publish = false`.

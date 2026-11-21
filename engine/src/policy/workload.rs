@@ -118,14 +118,19 @@ pub const PLAY_THUMB_AIM_DECODE_MIN_MS: f64 = 800.0;
 /// Whether fMP4 fragment backfill should `yield_now` between chunks.
 ///
 /// Keeps pumping when Play, urgent, or index lead `< min_ahead`; otherwise idle-yield
-/// so scrub/pause can breathe.
+/// so scrub/pause can breathe. A step that did not extend the index
+/// (`!progressed`: `ensure_frame_indexed` holds the plan, so the step returns
+/// without awaiting) always yields — a spin there starves the holder's Range
+/// read. mediabunny readers share the in-flight `readFragment` promise
+/// (`isobmff-demuxer.ts lastReadFragment`) instead; this is the adapter.
 pub fn fragment_backfill_should_idle_yield(
     mode: WorkloadMode,
     ahead: FrameId,
     urgent: bool,
     min_ahead: FrameId,
+    progressed: bool,
 ) -> bool {
-    !(urgent || matches!(mode, WorkloadMode::Play) || ahead < min_ahead)
+    !progressed || !(urgent || matches!(mode, WorkloadMode::Play) || ahead < min_ahead)
 }
 
 /// Default index lead before fragment backfill idle-yields (frames).
@@ -264,36 +269,59 @@ mod tests {
     }
 
     #[test]
+    fn backfill_yields_when_step_made_no_progress() {
+        // Plan held by another task: even Play / urgent must yield, not spin.
+        for (mode, ahead, urgent) in [
+            (WorkloadMode::Play, 500, false),
+            (WorkloadMode::Bg, 100, true),
+            (WorkloadMode::Bg, 0, false),
+        ] {
+            assert!(fragment_backfill_should_idle_yield(
+                mode,
+                ahead,
+                urgent,
+                FRAGMENT_BACKFILL_IDLE_AHEAD,
+                false
+            ));
+        }
+    }
+
+    #[test]
     fn backfill_idle_yield_table() {
         assert!(!fragment_backfill_should_idle_yield(
             WorkloadMode::Play,
             500,
             false,
-            FRAGMENT_BACKFILL_IDLE_AHEAD
+            FRAGMENT_BACKFILL_IDLE_AHEAD,
+            true
         ));
         assert!(!fragment_backfill_should_idle_yield(
             WorkloadMode::Bg,
             100,
             false,
-            FRAGMENT_BACKFILL_IDLE_AHEAD
+            FRAGMENT_BACKFILL_IDLE_AHEAD,
+            true
         ));
         assert!(!fragment_backfill_should_idle_yield(
             WorkloadMode::Bg,
             500,
             true,
-            FRAGMENT_BACKFILL_IDLE_AHEAD
+            FRAGMENT_BACKFILL_IDLE_AHEAD,
+            true
         ));
         assert!(fragment_backfill_should_idle_yield(
             WorkloadMode::Bg,
             500,
             false,
-            FRAGMENT_BACKFILL_IDLE_AHEAD
+            FRAGMENT_BACKFILL_IDLE_AHEAD,
+            true
         ));
         assert!(fragment_backfill_should_idle_yield(
             WorkloadMode::Seek,
             500,
             false,
-            FRAGMENT_BACKFILL_IDLE_AHEAD
+            FRAGMENT_BACKFILL_IDLE_AHEAD,
+            true
         ));
     }
 }
