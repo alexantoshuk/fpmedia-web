@@ -2,48 +2,52 @@
 //!
 //! **no equivalent** (composition local).
 
+use fpmedia_web::FrameId;
+
+use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 
 /// Aim resolved onto a concrete decode surface (slot / single player).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BackendAim {
     /// Virtual timeline unit (Σ frames for playlist; identity for single).
-    pub global: u32,
-    /// Local presentation FrameId on the player that will decode/present.
-    pub local: u32,
+    pub global: GlobalFrame,
+    /// Position inside the clip on the player that will decode/present
+    /// (hand to the engine via [ClipFrame::source]).
+    pub frame: ClipFrame,
     /// Playlist clip index; `0` for single-clip backends.
     pub clip_index: u32,
 }
 
 impl BackendAim {
-    pub fn single(global: u32) -> Self {
+    pub fn single(global: GlobalFrame) -> Self {
         Self {
             global,
-            local: global,
+            frame: ClipFrame::new(global.get()),
             clip_index: 0,
         }
     }
 
-    pub fn from_playlist_pos(global: u32, pos: PlaylistPos) -> Self {
+    pub fn from_playlist_pos(global: GlobalFrame, pos: PlaylistPos) -> Self {
         Self {
             global,
-            local: pos.local_frame,
+            frame: pos.frame,
             clip_index: pos.clip_index,
         }
     }
 }
 
 /// Single-clip: global FrameId == local (clamp to `len` when `len > 0`).
-pub fn resolve_single(global: u32, len: u32) -> Option<BackendAim> {
+pub fn resolve_single(global: GlobalFrame, len: FrameId) -> Option<BackendAim> {
     if len == 0 {
         return None;
     }
-    let local = global.min(len.saturating_sub(1));
-    Some(BackendAim::single(local))
+    let clamped = GlobalFrame::new(global.get().min(len.saturating_sub(1)));
+    Some(BackendAim::single(clamped))
 }
 
 /// Playlist: map global → clip + local via [`PlaylistModel`].
-pub fn resolve_playlist(model: &PlaylistModel, global: u32) -> Option<BackendAim> {
+pub fn resolve_playlist(model: &PlaylistModel, global: GlobalFrame) -> Option<BackendAim> {
     let pos = model.at_global_frame(global)?;
     Some(BackendAim::from_playlist_pos(global, pos))
 }
@@ -56,19 +60,19 @@ mod tests {
     #[test]
     fn resolve_single_identity() {
         assert_eq!(
-            resolve_single(12, 100),
+            resolve_single(GlobalFrame::new(12), 100),
             Some(BackendAim {
-                global: 12,
-                local: 12,
+                global: GlobalFrame::new(12),
+                frame: ClipFrame::new(12),
                 clip_index: 0
             })
         );
-        assert_eq!(resolve_single(0, 0), None);
+        assert_eq!(resolve_single(GlobalFrame::new(0), 0), None);
         assert_eq!(
-            resolve_single(99, 50),
+            resolve_single(GlobalFrame::new(99), 50),
             Some(BackendAim {
-                global: 49,
-                local: 49,
+                global: GlobalFrame::new(49),
+                frame: ClipFrame::new(49),
                 clip_index: 0
             })
         );
@@ -88,12 +92,12 @@ mod tests {
                 fps: Some(10.0),
             },
         ]);
-        let at_cut = resolve_playlist(&model, 10).expect("second clip start");
+        let at_cut = resolve_playlist(&model, GlobalFrame::new(10)).expect("second clip start");
         assert_eq!(at_cut.clip_index, 1);
-        assert_eq!(at_cut.local, 0);
-        assert_eq!(at_cut.global, 10);
-        let last_first = resolve_playlist(&model, 9).expect("end of first");
+        assert_eq!(at_cut.frame, ClipFrame::new(0));
+        assert_eq!(at_cut.global, GlobalFrame::new(10));
+        let last_first = resolve_playlist(&model, GlobalFrame::new(9)).expect("end of first");
         assert_eq!(last_first.clip_index, 0);
-        assert_eq!(last_first.local, 9);
+        assert_eq!(last_first.frame, ClipFrame::new(9));
     }
 }

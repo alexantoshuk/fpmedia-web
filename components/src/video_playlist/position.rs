@@ -2,21 +2,20 @@
 
 use fpmedia_web::VideoMetadata;
 
+use crate::frame_axis::ClipFrame;
+
 use crate::helpers::{format_timecode_at_loose, last_frame_id, parse_position};
 
-/// Playlist position: 0-based clip index + local presentation frame.
+/// Playlist position: 0-based clip index + [ClipFrame] inside that clip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlaylistPos {
     pub clip_index: u32,
-    pub local_frame: u32,
+    pub frame: ClipFrame,
 }
 
 impl PlaylistPos {
-    pub fn new(clip_index: u32, local_frame: u32) -> Self {
-        Self {
-            clip_index,
-            local_frame,
-        }
+    pub fn new(clip_index: u32, frame: ClipFrame) -> Self {
+        Self { clip_index, frame }
     }
 
     /// 1-based playlist index for UI (`[i]`).
@@ -30,7 +29,7 @@ pub fn format_playlist_frames(pos: PlaylistPos, frame_count: u32) -> String {
     format!(
         "[{}] {} / {}",
         pos.display_index(),
-        pos.local_frame,
+        pos.frame,
         last_frame_id(frame_count)
     )
 }
@@ -38,19 +37,19 @@ pub fn format_playlist_frames(pos: PlaylistPos, frame_count: u32) -> String {
 /// Timecode readout: `[1] 00:00:01:23 / 00:00:11:25` (current clip only).
 pub fn format_playlist_timecode(pos: PlaylistPos, meta: &VideoMetadata) -> String {
     let last = last_frame_id(meta.frame_count);
-    let now = format_timecode_at_loose(meta, pos.local_frame);
+    let now = format_timecode_at_loose(meta, pos.frame.get());
     let end = format_timecode_at_loose(meta, last);
     format!("[{}] {now} / {end}", pos.display_index())
 }
 
 /// Go-to draft seed: `[i] now` only — `/ end` stays display-only.
 pub fn format_playlist_goto_frames(pos: PlaylistPos) -> String {
-    format!("[{}] {}", pos.display_index(), pos.local_frame)
+    format!("[{}] {}", pos.display_index(), pos.frame)
 }
 
 /// Go-to draft seed (timecode): `[i] 00:00:01:23`.
 pub fn format_playlist_goto_timecode(pos: PlaylistPos, meta: &VideoMetadata) -> String {
-    let now = format_timecode_at_loose(meta, pos.local_frame);
+    let now = format_timecode_at_loose(meta, pos.frame.get());
     format!("[{}] {now}", pos.display_index())
 }
 
@@ -95,11 +94,8 @@ pub fn parse_playlist_goto(
     let (clip_opt, rest) = split_playlist_goto(raw)?;
     let clip_index = clip_opt.unwrap_or(current_clip);
     let meta = meta_for_clip(clip_index)?;
-    let local_frame = parse_position(&meta, rest)?;
-    Some(PlaylistPos {
-        clip_index,
-        local_frame,
-    })
+    let frame = parse_position(&meta, rest)?;
+    Some(PlaylistPos::new(clip_index, ClipFrame::from_source(frame)))
 }
 
 #[cfg(test)]
@@ -127,14 +123,14 @@ mod tests {
 
     #[test]
     fn format_frames_and_timecode() {
-        let pos = PlaylistPos::new(1, 10);
+        let pos = PlaylistPos::new(1, ClipFrame::new(10));
         assert_eq!(format_playlist_frames(pos, 100), "[2] 10 / 99");
         assert_eq!(format_playlist_goto_frames(pos), "[2] 10");
         let meta = meta_24fps(240);
-        let s = format_playlist_timecode(PlaylistPos::new(0, 24), &meta);
+        let s = format_playlist_timecode(PlaylistPos::new(0, ClipFrame::new(24)), &meta);
         assert_eq!(s, "[1] 00:00:01:00 / 00:00:09:23");
         assert_eq!(
-            format_playlist_goto_timecode(PlaylistPos::new(0, 24), &meta),
+            format_playlist_goto_timecode(PlaylistPos::new(0, ClipFrame::new(24)), &meta),
             "[1] 00:00:01:00"
         );
     }
@@ -159,15 +155,15 @@ mod tests {
 
         assert_eq!(
             parse_playlist_goto("[2] 10", 0, resolve),
-            Some(PlaylistPos::new(1, 10))
+            Some(PlaylistPos::new(1, ClipFrame::new(10)))
         );
         assert_eq!(
             parse_playlist_goto("12", 0, resolve),
-            Some(PlaylistPos::new(0, 12))
+            Some(PlaylistPos::new(0, ClipFrame::new(12)))
         );
         assert_eq!(
             parse_playlist_goto("[1] 00:00:01:00", 1, resolve),
-            Some(PlaylistPos::new(0, 24))
+            Some(PlaylistPos::new(0, ClipFrame::new(24)))
         );
         assert!(parse_playlist_goto("[9] 1", 0, resolve).is_none());
     }

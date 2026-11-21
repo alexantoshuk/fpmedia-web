@@ -7,7 +7,7 @@ use fpmedia_web_components::helpers::{
     playhead_tip_css, playhead_width_css, strip_canvas_buffer_width,
 };
 use fpmedia_web_components::{
-    HoverThumb, HoverThumbCtx, MediaRef, PipelinePlane, PipelineStats, ReadyFrameKind,
+    GlobalFrame, HoverThumb, HoverThumbCtx, MediaRef, PipelinePlane, PipelineStats, ReadyFrameKind,
     ScrubCachePolicy, Scrubber, ScrubberCtx, ThumbPolicy, TimelineMeta, TimelineMetaKind, VERSION,
     Video, VideoPlaylist, VideoPlaylistRef, VideoRef, format_playlist_frames,
     format_playlist_goto_frames, format_playlist_goto_timecode, format_playlist_timecode,
@@ -1784,10 +1784,10 @@ fn playlist_position_sides(playlist: VideoPlaylistRef, format: PositionFormat) -
     let last = last_frame_id(n);
     let i = pos.display_index();
     match format {
-        PositionFormat::Frames => (format!("[{i}] {}", pos.local_frame), last.to_string()),
+        PositionFormat::Frames => (format!("[{i}] {}", pos.frame.get()), last.to_string()),
         PositionFormat::Timecode => match live.metadata.get() {
             Some(m) => (
-                format!("[{i}] {}", format_timecode_at_loose(&m, pos.local_frame)),
+                format!("[{i}] {}", format_timecode_at_loose(&m, pos.frame.get())),
                 format_timecode_at_loose(&m, last),
             ),
             // Live warm but meta not yet — keep Timecode mode via model fps.
@@ -1798,7 +1798,7 @@ fn playlist_position_sides(playlist: VideoPlaylistRef, format: PositionFormat) -
                     .clip(pos.clip_index as usize)
                     .and_then(|c| c.fps);
                 (
-                    format!("[{i}] {}", format_timecode_from_fps(pos.local_frame, fps)),
+                    format!("[{i}] {}", format_timecode_from_fps(pos.frame.get(), fps)),
                     format_timecode_from_fps(last, fps),
                 )
             }
@@ -1915,7 +1915,7 @@ fn PositionDisplay(
                             format!(
                                 "[{}] {}",
                                 pos.display_index(),
-                                format_timecode_from_fps(pos.local_frame, fps)
+                                format_timecode_from_fps(pos.frame.get(), fps)
                             )
                         }
                     }
@@ -2179,7 +2179,7 @@ fn HoverPlaylistThumbLabel(
                     return String::new();
                 };
                 let model = playlist.model.get();
-                let Some(pos) = model.at_global_frame(global) else {
+                let Some(pos) = model.at_global_frame(GlobalFrame::new(global)) else {
                     return String::new();
                 };
                 let Some(clip) = model.clip(pos.clip_index as usize) else {
@@ -2218,7 +2218,7 @@ fn HoverPlaylistThumbLabel(
                         // fall back to bare frames when the slot is cold.
                         None => {
                             let last = last_frame_id(n);
-                            let now = format_timecode_from_fps(pos.local_frame, clip.fps);
+                            let now = format_timecode_from_fps(pos.frame.get(), clip.fps);
                             let end = format_timecode_from_fps(last, clip.fps);
                             format!("[{}] {now} / {end}", pos.display_index())
                         }

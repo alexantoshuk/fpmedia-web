@@ -8,6 +8,7 @@
 
 use leptos::prelude::*;
 
+use crate::frame_axis::GlobalFrame;
 use crate::virtual_timeline::{
     seam_ensure_preparing as vt_seam_ensure_preparing, seam_try_begin, zone_owner_from_spans,
 };
@@ -36,10 +37,10 @@ pub(crate) fn loop_owner(pl: VideoPlaylistRef) -> LoopOwner {
     let model = pl.model.get_untracked();
     let live_i = pl.live_clip.get_untracked();
     let (zone_in, zone_out) = pl.loop_zone();
-    let Some(clip_start) = model.clip_start_frame(live_i) else {
+    let Some(clip_start) = model.clip_start_frame(live_i).map(GlobalFrame::get) else {
         return LoopOwner::Host;
     };
-    let Some(clip_end) = model.clip_end_frame(live_i) else {
+    let Some(clip_end) = model.clip_end_frame(live_i).map(GlobalFrame::get) else {
         return LoopOwner::Host;
     };
     zone_owner_from_spans(true, zone_in, zone_out, clip_start, clip_end)

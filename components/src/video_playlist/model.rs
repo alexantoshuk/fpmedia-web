@@ -5,6 +5,8 @@
 
 use fpmedia_web::{FrameRun, VideoMetadata};
 
+use crate::frame_axis::{ClipFrame, GlobalFrame};
+
 use super::PlaylistPos;
 
 /// One playlist entry after metadata probe (timing only — no decode session).
@@ -116,12 +118,15 @@ impl PlaylistModel {
     }
 
     /// Global frame index at the start of clip `index`.
-    pub fn clip_start_frame(&self, index: u32) -> Option<u32> {
-        self.frame_starts.get(index as usize).copied()
+    pub fn clip_start_frame(&self, index: u32) -> Option<GlobalFrame> {
+        self.frame_starts
+            .get(index as usize)
+            .copied()
+            .map(GlobalFrame::new)
     }
 
     /// Exclusive end global frame of clip `index` (next start / total).
-    pub fn clip_end_frame(&self, index: u32) -> Option<u32> {
+    pub fn clip_end_frame(&self, index: u32) -> Option<GlobalFrame> {
         let i = index as usize;
         if i >= self.clips.len() {
             return None;
@@ -129,23 +134,24 @@ impl PlaylistModel {
         if i + 1 < self.clips.len() {
             self.clip_start_frame(index + 1)
         } else {
-            Some(self.total_frame_count)
+            Some(GlobalFrame::new(self.total_frame_count))
         }
     }
 
     /// Map playlist scrub units (global frame) → position.
-    pub fn at_global_frame(&self, global: u32) -> Option<PlaylistPos> {
+    pub fn at_global_frame(&self, global: GlobalFrame) -> Option<PlaylistPos> {
+        let global = global.get();
         if self.clips.is_empty() {
             return None;
         }
         if self.total_frame_count == 0 {
-            return Some(PlaylistPos::new(0, 0));
+            return Some(PlaylistPos::new(0, ClipFrame::new(0)));
         }
         if global >= self.total_frame_count {
             let i = self.clips.len() - 1;
             return Some(PlaylistPos {
                 clip_index: i as u32,
-                local_frame: self.clips[i].last_frame(),
+                frame: ClipFrame::new(self.clips[i].last_frame()),
             });
         }
         let mut i = 0usize;
@@ -156,24 +162,26 @@ impl PlaylistModel {
         let clip = &self.clips[i];
         Some(PlaylistPos {
             clip_index: i as u32,
-            local_frame: local.min(clip.last_frame()),
+            frame: ClipFrame::new(local.min(clip.last_frame())),
         })
     }
 
     /// Global frame at the start of `pos` (clamped to the clip).
-    pub fn global_frame_at(&self, pos: PlaylistPos) -> Option<u32> {
+    pub fn global_frame_at(&self, pos: PlaylistPos) -> Option<GlobalFrame> {
         let i = pos.clip_index as usize;
         let clip = self.clip(i)?;
         let start = *self.frame_starts.get(i)?;
-        let local = pos.local_frame.min(clip.last_frame());
-        Some(start.saturating_add(local))
+        let local = pos.frame.get().min(clip.last_frame());
+        Some(GlobalFrame::new(start.saturating_add(local)))
     }
 
-    /// Inclusive clip-local `run` → global run (both ends clamped to the clip).
+    /// Inclusive source-axis `run` of a clip → global run (both ends clamped to the clip).
     pub fn global_run_at(&self, clip_index: u32, run: FrameRun) -> Option<FrameRun> {
-        let lo = self.global_frame_at(PlaylistPos::new(clip_index, run.lo))?;
-        let hi = self.global_frame_at(PlaylistPos::new(clip_index, run.hi))?;
-        Some(FrameRun::new(lo, hi))
+        let lo =
+            self.global_frame_at(PlaylistPos::new(clip_index, ClipFrame::from_source(run.lo)))?;
+        let hi =
+            self.global_frame_at(PlaylistPos::new(clip_index, ClipFrame::from_source(run.hi)))?;
+        Some(FrameRun::new(lo.get(), hi.get()))
     }
 
     /// Global time at the start of a clip.
@@ -192,7 +200,7 @@ impl PlaylistModel {
             let clip = &self.clips[i];
             return Some(PlaylistPos {
                 clip_index: i as u32,
-                local_frame: clip.last_frame(),
+                frame: ClipFrame::new(clip.last_frame()),
             });
         }
         let mut i = 0usize;
@@ -203,7 +211,7 @@ impl PlaylistModel {
         let clip = &self.clips[i];
         Some(PlaylistPos {
             clip_index: i as u32,
-            local_frame: clip.frame_at_local_time(local),
+            frame: ClipFrame::new(clip.frame_at_local_time(local)),
         })
     }
 
@@ -212,7 +220,7 @@ impl PlaylistModel {
         let i = pos.clip_index as usize;
         let clip = self.clip(i)?;
         let start = self.starts[i];
-        Some(start + clip.time_at_frame(pos.local_frame))
+        Some(start + clip.time_at_frame(pos.frame.get()))
     }
 
     /// `frac` in `0…1` along scrub domain (Σ frames) → position.
@@ -223,12 +231,14 @@ impl PlaylistModel {
         if self.total_frame_count == 0 {
             return Some(PlaylistPos {
                 clip_index: 0,
-                local_frame: 0,
+                frame: ClipFrame::new(0),
             });
         }
         let f = frac.clamp(0.0, 1.0);
         let g = (f * f64::from(self.total_frame_count)).floor() as u32;
-        self.at_global_frame(g.min(self.total_frame_count.saturating_sub(1)))
+        self.at_global_frame(GlobalFrame::new(
+            g.min(self.total_frame_count.saturating_sub(1)),
+        ))
     }
 
     /// Hysteresis (frames) so midpoint scrub does not flip cut-idle every move.
@@ -363,12 +373,12 @@ mod tests {
         assert!((m.total_duration_secs() - 2.0).abs() < 1e-9);
         assert_eq!(m.total_frame_count(), 48);
         let p0 = m.at_time(0.0).unwrap();
-        assert_eq!(p0, PlaylistPos::new(0, 0));
+        assert_eq!(p0, PlaylistPos::new(0, ClipFrame::new(0)));
         let p_mid = m.at_time(1.0).unwrap();
         assert_eq!(p_mid.clip_index, 0);
-        assert_eq!(p_mid.local_frame, 24);
-        assert_eq!(m.global_frame_at(p_mid), Some(24));
-        assert_eq!(m.at_global_frame(24), Some(p_mid));
+        assert_eq!(p_mid.frame, ClipFrame::new(24));
+        assert_eq!(m.global_frame_at(p_mid), Some(GlobalFrame::new(24)));
+        assert_eq!(m.at_global_frame(GlobalFrame::new(24)), Some(p_mid));
     }
 
     #[test]
@@ -376,28 +386,49 @@ mod tests {
         // 24 frames + 60 frames → scrub midpoint is frame 42 (in clip 1), not the cut.
         let m = PlaylistModel::new(vec![clip(24, 1.0, 24.0), clip(60, 1.0, 60.0)]);
         assert_eq!(m.total_frame_count(), 84);
-        assert_eq!(m.clip_start_frame(0), Some(0));
-        assert_eq!(m.clip_end_frame(0), Some(24));
-        assert_eq!(m.clip_start_frame(1), Some(24));
-        assert_eq!(m.clip_end_frame(1), Some(84));
+        assert_eq!(m.clip_start_frame(0), Some(GlobalFrame::new(0)));
+        assert_eq!(m.clip_end_frame(0), Some(GlobalFrame::new(24)));
+        assert_eq!(m.clip_start_frame(1), Some(GlobalFrame::new(24)));
+        assert_eq!(m.clip_end_frame(1), Some(GlobalFrame::new(84)));
 
-        assert_eq!(m.at_global_frame(0), Some(PlaylistPos::new(0, 0)));
-        assert_eq!(m.at_global_frame(23), Some(PlaylistPos::new(0, 23)));
-        assert_eq!(m.at_global_frame(24), Some(PlaylistPos::new(1, 0)));
-        assert_eq!(m.at_global_frame(83), Some(PlaylistPos::new(1, 59)));
-        assert_eq!(m.at_global_frame(99), Some(PlaylistPos::new(1, 59)));
+        assert_eq!(
+            m.at_global_frame(GlobalFrame::new(0)),
+            Some(PlaylistPos::new(0, ClipFrame::new(0)))
+        );
+        assert_eq!(
+            m.at_global_frame(GlobalFrame::new(23)),
+            Some(PlaylistPos::new(0, ClipFrame::new(23)))
+        );
+        assert_eq!(
+            m.at_global_frame(GlobalFrame::new(24)),
+            Some(PlaylistPos::new(1, ClipFrame::new(0)))
+        );
+        assert_eq!(
+            m.at_global_frame(GlobalFrame::new(83)),
+            Some(PlaylistPos::new(1, ClipFrame::new(59)))
+        );
+        assert_eq!(
+            m.at_global_frame(GlobalFrame::new(99)),
+            Some(PlaylistPos::new(1, ClipFrame::new(59)))
+        );
 
         // Half of Σ frames ≈ frame 42 → clip 1 local 18.
-        assert_eq!(m.at_fraction(0.5).unwrap(), PlaylistPos::new(1, 18));
+        assert_eq!(
+            m.at_fraction(0.5).unwrap(),
+            PlaylistPos::new(1, ClipFrame::new(18))
+        );
     }
 
     #[test]
     fn two_clips_time_helpers_unchanged() {
         let m = PlaylistModel::new(vec![clip(24, 1.0, 24.0), clip(60, 1.0, 60.0)]);
-        assert_eq!(m.at_time(1.0).unwrap(), PlaylistPos::new(1, 0));
+        assert_eq!(
+            m.at_time(1.0).unwrap(),
+            PlaylistPos::new(1, ClipFrame::new(0))
+        );
         let in_b = m.at_time(1.5).unwrap();
         assert_eq!(in_b.clip_index, 1);
-        assert_eq!(in_b.local_frame, 30);
+        assert_eq!(in_b.frame, ClipFrame::new(30));
     }
 
     #[test]

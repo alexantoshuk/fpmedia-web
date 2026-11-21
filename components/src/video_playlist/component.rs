@@ -5,6 +5,7 @@ use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::Video;
+use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::video_playlist::PlaylistPos;
 
 use super::host::PlaylistHost;
@@ -80,9 +81,13 @@ pub fn VideoPlaylist(
         let committed = live.frame.get();
         let aim = live.playhead.get();
         let local = if aim != committed { aim } else { committed };
-        let p = PlaylistPos::new(clip, local);
+        let p = PlaylistPos::new(clip, ClipFrame::from_source(local));
         if seam_busy(playlist) {
-            if let Some(would) = model.get_untracked().global_frame_at(p) {
+            if let Some(would) = model
+                .get_untracked()
+                .global_frame_at(p)
+                .map(GlobalFrame::get)
+            {
                 let cur = playhead.get_untracked();
                 let (zone_in, zone_out) = playlist.loop_zone();
                 let zone_last = zone_out.saturating_sub(1);
@@ -100,7 +105,11 @@ pub fn VideoPlaylist(
             return;
         }
         pos.set(p);
-        if let Some(g) = model.get_untracked().global_frame_at(p) {
+        if let Some(g) = model
+            .get_untracked()
+            .global_frame_at(p)
+            .map(GlobalFrame::get)
+        {
             let cur = playhead.get_untracked();
             let (_, zone_out) = playlist.loop_zone();
             let zone_last = zone_out.saturating_sub(1);
@@ -139,7 +148,7 @@ pub fn VideoPlaylist(
         let wall_on_live = playlist
             .model
             .get_untracked()
-            .at_global_frame(zone_last)
+            .at_global_frame(GlobalFrame::new(zone_last))
             .is_some_and(|p| p.clip_index == live_clip.get_untracked());
         let wall = plan_host_outside(HostOutsideCtx {
             owner,

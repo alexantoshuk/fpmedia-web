@@ -16,6 +16,7 @@ use crate::ReadyFrameKind;
 use crate::ReadyFrameMark;
 use crate::VideoPlaylistRef;
 use crate::VideoRef;
+use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::video_playlist::PlaylistPos;
 use crate::video_playlist::video_playlist_ref::ScrubPhase;
 use crate::virtual_timeline::{
@@ -134,7 +135,7 @@ impl TimelineRef {
         let changed = match self.inner {
             TimelineInner::Video(v) => {
                 let mut led = h.borrow_mut();
-                note_covered_from_video_ref(&mut led, &v, Some)
+                note_covered_from_video_ref(&mut led, &v, |l| Some(GlobalFrame::new(l)))
             }
             TimelineInner::Playlist(p) => {
                 let model = p.model.get_untracked();
@@ -143,12 +144,16 @@ impl TimelineRef {
                 let live_clip = p.live_clip.get_untracked();
                 let live = p.live_video();
                 changed |= note_covered_from_video_ref(&mut led, &live, |local| {
-                    model.global_frame_at(PlaylistPos::new(live_clip, local))
+                    model
+                        .global_frame_at(PlaylistPos::new(live_clip, ClipFrame::from_source(local)))
                 });
                 if let Some(idle_idx) = p.idle_clip.get_untracked() {
                     let idle = p.idle_video();
                     changed |= note_covered_from_video_ref(&mut led, &idle, |local| {
-                        model.global_frame_at(PlaylistPos::new(idle_idx, local))
+                        model.global_frame_at(PlaylistPos::new(
+                            idle_idx,
+                            ClipFrame::from_source(local),
+                        ))
                     });
                 }
                 changed
@@ -170,7 +175,7 @@ impl TimelineRef {
         let changed = match self.inner {
             TimelineInner::Video(v) => {
                 let mut led = h.borrow_mut();
-                note_fetch_from_video_ref(&mut led, &v, Some)
+                note_fetch_from_video_ref(&mut led, &v, |l| Some(GlobalFrame::new(l)))
             }
             TimelineInner::Playlist(p) => {
                 let model = p.model.get_untracked();
@@ -179,12 +184,16 @@ impl TimelineRef {
                 let live_clip = p.live_clip.get_untracked();
                 let live = p.live_video();
                 changed |= note_fetch_from_video_ref(&mut led, &live, |local| {
-                    model.global_frame_at(PlaylistPos::new(live_clip, local))
+                    model
+                        .global_frame_at(PlaylistPos::new(live_clip, ClipFrame::from_source(local)))
                 });
                 if let Some(idle_idx) = p.idle_clip.get_untracked() {
                     let idle = p.idle_video();
                     changed |= note_fetch_from_video_ref(&mut led, &idle, |local| {
-                        model.global_frame_at(PlaylistPos::new(idle_idx, local))
+                        model.global_frame_at(PlaylistPos::new(
+                            idle_idx,
+                            ClipFrame::from_source(local),
+                        ))
                     });
                 }
                 changed
@@ -271,8 +280,14 @@ impl TimelineRef {
                 let live_clip = p.live_clip.get();
                 let model = p.model.get();
                 let total = self.frame_count.get().max(1);
-                let start = model.clip_start_frame(live_clip).unwrap_or(0);
-                let end = model.clip_end_frame(live_clip).unwrap_or(total);
+                let start = model
+                    .clip_start_frame(live_clip)
+                    .map(GlobalFrame::get)
+                    .unwrap_or(0);
+                let end = model
+                    .clip_end_frame(live_clip)
+                    .map(GlobalFrame::get)
+                    .unwrap_or(total);
                 fetch_ranges_in_clip_window(ranges, start, end, total)
             }
         }

@@ -6,6 +6,7 @@
 //! **no equivalent** (playlist local).
 
 use super::position::PlaylistPos;
+use crate::frame_axis::ClipFrame;
 
 // Same as `host_zone`: wasm call sites; native only builds `plan_step` + VT tests.
 #[cfg_attr(not(target_arch = "wasm32"), allow(unused_imports))]
@@ -29,13 +30,13 @@ pub(crate) enum StepDir {
 pub(crate) struct StepCtx {
     pub dir: StepDir,
     pub clip_index: u32,
-    pub local_frame: u32,
+    pub frame: ClipFrame,
     /// Last presentation frame of the live clip (`frame_count − 1`).
-    pub clip_last_frame: u32,
+    pub clip_last_frame: ClipFrame,
     pub clip_count: u32,
     pub looping: bool,
     /// Prev @0 → previous clip's last; Prev wrap → last clip's last; Next unused.
-    pub edge_target_local: u32,
+    pub edge_target_local: ClipFrame,
 }
 
 /// What Next/Prev must run — stop Play / ignore LoopZone (Goto, not seek).
@@ -55,24 +56,24 @@ pub(crate) enum StepPlan {
 pub(crate) fn plan_step(ctx: StepCtx) -> StepPlan {
     match ctx.dir {
         StepDir::Next => {
-            if ctx.local_frame < ctx.clip_last_frame {
+            if ctx.frame < ctx.clip_last_frame {
                 return StepPlan::LiveStep { dir: StepDir::Next };
             }
             let next = ctx.clip_index.saturating_add(1);
             if next < ctx.clip_count {
                 return StepPlan::GotoPos {
-                    pos: PlaylistPos::new(next, 0),
+                    pos: PlaylistPos::new(next, ClipFrame::new(0)),
                 };
             }
             if ctx.looping && ctx.clip_count > 0 {
                 return StepPlan::GotoPos {
-                    pos: PlaylistPos::new(0, 0),
+                    pos: PlaylistPos::new(0, ClipFrame::new(0)),
                 };
             }
             StepPlan::ClearPlayIntent
         }
         StepDir::Prev => {
-            if ctx.local_frame > 0 {
+            if ctx.frame.get() > 0 {
                 return StepPlan::LiveStep { dir: StepDir::Prev };
             }
             if ctx.clip_index > 0 {
@@ -99,11 +100,11 @@ mod tests {
         StepCtx {
             dir: StepDir::Next,
             clip_index: clip,
-            local_frame: local,
-            clip_last_frame: last,
+            frame: ClipFrame::new(local),
+            clip_last_frame: ClipFrame::new(last),
             clip_count: count,
             looping,
-            edge_target_local: 0,
+            edge_target_local: ClipFrame::new(0),
         }
     }
 
@@ -111,11 +112,11 @@ mod tests {
         StepCtx {
             dir: StepDir::Prev,
             clip_index: clip,
-            local_frame: local,
-            clip_last_frame: 99,
+            frame: ClipFrame::new(local),
+            clip_last_frame: ClipFrame::new(99),
             clip_count: count,
             looping,
-            edge_target_local: edge_local,
+            edge_target_local: ClipFrame::new(edge_local),
         }
     }
 
@@ -128,13 +129,13 @@ mod tests {
         assert_eq!(
             plan_step(step_next(99, 99, 0, 2, false)),
             StepPlan::GotoPos {
-                pos: PlaylistPos::new(1, 0)
+                pos: PlaylistPos::new(1, ClipFrame::new(0))
             }
         );
         assert_eq!(
             plan_step(step_next(99, 99, 1, 2, true)),
             StepPlan::GotoPos {
-                pos: PlaylistPos::new(0, 0)
+                pos: PlaylistPos::new(0, ClipFrame::new(0))
             }
         );
         assert_eq!(
@@ -152,13 +153,13 @@ mod tests {
         assert_eq!(
             plan_step(step_prev(0, 1, 2, false, 40)),
             StepPlan::GotoPos {
-                pos: PlaylistPos::new(0, 40)
+                pos: PlaylistPos::new(0, ClipFrame::new(40))
             }
         );
         assert_eq!(
             plan_step(step_prev(0, 0, 2, true, 77)),
             StepPlan::GotoPos {
-                pos: PlaylistPos::new(1, 77)
+                pos: PlaylistPos::new(1, ClipFrame::new(77))
             }
         );
         assert_eq!(

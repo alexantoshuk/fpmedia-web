@@ -4,6 +4,7 @@
 //! (coarse grid kept longer). **no equivalent** (filmstrip local).
 //! Decode: `mediabunny:` CanvasSink — producer only.
 
+use crate::frame_axis::GlobalFrame;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -89,30 +90,31 @@ impl VtThumbCache {
         }
     }
 
-    pub fn has(&self, global: FrameId, width: u32, height: u32) -> bool {
+    pub fn has(&self, global: GlobalFrame, width: u32, height: u32) -> bool {
         self.by_frame
-            .get(&global)
+            .get(&global.get())
             .is_some_and(|e| e.matches_size(width, height))
     }
 
-    pub fn has_any(&self, global: FrameId) -> bool {
-        self.by_frame.contains_key(&global)
+    pub fn has_any(&self, global: GlobalFrame) -> bool {
+        self.by_frame.contains_key(&global.get())
     }
 
     /// Exact frame hit at size.
-    pub fn get(&self, global: FrameId, width: u32, height: u32) -> Option<&ImageBitmap> {
-        let e = self.by_frame.get(&global)?;
+    pub fn get(&self, global: GlobalFrame, width: u32, height: u32) -> Option<&ImageBitmap> {
+        let e = self.by_frame.get(&global.get())?;
         e.matches_size(width, height).then_some(&e.bitmap)
     }
 
     /// Closest resident thumb to `target`. Prefers `width`×`height` match, else any size.
     pub fn nearest(
         &self,
-        target: FrameId,
+        target: GlobalFrame,
         width: u32,
         height: u32,
         dir: i8,
-    ) -> Option<(FrameId, &ImageBitmap, u32, u32)> {
+    ) -> Option<(GlobalFrame, &ImageBitmap, u32, u32)> {
+        let target = target.get();
         let _ = dir;
         let pick = |require_size: bool| -> Option<(FrameId, FrameId)> {
             let mut best: Option<(FrameId, FrameId)> = None;
@@ -134,18 +136,19 @@ impl VtThumbCache {
         let (id, _) = pick(true).or_else(|| pick(false))?;
         self.by_frame
             .get(&id)
-            .map(|e| (id, &e.bitmap, e.width, e.height))
+            .map(|e| (GlobalFrame::new(id), &e.bitmap, e.width, e.height))
     }
 
     /// Insert or replace. Evicts denser (higher rank) first. Closes `bitmap` on refuse.
     pub fn put(
         &mut self,
-        global: FrameId,
+        global: GlobalFrame,
         bitmap: ImageBitmap,
         width: u32,
         height: u32,
         rank: u16,
     ) -> bool {
+        let global = global.get();
         let replacing = self.by_frame.contains_key(&global);
         if !replacing {
             let floor = if rank == u16::MAX { 1 } else { rank };
@@ -232,6 +235,6 @@ mod tests {
         let c = VtThumbCache::new(4);
         assert_eq!(c.max_thumbs(), 4);
         assert!(c.is_empty());
-        assert!(!c.has_any(0));
+        assert!(!c.has_any(GlobalFrame::new(0)));
     }
 }

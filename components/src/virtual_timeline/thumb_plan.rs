@@ -7,6 +7,7 @@
 use fpmedia_web::{FrameId, next_progressive_sync_key, thumb_progressive_coarse_count};
 
 use super::BackendAim;
+use crate::frame_axis::GlobalFrame;
 use crate::video_playlist::PlaylistModel;
 
 /// Inputs for [`plan_next_thumb_fill`].
@@ -42,7 +43,7 @@ pub fn map_local_sync_keys_to_global(
     let Some(start) = model.clip_start_frame(clip_index) else {
         return Vec::new();
     };
-    let start = FrameId::from(start);
+    let start = start.get();
     local_keys
         .iter()
         .copied()
@@ -51,12 +52,15 @@ pub fn map_local_sync_keys_to_global(
 }
 
 /// Resolve a planned global thumb key onto a decode backend.
-pub fn resolve_thumb_fill_playlist(model: &PlaylistModel, global: FrameId) -> Option<BackendAim> {
+pub fn resolve_thumb_fill_playlist(
+    model: &PlaylistModel,
+    global: GlobalFrame,
+) -> Option<BackendAim> {
     super::resolve_playlist(model, global)
 }
 
 /// Single-clip: global == local.
-pub fn resolve_thumb_fill_single(global: FrameId, frame_count: FrameId) -> Option<BackendAim> {
+pub fn resolve_thumb_fill_single(global: GlobalFrame, frame_count: FrameId) -> Option<BackendAim> {
     super::resolve_single(global, frame_count)
 }
 
@@ -77,6 +81,7 @@ pub fn merge_global_sync_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame_axis::ClipFrame;
     use crate::video_playlist::PlaylistClip;
 
     fn two_clip_model() -> PlaylistModel {
@@ -121,15 +126,15 @@ mod tests {
         let second = plan_next_thumb_fill(&input, |g| ready.contains(&g)).expect("second");
         // Coarse spreads across full key list — not only clip 0 densify.
         assert!(second > 0);
-        let aim = resolve_thumb_fill_playlist(&model, second).expect("resolve");
+        let aim = resolve_thumb_fill_playlist(&model, GlobalFrame::new(second)).expect("resolve");
         assert!(aim.clip_index <= 1);
     }
 
     #[test]
     fn single_identity_resolve() {
-        let aim = resolve_thumb_fill_single(12, 100).expect("ok");
-        assert_eq!(aim.global, 12);
-        assert_eq!(aim.local, 12);
+        let aim = resolve_thumb_fill_single(GlobalFrame::new(12), 100).expect("ok");
+        assert_eq!(aim.global, GlobalFrame::new(12));
+        assert_eq!(aim.frame, ClipFrame::new(12));
         assert_eq!(aim.clip_index, 0);
     }
 }

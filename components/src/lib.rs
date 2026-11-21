@@ -8,6 +8,7 @@
 //! - [`timeline_meta`] — `<TimelineMeta>` (one fetch/residency strip)
 //! - [`hover_thumb`] — `<HoverThumb>` (paint inside; host chrome via children)
 //! - [`strip`] — strip pixel-run math + 1 px canvas paint
+//! - [`frame_axis`] — Source / Clip / Global frame axes ([`ClipFrame`], [`GlobalFrame`])
 //! - [`helpers`] — playhead / scrub-x CSS math, hover geometry, metadata formatters
 //! - [`video_playlist`] — playlist model + `[i]` helpers + [`VideoPlaylist`] / [`VideoPlaylistRef`] (wasm)
 //! - `audio` — planned pure-audio host (`AudioRef`)
@@ -18,6 +19,7 @@
 /// Crate version (`Cargo.toml`) — demo / host chrome should show this, not a parallel number.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod frame_axis;
 pub mod helpers;
 #[cfg(target_arch = "wasm32")]
 pub mod hover_thumb;
@@ -35,6 +37,7 @@ pub mod video;
 pub mod video_playlist;
 pub mod virtual_timeline;
 
+pub use frame_axis::{ClipFrame, GlobalFrame};
 #[cfg(target_arch = "wasm32")]
 pub use hover_thumb::{
     DEFAULT_HOVER_THUMB_MAX_H, DEFAULT_HOVER_THUMB_MAX_W, HoverThumb, HoverThumbCtx,

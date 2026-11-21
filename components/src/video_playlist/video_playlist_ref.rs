@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use web_sys::HtmlCanvasElement;
 
 use crate::VideoRef;
+use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 use crate::virtual_timeline::{resolve_zone, store_zone};
 
@@ -114,7 +115,7 @@ impl VideoPlaylistRef {
             loop_in: RwSignal::new(0),
             loop_out: RwSignal::new(None),
             model: RwSignal::new(PlaylistModel::default()),
-            pos: RwSignal::new(PlaylistPos::new(0, 0)),
+            pos: RwSignal::new(PlaylistPos::new(0, ClipFrame::from_source(0))),
             playhead: RwSignal::new(0),
             frame_count: RwSignal::new(0),
             live_clip: RwSignal::new(0),
@@ -473,7 +474,7 @@ impl VideoPlaylistRef {
     fn cut_idle_want(self, aim: PlaylistPos) -> Option<u32> {
         self.model.get_untracked().idle_neighbor_near_cut(
             aim.clip_index,
-            aim.local_frame,
+            aim.frame.source(),
             self.looping.get_untracked(),
             self.idle_clip.get_untracked(),
         )
@@ -500,7 +501,11 @@ impl VideoPlaylistRef {
             }
         }
         self.playhead.set(global_frame);
-        let Some(aim) = self.model.get_untracked().at_global_frame(global_frame) else {
+        let Some(aim) = self
+            .model
+            .get_untracked()
+            .at_global_frame(GlobalFrame::new(global_frame))
+        else {
             if matches!(phase, ScrubPhase::Up) {
                 self.scrubbing.set(false);
             }
@@ -553,10 +558,10 @@ impl VideoPlaylistRef {
         if aim.clip_index == self.live_clip.get_untracked() {
             let live = self.live_video();
             match phase {
-                ScrubPhase::Down => live.scrub_pointer_down(aim.local_frame),
+                ScrubPhase::Down => live.scrub_pointer_down(aim.frame.source()),
                 // After promote the new live never saw PointerDown — Move alone is a no-op.
-                ScrubPhase::Move if promoted => live.scrub_pointer_down(aim.local_frame),
-                ScrubPhase::Move => live.scrub_pointer_move(aim.local_frame),
+                ScrubPhase::Move if promoted => live.scrub_pointer_down(aim.frame.source()),
+                ScrubPhase::Move => live.scrub_pointer_move(aim.frame.source()),
                 ScrubPhase::Up => {
                     let resume = self.scrub_resume.get_untracked();
                     self.scrub_resume.set(false);
@@ -602,7 +607,7 @@ impl VideoPlaylistRef {
             }
             ScrubUpPlan::LiveSettle { then_play } => {
                 let live = self.live_video();
-                live.scrub_pointer_up(aim.local_frame);
+                live.scrub_pointer_up(aim.frame.source());
                 if then_play {
                     // Host-aware Play — not bare slot `play()` (skips wrap).
                     self.play();
@@ -611,7 +616,7 @@ impl VideoPlaylistRef {
                     // (PresentHit/cancel storms left strip empty). **no equivalent**.
                     live.set_scrub_cache_policy(fpmedia_web::ScrubCachePolicy::On);
                     live.clear_densify_hold();
-                    live.arm_scrub_densify_after_exact(aim.local_frame);
+                    live.arm_scrub_densify_after_exact(aim.frame.source());
                 }
                 // Keep cut-pair idle (near 1|2 → other of pair); Play EOF still
                 // seam-warms next when near wall.
@@ -662,19 +667,26 @@ impl VideoPlaylistRef {
         if self.try_paint_hover_thumb(global_frame, dest.clone(), max_w, max_h) {
             return;
         }
-        let Some(pos) = self.model.get_untracked().at_global_frame(global_frame) else {
+        let Some(pos) = self
+            .model
+            .get_untracked()
+            .at_global_frame(GlobalFrame::new(global_frame))
+        else {
             return;
         };
         // On-slot Pause: slot Exact refine, then import into VT.
         if let Some(video) = self.video_for_clip(pos.clip_index) {
-            video.paint_hover_thumb(pos.local_frame, dest, max_w, max_h);
+            video.paint_hover_thumb(pos.frame.source(), dest, max_w, max_h);
             #[cfg(feature = "thumbs")]
-            if let Some(bmp) = video.clone_thumb_bitmap(pos.local_frame, max_w, max_h)
+            if let Some(bmp) = video.clone_thumb_bitmap(pos.frame.source(), max_w, max_h)
                 && let Some(cache) = self.thumb_cache.get_value()
             {
                 let tw = bmp.width().max(1);
                 let th = bmp.height().max(1);
-                if cache.borrow_mut().put(global_frame, bmp, tw, th, u16::MAX) {
+                if cache
+                    .borrow_mut()
+                    .put(GlobalFrame::new(global_frame), bmp, tw, th, u16::MAX)
+                {
                     self.bump_thumb_residency();
                 }
             }
@@ -696,19 +708,30 @@ impl VideoPlaylistRef {
         if let Some(cache) = self.thumb_cache.get_value() {
             let c = cache.borrow();
             // Prefer exact size; fall back to any stored size for interim.
-            if crate::virtual_timeline::try_paint_vt(&c, global_frame, &dest, max_w, max_h, 0)
-                .is_some()
+            if crate::virtual_timeline::try_paint_vt(
+                &c,
+                GlobalFrame::new(global_frame),
+                &dest,
+                max_w,
+                max_h,
+                0,
+            )
+            .is_some()
             {
                 return true;
             }
         }
-        let Some(pos) = self.model.get_untracked().at_global_frame(global_frame) else {
+        let Some(pos) = self
+            .model
+            .get_untracked()
+            .at_global_frame(GlobalFrame::new(global_frame))
+        else {
             return false;
         };
         let Some(video) = self.video_for_clip(pos.clip_index) else {
             return false;
         };
-        video.try_paint_hover_thumb(pos.local_frame, dest, max_w, max_h)
+        video.try_paint_hover_thumb(pos.frame.source(), dest, max_w, max_h)
     }
 
     pub(crate) fn cancel_hover_thumb(self) {

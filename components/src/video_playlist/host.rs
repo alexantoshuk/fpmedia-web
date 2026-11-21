@@ -9,6 +9,7 @@ use fpmedia_web::timer::sleep_ms;
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
+use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 
 use super::host_zone::is_soft_seam_cancel;
@@ -67,7 +68,7 @@ impl PlaylistHost {
         pl.ended.set(false);
         pl.playing.set(false);
         pl.model.set(PlaylistModel::default());
-        pl.pos.set(PlaylistPos::new(0, 0));
+        pl.pos.set(PlaylistPos::new(0, ClipFrame::from_source(0)));
         pl.playhead.set(0);
         pl.frame_count.set(0);
         pl.loop_in.set(0);
@@ -162,7 +163,7 @@ impl PlaylistHost {
             playlist.loop_in.set(0);
             playlist.loop_out.set(None);
             playhead.set(0);
-            pos.set(PlaylistPos::new(0, 0));
+            pos.set(PlaylistPos::new(0, ClipFrame::from_source(0)));
             live_is_a.set(true);
             live_clip.set(0);
             idle_clip.set(if list.len() > 1 { Some(1) } else { None });
@@ -284,11 +285,11 @@ impl PlaylistHost {
                 let zone_full = zone_in == 0 && zone_out == total;
                 let next_clip = model.next_clip_index(cur);
                 let next_start = next_clip
-                    .and_then(|n| model.clip_start_frame(n))
+                    .and_then(|n| model.clip_start_frame(n).map(GlobalFrame::get))
                     .unwrap_or(0);
                 let zone_in_aim = model
-                    .at_global_frame(zone_in)
-                    .map(|p| (p.clip_index, p.local_frame));
+                    .at_global_frame(GlobalFrame::new(zone_in))
+                    .map(|p| (p.clip_index, p.frame.source()));
                 let seam_next = plan_seam_next_clip(SeamNextCtx {
                     cur,
                     next_clip,
@@ -308,7 +309,7 @@ impl PlaylistHost {
                     PlayAtClipLastPlan::PromoteSeek { clip_index } => {
                         let epoch = open_gen.get_value();
                         let pl = playlist;
-                        let aim = PlaylistPos::new(clip_index, 0);
+                        let aim = PlaylistPos::new(clip_index, ClipFrame::from_source(0));
                         spawn_local(async move {
                             if let Err(e) = seek_to_pos(pl, aim, epoch, true).await {
                                 note_host_seam_err(pl, epoch, e, "Playlist seam failed.");
@@ -338,7 +339,11 @@ impl PlaylistHost {
         if !pl.ready.get_untracked() {
             return;
         }
-        let Some(aim) = pl.model.get_untracked().at_global_frame(global_frame) else {
+        let Some(aim) = pl
+            .model
+            .get_untracked()
+            .at_global_frame(GlobalFrame::new(global_frame))
+        else {
             return;
         };
         let epoch = pl.open_gen.get_value();
@@ -396,11 +401,11 @@ impl PlaylistHost {
         let plan = plan_step(StepCtx {
             dir: StepDir::Next,
             clip_index: clip_i,
-            local_frame: local,
-            clip_last_frame: clip.last_frame(),
+            frame: ClipFrame::from_source(local),
+            clip_last_frame: ClipFrame::new(clip.last_frame()),
             clip_count: model.len() as u32,
             looping: pl.looping.get_untracked(),
-            edge_target_local: 0,
+            edge_target_local: ClipFrame::new(0),
         });
         run_step_plan(pl, plan);
     }
@@ -431,11 +436,11 @@ impl PlaylistHost {
         let plan = plan_step(StepCtx {
             dir: StepDir::Prev,
             clip_index: clip_i,
-            local_frame: local,
-            clip_last_frame: clip.last_frame(),
+            frame: ClipFrame::from_source(local),
+            clip_last_frame: ClipFrame::new(clip.last_frame()),
             clip_count: model.len() as u32,
             looping: pl.looping.get_untracked(),
-            edge_target_local,
+            edge_target_local: ClipFrame::new(edge_target_local),
         });
         run_step_plan(pl, plan);
     }

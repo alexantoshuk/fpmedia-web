@@ -8,6 +8,7 @@
 
 use leptos::prelude::*;
 
+use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::video_playlist::PlaylistPos;
 
 use super::loop_seam::{
@@ -28,11 +29,11 @@ use super::video_playlist_ref::VideoPlaylistRef;
 fn reassert_zone_in_playhead(pl: VideoPlaylistRef) {
     let (zone_in, _) = pl.loop_zone();
     let model = pl.model.get_untracked();
-    let Some(aim) = model.at_global_frame(zone_in) else {
+    let Some(aim) = model.at_global_frame(GlobalFrame::new(zone_in)) else {
         return;
     };
     pl.pos.set(aim);
-    if let Some(g) = model.global_frame_at(aim) {
+    if let Some(g) = model.global_frame_at(aim).map(GlobalFrame::get) {
         pl.playhead.set(g);
     }
 }
@@ -78,9 +79,14 @@ async fn promote_idle_at(
     pl.seam_warm_for.set_value(None);
     // Facade must match new live — else mirror `pos.clip ≠ live` skip (tip-jump
     // guard) freezes the progress bar while Play continues. **no equivalent**.
-    let facade = PlaylistPos::new(clip_index, local);
+    let facade = PlaylistPos::new(clip_index, ClipFrame::from_source(local));
     pl.pos.set(facade);
-    if let Some(g) = pl.model.get_untracked().global_frame_at(facade) {
+    if let Some(g) = pl
+        .model
+        .get_untracked()
+        .global_frame_at(facade)
+        .map(GlobalFrame::get)
+    {
         pl.playhead.set(g);
     }
     let live = pl.live_video();
@@ -127,14 +133,14 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
     let result: Result<(), String> = async {
         let (zone_in, zone_out) = pl.loop_zone();
         let model = pl.model.get_untracked();
-        let Some(aim) = model.at_global_frame(zone_in) else {
+        let Some(aim) = model.at_global_frame(GlobalFrame::new(zone_in)) else {
             resume_live_if_playlist_playing(pl);
             return Err("LoopZone in out of range".into());
         };
         pl.status.set(format!("LoopZone → frame {zone_in}…"));
         pl.seam_warm_for.set_value(None);
         pl.ended.set(false);
-        if let Some(g) = model.global_frame_at(aim) {
+        if let Some(g) = model.global_frame_at(aim).map(GlobalFrame::get) {
             pl.playhead.set(g);
         }
         pl.pos.set(aim);
@@ -143,8 +149,11 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
         // `sync_live_loop_from_playlist` — never leave `set_loop(false)` here
         // (that re-broke intra-clip sharing from `aa8ac99` / `2c19b70`).
         if pl.live_clip.get_untracked() == aim.clip_index {
-            seam_trace(&format!("wrap same-clip prepare local={}", aim.local_frame));
-            let lead = PromoteLead::for_local(aim.local_frame);
+            seam_trace(&format!(
+                "wrap same-clip prepare local={}",
+                aim.frame.source()
+            ));
+            let lead = PromoteLead::for_local(aim.frame.source());
             let live = pl.live_video();
             live.ended.set(false);
             lead.prepare(live).await?;
@@ -167,9 +176,10 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
 
         seam_trace(&format!(
             "wrap promote clip={} local={}",
-            aim.clip_index, aim.local_frame
+            aim.clip_index,
+            aim.frame.source()
         ));
-        promote_idle_at(pl, epoch, aim.clip_index, aim.local_frame, None).await?;
+        promote_idle_at(pl, epoch, aim.clip_index, aim.frame.source(), None).await?;
         if pl.open_gen.get_value() != epoch {
             return Ok(());
         }
@@ -273,15 +283,15 @@ pub(crate) async fn advance_after_ended(
         let total = model.total_frame_count();
         let zone_full = zone_in == 0 && zone_out == total;
         let zone_in_aim = model
-            .at_global_frame(zone_in)
-            .map(|p| (p.clip_index, p.local_frame));
+            .at_global_frame(GlobalFrame::new(zone_in))
+            .map(|p| (p.clip_index, p.frame.source()));
         let seam_next = seam_next_clip(pl, from_clip);
         let plan = plan_advance_ended(AdvanceEndedCtx {
             live_still_from_clip: pl.live_clip.get_untracked() == from_clip,
             owner: loop_owner(pl),
             zone_full,
             zone_out,
-            clip_end: model.clip_end_frame(from_clip).unwrap_or(0),
+            clip_end: model.clip_end_frame(from_clip).map(GlobalFrame::get).unwrap_or(0),
             zone_in_aim,
             seam_next,
             looping: pl.looping.get_untracked(),

@@ -35,13 +35,12 @@ Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i
 
 Rules: `architecture.md` § Ownership & types. Each item leaves this list in the commit that ships it.
 
-1. **Frame types** — `LocalFrame` / `GlobalFrame` at the playlist seam.
-2. **Engine helpers** — `Waiters`, `Epoch` / `Ticket`, `SingleFlight` guard, `PlayIter` guard.
-3. **`Shared` grouping** — `seam_release_aim` only; `ScrubDir` enum; `UnderrunStats`; `LoopSpec`; thumb box.
-4. **`VideoPlayer` = `Clone` handle** over `Rc<PlayerInner>` (keep `Drop` teardown verbatim on inner).
-5. **Source layer** — `Arc` / `Mutex` / `Send + Sync` → `Rc` / `RefCell`.
-6. **Playlist latches** — group `StoredValue` latches into two structs (no FSM).
-7. **Split `demo-player/src/player.rs`** (move-only).
+1. **Engine helpers** — `Waiters`, `Epoch` / `Ticket`, `SingleFlight` guard, `PlayIter` guard.
+2. **`Shared` grouping** — `seam_release_aim` only; `ScrubDir` enum; `UnderrunStats`; `LoopSpec`; thumb box.
+3. **`VideoPlayer` = `Clone` handle** over `Rc<PlayerInner>` (keep `Drop` teardown verbatim on inner).
+4. **Source layer** — `Arc` / `Mutex` / `Send + Sync` → `Rc` / `RefCell`.
+5. **Playlist latches** — group `StoredValue` latches into two structs (no FSM).
+6. **Split `demo-player/src/player.rs`** (move-only).
 
 ### Publish crates (`0.1.0-alpha`)
 
@@ -59,7 +58,7 @@ Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. 
 ## Later
 
 - **Supplied open meta (unified)** — host/DB timing with media for both `<Video>` and `<VideoPlaylist>` (same shape; playlist = per-clip). Skip probe when meta present; `open_blob`/`open_url` / playlist probe stay fallback. Not current — do not land playlist-only `open_entries` first.
-- **CutWindow** — half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut. After LoopZone (shipped — `architecture.md` § LoopZone). Prefer after host seam machine (§2), else seams grow more flag soup. Not current priority.
+- **CutWindow** — half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut. After LoopZone (shipped — `architecture.md` § LoopZone). Prefer after host seam machine (§2), else seams grow more flag soup. The Clip↔Source seam is already typed (`ClipFrame::source()` — `architecture.md` § Ownership & types); `cut_in` lands there. Not current priority.
 - Optional: harden Pause densify pin-holes on slow PreferSoftware (salvage + skip-bridge `put_chunk`; no Exact wipe) — only if strip cosmetics stop being acceptable (`product.md`).
 - Revisit seek Exact follow **without** wiping Exact on settle (densify yield / unbanned walk only — prove scrub still paints).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).

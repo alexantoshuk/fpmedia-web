@@ -17,6 +17,7 @@ use leptos::prelude::*;
 use web_sys::{HtmlCanvasElement, ImageBitmap};
 
 use super::thumb_cache::{ThumbCacheHandle, VtThumbCache};
+use crate::frame_axis::GlobalFrame;
 use crate::video_playlist::source::PlaylistSource;
 use crate::video_playlist::video_playlist_ref::VideoPlaylistRef;
 
@@ -163,7 +164,7 @@ impl ThumbProducer {
             return Ok(false);
         };
         let mut c = cache.borrow_mut();
-        Ok(c.put(global, bitmap, tw, th, rank))
+        Ok(c.put(GlobalFrame::new(global), bitmap, tw, th, rank))
     }
 }
 
@@ -180,12 +181,12 @@ fn clone_sink_bitmap(
 /// Paint from VT cache (nearest). Returns painted global id.
 pub fn try_paint_vt(
     cache: &VtThumbCache,
-    global: FrameId,
+    global: GlobalFrame,
     dest: &HtmlCanvasElement,
     width: u32,
     height: u32,
     dir: i8,
-) -> Option<FrameId> {
+) -> Option<GlobalFrame> {
     let (id, bmp, tw, th) = cache.nearest(global, width, height, dir)?;
     paint_thumb_canvas(dest, bmp, tw, th).ok()?;
     Some(id)

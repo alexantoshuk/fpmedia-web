@@ -9,6 +9,7 @@ use fpmedia_web::{
 use leptos::prelude::*;
 
 use crate::VideoRef;
+use crate::frame_axis::GlobalFrame;
 use crate::video_playlist::PlaylistModel;
 
 use super::host_zone::is_soft_seam_cancel;
@@ -166,13 +167,16 @@ pub(crate) fn idle_neighbor_for_zone(
         return idle_neighbor(model, live_clip, false);
     }
     if let Some(next) = model.next_clip_index(live_clip) {
-        let next_start = model.clip_start_frame(next).unwrap_or(0);
+        let next_start = model
+            .clip_start_frame(next)
+            .map(GlobalFrame::get)
+            .unwrap_or(0);
         if next_start < zone_out {
             return Some(next);
         }
     }
     model
-        .at_global_frame(zone_in)
+        .at_global_frame(GlobalFrame::new(zone_in))
         .map(|p| p.clip_index)
         .or_else(|| idle_neighbor(model, live_clip, true))
 }
@@ -346,7 +350,7 @@ pub(crate) fn sync_live_loop_from_playlist(pl: VideoPlaylistRef) {
             let model = pl.model.get_untracked();
             let live_i = pl.live_clip.get_untracked();
             let (zone_in, zone_out) = pl.loop_zone();
-            let Some(clip_start) = model.clip_start_frame(live_i) else {
+            let Some(clip_start) = model.clip_start_frame(live_i).map(GlobalFrame::get) else {
                 live.set_loop(false);
                 return;
             };
@@ -445,7 +449,7 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     kick_cut_join_exact_warm(pl);
 }
 
-/// Make `aim.clip_index` live (swap or open) at `aim.local_frame`.
+/// Make `aim.clip_index` live (swap or open) at `aim.frame.source()`.
 ///
 /// Cross-clip: paint on idle → swap. `then_play`: SeamHold (`PromoteLead`) →
 /// `play()`; pause/goto: slot Exact PresentHit or seek densify.
@@ -461,7 +465,12 @@ pub(crate) async fn seek_to_pos(
     }
     pl.ended.set(false);
     pl.pos.set(aim);
-    let global = pl.model.get_untracked().global_frame_at(aim).unwrap_or(0);
+    let global = pl
+        .model
+        .get_untracked()
+        .global_frame_at(aim)
+        .map(GlobalFrame::get)
+        .unwrap_or(0);
     pl.playhead.set(global);
     let _ = global; // playhead already set above
 
@@ -473,17 +482,17 @@ pub(crate) async fn seek_to_pos(
         // Stop outgoing Play before idle Exact / SeamHold (goto / scrub Up).
         stop_live_for_host_seam(pl);
         let idle = pl.idle_video();
-        let slot_exact_hit = !then_play && idle.has_scrub_exact_blit(aim.local_frame);
+        let slot_exact_hit = !then_play && idle.has_scrub_exact_blit(aim.frame.source());
         if then_play {
             // Play join: idle main SeamHold → promote → PlayPrime release.
-            PromoteLead::for_local(aim.local_frame)
+            PromoteLead::for_local(aim.frame.source())
                 .prepare(idle)
                 .await?;
         } else if !slot_exact_hit {
             // Paused miss: On so prepare Exact ingest works (Off gates blit).
             // Never leave SeamHold. **no equivalent** (playlist scrub local).
             idle.set_scrub_cache_policy(ScrubCachePolicy::On);
-            idle.prepare_seam_at(aim.local_frame).await?;
+            idle.prepare_seam_at(aim.frame.source()).await?;
         }
         if pl.open_gen.get_value() != epoch {
             return Ok(());
@@ -493,7 +502,7 @@ pub(crate) async fn seek_to_pos(
         }
         // Aim local before neighbor preload — mirror must not see new live +
         // stale idle local. **no equivalent**.
-        pl.live_video().playhead.set(aim.local_frame);
+        pl.live_video().playhead.set(aim.frame.source());
         let neighbor = idle_neighbor_for_zone(
             &pl.model.get_untracked(),
             aim.clip_index,
@@ -508,12 +517,12 @@ pub(crate) async fn seek_to_pos(
         sync_live_loop_from_playlist(pl);
         let live = pl.live_video();
         live.ended.set(false);
-        live.playhead.set(aim.local_frame);
+        live.playhead.set(aim.frame.source());
         if then_play {
             // SeamHold already painted — PlayPrime, no second Exact flash.
             pl.play();
         } else {
-            settle_playlist_pause_exact(pl, live, aim.local_frame, slot_exact_hit);
+            settle_playlist_pause_exact(pl, live, aim.frame.source(), slot_exact_hit);
         }
         return Ok(());
     }
@@ -525,11 +534,11 @@ pub(crate) async fn seek_to_pos(
     let live = pl.live_video();
     live.ended.set(false);
     // Slot playhead is local — PlayPrime reads it (playlist global ≠ slot).
-    live.playhead.set(aim.local_frame);
+    live.playhead.set(aim.frame.source());
     if then_play {
         pl.play();
     } else {
-        settle_playlist_pause_exact(pl, live, aim.local_frame, false);
+        settle_playlist_pause_exact(pl, live, aim.frame.source(), false);
     }
     Ok(())
 }
@@ -654,9 +663,11 @@ pub(crate) fn seam_next_clip(pl: VideoPlaylistRef, cur: u32) -> Option<u32> {
     let zone_full = zone_in == 0 && zone_out == total;
     let next_clip = model.next_clip_index(cur);
     let next_start = next_clip
-        .and_then(|n| model.clip_start_frame(n))
+        .and_then(|n| model.clip_start_frame(n).map(GlobalFrame::get))
         .unwrap_or(0);
-    let zone_in_clip = model.at_global_frame(zone_in).map(|p| p.clip_index);
+    let zone_in_clip = model
+        .at_global_frame(GlobalFrame::new(zone_in))
+        .map(|p| p.clip_index);
     plan_seam_next_clip(SeamNextCtx {
         cur,
         next_clip,
@@ -696,11 +707,11 @@ fn seam_warm_schedule(pl: VideoPlaylistRef) -> Option<SeamWarmTarget> {
     // 1. Host LoopZone wall — global time to `zone_out` (idle neighbor or same-clip live).
     if matches!(owner, LoopOwner::Host) && looping && !zone_full {
         let wall_t = model
-            .at_global_frame(zone_out.saturating_sub(1))
+            .at_global_frame(GlobalFrame::new(zone_out.saturating_sub(1)))
             .and_then(|p| {
                 let start = model.clip_start_secs(p.clip_index as usize)?;
                 let c = model.clip(p.clip_index as usize)?;
-                Some(start + c.time_at_frame(p.local_frame))
+                Some(start + c.time_at_frame(p.frame.source()))
             });
         let cur_t = model
             .clip_start_secs(cur as usize)
@@ -711,12 +722,12 @@ fn seam_warm_schedule(pl: VideoPlaylistRef) -> Option<SeamWarmTarget> {
         // 1s prewarm window immediately after wrap). Same-clip Host paints at
         // wall in `wrap_to_loop_in`. **no equivalent**.
         if wall_t.is_some_and(|w| should_prewarm_loop_origin(cur_t, w, LOOP_ORIGIN_PREWARM_SECS))
-            && let Some(aim) = model.at_global_frame(zone_in)
+            && let Some(aim) = model.at_global_frame(GlobalFrame::new(zone_in))
             && aim.clip_index != cur
         {
             return Some(SeamWarmTarget {
                 clip_index: aim.clip_index,
-                lead: PromoteLead::for_local(aim.local_frame),
+                lead: PromoteLead::for_local(aim.frame.source()),
                 on_idle: true,
             });
         }
@@ -729,10 +740,10 @@ fn seam_warm_schedule(pl: VideoPlaylistRef) -> Option<SeamWarmTarget> {
     if let Some(next_i) = seam_next_clip(pl, cur) {
         let local = if looping
             && !zone_full
-            && let Some(aim) = model.at_global_frame(zone_in)
+            && let Some(aim) = model.at_global_frame(GlobalFrame::new(zone_in))
             && aim.clip_index == next_i
         {
-            aim.local_frame
+            aim.frame.source()
         } else {
             0
         };

@@ -13,7 +13,11 @@ When a term’s meaning changes in code, **edit or delete** the entry here in th
 
 ### FrameId
 
-Primary timeline position: a **presentation** frame index, 0-based. Type `FrameId` = `u32` everywhere (width rule: `architecture.md` § Ownership & types). Not `time × fps`. Seek, step, scrub aim, strip paint, and densify gaps all speak FrameId. Demux may also track decode order; presentation order is what the user means by “frame N”.
+Primary timeline position: a **presentation** frame index, 0-based. Type `FrameId` = `u32` everywhere (width rule: `architecture.md` § Ownership & types). Not `time × fps`. Seek, step, scrub aim, strip paint, and densify gaps all speak FrameId. In `components` it is the **Source** (file) frame; playlist positions use [`ClipFrame`](#clipframe--globalframe) / `GlobalFrame`. Demux may also track decode order; presentation order is what the user means by “frame N”.
+
+### ClipFrame / GlobalFrame
+
+Newtypes over `FrameId` in `fpmedia_web_components::frame_axis`. **`ClipFrame`** = frame index inside one playlist clip (equals the Source frame until CutWindow adds `cut_in`). **`GlobalFrame`** = Σ-clip timeline position (identity for a single `<Video>`). Convert only via `ClipFrame::source()` / `from_source()` and model resolve helpers. Design: `architecture.md` § Ownership & types.
 
 ### FrameRun
 
@@ -193,7 +197,7 @@ Shared **axis + settle/resolve + Pause thumb progressive + LoopZone play plans**
 
 ### PlaylistPos
 
-Position inside a playlist: **clip index** (0-based in the model; **1-based** `[i]` in UI) + **local** presentation frame or timecode of that clip. Not a single global FrameId / SMPTE across mixed-fps clips. Type + helpers: `fpmedia_web_components::video_playlist`. UX: `product.md` § Playlist position UI.
+Position inside a playlist: **clip index** (0-based in the model; **1-based** `[i]` in UI) + [`ClipFrame`](#clipframe--globalframe) (or timecode) of that clip. Not a single global FrameId / SMPTE across mixed-fps clips. Type + helpers: `fpmedia_web_components::video_playlist`. UX: `product.md` § Playlist position UI.
 
 ### LoopZone
 

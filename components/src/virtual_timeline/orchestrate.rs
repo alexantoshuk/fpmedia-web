@@ -12,6 +12,7 @@ use super::{
     BackendAim, DensifyPlanInput, ExactLedger, plan_next_densify_gap, resolve_playlist,
     resolve_single,
 };
+use crate::frame_axis::GlobalFrame;
 use crate::video_playlist::PlaylistModel;
 
 /// Plan next timeline densify gap from ledger, or `None` when idle/saturated.
@@ -33,11 +34,11 @@ pub fn plan_timeline_densify_gap<V>(
 }
 
 /// Single-clip: timeline id == local.
-pub fn resolve_densify_single(global: FrameId, frame_count: FrameId) -> Option<BackendAim> {
+pub fn resolve_densify_single(global: GlobalFrame, frame_count: FrameId) -> Option<BackendAim> {
     resolve_single(global, frame_count)
 }
 
 /// Playlist: timeline id → clip + local.
-pub fn resolve_densify_playlist(model: &PlaylistModel, global: FrameId) -> Option<BackendAim> {
+pub fn resolve_densify_playlist(model: &PlaylistModel, global: GlobalFrame) -> Option<BackendAim> {
     resolve_playlist(model, global)
 }

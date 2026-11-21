@@ -13,6 +13,7 @@ use fpmedia_web::{FrameId, FrameRun};
 use web_sys::ImageBitmap;
 
 use super::ExactLedger;
+use crate::frame_axis::GlobalFrame;
 
 pub type TimelineExactLedger = ExactLedger<ImageBitmap>;
 
@@ -26,7 +27,7 @@ pub fn new_ledger_handle() -> LedgerHandle {
 pub fn note_covered_from_locals(
     ledger: &mut TimelineExactLedger,
     covered_local_ids: impl IntoIterator<Item = FrameId>,
-    local_to_global: impl Fn(FrameId) -> Option<FrameId>,
+    local_to_global: impl Fn(FrameId) -> Option<GlobalFrame>,
 ) -> bool {
     let mut changed = false;
     for local in covered_local_ids {
@@ -46,7 +47,7 @@ pub fn note_covered_from_locals(
 pub fn note_covered_from_video_ref(
     ledger: &mut TimelineExactLedger,
     video: &crate::VideoRef,
-    local_to_global: impl Fn(FrameId) -> Option<FrameId>,
+    local_to_global: impl Fn(FrameId) -> Option<GlobalFrame>,
 ) -> bool {
     let ids = video.scrub_covered_frame_ids();
     note_covered_from_locals(ledger, ids, local_to_global)
@@ -56,7 +57,7 @@ pub fn note_covered_from_video_ref(
 pub fn note_fetch_from_locals(
     ledger: &mut TimelineExactLedger,
     local_runs: impl IntoIterator<Item = FrameRun>,
-    local_to_global: impl Fn(FrameId) -> Option<FrameId>,
+    local_to_global: impl Fn(FrameId) -> Option<GlobalFrame>,
 ) -> bool {
     let mut changed = false;
     for run in local_runs {
@@ -75,7 +76,7 @@ pub fn note_fetch_from_locals(
 pub fn note_fetch_from_video_ref(
     ledger: &mut TimelineExactLedger,
     video: &crate::VideoRef,
-    local_to_global: impl Fn(FrameId) -> Option<FrameId>,
+    local_to_global: impl Fn(FrameId) -> Option<GlobalFrame>,
 ) -> bool {
     let runs = video.scrub_fetch_playable_runs();
     note_fetch_from_locals(ledger, runs, local_to_global)

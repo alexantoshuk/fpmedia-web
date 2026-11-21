@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
+use crate::frame_axis::GlobalFrame;
 use crate::virtual_timeline::{
     ThumbFillPlanInput, merge_global_sync_keys, plan_next_thumb_fill, rank_for_global_key,
     resolve_thumb_fill_playlist,
@@ -128,7 +129,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
 
         let max_thumbs = cache_h.borrow().max_thumbs();
         let skip = pl.thumb_fill_skip.get_value();
-        let ready = |g: FrameId| skip.contains(&g) || cache_h.borrow().has_any(g);
+        let ready = |g: FrameId| skip.contains(&g) || cache_h.borrow().has_any(GlobalFrame::new(g));
 
         let input = ThumbFillPlanInput {
             global_sync_keys: &global_keys,
@@ -139,7 +140,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
         let Some(global) = plan_next_thumb_fill(&input, ready) else {
             return;
         };
-        let Some(aim) = resolve_thumb_fill_playlist(&model, global) else {
+        let Some(aim) = resolve_thumb_fill_playlist(&model, GlobalFrame::new(global)) else {
             return;
         };
 
@@ -158,7 +159,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
                 cache_h,
                 prod_h,
                 clip_index: aim.clip_index,
-                local: aim.local,
+                local: aim.frame.source(),
                 global,
                 max_w,
                 max_h,
@@ -171,7 +172,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
             }
             if filled {
                 if let Some(h) = pl.exact_ledger() {
-                    h.borrow_mut().note_thumb(global);
+                    h.borrow_mut().note_thumb(GlobalFrame::new(global));
                 }
                 pl.bump_thumb_residency();
             } else {
@@ -218,7 +219,9 @@ async fn fill_one(args: FillOne) -> bool {
         video.fill_thumb_key_at(local).await;
         if let Some(bmp) = video.clone_thumb_bitmap(local, max_w, max_h) {
             let (tw, th) = (bmp.width().max(1), bmp.height().max(1));
-            return cache_h.borrow_mut().put(global, bmp, tw, th, rank);
+            return cache_h
+                .borrow_mut()
+                .put(GlobalFrame::new(global), bmp, tw, th, rank);
         }
     }
     // Off-slot (or slot miss): dedicated producer open.
@@ -299,7 +302,11 @@ pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u3
     if pl.thumb_fill_inflight.get_value() {
         return;
     }
-    let Some(pos) = pl.model.get_untracked().at_global_frame(global_frame) else {
+    let Some(pos) = pl
+        .model
+        .get_untracked()
+        .at_global_frame(GlobalFrame::new(global_frame))
+    else {
         return;
     };
     let Some(cache_h) = pl.thumb_cache.get_value() else {
@@ -308,13 +315,13 @@ pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u3
     let Some(prod_h) = pl.thumb_producer.get_value() else {
         return;
     };
-    if cache_h.borrow().has_any(global_frame) {
+    if cache_h.borrow().has_any(GlobalFrame::new(global_frame)) {
         return;
     }
     pl.thumb_fill_inflight.set_value(true);
     let epoch = pl.open_gen.get_value();
     let global = FrameId::from(global_frame);
-    let local = pos.local_frame;
+    let local = pos.frame.source();
     let clip = pos.clip_index;
     spawn_local(async move {
         let rank = u16::MAX; // hover Exact refine band
@@ -332,7 +339,7 @@ pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u3
         .await;
         if pl.open_gen.get_value() == epoch && filled {
             if let Some(h) = pl.exact_ledger() {
-                h.borrow_mut().note_thumb(global);
+                h.borrow_mut().note_thumb(GlobalFrame::new(global));
             }
             pl.bump_thumb_residency();
         }
