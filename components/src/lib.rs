@@ -24,6 +24,8 @@ pub mod helpers;
 #[cfg(target_arch = "wasm32")]
 pub mod hover_thumb;
 #[cfg(target_arch = "wasm32")]
+mod local_epoch;
+#[cfg(target_arch = "wasm32")]
 pub mod media;
 #[cfg(target_arch = "wasm32")]
 pub mod scrubber;

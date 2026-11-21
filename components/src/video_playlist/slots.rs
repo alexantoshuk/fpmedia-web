@@ -10,7 +10,9 @@ use leptos::prelude::*;
 
 use crate::VideoRef;
 use crate::frame_axis::GlobalFrame;
+use crate::local_epoch::LocalEpoch;
 use crate::video_playlist::PlaylistModel;
+use fpmedia_web::Ticket;
 
 use super::host_zone::is_soft_seam_cancel;
 use super::loop_seam::{LoopOwner, loop_owner, seam_busy, seam_trace};
@@ -22,12 +24,12 @@ pub(crate) const PROBE_POLL_MS: i32 = 32;
 
 pub(crate) async fn wait_ready(
     video: VideoRef,
-    epoch: u64,
-    open_gen: StoredValue<u64, LocalStorage>,
+    epoch: Ticket,
+    open_gen: LocalEpoch,
 ) -> Result<VideoMetadata, String> {
     let start = fpmedia_web::timer::now_ms().unwrap_or(0.0);
     loop {
-        if open_gen.get_value() != epoch {
+        if !open_gen.is_current(epoch) {
             return Err("cancelled".into());
         }
         if let Some(err) = video.error.get_untracked() {
@@ -68,7 +70,7 @@ pub(crate) fn kick_ensure_idle(pl: VideoPlaylistRef, want: u32) {
     if pl.ensure_idle_for.get_value() == Some(want) {
         return;
     }
-    let epoch = pl.open_gen.get_value();
+    let epoch = pl.open_gen.ticket();
     wasm_bindgen_futures::spawn_local(async move {
         let _ = ensure_clip_on_idle(pl, want, epoch).await;
         kick_cut_join_exact_warm(pl);
@@ -103,7 +105,7 @@ pub(crate) fn kick_cut_join_exact_warm(pl: VideoPlaylistRef) {
         return;
     }
     pl.cut_join_warm_for.set_value(Some((idle_i, join)));
-    let epoch = pl.open_gen.get_value();
+    let epoch = pl.open_gen.ticket();
     wasm_bindgen_futures::spawn_local(async move {
         let _ = warm_cut_join_exact(pl, idle_i, join, epoch).await;
         if pl.cut_join_warm_for.get_value() == Some((idle_i, join)) {
@@ -116,9 +118,9 @@ async fn warm_cut_join_exact(
     pl: VideoPlaylistRef,
     idle_i: u32,
     join: u32,
-    epoch: u64,
+    epoch: Ticket,
 ) -> Result<(), String> {
-    if pl.open_gen.get_value() != epoch {
+    if !pl.open_gen.is_current(epoch) {
         return Ok(());
     }
     if pl.playing.get_untracked() || pl.scrubbing.get_untracked() {
@@ -224,9 +226,9 @@ fn ensure_live_on(pl: VideoPlaylistRef, clip_index: u32) -> bool {
 pub(crate) async fn ensure_clip_on_idle(
     pl: VideoPlaylistRef,
     clip_index: u32,
-    epoch: u64,
+    epoch: Ticket,
 ) -> Result<(), String> {
-    if pl.open_gen.get_value() != epoch {
+    if !pl.open_gen.is_current(epoch) {
         return Err("cancelled".into());
     }
     if ensure_live_on(pl, clip_index) {
@@ -240,7 +242,7 @@ pub(crate) async fn ensure_clip_on_idle(
     // Coalesce Move stampede (2→1 reverse cut) — in-flight same clip: wait for ready.
     if pl.ensure_idle_for.get_value() == Some(clip_index) {
         loop {
-            if pl.open_gen.get_value() != epoch {
+            if !pl.open_gen.is_current(epoch) {
                 return Err("cancelled".into());
             }
             if ensure_live_on(pl, clip_index) {
@@ -287,7 +289,7 @@ pub(crate) async fn ensure_clip_on_idle(
             pl.ensure_idle_for.set_value(None);
         }
     };
-    if pl.open_gen.get_value() != epoch {
+    if !pl.open_gen.is_current(epoch) {
         clear_flight(pl, clip_index);
         return Err("cancelled".into());
     }
@@ -404,11 +406,11 @@ pub(crate) fn try_promote_idle(pl: VideoPlaylistRef, clip_index: u32) -> bool {
     true
 }
 
-pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, epoch: u64) {
+pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, epoch: Ticket) {
     let Some(i) = clip_index else {
         return;
     };
-    if pl.open_gen.get_value() != epoch {
+    if !pl.open_gen.is_current(epoch) {
         return;
     }
     if ensure_live_on(pl, i) {
@@ -457,10 +459,10 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
 pub(crate) async fn seek_to_pos(
     pl: VideoPlaylistRef,
     aim: crate::video_playlist::PlaylistPos,
-    epoch: u64,
+    epoch: Ticket,
     then_play: bool,
 ) -> Result<(), String> {
-    if pl.open_gen.get_value() != epoch {
+    if !pl.open_gen.is_current(epoch) {
         return Ok(());
     }
     pl.ended.set(false);
@@ -476,7 +478,7 @@ pub(crate) async fn seek_to_pos(
 
     if pl.live_clip.get_untracked() != aim.clip_index {
         ensure_clip_on_idle(pl, aim.clip_index, epoch).await?;
-        if pl.open_gen.get_value() != epoch {
+        if !pl.open_gen.is_current(epoch) {
             return Ok(());
         }
         // Stop outgoing Play before idle Exact / SeamHold (goto / scrub Up).
@@ -494,7 +496,7 @@ pub(crate) async fn seek_to_pos(
             idle.set_scrub_cache_policy(ScrubCachePolicy::On);
             idle.prepare_seam_at(aim.frame.source()).await?;
         }
-        if pl.open_gen.get_value() != epoch {
+        if !pl.open_gen.is_current(epoch) {
             return Ok(());
         }
         if pl.live_clip.get_untracked() != aim.clip_index && !try_promote_idle(pl, aim.clip_index) {
@@ -511,7 +513,7 @@ pub(crate) async fn seek_to_pos(
             pl.loop_zone().1,
         );
         preload_idle(pl, neighbor, epoch).await;
-        if pl.open_gen.get_value() != epoch {
+        if !pl.open_gen.is_current(epoch) {
             return Ok(());
         }
         sync_live_loop_from_playlist(pl);
@@ -527,7 +529,7 @@ pub(crate) async fn seek_to_pos(
         return Ok(());
     }
 
-    if pl.open_gen.get_value() != epoch {
+    if !pl.open_gen.is_current(epoch) {
         return Ok(());
     }
     sync_live_loop_from_playlist(pl);

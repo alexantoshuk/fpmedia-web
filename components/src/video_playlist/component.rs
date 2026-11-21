@@ -188,7 +188,7 @@ pub fn VideoPlaylist(
             return;
         }
         live.ended.set(false);
-        let epoch = open_gen.get_value();
+        let epoch = open_gen.ticket();
         let pl = playlist;
         spawn_local(async move {
             if let Err(e) = advance_after_ended(pl, epoch, from_clip).await {

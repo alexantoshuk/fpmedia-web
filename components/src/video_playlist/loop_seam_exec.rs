@@ -10,6 +10,7 @@ use leptos::prelude::*;
 
 use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::video_playlist::PlaylistPos;
+use fpmedia_web::Ticket;
 
 use super::loop_seam::{
     LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, seam_trace,
@@ -44,7 +45,7 @@ fn reassert_zone_in_playhead(pl: VideoPlaylistRef) {
 /// **no equivalent** (playlist host).
 async fn promote_idle_at(
     pl: VideoPlaylistRef,
-    epoch: u64,
+    epoch: Ticket,
     clip_index: u32,
     local_frame: u32,
     expect_live: Option<u32>,
@@ -52,7 +53,7 @@ async fn promote_idle_at(
     let lead = PromoteLead::for_local(local_frame);
     let local = lead.local();
     ensure_clip_on_idle(pl, clip_index, epoch).await?;
-    if pl.open_gen.get_value() != epoch {
+    if !pl.open_gen.is_current(epoch) {
         return Ok(());
     }
     if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
@@ -61,7 +62,7 @@ async fn promote_idle_at(
     // Stop live **before** idle prepare (not only at swap) — Host wall overrun.
     stop_live_for_host_seam(pl);
     lead.prepare(pl.idle_video()).await?;
-    if pl.open_gen.get_value() != epoch {
+    if !pl.open_gen.is_current(epoch) {
         // New open supersedes — do not resume stale slot.
         return Ok(());
     }
@@ -111,8 +112,8 @@ async fn promote_idle_at(
 /// Host LoopZone wrap → `promote_idle_at` at `zone_in` (or same-clip paint).
 /// Used when [`LoopOwner::Host`]. Intra-clip → engine `LoopSeam` instead.
 /// **no equivalent** (playlist local).
-pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<(), String> {
-    if pl.open_gen.get_value() != epoch {
+pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: Ticket) -> Result<(), String> {
+    if !pl.open_gen.is_current(epoch) {
         end_seam(pl);
         return Ok(());
     }
@@ -126,7 +127,7 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
     stop_live_for_host_seam(pl);
     let (zone_in_log, _) = pl.loop_zone();
     seam_trace(&format!(
-        "wrap enter epoch={epoch} zone_in={zone_in_log} live_clip={}",
+        "wrap enter epoch={epoch:?} zone_in={zone_in_log} live_clip={}",
         pl.live_clip.get_untracked()
     ));
     let mut neighbor_after: Option<u32> = None;
@@ -157,7 +158,7 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
             let live = pl.live_video();
             live.ended.set(false);
             lead.prepare(live).await?;
-            if pl.open_gen.get_value() != epoch {
+            if !pl.open_gen.is_current(epoch) {
                 return Ok(());
             }
             live.playhead.set(lead.local());
@@ -180,7 +181,7 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: u64) -> Result<
             aim.frame.source()
         ));
         promote_idle_at(pl, epoch, aim.clip_index, aim.frame.source(), None).await?;
-        if pl.open_gen.get_value() != epoch {
+        if !pl.open_gen.is_current(epoch) {
             return Ok(());
         }
         // Defer neighbor open until after `end_seam` (mirror). **no equivalent**.
@@ -220,7 +221,7 @@ pub(crate) fn start_host_wrap(pl: VideoPlaylistRef, seam_already_busy: bool) {
         return;
     }
     pl.playing.set(true);
-    let epoch = pl.open_gen.get_value();
+    let epoch = pl.open_gen.ticket();
     wasm_bindgen_futures::spawn_local(async move {
         let result = wrap_to_loop_in(pl, epoch).await;
         run_wrap_done(pl, epoch, result, "LoopZone wrap failed.");
@@ -230,11 +231,11 @@ pub(crate) fn start_host_wrap(pl: VideoPlaylistRef, seam_already_busy: bool) {
 /// Apply [`plan_wrap_done`] after Host wrap / seam async (soft ≠ sticky error).
 pub(crate) fn run_wrap_done(
     pl: VideoPlaylistRef,
-    epoch: u64,
+    epoch: Ticket,
     result: Result<(), String>,
     status: &str,
 ) {
-    let epoch_ok = pl.open_gen.get_value() == epoch;
+    let epoch_ok = pl.open_gen.is_current(epoch);
     let plan = match &result {
         Ok(()) => plan_wrap_done(Ok(()), epoch_ok),
         Err(e) => plan_wrap_done(Err(e.as_str()), epoch_ok),
@@ -258,7 +259,7 @@ pub(crate) fn run_wrap_done(
 }
 
 /// Host seam / wrap failed after live was already stopped — [`run_wrap_done`].
-pub(crate) fn note_host_seam_err(pl: VideoPlaylistRef, epoch: u64, err: String, status: &str) {
+pub(crate) fn note_host_seam_err(pl: VideoPlaylistRef, epoch: Ticket, err: String, status: &str) {
     run_wrap_done(pl, epoch, Err(err), status);
 }
 
@@ -267,10 +268,10 @@ pub(crate) fn note_host_seam_err(pl: VideoPlaylistRef, epoch: u64, err: String, 
 /// Do **not** bail on sticky `playing` after Effect cleared `ended` — **no equivalent**.
 pub(crate) async fn advance_after_ended(
     pl: VideoPlaylistRef,
-    epoch: u64,
+    epoch: Ticket,
     from_clip: u32,
 ) -> Result<(), String> {
-    if pl.open_gen.get_value() != epoch {
+    if !pl.open_gen.is_current(epoch) {
         end_seam(pl);
         return Ok(());
     }
@@ -305,7 +306,7 @@ pub(crate) async fn advance_after_ended(
             AdvanceEndedPlan::Promote { clip_index: next_i } => {
                 pl.status.set(format!("Seam → clip {}…", next_i + 1));
                 promote_idle_at(pl, epoch, next_i, 0, Some(from_clip)).await?;
-                if pl.open_gen.get_value() != epoch {
+                if !pl.open_gen.is_current(epoch) {
                     return Ok(());
                 }
                 if pl.live_clip.get_untracked() != next_i {

@@ -97,10 +97,10 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
         let clip_count = model.len() as u32;
         if let Some(missing) = (0..clip_count).find(|i| !key_cache.contains_key(i)) {
             pl.thumb_fill_inflight.set_value(true);
-            let epoch = pl.open_gen.get_value();
+            let epoch = pl.open_gen.ticket();
             spawn_local(async move {
                 let ok = prod_h.ensure_clip(pl, missing).await.is_ok();
-                if pl.open_gen.get_value() != epoch {
+                if !pl.open_gen.is_current(epoch) {
                     pl.thumb_fill_inflight.set_value(false);
                     return;
                 }
@@ -152,7 +152,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
         );
         let (max_w, max_h) = thumb_box(pl);
         pl.thumb_fill_inflight.set_value(true);
-        let epoch = pl.open_gen.get_value();
+        let epoch = pl.open_gen.ticket();
         spawn_local(async move {
             let filled = fill_one(FillOne {
                 pl,
@@ -166,7 +166,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
                 rank,
             })
             .await;
-            if pl.open_gen.get_value() != epoch {
+            if !pl.open_gen.is_current(epoch) {
                 pl.thumb_fill_inflight.set_value(false);
                 return;
             }
@@ -319,7 +319,7 @@ pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u3
         return;
     }
     pl.thumb_fill_inflight.set_value(true);
-    let epoch = pl.open_gen.get_value();
+    let epoch = pl.open_gen.ticket();
     let global = FrameId::from(global_frame);
     let local = pos.frame.source();
     let clip = pos.clip_index;
@@ -337,13 +337,13 @@ pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u3
             rank,
         })
         .await;
-        if pl.open_gen.get_value() == epoch && filled {
+        if pl.open_gen.is_current(epoch) && filled {
             if let Some(h) = pl.exact_ledger() {
                 h.borrow_mut().note_thumb(GlobalFrame::new(global));
             }
             pl.bump_thumb_residency();
         }
-        if pl.open_gen.get_value() == epoch {
+        if pl.open_gen.is_current(epoch) {
             pl.thumb_fill_inflight.set_value(false);
         }
     });

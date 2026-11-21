@@ -11,6 +11,7 @@ use wasm_bindgen_futures::spawn_local;
 
 use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
+use fpmedia_web::Ticket;
 
 use super::host_zone::is_soft_seam_cancel;
 use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy};
@@ -48,10 +49,9 @@ fn run_step_plan(pl: VideoPlaylistRef, plan: StepPlan) {
 
 impl PlaylistHost {
     /// Bump the open generation and clear per-gen coalesce latches.
-    pub(crate) fn bump_gen(self) -> u64 {
+    pub(crate) fn bump_gen(self) -> Ticket {
         let pl = self.0;
-        let g = pl.open_gen.get_value().wrapping_add(1);
-        pl.open_gen.set_value(g);
+        let g = pl.open_gen.bump();
         pl.ensure_idle_for.set_value(None);
         pl.cut_join_warm_for.set_value(None);
         pl.scrub_cross_paused.set_value(false);
@@ -125,21 +125,21 @@ impl PlaylistHost {
             let mut clips = Vec::with_capacity(list.len());
             // Probe every clip on slot_a (sequential open → metadata → close).
             for (i, src) in list.iter().enumerate() {
-                if open_gen.get_value() != epoch {
+                if !open_gen.is_current(epoch) {
                     return;
                 }
                 status.set(format!("Probing playlist ({}/{})…", i + 1, list.len()));
                 slot_a.close();
                 // Let retire settle one tick.
                 sleep_ms(0).await;
-                if open_gen.get_value() != epoch {
+                if !open_gen.is_current(epoch) {
                     return;
                 }
                 src.open_on(slot_a);
                 match wait_ready(slot_a, epoch, open_gen).await {
                     Ok(meta) => clips.push(PlaylistClip::from_meta(&meta)),
                     Err(e) => {
-                        if open_gen.get_value() != epoch {
+                        if !open_gen.is_current(epoch) {
                             return;
                         }
                         busy.set(false);
@@ -152,7 +152,7 @@ impl PlaylistHost {
                 }
             }
 
-            if open_gen.get_value() != epoch {
+            if !open_gen.is_current(epoch) {
                 return;
             }
 
@@ -171,7 +171,7 @@ impl PlaylistHost {
             slot_a.close();
             slot_b.close();
             sleep_ms(0).await;
-            if open_gen.get_value() != epoch {
+            if !open_gen.is_current(epoch) {
                 return;
             }
 
@@ -194,7 +194,7 @@ impl PlaylistHost {
 
             match wait_ready(slot_a, epoch, open_gen).await {
                 Ok(_) => {
-                    if open_gen.get_value() != epoch {
+                    if !open_gen.is_current(epoch) {
                         return;
                     }
                     // Idle may still be opening — do not block ready on it.
@@ -207,7 +207,7 @@ impl PlaylistHost {
                     error.set(None);
                 }
                 Err(e) => {
-                    if open_gen.get_value() != epoch {
+                    if !open_gen.is_current(epoch) {
                         return;
                     }
                     busy.set(false);
@@ -307,7 +307,7 @@ impl PlaylistHost {
                     seam_busy: seam_busy(playlist),
                 }) {
                     PlayAtClipLastPlan::PromoteSeek { clip_index } => {
-                        let epoch = open_gen.get_value();
+                        let epoch = open_gen.ticket();
                         let pl = playlist;
                         let aim = PlaylistPos::new(clip_index, ClipFrame::from_source(0));
                         spawn_local(async move {
@@ -346,10 +346,10 @@ impl PlaylistHost {
         else {
             return;
         };
-        let epoch = pl.open_gen.get_value();
+        let epoch = pl.open_gen.ticket();
         spawn_local(async move {
             if let Err(e) = seek_to_pos(pl, aim, epoch, false).await {
-                if pl.open_gen.get_value() != epoch {
+                if !pl.open_gen.is_current(epoch) {
                     return;
                 }
                 // Promote/ensure race cancel — not a sticky UI fault.
@@ -367,10 +367,10 @@ impl PlaylistHost {
         if !pl.ready.get_untracked() {
             return;
         }
-        let epoch = pl.open_gen.get_value();
+        let epoch = pl.open_gen.ticket();
         spawn_local(async move {
             if let Err(e) = seek_to_pos(pl, aim, epoch, false).await {
-                if pl.open_gen.get_value() != epoch {
+                if !pl.open_gen.is_current(epoch) {
                     return;
                 }
                 if is_soft_seam_cancel(&e) {

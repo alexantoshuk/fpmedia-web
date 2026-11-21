@@ -8,6 +8,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::VideoRef;
 use crate::frame_axis::{ClipFrame, GlobalFrame};
+use crate::local_epoch::LocalEpoch;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 use crate::virtual_timeline::{resolve_zone, store_zone};
 
@@ -63,7 +64,7 @@ pub struct VideoPlaylistRef {
     /// Set by the mounted [`super::VideoPlaylist`]; ops are no-ops / `not mounted` before.
     pub(crate) mounted: StoredValue<bool, LocalStorage>,
     pub(crate) sources: StoredValue<Vec<PlaylistSource>, LocalStorage>,
-    pub(crate) open_gen: StoredValue<u64, LocalStorage>,
+    pub(crate) open_gen: LocalEpoch,
     /// Clip index already kicked for near-EOF origin warm this lap (`None` = none).
     pub(crate) seam_warm_for: StoredValue<Option<u32>, LocalStorage>,
     /// In-flight [`super::slots::ensure_clip_on_idle`] target — coalesce Move stampede.
@@ -131,7 +132,7 @@ impl VideoPlaylistRef {
             slot_b: VideoRef::new(),
             mounted: StoredValue::new_local(false),
             sources: StoredValue::new_local(Vec::new()),
-            open_gen: StoredValue::new_local(0),
+            open_gen: LocalEpoch::new(),
             seam_warm_for: StoredValue::new_local(None),
             ensure_idle_for: StoredValue::new_local(None),
             cut_join_warm_for: StoredValue::new_local(None),
@@ -297,7 +298,7 @@ impl VideoPlaylistRef {
         if let Some(want) = want
             && self.idle_clip.get_untracked() != Some(want)
         {
-            let epoch = self.open_gen.get_value();
+            let epoch = self.open_gen.ticket();
             spawn_local(async move {
                 preload_idle(self, Some(want), epoch).await;
             });
@@ -536,7 +537,7 @@ impl VideoPlaylistRef {
                 live.set_scrub_cache_policy(fpmedia_web::ScrubCachePolicy::On);
                 // Keep the other clip of the nearest cut in idle (1|2 or 2|3).
                 if let Some(want) = self.cut_idle_want(aim) {
-                    let epoch = self.open_gen.get_value();
+                    let epoch = self.open_gen.ticket();
                     spawn_local(async move {
                         preload_idle(self, Some(want), epoch).await;
                     });
@@ -627,7 +628,7 @@ impl VideoPlaylistRef {
                         self.looping.get_untracked(),
                     )
                 });
-                let epoch = self.open_gen.get_value();
+                let epoch = self.open_gen.ticket();
                 spawn_local(async move {
                     preload_idle(self, neighbor, epoch).await;
                     kick_cut_join_exact_warm(self);
@@ -637,10 +638,10 @@ impl VideoPlaylistRef {
             }
             ScrubUpPlan::CrossClipSeek { then_play } => {
                 if then_play {
-                    let epoch = self.open_gen.get_value();
+                    let epoch = self.open_gen.ticket();
                     spawn_local(async move {
                         if let Err(e) = super::slots::seek_to_pos(self, aim, epoch, true).await {
-                            if self.open_gen.get_value() != epoch {
+                            if !self.open_gen.is_current(epoch) {
                                 return;
                             }
                             if super::host_zone::is_soft_seam_cancel(&e) {

@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use fpmedia_web::{
-    BlobSource, FrameId, MediaSource, OpenMp4Options, ThumbSink, ThumbSinkOptions, UrlSource,
-    hover_thumb_dims, open_mp4, paint_thumb_canvas, thumb_progressive_coarse_count,
+    BlobSource, Epoch, FrameId, MediaSource, OpenMp4Options, ThumbSink, ThumbSinkOptions,
+    UrlSource, hover_thumb_dims, open_mp4, paint_thumb_canvas, thumb_progressive_coarse_count,
     thumb_progressive_rank,
 };
 use leptos::prelude::*;
@@ -26,7 +26,7 @@ pub struct ThumbProducer {
     clip: Cell<Option<u32>>,
     sink: RefCell<Option<Rc<ThumbSink>>>,
     /// Bumped to cancel in-flight open/decode.
-    epoch: Cell<u64>,
+    epoch: Epoch,
     inflight: Cell<bool>,
 }
 
@@ -41,13 +41,13 @@ impl ThumbProducer {
         Self {
             clip: Cell::new(None),
             sink: RefCell::new(None),
-            epoch: Cell::new(0),
+            epoch: Epoch::new(),
             inflight: Cell::new(false),
         }
     }
 
     pub fn cancel(&self) {
-        self.epoch.set(self.epoch.get().wrapping_add(1));
+        self.epoch.bump();
         self.inflight.set(false);
         self.clip.set(None);
         *self.sink.borrow_mut() = None;
@@ -83,7 +83,7 @@ impl ThumbProducer {
         {
             return Ok(slot.as_ref().expect("checked").clone());
         }
-        let epoch = self.epoch.get();
+        let epoch = self.epoch.ticket();
         // Dedicated open — never `ensure_clip_on_idle` / steal play slots.
         // On-slot fills prefer slot `fill_thumb_key_at` + VT import (see thumbs.rs).
         let src = pl
@@ -101,7 +101,7 @@ impl ThumbProducer {
                 Arc::new(u)
             }
         };
-        if self.epoch.get() != epoch {
+        if !self.epoch.is_current(epoch) {
             return Err("cancelled".into());
         }
         let opened = open_mp4(
@@ -114,7 +114,7 @@ impl ThumbProducer {
         )
         .await
         .map_err(|e| e.to_string())?;
-        if self.epoch.get() != epoch {
+        if !self.epoch.is_current(epoch) {
             return Err("cancelled".into());
         }
         let track = opened.require_video().map_err(|e| e.to_string())?;
@@ -146,8 +146,8 @@ impl ThumbProducer {
                 .cloned()
                 .ok_or_else(|| "no sink".to_string())?
         };
-        let epoch = self.epoch.get();
-        let cancel = move || self.epoch.get() != epoch;
+        let epoch = self.epoch.ticket();
+        let cancel = move || !self.epoch.is_current(epoch);
         sink.note_size(max_w, max_h);
         match sink.get(local, &cancel).await {
             Ok(Some(_)) => {}

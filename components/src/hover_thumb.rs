@@ -18,6 +18,7 @@ use web_sys::HtmlCanvasElement;
 use crate::TimelineRef;
 use crate::VideoRef;
 use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
+use crate::local_epoch::LocalEpoch;
 use crate::scrubber::{HoverThumbApi, ScrubberCtx};
 
 /// Default max-edge box (matches engine `DEFAULT_THUMB_MAX_*`).
@@ -80,15 +81,22 @@ pub fn HoverThumb(
     let canvas_ref = NodeRef::<Canvas>::new();
     // Declarative `style:transform` — not `el.style().set_property` (skills/leptos.md).
     let transform = RwSignal::new(String::new());
-    let epoch = StoredValue::new_local(0u64);
+    let epoch = LocalEpoch::new();
     let root_class = class.unwrap_or_default();
 
     #[cfg(feature = "thumbs")]
     let throttled_paint = {
+        use fpmedia_web::Ticket;
         use leptos_use::{ThrottleOptions, use_throttle_fn_with_arg_and_options};
         use_throttle_fn_with_arg_and_options(
-            move |(frame, dest, w, h, scheduled_epoch): (u32, HtmlCanvasElement, u32, u32, u64)| {
-                if epoch.get_value() != scheduled_epoch {
+            move |(frame, dest, w, h, scheduled_epoch): (
+                u32,
+                HtmlCanvasElement,
+                u32,
+                u32,
+                Ticket,
+            )| {
+                if !epoch.is_current(scheduled_epoch) {
                     return;
                 }
                 if timeline.ready.get_untracked() {
@@ -103,8 +111,7 @@ pub fn HoverThumb(
     let hide: Rc<dyn Fn()> = Rc::new(move || {
         visible.set(false);
         frame.set(None);
-        let e = epoch.get_value().wrapping_add(1);
-        epoch.set_value(e);
+        epoch.bump();
         timeline.cancel_hover_thumb();
     });
 
@@ -150,7 +157,7 @@ pub fn HoverThumb(
                 if timeline.try_paint_hover_thumb(aim, canvas.clone(), width, height) {
                     return;
                 }
-                let scheduled_epoch = epoch.get_value();
+                let scheduled_epoch = epoch.ticket();
                 throttled_paint_move((aim, canvas, width, height, scheduled_epoch));
             }
         })
@@ -196,7 +203,7 @@ pub fn HoverThumb(
             if timeline.try_paint_hover_thumb(aim, canvas.clone(), width, height) {
                 return;
             }
-            let scheduled_epoch = epoch.get_value();
+            let scheduled_epoch = epoch.ticket();
             throttled_paint((aim, canvas, width, height, scheduled_epoch));
         }
     });
@@ -210,8 +217,7 @@ pub fn HoverThumb(
     }
 
     on_cleanup(move || {
-        let e = epoch.get_value().wrapping_add(1);
-        epoch.set_value(e);
+        epoch.bump();
         visible.set(false);
         frame.set(None);
         timeline.cancel_hover_thumb();
