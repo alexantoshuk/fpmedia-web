@@ -22,7 +22,7 @@ use crate::policy::{
 };
 use crate::types::FrameId;
 
-use super::play_pool::{LoopOriginStash, PlayCanvasPool};
+use super::play_pool::{LoopOriginStash, PlayCanvasPool, PlayIterGuard};
 use super::shared::PlayNext;
 use super::{DuePresent, PLAY_EXACT_VRAM_VF_SLACK, PlayTick, PlayerInner, VideoPlayer, now_ms};
 
@@ -98,11 +98,10 @@ impl PlayerInner {
     }
 
     pub(super) fn drop_loop_play_warm(&self) {
-        if let Some(warm) = self.shared.loop_play_warm.borrow_mut().take()
-            && let Some(d) = warm.iter.finish()
-        {
-            drop(d);
-        }
+        // Guard `Drop` finishes the iterator and closes its decoder. Take out
+        // first so the `RefCell` borrow is not held across that JS call.
+        let warm = self.shared.loop_play_warm.borrow_mut().take();
+        drop(warm);
     }
 
     /// mediabunny `videoFrameIterator.return()` — decoder back to the slot.
@@ -415,9 +414,7 @@ impl VideoPlayer {
                     player.adopt_loop_play_warm(warm);
                     Ok(())
                 } else {
-                    if let Some(d) = warm.iter.finish() {
-                        drop(d);
-                    }
+                    drop(warm); // stale origin: guard closes its decoder
                     drop(stash);
                     player.start_play_iter(origin, epoch).await
                 }
@@ -473,18 +470,14 @@ impl VideoPlayer {
             first_slot,
             second,
         } = warm;
+        // Warm's HW is the only Play decoder now: on failure it becomes main.
+        let iter = iter.disarm();
         if let Err(e) = pool.draw(first_slot, &self.shared.canvas, &self.shared.ctx) {
-            *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
-            if let Some(d) = iter.finish() {
-                *self.decoder.borrow_mut() = Some(d);
-            }
+            self.fail_adopt(iter, &e);
             return;
         }
         if let Err(e) = self.shared.commit_frame(first) {
-            *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
-            if let Some(d) = iter.finish() {
-                *self.decoder.borrow_mut() = Some(d);
-            }
+            self.fail_adopt(iter, &e);
             return;
         }
         self.touch_playhead(first);
@@ -499,10 +492,7 @@ impl VideoPlayer {
                     });
                 }
                 Err(e) => {
-                    *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
-                    if let Some(d) = iter.finish() {
-                        *self.decoder.borrow_mut() = Some(d);
-                    }
+                    self.fail_adopt(iter, &e);
                     return;
                 }
             }
@@ -512,6 +502,15 @@ impl VideoPlayer {
             &format!("fpmedia-web: LoopSeam adopt HW play-warm frame={first}").into(),
         );
         self.kick_update_next_frame();
+    }
+
+    /// Adopt failed after the outgoing main decoder was dropped: report, then
+    /// keep the warm HW decoder as main.
+    fn fail_adopt(&self, iter: PlayIter, e: &MediaError) {
+        *self.shared.play_driver_error.borrow_mut() = Some(e.to_string());
+        if let Some(d) = iter.finish() {
+            *self.decoder.borrow_mut() = Some(d);
+        }
     }
 }
 
@@ -1093,32 +1092,17 @@ impl PlayerInner {
         let t0 = now_ms().unwrap_or(0.0);
         let lead = meta.settle_policy().play_index_lead;
         let track = self.shared.track.clone();
-        let iter = PlayIter::start(decoder, track, origin, lead);
-        let first = match iter.next().await {
+        // Guard: every early exit finishes the iterator and closes its HW decoder.
+        let iter = PlayIterGuard::close_on_drop(PlayIter::start(decoder, track, origin, lead));
+        let first = match iter.iter().next().await {
             Ok(v) => v,
-            Err(e) => {
-                if let Some(d) = iter.finish() {
-                    drop(d);
-                }
-                return if e.is_cancelled() { Ok(()) } else { Err(e) };
-            }
+            Err(e) => return if e.is_cancelled() { Ok(()) } else { Err(e) },
         };
-        let second = match iter.next().await {
+        let second = match iter.iter().next().await {
             Ok(v) => v,
-            Err(e) => {
-                drop(first);
-                if let Some(d) = iter.finish() {
-                    drop(d);
-                }
-                return if e.is_cancelled() { Ok(()) } else { Err(e) };
-            }
+            Err(e) => return if e.is_cancelled() { Ok(()) } else { Err(e) },
         };
         if !self.origin_stash_warm_allowed() {
-            drop(first);
-            drop(second);
-            if let Some(d) = iter.finish() {
-                drop(d);
-            }
             return Ok(());
         }
 
@@ -1128,25 +1112,11 @@ impl PlayerInner {
                 let h = self.shared.canvas.height().max(1);
                 let mut pool = match super::play_pool::PlayCanvasPool::new() {
                     Ok(p) => p,
-                    Err(e) => {
-                        drop(vf0);
-                        drop(second);
-                        if let Some(d) = iter.finish() {
-                            drop(d);
-                        }
-                        return Err(e);
-                    }
+                    Err(e) => return Err(e),
                 };
                 let first_slot = match pool.copy(id0, vf0.as_web_sys(), w, h) {
                     Ok(s) => s,
-                    Err(e) => {
-                        drop(vf0);
-                        drop(second);
-                        if let Some(d) = iter.finish() {
-                            drop(d);
-                        }
-                        return Err(e);
-                    }
+                    Err(e) => return Err(e),
                 };
                 drop(vf0);
                 let second_slot = match second {
@@ -1155,12 +1125,7 @@ impl PlayerInner {
                         drop(vf1);
                         match slot {
                             Ok(s) => Some((id1, s)),
-                            Err(e) => {
-                                if let Some(d) = iter.finish() {
-                                    drop(d);
-                                }
-                                return Err(e);
-                            }
+                            Err(e) => return Err(e),
                         }
                     }
                     None => None,
@@ -1173,13 +1138,7 @@ impl PlayerInner {
                     second: second_slot,
                 })
             }
-            None => {
-                drop(second);
-                if let Some(d) = iter.finish() {
-                    drop(d);
-                }
-                None
-            }
+            None => None, // `iter` drops here (guard closes the decoder)
         };
 
         if let Some(warm) = warm {
@@ -1236,27 +1195,18 @@ impl PlayerInner {
         let lead = meta.settle_policy().play_index_lead;
         // LoopZone in-frame (default 0). Playlist idle seam still uses this at 0.
         let origin = self.shared.loop_zone().in_frame;
-        let iter = PlayIter::start(decoder, track, origin, lead);
-        let first = match iter.next().await {
+        // Guard: every exit resets the decoder and parks it in the scrub slot.
+        let iter =
+            PlayIterGuard::to_scrub_slot(PlayIter::start(decoder, track, origin, lead), self);
+        let first = match iter.iter().next().await {
             Ok(v) => v,
-            Err(e) => {
-                if let Some(d) = iter.finish() {
-                    self.return_loop_prewarm_decoder(d);
-                }
-                return if e.is_cancelled() { Ok(()) } else { Err(e) };
-            }
+            Err(e) => return if e.is_cancelled() { Ok(()) } else { Err(e) },
         };
-        let second = match iter.next().await {
+        let second = match iter.iter().next().await {
             Ok(v) => v,
-            Err(e) => {
-                drop(first);
-                if let Some(d) = iter.finish() {
-                    self.return_loop_prewarm_decoder(d);
-                }
-                return if e.is_cancelled() { Ok(()) } else { Err(e) };
-            }
+            Err(e) => return if e.is_cancelled() { Ok(()) } else { Err(e) },
         };
-        let decoder = iter.finish();
+        drop(iter); // decoder back to the scrub slot before the stash is built
 
         let stash = match first {
             Some((id0, vf0)) => {
@@ -1270,12 +1220,7 @@ impl PlayerInner {
                 drop(second);
                 match built {
                     Ok(s) => Some(s),
-                    Err(e) => {
-                        if let Some(d) = decoder {
-                            self.return_loop_prewarm_decoder(d);
-                        }
-                        return Err(e);
-                    }
+                    Err(e) => return Err(e),
                 }
             }
             None => {
@@ -1284,9 +1229,6 @@ impl PlayerInner {
             }
         };
 
-        if let Some(d) = decoder {
-            self.return_loop_prewarm_decoder(d);
-        }
         if !self.origin_stash_warm_allowed() {
             return Ok(());
         }
@@ -1300,7 +1242,7 @@ impl PlayerInner {
         Ok(())
     }
 
-    fn return_loop_prewarm_decoder(&self, mut decoder: WebCodecsDecoder) {
+    pub(super) fn return_loop_prewarm_decoder(&self, mut decoder: WebCodecsDecoder) {
         let _ = decoder.reset();
         if !self.shared.is_disposed() && !self.shared.scrub_cache_off() {
             *self.shared.scrub_decoder.borrow_mut() = Some(decoder);

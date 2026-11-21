@@ -31,12 +31,9 @@ Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i
 
 **Out of v1:** compare dual-visible.
 
-### Ownership / type debt
+### E2E known state
 
-Rules: `architecture.md` § Ownership & types. Each item leaves this list in the commit that ships it (`closes:` line; agent commits on explicit `commit` — `AGENTS.md` § Commits). **Order:** 1b only (needs a design pass). Each plan needs a `docs:` line (see `AGENTS.md`). Browser e2e (`skills/media.md` Triage) — run before 3 / 4. **Known e2e state:** the `trunk serve` **dev** build of the demo crashes on load (`RuntimeError: memory access out of bounds` in `player::__component_demo_player`; `trunk build --release` is fine — suspect dev-profile stack/frame size, undiagnosed), so run e2e against a release build (`trunk build --release --dist <dir>` + a Range-capable static server, `WEBMEDIA_BASE_URL`). Stale specs vs demo chrome (not engine): `player.jkl` (rate badge now `25fps`), `player.scrub.sticky-error` (`empty URL` text), `player.smoke` audio mute (`is-on` class). Also failing on baseline (undiagnosed): `player.fetchmap.fmp4-gap` (`engine frame did not reach 1102`).
-
-1. **Engine guards.**
-   - **1b `PlayIter` guard (last):** ~20 `iter.finish()` sites (`play.rs`, `play_iter.rs`) each hand the main decoder back to `decoder_slot`. Design pass first: table of exit paths (cancel, EOF, error, seek-restart, `LoopPlayWarm` adopt, clip switch, player Drop) → who gets the decoder; `Drop` is sync (`try_borrow`). Cite `mediabunny: src/media-sink.ts` `mediaSamplesInRange` / `iterator.return()`. Then drop the item (`closes: Ownership debt - Engine helpers`).
+Browser e2e (`skills/media.md` Triage) — run before committing engine playback / ownership refactors. **Known e2e state:** the `trunk serve` **dev** build of the demo crashes on load (`RuntimeError: memory access out of bounds` in `player::__component_demo_player`; `trunk build --release` is fine — suspect dev-profile stack/frame size, undiagnosed), so run e2e against a release build (`trunk build --release --dist <dir>` + a Range-capable static server, `WEBMEDIA_BASE_URL`). Stale specs vs demo chrome (not engine): `player.jkl` (rate badge now `25fps`), `player.scrub.sticky-error` (`empty URL` text), `player.smoke` audio mute (`is-on` class). Also failing on baseline (undiagnosed): `player.fetchmap.fmp4-gap` (`engine frame did not reach 1102`).
 
 ### Publish crates (`0.1.0-alpha`)
 

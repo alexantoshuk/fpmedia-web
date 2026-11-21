@@ -6,7 +6,8 @@
 //! awaits `queueDequeue` (woken by decoder output or a consumer take, no
 //! timer). Samples before the start timestamp are closed on output. The
 //! consumer pulls the earliest sample (`queueNotEmpty`). `iterator.return()`
-//! closes the decoder → [`PlayIter::finish`] resets it before handing it back.
+//! closes the decoder → [`PlayIter::finish`] resets it before handing it back
+//! (callers: `end_play_iter` for the main slot, `PlayIterGuard` elsewhere).
 //!
 //! Distinct from [`super::WebCodecsDecoder::decode_frame`]
 //! (`samplesAtTimestamps`-shaped single-target seek / step path).

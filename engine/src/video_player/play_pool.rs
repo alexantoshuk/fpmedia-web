@@ -8,10 +8,74 @@ use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, VideoFrame};
 
 use crate::decode::canvas::canvas_2d;
+use crate::decode::webcodecs::PlayIter;
 use crate::error::MediaError;
 use crate::types::FrameId;
 
+use super::PlayerInner;
+
 const POOL_SIZE: usize = 2;
+
+/// Where a guarded [`PlayIter`]'s decoder goes when the guard drops.
+enum IterHome<'a> {
+    /// Second HW decoder of a [`LoopPlayWarm`]: just close it.
+    Close,
+    /// PreferSoftware loop-origin decode: back to the scrub decoder slot.
+    ScrubSlot(&'a PlayerInner),
+}
+
+/// Scope guard for a [`PlayIter`] that is not (yet) owned by the `play_iter`
+/// slot — `mediabunny: src/media-sink.ts mediaSamplesInRange` `finally` /
+/// `iterator.return()`: every exit finishes the iterator. `Drop` = `finish()`
+/// then the decoder goes to its [`IterHome`].
+///
+/// Main Play iterators live in `Shared::play_iter` and end through
+/// `PlayerInner::end_play_iter` instead.
+pub(super) struct PlayIterGuard<'a> {
+    iter: Option<PlayIter>,
+    home: IterHome<'a>,
+}
+
+impl PlayIterGuard<'static> {
+    /// Drop closes the decoder (HW play-warm).
+    pub(super) fn close_on_drop(iter: PlayIter) -> Self {
+        Self {
+            iter: Some(iter),
+            home: IterHome::Close,
+        }
+    }
+}
+
+impl<'a> PlayIterGuard<'a> {
+    /// Drop resets the decoder and parks it in `player`'s scrub slot.
+    pub(super) fn to_scrub_slot(iter: PlayIter, player: &'a PlayerInner) -> Self {
+        Self {
+            iter: Some(iter),
+            home: IterHome::ScrubSlot(player),
+        }
+    }
+
+    pub(super) fn iter(&self) -> &PlayIter {
+        self.iter.as_ref().expect("guard armed")
+    }
+
+    /// Hand the live iterator to a new owner; `Drop` becomes a no-op.
+    pub(super) fn disarm(mut self) -> PlayIter {
+        self.iter.take().expect("guard armed")
+    }
+}
+
+impl Drop for PlayIterGuard<'_> {
+    fn drop(&mut self) {
+        let Some(decoder) = self.iter.take().and_then(|it| it.finish()) else {
+            return;
+        };
+        match self.home {
+            IterHome::Close => drop(decoder),
+            IterHome::ScrubSlot(player) => player.return_loop_prewarm_decoder(decoder),
+        }
+    }
+}
 
 struct PoolCanvas {
     canvas: HtmlCanvasElement,
@@ -115,7 +179,7 @@ pub(super) struct LoopOriginStash {
 /// can adopt it without cold `start_play_iter` catch-up (mobile residual).
 /// Short dual-HW window (~1 s). **no equivalent**; Remotion `prewarmIteratorForLooping`.
 pub(super) struct LoopPlayWarm {
-    pub(super) iter: crate::decode::webcodecs::PlayIter,
+    pub(super) iter: PlayIterGuard<'static>,
     pub(super) pool: PlayCanvasPool,
     pub(super) first: FrameId,
     pub(super) first_slot: usize,
