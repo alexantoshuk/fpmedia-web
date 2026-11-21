@@ -15,7 +15,7 @@ use crate::decode::frame_cache::ScrubBlitLru;
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::scrub_blit::BlitCanvasSlot;
 #[cfg(feature = "thumbs")]
-use crate::decode::thumb_sink::ThumbSink;
+use crate::decode::thumb_sink::{ThumbBox, ThumbSink};
 use crate::decode::webcodecs::{PlayIter, WebCodecsDecoder};
 use crate::demux::Mp4VideoTrack;
 use crate::epoch::Epoch;
@@ -100,9 +100,7 @@ pub(super) struct Shared {
     pub(super) thumb_policy: Cell<ThumbPolicy>,
     /// Host thumb decode max box (applied on sink create + [`VideoPlayer::set_thumb_max_size`]).
     #[cfg(feature = "thumbs")]
-    pub(super) thumb_max_w: Cell<u32>,
-    #[cfg(feature = "thumbs")]
-    pub(super) thumb_max_h: Cell<u32>,
+    pub(super) thumb_box: Cell<ThumbBox>,
     /// Second decoder for background gap fill (does not steal main playback).
     pub(super) scrub_decoder: RefCell<Option<WebCodecsDecoder>>,
     /// `Off` → no scrub decoder / Covered / Exact / gray fill (host without scrub UI).

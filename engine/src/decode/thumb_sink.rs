@@ -33,6 +33,32 @@ use crate::types::FrameId;
 pub const DEFAULT_THUMB_MAX_W: u32 = 160;
 pub const DEFAULT_THUMB_MAX_H: u32 = 160;
 
+/// Host thumb decode max box (`w` × `h`, each ≥ 1). One value type for the
+/// player ([`crate::VideoPlayer::set_thumb_max_size`]) and the sink, so the two
+/// edges change together and the `.max(1)` clamp lives in one place.
+/// **no equivalent** (host-layer grouping; width/height shape of
+/// `mediabunny: CanvasSinkOptions` stays on [`ThumbSinkOptions`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ThumbBox {
+    pub w: u32,
+    pub h: u32,
+}
+
+impl ThumbBox {
+    pub fn new(w: u32, h: u32) -> Self {
+        Self {
+            w: w.max(1),
+            h: h.max(1),
+        }
+    }
+}
+
+impl Default for ThumbBox {
+    fn default() -> Self {
+        Self::new(DEFAULT_THUMB_MAX_W, DEFAULT_THUMB_MAX_H)
+    }
+}
+
 /// Options for [`ThumbSink`] (`mediabunny:` `CanvasSinkOptions` width/height).
 ///
 /// `max_thumbs` / `max_gops` from [`thumb_cache_frame_budget`] at `max_w`×`max_h`
@@ -48,12 +74,11 @@ pub struct ThumbSinkOptions {
 impl ThumbSinkOptions {
     /// Host max box → decode size + computed residency cap.
     pub fn for_max_box(max_w: u32, max_h: u32) -> Self {
-        let max_w = max_w.max(1);
-        let max_h = max_h.max(1);
-        let cap = thumb_cache_frame_budget(max_w, max_h, DEFAULT_THUMB_CACHE_MIB);
+        let b = ThumbBox::new(max_w, max_h);
+        let cap = thumb_cache_frame_budget(b.w, b.h, DEFAULT_THUMB_CACHE_MIB);
         Self {
-            max_w,
-            max_h,
+            max_w: b.w,
+            max_h: b.h,
             max_gops: cap,
             max_thumbs: cap,
         }
@@ -89,8 +114,8 @@ pub struct ThumbSink {
     /// Hover client: floor/ceil bias (`+1` / `-1` / `0`).
     hover_dir: Cell<i8>,
     prev_hover_aim: Cell<Option<FrameId>>,
-    last_max_w: Cell<u32>,
-    last_max_h: Cell<u32>,
+    /// Current decode max box (host `set_thumb_max_size` → [`Self::note_size`]).
+    last_box: Cell<ThumbBox>,
     /// Hover client: wall ms of last aim-decode start (Play throttle).
     last_aim_decode_ms: Cell<f64>,
     /// Pointer over scrubber — progressive Pause fill yields.
@@ -102,8 +127,7 @@ pub struct ThumbSink {
 impl ThumbSink {
     /// Create a sink on an opened video track (decoder lazy on first decode).
     pub fn new(track: Rc<Mp4VideoTrack>, opts: ThumbSinkOptions) -> Self {
-        let max_w = opts.max_w.max(1);
-        let max_h = opts.max_h.max(1);
+        let last_box = ThumbBox::new(opts.max_w, opts.max_h);
         Self {
             track,
             cache: RefCell::new(ThumbCache::new(opts.max_gops, opts.max_thumbs)),
@@ -116,8 +140,7 @@ impl ThumbSink {
             hover_aim: Cell::new(0),
             hover_dir: Cell::new(0),
             prev_hover_aim: Cell::new(None),
-            last_max_w: Cell::new(max_w),
-            last_max_h: Cell::new(max_h),
+            last_box: Cell::new(last_box),
             last_aim_decode_ms: Cell::new(0.0),
             hover_active: Cell::new(false),
             progressive_done: Cell::new(false),
@@ -173,18 +196,17 @@ impl ThumbSink {
     }
 
     pub fn note_size(&self, max_w: u32, max_h: u32) {
-        let w = max_w.max(1);
-        let h = max_h.max(1);
-        self.last_max_w.set(w);
-        self.last_max_h.set(h);
-        let cap = thumb_cache_frame_budget(w, h, DEFAULT_THUMB_CACHE_MIB);
+        let b = ThumbBox::new(max_w, max_h);
+        self.last_box.set(b);
+        let cap = thumb_cache_frame_budget(b.w, b.h, DEFAULT_THUMB_CACHE_MIB);
         if let Ok(mut cache) = self.cache.try_borrow_mut() {
             cache.set_max_thumbs(cap);
         }
     }
 
     pub fn last_size(&self) -> (u32, u32) {
-        (self.last_max_w.get(), self.last_max_h.get())
+        let b = self.last_box.get();
+        (b.w, b.h)
     }
 
     pub fn set_fill_pending(&self, pending: bool) {

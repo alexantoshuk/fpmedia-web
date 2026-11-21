@@ -6,7 +6,7 @@ use std::rc::Rc;
 use web_sys::HtmlCanvasElement;
 
 use crate::decode::thumb_sink::{
-    ThumbSink, ThumbSinkOptions, paint_thumb_canvas, run_sparse_key_fill,
+    ThumbBox, ThumbSink, ThumbSinkOptions, paint_thumb_canvas, run_sparse_key_fill,
 };
 use crate::error::MediaError;
 use crate::policy::workload::{allows_thumb_aim_decode, allows_thumb_key_fill};
@@ -52,16 +52,14 @@ impl VideoPlayer {
     /// Host max decode box. Clears cached bitmaps so sizes do not mix; notes
     /// size on the live sink (or next [`Self::ensure_thumb_sink`]).
     pub fn set_thumb_max_size(&self, max_w: u32, max_h: u32) {
-        let w = max_w.max(1);
-        let h = max_h.max(1);
-        self.shared.thumb_max_w.set(w);
-        self.shared.thumb_max_h.set(h);
+        let b = ThumbBox::new(max_w, max_h);
+        self.shared.thumb_box.set(b);
         self.cancel_hover_thumb_inner(false);
         self.clear_thumbs();
         if let Ok(slot) = self.shared.thumb.try_borrow()
             && let Some(thumbs) = slot.as_ref()
         {
-            thumbs.note_size(w, h);
+            thumbs.note_size(b.w, b.h);
         }
         // Restart Pause progressive under the new box when allowed.
         self.schedule_thumb_key_fill();
@@ -107,12 +105,10 @@ impl VideoPlayer {
             return false;
         };
         if slot.is_none() {
+            let b = self.shared.thumb_box.get();
             *slot = Some(Rc::new(ThumbSink::new(
                 Rc::clone(&self.shared.track),
-                ThumbSinkOptions::for_max_box(
-                    self.shared.thumb_max_w.get(),
-                    self.shared.thumb_max_h.get(),
-                ),
+                ThumbSinkOptions::for_max_box(b.w, b.h),
             )));
         }
         true

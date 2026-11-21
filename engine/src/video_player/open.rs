@@ -181,9 +181,7 @@ impl VideoPlayer {
             #[cfg(feature = "thumbs")]
             thumb_policy: Cell::new(ThumbPolicy::On),
             #[cfg(feature = "thumbs")]
-            thumb_max_w: Cell::new(crate::decode::thumb_sink::DEFAULT_THUMB_MAX_W),
-            #[cfg(feature = "thumbs")]
-            thumb_max_h: Cell::new(crate::decode::thumb_sink::DEFAULT_THUMB_MAX_H),
+            thumb_box: Cell::new(crate::decode::thumb_sink::ThumbBox::default()),
             scrub_decoder: RefCell::new(None),
             scrub_cache_policy: Cell::new(crate::policy::ScrubCachePolicy::On),
             scrub_densify_blocked: Cell::new(false),
