@@ -362,6 +362,9 @@ export class DemoPlayer {
    * Dispatches pointerdown/move/up so settle runs.
    */
   async scrubToFraction(fraction: number) {
+    // On the 1280×720 e2e viewport the bar can sit below the fold; mouse
+    // events outside the viewport hit nothing.
+    await this.scrubber.scrollIntoViewIfNeeded();
     const box = await this.scrubber.boundingBox();
     if (!box) throw new Error("scrubber has no bounding box");
     const x = box.x + box.width * Math.min(1, Math.max(0, fraction));

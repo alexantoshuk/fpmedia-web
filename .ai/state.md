@@ -33,8 +33,7 @@ Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i
 
 ### E2E known state
 
-Browser e2e (`skills/media.md` Triage) — run before committing engine playback / ownership refactors; `trunk serve` dev build works (wasm stack size is set in `.cargo/config.toml`). Failing, undiagnosed: `perf.scrub.settle`.
-
+Browser e2e (`skills/media.md` Triage) — run before committing engine playback / ownership refactors; `trunk serve` dev build works (wasm stack size is set in `.cargo/config.toml`).
 ### Publish crates (`0.1.0-alpha`)
 
 Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. Demo `demo-player` stays `publish = false`.

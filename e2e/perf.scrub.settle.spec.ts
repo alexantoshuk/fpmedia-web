@@ -19,12 +19,8 @@ test("cold scrub settle paints exact engine frame", async ({ page }) => {
   await player.openUrl(CLIP_URL, 180_000);
   const openMs = Date.now() - openStart;
 
-  // Single click near end — pointerdown + pointerup settle (no drag densify storm).
-  const box = await player.scrubber.boundingBox();
-  if (!box) throw new Error("no scrubber");
-  const x = box.x + box.width * 0.85;
-  const y = box.y + box.height / 2;
-  await page.mouse.click(x, y);
+  // Single gesture near end — pointerdown + pointerup settle (no drag densify storm).
+  await player.scrubToFraction(0.85);
 
   const settleStart = Date.now();
   let last = await player.readStatus();
