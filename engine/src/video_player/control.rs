@@ -226,11 +226,11 @@ impl VideoPlayer {
                     scrub_cold::schedule_fetchmap_gap_fill(&shared);
                     return;
                 }
-                if !shared.densify.request() {
+                let Some(guard) = shared.densify.request() else {
                     return;
-                }
+                };
                 let again = Rc::clone(&shared);
-                let _ = scrub_cache_fill_task(again).await;
+                let _ = scrub_cache_fill_task(again, guard).await;
             });
         }
     }

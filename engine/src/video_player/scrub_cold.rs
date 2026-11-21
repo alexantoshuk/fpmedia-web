@@ -201,16 +201,17 @@ pub(super) fn schedule_fetchmap_gap_fill(shared: &Rc<Shared>) {
     if shared.fetch_map.gaps(shared.file_size).is_empty() {
         return;
     }
-    if !shared.gray_fill.try_claim() {
+    let Some(flight) = shared.gray_fill.try_claim() else {
         return;
-    }
+    };
     let shared = Rc::clone(shared);
     wasm_bindgen_futures::spawn_local(async move {
-        fetchmap_gap_fill_task(shared).await;
+        fetchmap_gap_fill_task(shared, flight).await;
     });
 }
 
-async fn fetchmap_gap_fill_task(shared: Rc<Shared>) {
+/// Gray fill task; `_flight` releases `gray_fill` busy when the task ends.
+async fn fetchmap_gap_fill_task(shared: Rc<Shared>, _flight: crate::FlightGuard) {
     while !shared.is_disposed()
         && !shared.scrub_bg_suspended()
         && !shared.scrub_cache_off()
@@ -225,5 +226,4 @@ async fn fetchmap_gap_fill_task(shared: Rc<Shared>) {
         let pace_ms = if shared.scrub_gesture.get() { 150 } else { 16 };
         sleep_ms(pace_ms).await;
     }
-    shared.gray_fill.release_busy();
 }

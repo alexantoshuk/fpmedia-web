@@ -22,7 +22,7 @@ use super::webcodecs::WebCodecsDecoder;
 use crate::demux::Mp4VideoTrack;
 use crate::epoch::{Epoch, Ticket};
 use crate::error::MediaError;
-use crate::model::bg_task::SingleFlight;
+use crate::model::bg_task::{FlightGuard, SingleFlight};
 use crate::policy::{
     DEFAULT_THUMB_CACHE_MIB, hover_thumb_dims, next_missing_sync_key, next_progressive_sync_key,
     thumb_cache_frame_budget, thumb_progressive_coarse_count, thumb_progressive_rank,
@@ -215,7 +215,8 @@ impl ThumbSink {
             let _ = d.reset();
         }
         self.decode_blocked.set(false);
-        self.flight.release_busy();
+        // Retires an in-flight worker's guard (late Drop must not clear a newer claim).
+        self.flight.force_release();
         self.flight.clear_pending();
         self.progressive_done.set(false);
     }
@@ -461,20 +462,19 @@ impl ThumbSink {
         self.blit.with_blit(f)
     }
 
-    /// Record latest aim; return `true` if this caller should run the decode loop.
-    pub fn claim_decode(&self, aim: FrameId) -> bool {
+    /// Record latest aim; `Some` = this caller owns the decode loop (dropping
+    /// the guard ends it).
+    pub fn claim_decode(&self, aim: FrameId) -> Option<FlightGuard> {
         self.hover_aim.set(aim);
         self.pending_aim.set(Some(aim));
         self.flight.try_claim()
     }
 
     /// Bg fill: claim worker without stomping [`Self::hover_aim`].
-    pub fn claim_fill_key(&self, key: FrameId) -> bool {
-        if !self.flight.request() {
-            return false;
-        }
+    pub fn claim_fill_key(&self, key: FrameId) -> Option<FlightGuard> {
+        let guard = self.flight.request()?;
         self.pending_aim.set(Some(key));
-        true
+        Some(guard)
     }
 
     pub fn take_pending_aim(&self) -> Option<FrameId> {
@@ -488,10 +488,6 @@ impl ThumbSink {
     /// Queue next bg key while the fill worker stays busy.
     pub fn queue_fill_key(&self, key: FrameId) {
         self.pending_aim.set(Some(key));
-    }
-
-    pub fn end_decode(&self) {
-        self.flight.release_busy();
     }
 
     /// Decode `frame` into the cache. Caller must own the decode flight (or be
@@ -586,11 +582,11 @@ impl ThumbSink {
         if self.decode_blocked.get() {
             return Ok(None);
         }
-        if !self.flight.try_claim() {
+        let Some(flight) = self.flight.try_claim() else {
             return Err(MediaError::Cancelled);
-        }
+        };
         let result = self.decode_into_cache(frame, cancel).await;
-        self.end_decode();
+        drop(flight);
         match result {
             Ok(id) => Ok(Some(id)),
             Err(MediaError::CodecUnsupported(_)) => Ok(None),
@@ -644,23 +640,25 @@ pub fn paint_thumb_canvas(
 ///
 /// `next_gap` returns the next progressive sync id. Yields on Play / hover /
 /// pending hover aim. Stops when `next_gap` is `None` (cap or done).
+///
+/// `flight` is the claim from [`ThumbSink::claim_fill_key`]; every `return`
+/// drops it (busy off). Re-claim for a queued restart replaces it.
 pub async fn run_sparse_key_fill(
     sink: Rc<ThumbSink>,
+    flight: FlightGuard,
     mut next_gap: impl FnMut() -> Option<FrameId>,
     yield_to_play: impl Fn() -> bool,
 ) -> Result<(), MediaError> {
-    let end = || sink.end_decode();
+    let mut flight = flight;
     let should_yield = || {
         yield_to_play() || sink.decode_blocked() || sink.hover_active() || sink.progressive_done()
     };
 
     loop {
         if should_yield() {
-            end();
             return Ok(());
         }
         let Some(key) = sink.take_pending_aim() else {
-            end();
             return Ok(());
         };
 
@@ -671,35 +669,29 @@ pub async fn run_sparse_key_fill(
             let needs_new_gop = !sink.has_gop(key);
             if !sink.can_admit(rank, needs_new_gop) {
                 sink.mark_progressive_done();
-                end();
                 return Ok(());
             }
             let cancelled = || should_yield() || sink.has_pending_aim() || sink.hover_active();
             if cancelled() {
-                end();
                 return Ok(());
             }
             match sink.decode_into_cache(key, &cancelled).await {
                 Ok(_) => {}
                 Err(MediaError::Cancelled) | Err(MediaError::CodecUnsupported(_)) => {
-                    end();
                     return Ok(());
                 }
                 Err(e) => {
-                    end();
                     return Err(e);
                 }
             }
         }
 
         if should_yield() {
-            end();
             return Ok(());
         }
 
         // Hover queued mid-fill — release so paint_hover can claim.
         if sink.has_pending_aim() {
-            end();
             return Ok(());
         }
 
@@ -709,12 +701,13 @@ pub async fn run_sparse_key_fill(
         }
 
         let want_again = sink.take_fill_pending();
-        end();
+        drop(flight);
         if want_again
             && !should_yield()
             && let Some(k) = next_gap()
-            && sink.claim_fill_key(k)
+            && let Some(g) = sink.claim_fill_key(k)
         {
+            flight = g;
             continue;
         }
         return Ok(());

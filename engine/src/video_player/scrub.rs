@@ -194,9 +194,11 @@ impl VideoPlayer {
         // a new iterator — local densify plane must not wedge Exact forever.
         if self.shared.densify.is_busy() {
             web_sys::console::warn_1(
-                &"fpmedia-web: densify still busy after re-abort — force release_busy".into(),
+                &"fpmedia-web: densify still busy after re-abort — force release".into(),
             );
-            self.shared.densify.release_busy();
+            // Retires the stalled task's guard — its late Drop must not clear a
+            // newer densify owner's busy.
+            self.shared.densify.force_release();
         }
     }
 
@@ -914,12 +916,12 @@ impl VideoPlayer {
             }
             return;
         }
-        if !self.shared.densify.request() {
+        let Some(guard) = self.shared.densify.request() else {
             return;
-        }
+        };
         let shared = Rc::clone(&self.shared);
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = scrub_cache_fill_task(shared).await;
+            let _ = scrub_cache_fill_task(shared, guard).await;
         });
     }
 }
@@ -940,7 +942,12 @@ fn note_vt_densify_ban(shared: &Shared, key: FrameId, gop_ids: &[FrameId]) {
     shared.vt_densify_target.set(None);
 }
 
-pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
+/// Densify task. `guard` is the densify [`crate::FlightGuard`]: it lives for the
+/// whole task, so any exit (early return, cancelled future) releases busy.
+pub(super) async fn scrub_cache_fill_task(
+    shared: Rc<Shared>,
+    guard: crate::FlightGuard,
+) -> Result<(), MediaError> {
     let mut scrub_epoch = shared.scrub_epoch.ticket();
     let result = async {
         let mut idle_passes = 0u8;
@@ -1120,18 +1127,18 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
     .await;
 
     if shared.is_disposed() {
-        shared.densify.release_busy();
+        drop(guard);
         shared.densify.clear_pending();
         return result;
     }
     // While exact settle/seek holds densify, leave pending latched and do
     // **not** respawn — a spawn_local spin froze the tab (long-GOP cold scrub).
     if shared.engine.get().holds_exact() {
-        shared.densify.release_busy();
+        drop(guard); // busy off, pending kept
         return result;
     }
 
-    let was_pending = shared.densify.finish();
+    let was_pending = guard.finish();
     // Park / ScrubCacheOff can win the race after this task saw Off and exited
     // with pending still latched — never respawn fill on a parked idle slot
     // (playlist Exact growing on the previous clip). **no equivalent**.
@@ -1143,15 +1150,14 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
         && next_gap_target(&shared).is_some(); // banned set dies with the task
 
     if want_again {
-        shared.densify.begin();
+        let again_guard = shared.densify.begin();
         let again = Rc::clone(&shared);
         wasm_bindgen_futures::spawn_local(async move {
             yield_microtask().await;
             if again.is_disposed() || again.scrub_cache_off() {
-                again.densify.release_busy();
-                return;
+                return; // `again_guard` drops → busy off
             }
-            let _ = scrub_cache_fill_task(again).await;
+            let _ = scrub_cache_fill_task(again, again_guard).await;
         });
     }
     result

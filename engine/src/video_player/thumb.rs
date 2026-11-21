@@ -406,7 +406,7 @@ impl VideoPlayer {
             return Err(MediaError::Cancelled);
         }
 
-        let claim = {
+        let mut flight = {
             let Ok(slot) = self.shared.thumb.try_borrow() else {
                 return Err(MediaError::Cancelled);
             };
@@ -415,7 +415,7 @@ impl VideoPlayer {
             };
             thumbs.claim_decode(frame)
         };
-        if !claim {
+        if flight.is_none() {
             // Bg key-fill owns the worker — wait until free; latest aim already
             // latched in `pending_aim`. Do **not** spin on `yield_microtask`
             // (Promise.resolve microtask) — that freezes the tab while fill
@@ -446,27 +446,22 @@ impl VideoPlayer {
                 if !thumbs.is_current(wait_epoch) || thumbs.decode_blocked() {
                     return Err(MediaError::Cancelled);
                 }
-                if thumbs.claim_decode(frame) {
+                if let Some(g) = thumbs.claim_decode(frame) {
+                    flight = Some(g);
                     break;
                 }
             }
         }
-
-        let end_decode = || {
-            if let Ok(slot) = self.shared.thumb.try_borrow()
-                && let Some(thumbs) = slot.as_ref()
-            {
-                thumbs.end_decode();
-            }
+        // Held for the whole worker: every early `return` releases the flight.
+        let Some(flight) = flight else {
+            return Err(MediaError::Cancelled);
         };
 
         let epoch = {
             let Ok(slot) = self.shared.thumb.try_borrow() else {
-                end_decode();
                 return Err(MediaError::Cancelled);
             };
             let Some(thumbs) = slot.as_ref() else {
-                end_decode();
                 return Err(MediaError::Cancelled);
             };
             thumbs.ticket()
@@ -528,7 +523,7 @@ impl VideoPlayer {
             }
         }
 
-        end_decode();
+        drop(flight);
         last_ok.ok_or(MediaError::Cancelled)
     }
 
@@ -738,9 +733,9 @@ impl VideoPlayer {
         let Some(thumbs) = self.thumb_sink_inner() else {
             return;
         };
-        if !thumbs.claim_fill_key(key) {
+        let Some(flight) = thumbs.claim_fill_key(key) else {
             return;
-        }
+        };
         let shared = Rc::clone(&self.shared);
         let sink = Rc::clone(&thumbs);
         let yield_play = || {
@@ -755,7 +750,7 @@ impl VideoPlayer {
                     .unwrap_or(false)
         };
         // One key only — host VT re-plans the next global target.
-        let _ = run_sparse_key_fill(sink, || None, yield_play).await;
+        let _ = run_sparse_key_fill(sink, flight, || None, yield_play).await;
     }
 
     pub(super) fn thumb_sink_inner(&self) -> Option<Rc<ThumbSink>> {
@@ -778,9 +773,9 @@ impl VideoPlayer {
         let Some(key) = self.next_thumb_progressive_key() else {
             return;
         };
-        if !thumbs.claim_fill_key(key) {
+        let Some(flight) = thumbs.claim_fill_key(key) else {
             return;
-        }
+        };
         let shared = Rc::clone(&self.shared);
         let sink = Rc::clone(&thumbs);
         wasm_bindgen_futures::spawn_local(async move {
@@ -804,7 +799,7 @@ impl VideoPlayer {
                 }
                 next_thumb_progressive_key_shared(&shared)
             };
-            let _ = run_sparse_key_fill(sink, next_gap, yield_play).await;
+            let _ = run_sparse_key_fill(sink, flight, next_gap, yield_play).await;
         });
     }
 

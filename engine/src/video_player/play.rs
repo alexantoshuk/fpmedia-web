@@ -953,9 +953,9 @@ impl VideoPlayer {
     /// Remotion `prewarmIteratorForLooping` / `maybe_kick_loop_origin_prewarm`.
     pub async fn warm_play_origin_bytes(&self) -> Result<(), MediaError> {
         loop {
-            if self.shared.play_origin_warm.request() {
+            if let Some(flight) = self.shared.play_origin_warm.request() {
                 let result = self.warm_play_sample_lead(0, false).await;
-                let again = self.shared.play_origin_warm.finish();
+                let again = flight.finish();
                 if again {
                     continue;
                 }
@@ -977,10 +977,10 @@ impl VideoPlayer {
     /// **no equivalent**; Remotion `prewarmIteratorForLooping`.
     pub async fn warm_play_origin_stash(&self) -> Result<(), MediaError> {
         loop {
-            if self.shared.play_origin_decode.request() {
+            if let Some(flight) = self.shared.play_origin_decode.request() {
                 // Playlist idle / explicit stash callers — PreferSoftware only.
                 let result = self.decode_loop_origin_into_stash().await;
-                let again = self.shared.play_origin_decode.finish();
+                let again = flight.finish();
                 if again {
                     continue;
                 }
@@ -995,9 +995,9 @@ impl VideoPlayer {
 
     async fn warm_loop_origin_decode(&self) -> Result<(), MediaError> {
         loop {
-            if self.shared.play_origin_decode.request() {
+            if let Some(flight) = self.shared.play_origin_decode.request() {
                 let result = self.warm_loop_origin_decode_inner().await;
-                let again = self.shared.play_origin_decode.finish();
+                let again = flight.finish();
                 if again {
                     continue;
                 }
@@ -1316,9 +1316,9 @@ impl VideoPlayer {
             if self.seam_hold_ready_at(frame) {
                 return Ok(());
             }
-            if self.shared.seam_hold_arm.request() {
+            if let Some(flight) = self.shared.seam_hold_arm.request() {
                 let result = self.arm_playlist_seam_hold_inner(frame).await;
-                let again = self.shared.seam_hold_arm.finish();
+                let again = flight.finish();
                 if again {
                     continue;
                 }

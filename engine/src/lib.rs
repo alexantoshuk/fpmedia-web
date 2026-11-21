@@ -65,7 +65,7 @@ pub use host::host_op_coalesce::{HostOp, apply_enqueue};
 #[doc(hidden)]
 pub use host::open_phase::{OpenPhase, OpenSourceKind};
 #[doc(hidden)]
-pub use model::bg_task::SingleFlight;
+pub use model::bg_task::{FlightGuard, SingleFlight};
 #[doc(hidden)]
 pub use model::clock_state::{ClockCmd, ClockEvent, ClockState, reduce as clock_state_reduce};
 #[doc(hidden)]
