@@ -30,7 +30,7 @@ use crate::residency::ScrubChunkStore;
 
 use super::scrub::apply_clip_budgets;
 use super::shared::Shared;
-use super::{VideoPlayer, sleep_ms};
+use super::{PlayerInner, VideoPlayer, sleep_ms};
 
 impl VideoPlayer {
     pub async fn open_mp4_bytes(
@@ -243,10 +243,10 @@ impl VideoPlayer {
         Self::kick_fragment_backfill(&shared);
         // Do not seek here — first-frame decode can be slow; let the host show
         // metadata first and call `seek_frame(0)` with its own progress UI.
-        Ok(Self {
+        Ok(Self(Rc::new(PlayerInner {
             shared,
             decoder: RefCell::new(Some(decoder)),
-        })
+        })))
     }
 
     /// Background fMP4 moof backfill after warm open (mediabunny: `readFragment`).

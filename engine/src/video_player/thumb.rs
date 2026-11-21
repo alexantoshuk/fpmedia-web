@@ -13,12 +13,12 @@ use crate::policy::workload::{allows_thumb_aim_decode, allows_thumb_key_fill};
 use crate::policy::{ThumbPolicy, hover_preview_choice, hover_thumb_dims};
 use crate::types::FrameId;
 
-use super::{Shared, VideoPlayer, now_ms, sleep_ms};
+use super::{PlayerInner, Shared, VideoPlayer, now_ms, sleep_ms};
 
 /// Wall cap waiting for a free PreferSoftware claim (no microtask spin).
 const CLAIM_WAIT_MS: f64 = 2_000.0;
 
-impl VideoPlayer {
+impl PlayerInner {
     /// Abort in-flight hover Exact downscale (scrub start / pointer leave).
     /// Play does not cancel the sink — ThumbCache stays; fill/aim decode only
     /// when paused. `resume_progressive` restarts Pause fill after hover leave.
@@ -682,12 +682,14 @@ impl VideoPlayer {
         }
         self.kick_thumb_key_fill();
     }
+}
 
+impl VideoPlayer {
     /// VT host: decode one progressive sync key into ThumbCache (no local next-key).
     ///
     /// Awaits the one-key fill attempt. Host notes VT markers + re-plans.
     /// **no equivalent** (playlist VT local). `mediabunny:` CanvasSink sparse fill.
-    pub async fn fill_thumb_key_at(self: &Rc<Self>, key: FrameId) {
+    pub async fn fill_thumb_key_at(&self, key: FrameId) {
         if self.shared.is_disposed() || self.shared.scrub_bg_suspended() {
             return;
         }
@@ -748,7 +750,9 @@ impl VideoPlayer {
         // One key only — host VT re-plans the next global target.
         let _ = run_sparse_key_fill(sink, flight, || None, yield_play).await;
     }
+}
 
+impl PlayerInner {
     pub(super) fn thumb_sink_inner(&self) -> Option<Rc<ThumbSink>> {
         self.shared.thumb.try_borrow().ok().and_then(|s| s.clone())
     }

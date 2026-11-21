@@ -154,11 +154,11 @@ Comments that state **who owns decode**, HW vs PreferSoftware, densify on/off, m
 | ----- | -------------- | --------- |
 | Mediabunny-first workflow | `AGENTS.md` | One-line pointer only |
 | Scrub UX / densify / soft-drag / Exact blit (no MB scrub) | `AGENTS.md` § Scrub is local | One-line pointer only — do not invent `mediabunny: … scrub` cites |
-| Approve-before-edit / human commits (agent prep only) | `AGENTS.md` | Do not restate |
+| Approve-before-edit / agent commits on explicit `commit` | `AGENTS.md` | Do not restate |
 | Ownership / pointer / value-type conventions | `architecture.md` § Code rules → Ownership & types | `AGENTS.md` § Type / ownership check — gate only, no rule text |
 | Share common logic (unify siblings) | `product.md` § Share common logic | `AGENTS.md` § Sibling / shared-logic check — pointer only |
 | Fix commit hygiene (integrate, strip debris) | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |
-| Who runs `git commit` (human) / agent prep | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |
+| Who runs `git commit` (agent on explicit `commit`; never push/amend unless asked) | `AGENTS.md` § Commits | `CONTRIBUTING.md`: one-line pointer only |
 | Doc write gate / skill budgets / same-diff freshness / policy comments | `AGENTS.md` | Do not restate — `CONTRIBUTING.md`: one-line pointer only |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
@@ -228,17 +228,18 @@ Do **not** only “append to `media.md`” without choosing a canonical slot. Do
 
 ## Commits
 
-**Human commits (hard):** the agent **never** runs `git commit`, `git push`, `git commit --amend`, or other history-rewriting git. The user creates the commit in their own terminal. Finishing a task, `go` / `ok` on an edit plan is **not** a request to prepare a commit.
+**Agent commits on request:** when the user asks to commit (e.g. `commit`, `commi`, «закоммить»), the agent **stages and runs `git commit`**. Finishing a task, `go` / `ok` on an edit plan is **not** commit consent.
 
-**When the user asks to commit** (e.g. `commit`, `commi`, «закоммить», «подготовь коммит»):
+**Still human-only unless explicitly asked:** `git push`, `git commit --amend`, force push, hard reset, and other history-rewriting git.
+
+**When the user asks to commit:**
 
 1. Ensure the tree is ready for a commit (same-diff `.ai/` / state drop / fix hygiene — see below and **[`CONTRIBUTING.md`](CONTRIBUTING.md)**).
-2. Run **[`scripts/check.sh`](scripts/check.sh)** (fmt + Clippy `-D warnings` + tests). Fix failures before drafting a message. Do not hand a message while gates are red.
+2. Run **[`scripts/check.sh`](scripts/check.sh)** (fmt + Clippy `-D warnings` + tests). Fix failures before committing. Do not commit while gates are red.
 3. Read `git status` / `git diff` / recent `git log` (read-only) and draft the commit message per **CONTRIBUTING** (subject + body; `closes:` when dropping a `state.md` item).
-4. Show the message in chat. Optionally write it UTF-8 **without BOM** to `.git/COMMIT_MSG_TMP.txt` (Python `open(..., encoding='utf-8')`) so the user can `git commit -F .git/COMMIT_MSG_TMP.txt`.
-5. **Stop.** Do not `git add` / `git commit` / `git push` unless the user explicitly asks to stage only (`git add`). Default: human stages and commits.
-
-Do **not** invent agent commit wrappers (`.git/do_commit.sh`, PowerShell HEREDOC, etc.) — obsolete under this policy.
+4. Stage only the files that belong in this commit (`git add` paths — never blanket secrets / `.env`).
+5. **Commit message via file only (hard):** write the full subject+body UTF-8 **without BOM** (Python `open(..., encoding='utf-8')` or equivalent) to a temp path such as `.git/COMMIT_MSG_TMP.txt`, then `git commit -F` that path. **Never** `git commit -m`, bash/`cat` HEREDOC, PowerShell here-strings, or inline multi-line `-m` — they corrupt quoting on Windows. Show the message in chat.
+6. Run `git status` after the commit to verify success. Do **not** push unless the user explicitly asks.
 
 ### Before commit (fix) — integrate, don’t bolt on
 

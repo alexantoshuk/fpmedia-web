@@ -24,12 +24,12 @@ use crate::types::FrameId;
 
 use super::play_pool::{LoopOriginStash, PlayCanvasPool};
 use super::shared::PlayNext;
-use super::{DuePresent, PLAY_EXACT_VRAM_VF_SLACK, PlayTick, VideoPlayer, now_ms};
+use super::{DuePresent, PLAY_EXACT_VRAM_VF_SLACK, PlayTick, PlayerInner, VideoPlayer, now_ms};
 
 /// After tab visible while Playing — skip audio underrun hold this long.
 const UNDERRUN_CATCHUP_GRACE_MS: f64 = 1000.0;
 
-impl VideoPlayer {
+impl PlayerInner {
     /// Paused Next ring cap (step only — Play uses [`PlayIter`]).
     pub(super) fn play_presentation_cap(&self) -> usize {
         self.shared
@@ -43,11 +43,13 @@ impl VideoPlayer {
         let next = play_phase_reduce(self.shared.play_phase.get(), event);
         self.shared.play_phase.set(next);
     }
+}
 
+impl VideoPlayer {
     /// PlayPrime finished (clock armed or deferred silent) — render may present.
     ///
     /// `mediabunny: examples/media-player` `play` after `startVideoIterator`.
-    pub fn begin_play_session(self: &Rc<Self>, pending_silent_clock: bool) {
+    pub fn begin_play_session(&self, pending_silent_clock: bool) {
         self.apply_play_phase(PlayPhaseEvent::Begin);
         self.shared.pending_silent_clock.set(pending_silent_clock);
         self.shared.resuming_clock.set(false);
@@ -58,7 +60,9 @@ impl VideoPlayer {
         self.arm_underrun_catchup_grace();
         self.kick_update_next_frame();
     }
+}
 
+impl PlayerInner {
     /// True after [`Self::begin_play_session`] until pause / soft-hold / teardown.
     pub fn play_session_live(&self) -> bool {
         self.shared.play_phase.get().is_live()
@@ -138,12 +142,14 @@ impl VideoPlayer {
             .as_ref()
             .map(|it| (it.held_len(), it.decode_queue_size()))
     }
+}
 
+impl VideoPlayer {
     /// One play rAF: silent-clock arm, render, underrun hold/resume, loop seam.
     ///
     /// `mediabunny: examples/media-player/media-player.ts` `render` + deferred
     /// `audioContextStartTime` on no-AAC (`finish_silent_play_prime`).
-    pub fn play_raf_tick(self: &Rc<Self>) -> Result<PlayTick, MediaError> {
+    pub fn play_raf_tick(&self) -> Result<PlayTick, MediaError> {
         if let Some(msg) = self.shared.play_driver_error.borrow_mut().take() {
             return Ok(PlayTick::Failed(msg));
         }
@@ -196,7 +202,9 @@ impl VideoPlayer {
         }
         Ok(tick)
     }
+}
 
+impl PlayerInner {
     /// mediabunny `startVideoIterator`: return the prior range, start at
     /// `start`, draw the first sample, keep the second as `nextFrame`.
     pub(super) async fn start_play_iter(
@@ -273,9 +281,11 @@ impl VideoPlayer {
         pool.draw(slot, &self.shared.canvas, &self.shared.ctx)?;
         Ok(true)
     }
+}
 
+impl VideoPlayer {
     /// Spawn `updateNextFrame` unless one runs or `nextFrame` already waits.
-    fn kick_update_next_frame(self: &Rc<Self>) {
+    fn kick_update_next_frame(&self) {
         if self.shared.play_updating.get() || self.shared.play_next.borrow().is_some() {
             return;
         }
@@ -286,7 +296,7 @@ impl VideoPlayer {
             return;
         }
         self.shared.play_updating.set(true);
-        let player = Rc::clone(self);
+        let player = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let result = player.update_next_frame(&iter).await;
             player.shared.play_updating.set(false);
@@ -298,7 +308,9 @@ impl VideoPlayer {
             }
         });
     }
+}
 
+impl PlayerInner {
     /// mediabunny `updateNextFrame`: draw overdue samples immediately; keep the
     /// first future one as `nextFrame` (pool canvas; `VideoFrame` closed).
     async fn update_next_frame(&self, iter: &PlayIter) -> Result<(), MediaError> {
@@ -365,13 +377,15 @@ impl VideoPlayer {
         }
         Ok(())
     }
+}
 
+impl VideoPlayer {
     /// EOF while looping: restart the iterator at `loop_in` under a soft-held clock.
     ///
     /// mediabunny: no loop in `examples/media-player`. Near-EOF prewarm mirrors
     /// Remotion `prewarmIteratorForLooping`: prefer 2nd HW [`LoopPlayWarm`] adopt
     /// (slice B); else PreferSoftware stash + bg catch-up; else cold `start_play_iter`.
-    fn start_loop_seam(self: &Rc<Self>) {
+    fn start_loop_seam(&self) {
         if self.shared.play_phase.get() != PlayPhase::Live {
             return;
         }
@@ -381,7 +395,7 @@ impl VideoPlayer {
         self.apply_clock_event(crate::ClockEvent::ResetForPlay);
         let t = self.hold_media_clock_for_scrub();
         self.shared.held_media_origin.set(Some(t));
-        let player = Rc::clone(self);
+        let player = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let epoch = player.shared.op_epoch.ticket();
             // Finish (or start) loop-in warm under the held clock — hit path is cheap.
@@ -445,7 +459,7 @@ impl VideoPlayer {
 
     /// Install a primed 2nd-HW PlayIter as the live session (no cold catch-up).
     /// Drops the outgoing main decoder from the slot — warm's HW becomes sole Play.
-    fn adopt_loop_play_warm(self: &Rc<Self>, warm: super::play_pool::LoopPlayWarm) {
+    fn adopt_loop_play_warm(&self, warm: super::play_pool::LoopPlayWarm) {
         self.end_play_iter();
         self.shared.displayed.borrow_mut().take();
         self.clear_presentation();
@@ -499,7 +513,9 @@ impl VideoPlayer {
         );
         self.kick_update_next_frame();
     }
+}
 
+impl PlayerInner {
     /// Draw stash frame 0 onto the stage **without consuming** the stash.
     ///
     /// Playlist: call on idle **before** live/idle CSS swap so the promoted
@@ -523,12 +539,14 @@ impl VideoPlayer {
         self.touch_playhead(stash.first);
         true
     }
+}
 
+impl VideoPlayer {
     /// Idle playlist slot: warm + put origin on stage before promote.
     ///
     /// Hits PreferSoftware stash preview; else Exact@0; else `seek_frame(0)`
     /// when still on a non-origin frame (wrap: same clip left at EOF).
-    pub async fn prepare_playlist_seam_origin(self: &Rc<Self>) -> Result<(), MediaError> {
+    pub async fn prepare_playlist_seam_origin(&self) -> Result<(), MediaError> {
         self.prepare_playlist_seam_at(0).await
     }
 
@@ -540,10 +558,7 @@ impl VideoPlayer {
     /// `begin_op` before warm so a near-wall `kick_prepare_seam_at` cannot finish
     /// `seek_frame_with` after wrap/Play (small Host LoopZone: warm overlaps wall
     /// → late seek clears the play session). **no equivalent**.
-    pub async fn prepare_playlist_seam_at(
-        self: &Rc<Self>,
-        frame: FrameId,
-    ) -> Result<(), MediaError> {
+    pub async fn prepare_playlist_seam_at(&self, frame: FrameId) -> Result<(), MediaError> {
         let epoch = self.begin_op();
         if frame == 0 {
             self.warm_play_origin_bytes().await?;
@@ -591,7 +606,7 @@ impl VideoPlayer {
     /// Remotion swap path: stash already has origin canvases — paint + seed
     /// `play_next` sync, then spawn main PlayIter catch-up under `play_updating`
     /// so the seam can resume the clock without awaiting origin decode on main.
-    fn start_loop_seam_with_stash(self: &Rc<Self>, stash: LoopOriginStash, epoch: Ticket) {
+    fn start_loop_seam_with_stash(&self, stash: LoopOriginStash, epoch: Ticket) {
         self.end_play_iter();
         self.shared.displayed.borrow_mut().take();
         self.clear_presentation();
@@ -630,7 +645,7 @@ impl VideoPlayer {
 
         // Block kick_update until catch-up owns `iter.next` exclusively.
         self.shared.play_updating.set(true);
-        let player = Rc::clone(self);
+        let player = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let result = async {
                 let decoder = player.take_decoder(epoch).await?;
@@ -693,7 +708,7 @@ impl VideoPlayer {
     }
 
     /// Kick loop-origin byte + decode prewarm once in the near-zone-end window.
-    fn maybe_kick_loop_origin_prewarm(self: &Rc<Self>, media_time_secs: f64) {
+    fn maybe_kick_loop_origin_prewarm(&self, media_time_secs: f64) {
         if !self.is_looping()
             || self.shared.loop_origin_warm_started.get()
             || self.shared.play_phase.get() != PlayPhase::Live
@@ -707,13 +722,15 @@ impl VideoPlayer {
             return;
         }
         self.shared.loop_origin_warm_started.set(true);
-        let player = Rc::clone(self);
+        let player = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let _ = player.warm_loop_in_bytes().await;
             let _ = player.warm_loop_origin_decode().await;
         });
     }
+}
 
+impl PlayerInner {
     /// Sample-end seconds for the current indexed timeline (full-file EOF wall).
     fn timeline_last_end(&self) -> Option<f64> {
         let track = &self.shared.track;
@@ -795,8 +812,10 @@ impl VideoPlayer {
                 .set(Some(now + UNDERRUN_CATCHUP_GRACE_MS));
         }
     }
+}
 
-    fn tick_underrun_hold_resume(self: &Rc<Self>) {
+impl VideoPlayer {
+    fn tick_underrun_hold_resume(&self) {
         // Tab hidden / catch-up grace: video `nextFrame` lags — never silence audio.
         // Leave any in-flight HoldUnderrun even without `nextFrame`.
         // `mediabunny: media-player` — no video-underrun → audio hold.
@@ -827,9 +846,9 @@ impl VideoPlayer {
         self.spawn_resume_after_underrun_hold();
     }
 
-    pub(super) fn spawn_resume_after_underrun_hold(self: &Rc<Self>) {
+    pub(super) fn spawn_resume_after_underrun_hold(&self) {
         self.shared.resuming_clock.set(true);
-        let player = Rc::clone(self);
+        let player = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let t = player
                 .shared
@@ -847,7 +866,9 @@ impl VideoPlayer {
             }
         });
     }
+}
 
+impl PlayerInner {
     /// Shrink Exact to leave GPU headroom for Play VF pool; keep near-playhead bitmaps.
     pub(super) fn trim_exact_for_play(&self) {
         let Ok(mut blit) = self.shared.scrub_blit.try_borrow_mut() else {
@@ -1285,19 +1306,25 @@ impl VideoPlayer {
             *self.shared.scrub_decoder.borrow_mut() = Some(decoder);
         }
     }
+}
 
+impl VideoPlayer {
     /// Playlist Host: Play-ready at frame 0 under held clock (`SeamHold`).
-    pub async fn arm_playlist_seam_hold(self: &Rc<Self>) -> Result<(), MediaError> {
+    pub async fn arm_playlist_seam_hold(&self) -> Result<(), MediaError> {
         self.arm_playlist_seam_hold_at(0).await
     }
+}
 
+impl PlayerInner {
     fn seam_hold_ready_at(&self, frame: FrameId) -> bool {
         self.shared.play_phase.get().is_seam_hold()
             && self.shared.seam_hold_frame.get() == Some(frame)
             && self.shared.play_iter.borrow().is_some()
             && self.is_playing()
     }
+}
 
+impl VideoPlayer {
     /// Playlist Host: prime **main** PlayIter at `frame` under held clock.
     ///
     /// Idle slot's HW is free (live owns the other player) — not PreferSoftware
@@ -1305,10 +1332,7 @@ impl VideoPlayer {
     /// Clock does not advance until [`Self::release_playlist_seam_hold`].
     /// **no equivalent** (playlist local); Remotion `prewarmIteratorForLooping`
     /// / Kitsu dual-`<video>` preplay shape.
-    pub async fn arm_playlist_seam_hold_at(
-        self: &Rc<Self>,
-        frame: FrameId,
-    ) -> Result<(), MediaError> {
+    pub async fn arm_playlist_seam_hold_at(&self, frame: FrameId) -> Result<(), MediaError> {
         loop {
             if self.seam_hold_ready_at(frame) {
                 return Ok(());
@@ -1331,10 +1355,7 @@ impl VideoPlayer {
         }
     }
 
-    async fn arm_playlist_seam_hold_inner(
-        self: &Rc<Self>,
-        frame: FrameId,
-    ) -> Result<(), MediaError> {
+    async fn arm_playlist_seam_hold_inner(&self, frame: FrameId) -> Result<(), MediaError> {
         if self.seam_hold_ready_at(frame) {
             return Ok(());
         }
@@ -1395,10 +1416,7 @@ impl VideoPlayer {
     /// `restart_iter`: Host mid-zone — fresh PlayIter @aim on release (prepare
     /// refresh alone re-snapped to `loop_in`). Full-axis keeps hold iter.
     /// Hard-reset + no-skip either way. **no equivalent** (playlist local).
-    pub async fn release_playlist_seam_hold(
-        self: &Rc<Self>,
-        restart_iter: bool,
-    ) -> Result<(), MediaError> {
+    pub async fn release_playlist_seam_hold(&self, restart_iter: bool) -> Result<(), MediaError> {
         if self.shared.play_phase.get() == PlayPhase::Live && self.is_playing() {
             return Ok(());
         }
@@ -1457,7 +1475,7 @@ impl VideoPlayer {
     /// At origin: PreferSoftware stash hit (playlist idle / loop prewarm) →
     /// sync paint + bg catch-up like [`Self::start_loop_seam_with_stash`] — no
     /// await cold decode on the Play click path.
-    pub async fn prime_playback(self: &Rc<Self>) -> Result<(), MediaError> {
+    pub async fn prime_playback(&self) -> Result<(), MediaError> {
         if !self.is_playing() {
             return Ok(());
         }
@@ -1507,7 +1525,9 @@ impl VideoPlayer {
             Err(e) => Err(e),
         }
     }
+}
 
+impl PlayerInner {
     /// Paused Next ring length (0 while playing).
     pub fn presentation_len(&self) -> usize {
         self.shared.presentation.borrow().len()

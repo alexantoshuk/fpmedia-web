@@ -205,7 +205,7 @@ fn apply_engine_cmd(ctx: &HostCtx, kick_drain: &KickDrain, cmd: TransportCmd) {
 
 /// Leave play for a scrub op: soft-hold the engine.
 /// Returns the live player, or `None` when nothing is open.
-fn leave_play_for_scrub(ctx: &HostCtx) -> Option<Rc<fpmedia_web::VideoPlayer>> {
+fn leave_play_for_scrub(ctx: &HostCtx) -> Option<fpmedia_web::VideoPlayer> {
     let p = ctx.player.borrow().as_ref().cloned()?;
     if p.is_playing() || p.play_session_live() {
         p.pause_for_scrub();

@@ -24,11 +24,11 @@ use super::scrub_cold::{
 };
 use super::scrub_gap::{gop_sample_lead, next_gap_target, next_gap_unbanned, playhead_and_last};
 use super::{
-    PLAY_EXACT_VRAM_VF_SLACK, Shared, VideoPlayer, next_animation_frame, now_ms, sleep_ms,
-    yield_microtask,
+    PLAY_EXACT_VRAM_VF_SLACK, PlayerInner, Shared, VideoPlayer, next_animation_frame, now_ms,
+    sleep_ms, yield_microtask,
 };
 
-impl VideoPlayer {
+impl PlayerInner {
     /// Aim + park only — no densify kick. Used while the main decoder owns an
     /// exact seek/scrub (`restarting`) so the scrub decoder does not compete for
     /// the HW session until the finger frame is on canvas.
@@ -73,7 +73,9 @@ impl VideoPlayer {
         schedule_fetchmap_gap_fill(&self.shared);
         self.schedule_thumb_key_fill();
     }
+}
 
+impl VideoPlayer {
     /// Tab / window hidden: stop densify / gray / thumbs. Play clock stays live.
     ///
     /// `mediabunny: examples/media-player/media-player.ts` — no visibility hold;
@@ -81,7 +83,7 @@ impl VideoPlayer {
     /// Also deepens audio ahead ([`crate::AudioOutput::set_tab_hidden`]) and
     /// blocks video-underrun → [`AudioOutput::hold_underrun`] (that made
     /// background audio choppy when rAF/`nextFrame` lagged).
-    pub fn yield_scrub_work_for_hidden(self: &Rc<Self>) {
+    pub fn yield_scrub_work_for_hidden(&self) {
         if self.shared.is_disposed() {
             return;
         }
@@ -102,7 +104,9 @@ impl VideoPlayer {
             self.spawn_resume_after_underrun_hold();
         }
     }
+}
 
+impl PlayerInner {
     /// Tab visible again: clear suspend and re-arm Pause densify / gray / thumbs.
     pub fn resume_scrub_work_after_visible(&self) {
         if self.shared.is_disposed() {

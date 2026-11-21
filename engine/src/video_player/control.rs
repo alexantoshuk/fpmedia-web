@@ -17,9 +17,9 @@ use crate::types::{AudioMetadata, FrameId, VideoMetadata};
 use super::scrub::scrub_cache_fill_task;
 use super::scrub_cold;
 use super::scrub_gap::next_gap_target;
-use super::{VideoPlayer, yield_microtask};
+use super::{PlayerInner, yield_microtask};
 
-impl VideoPlayer {
+impl PlayerInner {
     pub fn metadata(&self) -> VideoMetadata {
         self.shared.track.metadata()
     }
@@ -295,7 +295,7 @@ impl VideoPlayer {
     }
 }
 
-impl Drop for VideoPlayer {
+impl Drop for PlayerInner {
     fn drop(&mut self) {
         // Hard clip teardown — densify used to adopt scrub_epoch bumps and keep
         // `Shared` (+ AudioContext) alive across open_url; Chrome then goes silent

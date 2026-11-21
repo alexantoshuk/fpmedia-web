@@ -41,8 +41,27 @@ use shared::{PLAY_EXACT_VRAM_VF_SLACK, Shared};
 
 /// Frame-precise video player (WebCodecs → canvas); optional audio via [`crate::AudioOutput`].
 /// Pure-audio hosts will use a separate `AudioPlayer` over the same audio modules.
-pub struct VideoPlayer {
+///
+/// A cheap `Clone` handle over [`PlayerInner`]: the clip is torn down
+/// (`Drop for PlayerInner`) when the **last** clone is dropped, so a clone held
+/// by a spawned task delays teardown. Methods that spawn work and must keep the
+/// player alive live on this handle (`&self` + `self.clone()`); everything else
+/// is on [`PlayerInner`] and reached through `Deref`.
+#[derive(Clone)]
+pub struct VideoPlayer(Rc<PlayerInner>);
+
+/// State behind a [`VideoPlayer`] handle; owns the teardown `Drop`.
+#[doc(hidden)]
+pub struct PlayerInner {
     shared: Rc<Shared>,
     /// `None` only while an async decode owns the decoder (must not re-enter).
     decoder: RefCell<Option<WebCodecsDecoder>>,
+}
+
+impl std::ops::Deref for VideoPlayer {
+    type Target = PlayerInner;
+
+    fn deref(&self) -> &PlayerInner {
+        &self.0
+    }
 }

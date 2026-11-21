@@ -14,7 +14,7 @@ use super::transport_apply::{TransportHandle, note_transport, sync_playing_from_
 /// Starts the op-queue drain loop (built in `<Video>`; needs `resume_raf`).
 pub(super) type KickDrain = Rc<dyn Fn()>;
 
-pub(super) type PlayerHandle = Rc<RefCell<Option<Rc<VideoPlayer>>>>;
+pub(super) type PlayerHandle = Rc<RefCell<Option<VideoPlayer>>>;
 
 /// Player + queue + transport + UI signals. Clone is cheap (`Rc`s + `Copy`
 /// signals) — clone into each callback instead of cloning fields.
@@ -47,7 +47,7 @@ impl HostCtx {
     /// Run `f` on the live player unless it is absent or borrowed (re-entry).
     pub fn with_player<T>(&self, f: impl FnOnce(&VideoPlayer) -> T) -> Option<T> {
         let borrow = self.player.try_borrow().ok()?;
-        borrow.as_deref().map(f)
+        borrow.as_ref().map(f)
     }
 
     /// Engine → UI signals (frame, count, timestamp, loop, pipeline).

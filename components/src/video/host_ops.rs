@@ -1,7 +1,5 @@
 //! Host-op enqueue helpers + the async bodies the drain loop runs.
 
-use std::rc::Rc;
-
 use fpmedia_web::OpenPhase;
 use leptos::prelude::*;
 
@@ -78,7 +76,6 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
     }
     match opened {
         Ok(p) => {
-            let p = Rc::new(p);
             // Capability before `seek_frame(0)` (seek arms densify; policy does not).
             p.set_scrub_cache_policy(ctx.scrub_cache_policy.get());
             // Exact residency = slot blit; engine next_gap. VT = axis/settle only.
@@ -102,7 +99,7 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
             p.set_loop(ctx.video.looping.get_untracked());
             p.set_loop_zone(0, p.state().frame_count);
             let _ = p.relayout();
-            *player.borrow_mut() = Some(Rc::clone(&p));
+            *player.borrow_mut() = Some(p.clone());
             status.set(OpenPhase::DecodingStart.label());
             let seek = p.seek_frame(0).await;
             if !queue.is_current(id) {

@@ -71,7 +71,7 @@ Tailwind: only literal class strings in `.rs`/`.css`; prefer canonical utilities
 ## Host gotchas
 
 1. **OpQueue** — serialize open/seek/play-prime (CallSerializer + asyncId). `busy` = draining, not “drop input”.
-2. **No `RefCell` across `.await`** — clone `Rc<VideoPlayer>`, await, put back. Engine re-entry: `skills/media.md` RefCell.
+2. **No `RefCell` across `.await`** — clone `VideoPlayer`, await, put back. Engine re-entry: `skills/media.md` RefCell.
 3. **`playing` follows transport** — `TransportState::ui_playing(session_live)` = play intent (`Playing`, resume `Scrubbing`/`Settling`; `PlayPriming` needs live session). Never `playing.set(engine.playing)` in `sync_ui`. Seek/Step/Play/Pause/scrub → `dispatch_transport` / `note_transport`.
 4. **Transport** — pointers → `VideoRef::scrub_pointer_*`; Seek/Step → `SeekRequested` / `StepRequested`. FSM owns resume (`ScrubRelease { then_play }`). Soft-hold via `pause_for_scrub`. PlayPrime fail → soft-park (no bump) so retry works.
 5. **Playhead** — sync on pointerdown/move before `scrub_pointer_*`. `sync_ui` updates playhead only while playing or on new clip. Leaving play: snap playhead to engine. Hold ←/→: aim `engine±1`, not `playhead++`.

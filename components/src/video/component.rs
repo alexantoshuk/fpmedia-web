@@ -38,7 +38,7 @@ const HIDDEN_PLAY_TICK_MS: u64 = 500;
 
 /// One play-clock present tick — shared by the rAF driver and the hidden-tab
 /// interval (`mediabunny: setInterval(render, 500)`).
-fn on_play_tick(ctx: &HostCtx, p: &Rc<VideoPlayer>, last_play_ui_ms: &Cell<f64>) {
+fn on_play_tick(ctx: &HostCtx, p: &VideoPlayer, last_play_ui_ms: &Cell<f64>) {
     let VideoRef {
         ended,
         frame,
@@ -237,7 +237,7 @@ pub fn Video(
                 if let Ok(borrow) = ctx.player.try_borrow()
                     && let Some(p) = borrow.as_ref()
                 {
-                    Rc::clone(p).yield_scrub_work_for_hidden();
+                    p.yield_scrub_work_for_hidden();
                 }
                 scrub_yielded.set(true);
                 if first {

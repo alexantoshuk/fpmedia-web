@@ -8,10 +8,10 @@ use std::rc::Rc;
 use crate::error::MediaError;
 use crate::model::clock_state::{ClockCmd, ClockEvent, reduce as clock_reduce};
 
-use super::VideoPlayer;
+use super::PlayerInner;
 use super::now_ms;
 
-impl VideoPlayer {
+impl PlayerInner {
     pub fn set_volume(&self, volume: f64) {
         if let Some(a) = self.shared.audio.borrow().as_ref() {
             a.set_volume(volume);

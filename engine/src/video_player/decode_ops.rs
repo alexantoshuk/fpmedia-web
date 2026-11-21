@@ -12,12 +12,12 @@ use crate::error::MediaError;
 use crate::model::decoder_slot::{DecoderSlotCmd, DecoderSlotEvent, reduce as decoder_slot_reduce};
 use crate::types::FrameId;
 
-use super::VideoPlayer;
+use super::PlayerInner;
 use super::scrub::ingest_scrub_frame_shared;
 use super::shared::{QueuedFrame, STEP_BEHIND_CAP};
 use super::{now_ms, sleep_ms};
 
-impl VideoPlayer {
+impl PlayerInner {
     pub(super) fn apply_decoder_slot(&self, event: DecoderSlotEvent) -> Vec<DecoderSlotCmd> {
         let (next, cmds) = decoder_slot_reduce(self.shared.decoder_slot.get(), event);
         self.shared.decoder_slot.set(next);

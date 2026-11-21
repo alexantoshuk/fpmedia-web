@@ -10,9 +10,9 @@ use crate::types::{FrameId, FrameRun, coalesce_frame_runs};
 
 use super::scrub::{apply_clip_budgets, ingest_scrub_bitmap_only};
 use super::shared::{QueuedFrame, STEP_BEHIND_CAP, STEP_BEHIND_CAP_PLAY};
-use super::{PipelineStats, ReadyFrameKind, ReadyFrameMark, VideoPlayer, ready_kind_paint_order};
+use super::{PipelineStats, PlayerInner, ReadyFrameKind, ReadyFrameMark, ready_kind_paint_order};
 
-impl VideoPlayer {
+impl PlayerInner {
     /// Recompute canvas buffer from current CSS layout × DPR (call on container resize).
     ///
     /// Changing `canvas.width`/`height` clears the bitmap (fullscreen ↔ windowed).

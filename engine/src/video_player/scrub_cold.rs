@@ -1,4 +1,4 @@
-//! Cold scrub settle / byte-warm gates for [`super::VideoPlayer`].
+//! Cold scrub settle / byte-warm gates for [`super::VideoPlayer`] ([`PlayerInner`]).
 //!
 //! Soft path when Exact would stampede cold Ranges. Commit rule:
 //! [`crate::policy::scrub_plan::cold_settle_commit_frame`].
@@ -11,8 +11,8 @@ use crate::error::MediaError;
 use crate::policy::scrub_plan::{cold_settle_commit_frame, next_fetchmap_gap};
 use crate::types::FrameId;
 
+use super::PlayerInner;
 use super::Shared;
-use super::VideoPlayer;
 use super::scrub_gap::playhead_and_last;
 use super::sleep_ms;
 
@@ -71,7 +71,7 @@ pub(super) fn exact_scrub_ready(shared: &Shared, frame: FrameId) -> bool {
 ///
 /// **Named recovery** (not a [`crate::SettlePolicy`] knob). Does **not** decode.
 pub(super) fn soft_cold_scrub_settle(
-    player: &VideoPlayer,
+    player: &PlayerInner,
     frame: FrameId,
 ) -> Result<(), MediaError> {
     let indexed = player.shared.track.indexed_frame_count();

@@ -9,9 +9,9 @@ use crate::error::MediaError;
 use crate::policy::ThumbPolicy;
 use crate::types::FrameId;
 
-use super::VideoPlayer;
+use super::{PlayerInner, VideoPlayer};
 
-impl VideoPlayer {
+impl PlayerInner {
     pub fn cancel_hover_thumb(&self) {}
 
     pub fn set_thumb_policy(&self, _policy: ThumbPolicy) {}
@@ -48,9 +48,13 @@ impl VideoPlayer {
     pub fn thumb_has_key(&self, _key: FrameId) -> bool {
         false
     }
+}
 
-    pub async fn fill_thumb_key_at(self: &Rc<Self>, _key: FrameId) {}
+impl VideoPlayer {
+    pub async fn fill_thumb_key_at(&self, _key: FrameId) {}
+}
 
+impl PlayerInner {
     pub(super) fn clear_thumbs(&self) {}
 
     pub(super) fn drop_thumb_sink(&self) {}
