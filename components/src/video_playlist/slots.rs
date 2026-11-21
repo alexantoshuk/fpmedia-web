@@ -140,7 +140,6 @@ async fn warm_cut_join_exact(
     }
     // Off parks block Exact ingest — On for one densify-free Exact, then park.
     idle.set_scrub_cache_policy(ScrubCachePolicy::On);
-    idle.set_vt_densify_authority(false);
     let prepared = idle.prepare_seam_at(join).await;
     if let Some(r) = finish_if_opening_became_live(pl, opening_is_a, idle_i) {
         return r;
@@ -151,7 +150,6 @@ async fn warm_cut_join_exact(
     }
     if pl.idle_clip.get_untracked() == Some(idle_i) && opening_still_idle(pl, opening_is_a) {
         idle.park_scrub_cache();
-        idle.set_vt_densify_authority(false);
     }
     pl.apply_gain_to_slots();
     prepared
@@ -207,7 +205,6 @@ fn finish_if_opening_became_live(
     if pl.live_clip.get_untracked() == clip_index {
         let live = pl.live_video();
         live.set_scrub_cache_policy(ScrubCachePolicy::On);
-        live.set_vt_densify_authority(false);
         pl.apply_gain_to_slots();
         return Some(Ok(()));
     }
@@ -220,7 +217,6 @@ fn ensure_live_on(pl: VideoPlaylistRef, clip_index: u32) -> bool {
     }
     let live = pl.live_video();
     live.set_scrub_cache_policy(ScrubCachePolicy::On);
-    live.set_vt_densify_authority(false);
     true
 }
 
@@ -327,7 +323,6 @@ pub(crate) async fn ensure_clip_on_idle(
         && opening_still_idle(pl, opening_is_a)
     {
         idle.park_scrub_cache();
-        idle.set_vt_densify_authority(false);
     }
     clear_flight(pl, clip_index);
     // Open resets engine A/V — re-apply playlist-wide volume/mute/rate.
@@ -386,11 +381,9 @@ pub(crate) fn swap_live_idle(pl: VideoPlaylistRef, new_live_clip: u32) {
     pl.idle_clip.set(Some(former_live));
     let live = pl.live_video();
     live.set_scrub_cache_policy(ScrubCachePolicy::On);
-    live.set_vt_densify_authority(false);
     live.ended.set(false);
     let idle = pl.idle_video();
     idle.park_scrub_cache();
-    idle.set_vt_densify_authority(false);
     idle.ended.set(false);
     sync_live_loop_from_playlist(pl);
     pl.apply_gain_to_slots();
@@ -447,7 +440,6 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     }
     if pl.idle_clip.get_untracked() == Some(i) && opening_still_idle(pl, opening_is_a) {
         idle.park_scrub_cache();
-        idle.set_vt_densify_authority(false);
     }
     pl.apply_gain_to_slots();
     kick_cut_join_exact_warm(pl);
@@ -560,7 +552,6 @@ fn settle_playlist_pause_exact(
 ) {
     use crate::virtual_timeline::{ExactSettlePlan, plan_exact_settle};
     live.set_scrub_cache_policy(ScrubCachePolicy::On);
-    live.set_vt_densify_authority(false);
     let hit = known_hit || live.has_scrub_exact_blit(local);
     if matches!(plan_exact_settle(hit), ExactSettlePlan::PresentHit)
         && live.try_present_scrub_exact(local)

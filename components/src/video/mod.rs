@@ -20,7 +20,7 @@ pub use fpmedia_web::{
 };
 pub use pipeline_interest::{PipelineInterestLease, PipelinePlane};
 
-use fpmedia_web::{FrameId, FrameRun, ScrubDir};
+use fpmedia_web::{FrameRun, ScrubDir};
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
@@ -514,25 +514,6 @@ impl VideoRef {
         }
     }
 
-    /// Present a VT ledger Exact bitmap onto this slot.
-    pub fn present_image_bitmap(&self, local: u32, bitmap: &web_sys::ImageBitmap) -> bool {
-        self.host()
-            .is_some_and(|host| host.present_image_bitmap(local, bitmap))
-    }
-
-    /// Take Exact blit for import into the VT ledger.
-    pub fn take_scrub_exact_blit(&self, local: u32) -> Option<web_sys::ImageBitmap> {
-        self.host()
-            .and_then(|host| host.take_scrub_exact_blit(local))
-    }
-
-    /// Local Exact FrameIds in the slot blit.
-    pub fn scrub_exact_frame_ids(&self) -> Vec<u32> {
-        self.host()
-            .map(|host| host.scrub_exact_frame_ids())
-            .unwrap_or_default()
-    }
-
     /// Local Covered marker FrameIds.
     pub fn scrub_covered_frame_ids(&self) -> Vec<u32> {
         self.host()
@@ -545,26 +526,6 @@ impl VideoRef {
         self.host()
             .map(|host| host.scrub_fetch_playable_runs())
             .unwrap_or_default()
-    }
-
-    /// Clone Exact blit for VT ledger import.
-    pub fn clone_scrub_exact_blit(&self, local: u32) -> Option<web_sys::ImageBitmap> {
-        self.host()
-            .and_then(|host| host.clone_scrub_exact_blit(local))
-    }
-
-    /// Slot Exact capacity (frames).
-    pub fn scrub_exact_capacity(&self) -> usize {
-        self.host()
-            .map(|host| host.scrub_exact_capacity())
-            .unwrap_or(1)
-    }
-
-    /// VT densify authority on/off.
-    pub fn set_vt_densify_authority(&self, on: bool) {
-        if let Some(host) = self.host() {
-            host.set_vt_densify_authority(on);
-        }
     }
 
     /// VT Pause progressive thumbs on/off (playlist host planner).
@@ -611,36 +572,8 @@ impl VideoRef {
         }
     }
 
-    /// Queue local FrameId for VT densify fill task.
-    pub fn queue_vt_densify_target(&self, local: u32) {
-        if let Some(host) = self.host() {
-            host.queue_vt_densify_target(local);
-        }
-    }
-
-    /// Local Exact already in VT ledger — densify must not re-decode after take.
-    pub fn set_vt_exact_residents(&self, locals: &[u32]) {
-        if let Some(host) = self.host() {
-            host.set_vt_exact_residents(locals);
-        }
-    }
-
-    /// Scrub margins for [`crate::virtual_timeline::plan_next_densify_gap`].
-    pub fn scrub_plan_margins(&self) -> (FrameId, FrameId) {
-        self.host()
-            .map(|host| host.scrub_plan_margins())
-            .unwrap_or((12, 6))
-    }
-
     pub fn scrub_dir(&self) -> ScrubDir {
         self.host().map(|host| host.scrub_dir()).unwrap_or_default()
-    }
-
-    /// VT densify soft-ban locals (skip in timeline plan).
-    pub fn vt_densify_banned_locals(&self) -> Vec<u32> {
-        self.host()
-            .map(|host| host.vt_densify_banned_locals())
-            .unwrap_or_default()
     }
 
     pub fn densify_inflight(&self) -> bool {

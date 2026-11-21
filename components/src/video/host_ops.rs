@@ -78,8 +78,6 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
         Ok(p) => {
             // Capability before `seek_frame(0)` (seek arms densify; policy does not).
             p.set_scrub_cache_policy(ctx.scrub_cache_policy.get());
-            // Exact residency = slot blit; engine next_gap. VT = axis/settle only.
-            p.set_vt_densify_authority(false);
             // Playlist host turns thumb authority on after dual-slot open.
             p.set_vt_thumb_authority(false);
             p.set_thumb_policy(ctx.thumb_policy.get());
@@ -225,7 +223,6 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
                 ExactSettlePlan::DecodeExact => p.scrub_to(local, true).await,
             };
             if r.is_ok() && queue.is_current(id) && !queue.has_pending_play() {
-                p.set_vt_densify_authority(false);
                 p.arm_scrub_densify_after_exact(local);
             }
             r

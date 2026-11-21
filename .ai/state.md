@@ -10,9 +10,8 @@
 
 - **Branch:** `main` — Covered + Fetch + thumb markers sole on VT; Exact bitmaps = slot; **playlist thumb bitmaps = VT `VtThumbCache` + 1 `ThumbProducer`** (not idle ensure); idle = nearest cut; Pause cut-join Exact@join warm; VT LoopZone + SeamPhase FSM; Host wrap exec = `loop_seam_exec`; thumb max box = `set_thumb_max_size` (default 160²); ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB.
 - **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; VT LoopZone wall + wrap/EOF/seam-next + SeamPhase/`zone_owner_from_spans`; Host LoopSeam adapter (`loop_seam_exec`); VT thumb wallet + producer (`60d955d`).
-- **In this change:** host `set_thumb_max_size` + computed thumb ImageBitmap cap (MiB÷box). **Verify:** change max size mid-session (caches resize); Pause progressive still fills; hover tip follows timeline max signals.
+- **Open (thumb max size):** host `set_thumb_max_size` + computed ImageBitmap cap (MiB÷box) shipped; single + playlist paths re-read and consistent (clear → cap → progressive restart). **Not run in a browser:** the demo has no control that changes the box mid-session, so a resize e2e needs a demo control / test hook first. `ThumbCache::set_max_thumbs` has no test.
 - **OK in browser (prior):** Pause Exact grow; scrub Up densify; cut-join Pause scrub 1↔2 / reverse; Covered + Fetch gray survive clip leave. Pages demo live (`alexantoshuk.github.io/fpmedia-web`).
-- **Parked debris (do not use):** VT Exact take/import / densify orch (`vt_densify_authority` stays false). Exact-take backend helpers removed; `VideoHost` take/present methods may still exist unused.
 - **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.
 - **Open (unchanged):** mobile LoopPlayWarm unverified. Residual light mobile pause on Host mid-zone LoopZone seam — later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional (unrelated).
@@ -51,6 +50,7 @@ Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. 
 
 - **Supplied open meta (unified)** — host/DB timing with media for both `<Video>` and `<VideoPlaylist>` (same shape; playlist = per-clip). Skip probe when meta present; `open_blob`/`open_url` / playlist probe stay fallback. Not current — do not land playlist-only `open_entries` first.
 - **CutWindow** — half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut. After LoopZone (shipped — `architecture.md` § LoopZone). Prefer after host seam machine (§2), else seams grow more flag soup. The Clip↔Source seam is already typed (`ClipFrame::source()` — `architecture.md` § Ownership & types); `cut_in` lands there. Not current priority.
+- Optional cleanup: `virtual_timeline/densify_plan.rs` (`DensifyPlanInput`, `plan_next_densify_gap`) has no production caller since the VT densify authority was removed — delete it (and its tests + `architecture.md` § axes mention) or revive on purpose.
 - Optional: harden Pause densify pin-holes on slow PreferSoftware (salvage + skip-bridge `put_chunk`; no Exact wipe) — only if strip cosmetics stop being acceptable (`product.md`).
 - Revisit seek Exact follow **without** wiping Exact on settle (densify yield / unbanned walk only — prove scrub still paints).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).

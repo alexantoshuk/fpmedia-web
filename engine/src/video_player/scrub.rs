@@ -39,13 +39,9 @@ impl PlayerInner {
         // Keep the step VF ring (displayed / behind / ahead) across Pause and
         // step — park used to drop ahead VFs and force key→N on Next/Prev hold.
         // Seek / scrub settle call [`Self::clear_step_ring`] explicitly.
-        let prev = self.shared.state().frame;
         self.touch_playhead(focus);
-        // Fresh aim — allow fill even after a prior stall; drop VT soft-bans.
+        // Fresh aim — allow fill even after a prior stall.
         self.shared.fill_stalled_aim.set(None);
-        if prev != focus {
-            self.shared.vt_densify_banned.borrow_mut().clear();
-        }
     }
 
     /// **Unified scrub-cache pipeline** — the only entry for pause, scrub pointer
@@ -301,38 +297,6 @@ impl PlayerInner {
         }
     }
 
-    /// Present an Exact `ImageBitmap` from the VT ledger (not the slot blit).
-    ///
-    /// `frame` = local FrameId on this player. **no equivalent** (VT local).
-    pub fn present_image_bitmap(
-        &self,
-        frame: FrameId,
-        bitmap: &web_sys::ImageBitmap,
-    ) -> Result<(), MediaError> {
-        draw_image_bitmap(&self.shared.canvas, &self.shared.ctx, bitmap)?;
-        self.shared.commit_frame(frame)?;
-        Ok(())
-    }
-
-    /// Take Exact blit out of the slot (import into VT ledger). Canvas already
-    /// painted stays; densify may refill. **no equivalent** (VT local).
-    pub fn take_scrub_exact_blit(&self, frame: FrameId) -> Option<web_sys::ImageBitmap> {
-        self.shared
-            .scrub_blit
-            .try_borrow_mut()
-            .ok()
-            .and_then(|mut b| b.take(frame))
-    }
-
-    /// Local Exact FrameIds currently in the slot blit (densify / settle).
-    pub fn scrub_exact_frame_ids(&self) -> Vec<FrameId> {
-        self.shared
-            .scrub_blit
-            .try_borrow()
-            .map(|b| b.cached_frame_ids())
-            .unwrap_or_default()
-    }
-
     /// Local Covered marker FrameIds (densify store — VT ledger import).
     pub fn scrub_covered_frame_ids(&self) -> Vec<FrameId> {
         self.shared
@@ -354,30 +318,6 @@ impl PlayerInner {
                 .iter()
                 .map(|e| (e.frame, e.offset, e.size)),
         )
-    }
-
-    /// Exact blit capacity (frames) — VT ledger should match (one AimWindow).
-    pub fn scrub_exact_capacity(&self) -> usize {
-        self.shared
-            .scrub_blit
-            .try_borrow()
-            .map(|b| b.max())
-            .unwrap_or(1)
-    }
-
-    /// Clone Exact blit for VT ledger import (slot keeps its copy).
-    /// **no equivalent** (VT local).
-    pub fn clone_scrub_exact_blit(&self, frame: FrameId) -> Option<web_sys::ImageBitmap> {
-        // Touch LRU + snapshot handle, then release blit before offscreen draw.
-        let (src, w, h) = {
-            let mut blit = self.shared.scrub_blit.try_borrow_mut().ok()?;
-            let src = blit.get(frame)?;
-            (src.clone(), src.width().max(1), src.height().max(1))
-        };
-        self.shared
-            .encode_canvas
-            .with_blit(|enc| enc.bitmap_to_sized(&src, w, h))
-            .ok()
     }
 
     /// Async timeline scrub (local scrub policy; settle always exact VF).
@@ -707,53 +647,6 @@ impl PlayerInner {
         self.enter_scrub_cache_pipeline(focus);
     }
 
-    /// VT densify authority: gaps only from [`Self::queue_vt_densify_target`].
-    /// **no equivalent** (VT local).
-    pub fn set_vt_densify_authority(&self, on: bool) {
-        self.shared.vt_densify_authority.set(on);
-        if !on {
-            self.shared.vt_densify_target.set(None);
-            self.shared.vt_exact_residents.borrow_mut().clear();
-        }
-    }
-
-    /// Local Exact FrameIds already committed to the VT ledger (after take).
-    /// Densify skips re-decode when blit is empty but ledger still holds them.
-    /// **no equivalent** (VT local).
-    pub fn set_vt_exact_residents(&self, locals: &[FrameId]) {
-        let mut set = self.shared.vt_exact_residents.borrow_mut();
-        set.clear();
-        set.extend(locals.iter().copied());
-    }
-
-    pub fn vt_densify_authority(&self) -> bool {
-        self.shared.vt_densify_authority.get()
-    }
-
-    /// Queue one local FrameId for VT-owned densify (peek until success/ban).
-    pub fn queue_vt_densify_target(&self, local: FrameId) {
-        if !self.shared.vt_densify_authority.get() {
-            return;
-        }
-        self.shared.vt_densify_target.set(Some(local));
-    }
-
-    /// Local FrameIds soft-banned for VT densify (map to timeline before plan skip).
-    pub fn vt_densify_banned_locals(&self) -> Vec<FrameId> {
-        self.shared
-            .vt_densify_banned
-            .borrow()
-            .iter()
-            .copied()
-            .collect()
-    }
-
-    /// Scrub edge margins for VT [`plan_next_densify_gap`] (same as slot densify).
-    pub fn scrub_plan_margins(&self) -> (FrameId, FrameId) {
-        let p = self.scrub_policy();
-        (p.margin_left, p.margin_right)
-    }
-
     pub fn scrub_dir(&self) -> ScrubDir {
         self.shared.scrub_dir()
     }
@@ -926,22 +819,6 @@ impl PlayerInner {
     }
 }
 
-/// Sticky VT soft-ban (local FrameIds) so host plan skips the same GOP hole.
-fn note_vt_densify_ban(shared: &Shared, key: FrameId, gop_ids: &[FrameId]) {
-    if !shared.vt_densify_authority.get() {
-        return;
-    }
-    let mut banned = shared.vt_densify_banned.borrow_mut();
-    if gop_ids.is_empty() {
-        banned.insert(key);
-    } else {
-        for &id in gop_ids {
-            banned.insert(id);
-        }
-    }
-    shared.vt_densify_target.set(None);
-}
-
 /// Densify task. `guard` is the densify [`crate::FlightGuard`]: it lives for the
 /// whole task, so any exit (early return, cancelled future) releases busy.
 pub(super) async fn scrub_cache_fill_task(
@@ -1044,12 +921,6 @@ pub(super) async fn scrub_cache_fill_task(
                 Ok(true) => {
                     idle_passes = 0;
                     orphan_armed = true;
-                    // Clear only our target — host may already have queued the next.
-                    if shared.vt_densify_authority.get()
-                        && shared.vt_densify_target.get() == Some(target)
-                    {
-                        shared.vt_densify_target.set(None);
-                    }
                     try_resolve_pending_cold_exact(&shared);
                     // One rAF between GOPs — Chrome VRAM flash under densify burst.
                     // mediabunny: CanvasSink poolSize stays tiny; local yield only.
@@ -1061,8 +932,7 @@ pub(super) async fn scrub_cache_fill_task(
                     let aim = playhead_and_last(&shared).0;
                     let (blit_complete, refuse_all_missing) = {
                         let blit = shared.scrub_blit.borrow();
-                        let residents = shared.vt_exact_residents.borrow();
-                        let exact_at = |id: FrameId| blit.contains(id) || residents.contains(&id);
+                        let exact_at = |id: FrameId| blit.contains(id);
                         let blit_complete = !ids.is_empty() && ids.iter().all(|&id| exact_at(id));
                         let refuse_all_missing = !ids.is_empty()
                             && ids.iter().all(|&id| {
@@ -1081,7 +951,6 @@ pub(super) async fn scrub_cache_fill_task(
                     idle_passes = next_idle;
                     if ban {
                         banned_keys.insert(key);
-                        note_vt_densify_ban(&shared, key, &ids);
                     }
                     if next_gap_unbanned(&shared, &banned_keys).is_none() {
                         evict_exact_orphans_beyond_aim(&shared);
@@ -1110,8 +979,6 @@ pub(super) async fn scrub_cache_fill_task(
                     idle_passes = idle_passes.saturating_add(1);
                     if idle_passes >= 3 {
                         banned_keys.insert(key);
-                        let ids = shared.track.index().gop_frame_ids(key).unwrap_or_default();
-                        note_vt_densify_ban(&shared, key, &ids);
                         idle_passes = 0;
                         if next_gap_unbanned(&shared, &banned_keys).is_none() {
                             evict_exact_orphans_beyond_aim(&shared);
@@ -1303,12 +1170,10 @@ pub(super) async fn fill_one_gap(
         let aim = playhead_and_last(&shared).0;
         let index = shared.track.index().clone();
         let ids = index.gop_frame_ids(key).unwrap_or_default();
-        // Skip when markers + Exact cover the GOP. Exact = blit **or** VT ledger
-        // residents (take empties blit; must not re-decode). **no equivalent**.
+        // Skip when markers + Exact cover the GOP. **no equivalent**.
         let cache = shared.scrub_chunks.borrow();
         let blit = shared.scrub_blit.borrow();
-        let residents = shared.vt_exact_residents.borrow();
-        let exact_at = |id: FrameId| blit.contains(id) || residents.contains(&id);
+        let exact_at = |id: FrameId| blit.contains(id);
         let exact_complete = !ids.is_empty() && ids.iter().all(|&id| exact_at(id));
         if !ids.is_empty() && cache.gop_complete(&ids) && cache.has_frame(target) {
             if exact_complete {
@@ -1435,12 +1300,11 @@ async fn salvage_gop_exact_blit(
     let aim = playhead_and_last(shared).0;
     let missing_blit: Vec<FrameId> = {
         let blit = shared.scrub_blit.borrow();
-        let residents = shared.vt_exact_residents.borrow();
         gop_ids
             .iter()
             .copied()
             .filter(|&id| {
-                if blit.contains(id) || residents.contains(&id) {
+                if blit.contains(id) {
                     return false;
                 }
                 !(blit.len() >= blit.max() && blit.would_evict_closer_than(id, aim))

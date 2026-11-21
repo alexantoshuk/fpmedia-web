@@ -48,9 +48,7 @@ pub fn VideoPlaylist(
         let live = playlist.live_video_tracked();
         let idle = playlist.idle_video_tracked();
         idle.park_scrub_cache();
-        idle.set_vt_densify_authority(false);
-        live.set_vt_densify_authority(false);
-        // Re-assert after each slot open (open_source resets authority false).
+        // Re-assert after each slot open (open_source resets thumb authority false).
         idle.set_vt_thumb_authority(ready.get());
         live.set_vt_thumb_authority(ready.get());
         if ready.get() {

@@ -8,8 +8,8 @@
 use std::rc::Rc;
 
 use fpmedia_web::{
-    BlobSource, FrameId, FrameRun, MediaSource, OpenPhase, OpenSourceKind, ScrubCachePolicy,
-    ScrubDir, ThumbPolicy, TransportEvent, TransportState,
+    BlobSource, FrameRun, MediaSource, OpenPhase, OpenSourceKind, ScrubCachePolicy, ScrubDir,
+    ThumbPolicy, TransportEvent, TransportState,
 };
 use leptos::html::Canvas;
 use leptos::prelude::*;
@@ -359,24 +359,6 @@ impl VideoHost {
         self.ctx.with_player(|p| p.clear_densify_hold());
     }
 
-    pub(crate) fn present_image_bitmap(&self, frame: u32, bitmap: &ImageBitmap) -> bool {
-        self.ctx
-            .with_player(|p| p.present_image_bitmap(frame, bitmap).is_ok())
-            .unwrap_or(false)
-    }
-
-    pub(crate) fn take_scrub_exact_blit(&self, frame: u32) -> Option<ImageBitmap> {
-        self.ctx
-            .with_player(|p| p.take_scrub_exact_blit(frame))
-            .flatten()
-    }
-
-    pub(crate) fn scrub_exact_frame_ids(&self) -> Vec<u32> {
-        self.ctx
-            .with_player(|p| p.scrub_exact_frame_ids().into_iter().collect::<Vec<_>>())
-            .unwrap_or_default()
-    }
-
     pub(crate) fn scrub_covered_frame_ids(&self) -> Vec<u32> {
         self.ctx
             .with_player(|p| p.scrub_covered_frame_ids().into_iter().collect::<Vec<_>>())
@@ -387,22 +369,6 @@ impl VideoHost {
         self.ctx
             .with_player(|p| p.scrub_fetch_playable_runs())
             .unwrap_or_default()
-    }
-
-    pub(crate) fn clone_scrub_exact_blit(&self, frame: u32) -> Option<ImageBitmap> {
-        self.ctx
-            .with_player(|p| p.clone_scrub_exact_blit(frame))
-            .flatten()
-    }
-
-    pub(crate) fn scrub_exact_capacity(&self) -> usize {
-        self.ctx
-            .with_player(|p| p.scrub_exact_capacity())
-            .unwrap_or(1)
-    }
-
-    pub(crate) fn set_vt_densify_authority(&self, on: bool) {
-        self.ctx.with_player(|p| p.set_vt_densify_authority(on));
     }
 
     pub(crate) fn set_vt_thumb_authority(&self, on: bool) {
@@ -438,28 +404,8 @@ impl VideoHost {
             .flatten()
     }
 
-    pub(crate) fn queue_vt_densify_target(&self, frame: u32) {
-        self.ctx.with_player(|p| p.queue_vt_densify_target(frame));
-    }
-
-    pub(crate) fn set_vt_exact_residents(&self, locals: &[u32]) {
-        self.ctx.with_player(|p| p.set_vt_exact_residents(locals));
-    }
-
-    pub(crate) fn scrub_plan_margins(&self) -> (FrameId, FrameId) {
-        self.ctx
-            .with_player(|p| p.scrub_plan_margins())
-            .unwrap_or((12, 6))
-    }
-
     pub(crate) fn scrub_dir(&self) -> ScrubDir {
         self.ctx.with_player(|p| p.scrub_dir()).unwrap_or_default()
-    }
-
-    pub(crate) fn vt_densify_banned_locals(&self) -> Vec<u32> {
-        self.ctx
-            .with_player(|p| p.vt_densify_banned_locals().into_iter().collect::<Vec<_>>())
-            .unwrap_or_default()
     }
 
     pub(crate) fn densify_inflight(&self) -> bool {

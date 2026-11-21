@@ -186,8 +186,6 @@ impl PlaylistHost {
                 list[1].open_on(slot_b);
                 slot_b.park_scrub_cache();
             }
-            slot_a.set_vt_densify_authority(false);
-            slot_b.set_vt_densify_authority(false);
             slot_a.set_vt_thumb_authority(true);
             slot_b.set_vt_thumb_authority(true);
 

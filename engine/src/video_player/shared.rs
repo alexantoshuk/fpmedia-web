@@ -4,7 +4,7 @@
 //! Fields are `pub(super)` so `play` / `scrub` / `seek` can touch interior state.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
@@ -124,21 +124,10 @@ pub(super) struct Shared {
     pub(super) scrub_epoch: Epoch,
     /// Densify single-flight (`busy` + `pending` restart).
     pub(super) densify: SingleFlight,
-    /// When true, densify gaps come only from [`Self::vt_densify_target`] (VT
-    /// planner) — never slot-local `next_gap`. **no equivalent** (VT local).
-    pub(super) vt_densify_authority: Cell<bool>,
     /// When true, Pause progressive thumbs are driven by the host VT planner
     /// (`fill_thumb_key_at`) — local `schedule_thumb_key_fill` is a no-op.
     /// **no equivalent** (playlist VT local).
     pub(super) vt_thumb_authority: Cell<bool>,
-    /// Queued local FrameId for VT densify (peek until success/ban/clear).
-    pub(super) vt_densify_target: Cell<Option<FrameId>>,
-    /// Soft-banned local FrameIds (GOP members) across VT fill tasks — avoids
-    /// host re-queue spin after `Ok(false)` emptied a one-shot task ban set.
-    pub(super) vt_densify_banned: RefCell<HashSet<FrameId>>,
-    /// Local Exact ids already in the VT ledger (take left blit empty). Densify
-    /// treats these as Exact-complete so GOP is not re-decoded. **no equivalent**.
-    pub(super) vt_exact_residents: RefCell<HashSet<FrameId>>,
     /// Independent FetchMap (gray strip) hole fill — must not share densify flight
     /// (Exact yield must stay free of gray meter work).
     pub(super) gray_fill: SingleFlight,
