@@ -8,7 +8,6 @@
 //! Design: `.ai/architecture.md` § Virtual Timeline.
 //! **no equivalent** (scrub / playlist composition local — not a mediabunny port).
 
-mod densify_plan;
 mod ledger;
 mod loop_zone;
 mod resolve;
@@ -22,7 +21,6 @@ mod thumb_cache;
 #[cfg(all(target_arch = "wasm32", feature = "thumbs"))]
 mod thumb_producer;
 
-pub use densify_plan::{DensifyPlanInput, plan_next_densify_gap};
 pub use ledger::{ExactLedger, PutExactOutcome};
 pub use loop_zone::{
     AdvanceEndedCtx, AdvanceEndedPlan, HostOutsideCtx, HostOutsidePlan, PlayAtClipLastCtx,
