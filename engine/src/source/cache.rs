@@ -31,6 +31,7 @@
 //! slices when their bytes arrive, not when the outer prefetch hole completes.
 //! Do **not** chain fills to budget. `FetchMap` mirrors resident windows.
 
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -304,7 +305,7 @@ fn margin_prefetch_job(
 /// **Local:** do **not** call this on sample misses — use [`note_local_gray`]
 /// from `prefetch` / [`CachedSource::seed_windows`] only (`mediabunny:
 /// BlobSource` is sliceable; sample sync would comb the strip).
-fn sync_fetch_map(fetch_map: &Option<Arc<FetchMap>>, state: &CacheState) {
+fn sync_fetch_map(fetch_map: &Option<Rc<FetchMap>>, state: &CacheState) {
     let Some(map) = fetch_map else {
         return;
     };
@@ -318,7 +319,7 @@ fn sync_fetch_map(fetch_map: &Option<Arc<FetchMap>>, state: &CacheState) {
 }
 
 /// Gray-strip expand for local Blob without copying into WASM (quantum window).
-fn note_local_gray(fetch_map: &Option<Arc<FetchMap>>, offset: u64, len: usize, file_size: u64) {
+fn note_local_gray(fetch_map: &Option<Rc<FetchMap>>, offset: u64, len: usize, file_size: u64) {
     let Some(map) = fetch_map else {
         return;
     };
@@ -335,7 +336,7 @@ struct Shared {
     quantum: usize,
     budget: usize,
     state: Mutex<CacheState>,
-    fetch_map: Option<Arc<FetchMap>>,
+    fetch_map: Option<Rc<FetchMap>>,
 }
 
 /// Wraps an inner [`MediaSource`] with a byte-budget LRU of cache windows.
@@ -345,7 +346,7 @@ struct Shared {
 /// Hits that enter the right margin kick a non-blocking ahead fill.
 pub struct CachedSource<S> {
     inner: Arc<S>,
-    shared: Arc<Shared>,
+    shared: Rc<Shared>,
 }
 
 impl<S> CachedSource<S> {
@@ -357,7 +358,7 @@ impl<S> CachedSource<S> {
         Self::with_budget(inner, quantum, DEFAULT_CACHE_BUDGET, None)
     }
 
-    pub fn with_fetch_map(inner: S, fetch_map: Arc<FetchMap>) -> Self
+    pub fn with_fetch_map(inner: S, fetch_map: Rc<FetchMap>) -> Self
     where
         S: MediaSource,
     {
@@ -369,7 +370,7 @@ impl<S> CachedSource<S> {
         Self::with_budget(inner, DEFAULT_CACHE_SIZE, budget, Some(fetch_map))
     }
 
-    pub fn with_capacity_and_fetch_map(inner: S, quantum: usize, fetch_map: Arc<FetchMap>) -> Self
+    pub fn with_capacity_and_fetch_map(inner: S, quantum: usize, fetch_map: Rc<FetchMap>) -> Self
     where
         S: MediaSource,
     {
@@ -385,11 +386,11 @@ impl<S> CachedSource<S> {
         inner: S,
         quantum: usize,
         budget: usize,
-        fetch_map: Option<Arc<FetchMap>>,
+        fetch_map: Option<Rc<FetchMap>>,
     ) -> Self {
         Self {
             inner: Arc::new(inner),
-            shared: Arc::new(Shared {
+            shared: Rc::new(Shared {
                 quantum: quantum.max(1),
                 budget: budget.max(1),
                 state: Mutex::new(CacheState::default()),
@@ -458,7 +459,7 @@ impl<S: MediaSource + 'static> CachedSource<S> {
     /// on native, poll once (MemorySource completes inline — unit tests).
     fn kick_prefetch(&self, start: u64, len: usize) {
         let inner = Arc::clone(&self.inner);
-        let shared = Arc::clone(&self.shared);
+        let shared = Rc::clone(&self.shared);
         let run = async move {
             let result = inner.read(start, len).await;
             if let Ok(mut state) = shared.state.lock() {
@@ -505,7 +506,7 @@ impl<S: MediaSource + 'static> CachedSource<S> {
             return;
         }
         let inner = Arc::clone(&self.inner);
-        let shared = Arc::clone(&self.shared);
+        let shared = Rc::clone(&self.shared);
         let run = async move {
             let result = inner.read(start, len).await;
             if let Ok(mut state) = shared.state.lock()
@@ -841,12 +842,12 @@ mod tests {
     #[test]
     fn fetch_map_mirrors_resident_windows_on_network() {
         let data: Vec<u8> = (0u8..128).collect();
-        let map = Arc::new(FetchMap::new());
+        let map = Rc::new(FetchMap::new());
         let cached = CachedSource::with_budget(
             NetworkCounting(CountingSource::new(data)),
             32,
             256,
-            Some(Arc::clone(&map)),
+            Some(Rc::clone(&map)),
         );
 
         let _ = poll_ready(&cached, 0, 8).unwrap();
@@ -862,9 +863,9 @@ mod tests {
     #[test]
     fn local_sample_miss_does_not_pepper_fetch_map() {
         let data: Vec<u8> = (0u8..128).collect();
-        let map = Arc::new(FetchMap::new());
+        let map = Rc::new(FetchMap::new());
         let cached =
-            CachedSource::with_budget(CountingSource::new(data), 32, 256, Some(Arc::clone(&map)));
+            CachedSource::with_budget(CountingSource::new(data), 32, 256, Some(Rc::clone(&map)));
         let _ = poll_ready(&cached, 0, 20).unwrap();
         let _ = poll_ready(&cached, 64, 20).unwrap();
         assert!(
@@ -877,12 +878,12 @@ mod tests {
     #[test]
     fn seed_windows_fills_fetch_map_from_open_ranges() {
         let data: Vec<u8> = (0u8..128).collect();
-        let map = Arc::new(FetchMap::new());
+        let map = Rc::new(FetchMap::new());
         let cached = CachedSource::with_budget(
             MemorySource::from_vec(data.clone()),
             32,
             256,
-            Some(Arc::clone(&map)),
+            Some(Rc::clone(&map)),
         );
 
         // Progressive demux already read ftyp+moov-sized head; seed before sample I/O.
@@ -894,8 +895,8 @@ mod tests {
 
         // Seeded bytes are cache hits (no inner read).
         let counting = CountingSource::new(data);
-        let map2 = Arc::new(FetchMap::new());
-        let cached2 = CachedSource::with_budget(counting.clone(), 32, 256, Some(Arc::clone(&map2)));
+        let map2 = Rc::new(FetchMap::new());
+        let cached2 = CachedSource::with_budget(counting.clone(), 32, 256, Some(Rc::clone(&map2)));
         let head: Vec<u8> = (0u8..48).collect();
         cached2.seed_windows([(0, head)]);
         let hit = poll_ready(&cached2, 0, 20).unwrap();
@@ -975,10 +976,10 @@ mod tests {
     fn network_eviction_keeps_fetch_map_coverage() {
         // Gray = ever-fetched; WASM LRU may drop windows without punching the meter.
         let data: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
-        let map = Arc::new(FetchMap::new());
+        let map = Rc::new(FetchMap::new());
         let counting = CountingSource::new(data);
         let cached =
-            CachedSource::with_budget(NetworkCounting(counting), 32, 64, Some(Arc::clone(&map)));
+            CachedSource::with_budget(NetworkCounting(counting), 32, 64, Some(Rc::clone(&map)));
         let _ = poll_ready(&cached, 0, 20).unwrap();
         assert!(map.covers_range(0, 20), "wins={:?}", map.windows());
         let _ = poll_ready(&cached, 128, 20).unwrap();
@@ -1068,13 +1069,13 @@ mod tests {
         // Local sample misses: WASM want-only + FetchMap untouched; quantum gray
         // is prefetch `note_local_gray` only (no keyframe pepper / strip comb).
         let data = vec![7u8; MIN_LOAD + 4096];
-        let map = Arc::new(FetchMap::new());
+        let map = Rc::new(FetchMap::new());
         let counting = CountingSource::new(data);
         let cached = CachedSource::with_budget(
             counting.clone(),
             MIN_LOAD,
             MIN_LOAD * 2,
-            Some(Arc::clone(&map)),
+            Some(Rc::clone(&map)),
         );
         let _ = poll_ready(&cached, 0, 100).unwrap();
         assert_eq!(
@@ -1098,9 +1099,9 @@ mod tests {
     #[test]
     fn local_prefetch_notes_gray_without_read() {
         let data = vec![9u8; 256];
-        let map = Arc::new(FetchMap::new());
+        let map = Rc::new(FetchMap::new());
         let counting = CountingSource::new(data);
-        let cached = CachedSource::with_budget(counting.clone(), 64, 256, Some(Arc::clone(&map)));
+        let cached = CachedSource::with_budget(counting.clone(), 64, 256, Some(Rc::clone(&map)));
         cached.prefetch(32, 64);
         assert_eq!(counting.reads.load(Ordering::SeqCst), 0);
         assert!(map.covers_range(32, 96), "wins={:?}", map.windows());
@@ -1178,13 +1179,12 @@ mod tests {
 
     #[test]
     fn fetch_map_budget_local_vs_network() {
-        let map = Arc::new(FetchMap::new());
-        let local =
-            CachedSource::with_fetch_map(CountingSource::new(vec![0; 64]), Arc::clone(&map));
+        let map = Rc::new(FetchMap::new());
+        let local = CachedSource::with_fetch_map(CountingSource::new(vec![0; 64]), Rc::clone(&map));
         assert_eq!(local.budget(), LOCAL_CACHE_BUDGET);
         let net = CachedSource::with_fetch_map(
             NetworkCounting(CountingSource::new(vec![0; 64])),
-            Arc::clone(&map),
+            Rc::clone(&map),
         );
         assert_eq!(net.budget(), DEFAULT_CACHE_BUDGET);
     }

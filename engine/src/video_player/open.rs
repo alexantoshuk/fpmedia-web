@@ -88,7 +88,7 @@ impl VideoPlayer {
             track,
             audio,
             canvas,
-            std::sync::Arc::new(crate::FetchMap::new()),
+            std::rc::Rc::new(crate::FetchMap::new()),
         )
         .await
     }
@@ -98,7 +98,7 @@ impl VideoPlayer {
         track: crate::demux::Mp4VideoTrack,
         audio: Option<crate::audio::Mp4AudioTrack>,
         canvas: HtmlCanvasElement,
-        fetch_map: std::sync::Arc<crate::FetchMap>,
+        fetch_map: std::rc::Rc<crate::FetchMap>,
     ) -> Result<Self, MediaError> {
         if track.frame_count() == 0 {
             return Err(MediaError::EmptyTrack);
@@ -111,7 +111,7 @@ impl VideoPlayer {
         track: Rc<crate::demux::Mp4VideoTrack>,
         audio_track: Option<crate::audio::Mp4AudioTrack>,
         canvas: HtmlCanvasElement,
-        fetch_map: std::sync::Arc<crate::FetchMap>,
+        fetch_map: std::rc::Rc<crate::FetchMap>,
         file_size: u64,
     ) -> Result<Self, MediaError> {
         let meta = track.metadata();

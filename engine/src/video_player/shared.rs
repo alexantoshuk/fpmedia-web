@@ -229,7 +229,7 @@ pub(super) struct Shared {
     /// Wall `performance.now()/1000` origin — shuttle `>4×` only (or paused snaps).
     pub(super) wall_origin: Cell<Option<f64>>,
     /// File-byte fetch coverage (demo scrubber gray strip).
-    pub(super) fetch_map: std::sync::Arc<crate::FetchMap>,
+    pub(super) fetch_map: std::rc::Rc<crate::FetchMap>,
     pub(super) file_size: u64,
     /// Clip teardown latch — densify / backfill / thumb must exit (not adopt epoch).
     /// `mediabunny: examples/media-player` `asyncId++` before new `Input`.

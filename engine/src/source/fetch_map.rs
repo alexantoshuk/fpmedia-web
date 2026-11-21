@@ -17,7 +17,7 @@
 //! fragmentation do not paint a 1‑px “blurry hole”. [`Self::windows`] /
 //! [`Self::interior_gaps`] stay exact (diagnostics / tests).
 
-use std::sync::Mutex;
+use std::cell::RefCell;
 
 use crate::types::{FrameId, FrameRun, merge_frame_runs};
 
@@ -44,7 +44,7 @@ pub fn display_merge_gap(file_size: u64) -> u64 {
 /// Half-open `[start, end)` intervals, merged, file-absolute.
 #[derive(Debug, Default)]
 pub struct FetchMap {
-    ranges: Mutex<Vec<(u64, u64)>>,
+    ranges: RefCell<Vec<(u64, u64)>>,
 }
 
 impl FetchMap {
@@ -67,9 +67,7 @@ impl FetchMap {
 
     /// Replace coverage with the exact resident cache windows.
     pub fn set_windows(&self, windows: &[(u64, u64)]) {
-        let Ok(mut ranges) = self.ranges.lock() else {
-            return;
-        };
+        let mut ranges = self.ranges.borrow_mut();
         ranges.clear();
         for &(start, end) in windows {
             if end <= start {
@@ -85,21 +83,16 @@ impl FetchMap {
         if end <= start {
             return;
         }
-        let Ok(mut ranges) = self.ranges.lock() else {
-            return;
-        };
-        merge_touching(&mut ranges, start, end);
+        merge_touching(&mut self.ranges.borrow_mut(), start, end);
     }
 
     pub fn clear(&self) {
-        if let Ok(mut g) = self.ranges.lock() {
-            g.clear();
-        }
+        self.ranges.borrow_mut().clear();
     }
 
     /// Resident half-open windows `[start, end)` (file-absolute), merged hard.
     pub fn windows(&self) -> Vec<(u64, u64)> {
-        self.ranges.lock().map(|g| g.clone()).unwrap_or_default()
+        self.ranges.borrow().clone()
     }
 
     /// True if `[start, end)` is fully inside some resident window.
@@ -107,10 +100,10 @@ impl FetchMap {
         if end <= start {
             return true;
         }
-        let Ok(ranges) = self.ranges.lock() else {
-            return false;
-        };
-        ranges.iter().any(|&(s, e)| s <= start && end <= e)
+        self.ranges
+            .borrow()
+            .iter()
+            .any(|&(s, e)| s <= start && end <= e)
     }
 
     /// Gaps between resident windows inside `[0, file_size)` (half-open).
@@ -118,9 +111,7 @@ impl FetchMap {
         if file_size == 0 {
             return Vec::new();
         }
-        let Ok(ranges) = self.ranges.lock() else {
-            return Vec::new();
-        };
+        let ranges = self.ranges.borrow();
         let mut gaps = Vec::new();
         let mut cursor = 0u64;
         for &(s, e) in ranges.iter() {
@@ -204,10 +195,7 @@ impl FetchMap {
         if file_size == 0 {
             return Vec::new();
         }
-        let Ok(ranges) = self.ranges.lock() else {
-            return Vec::new();
-        };
-        let merged = soft_merge_windows(&ranges, display_merge_gap(file_size));
+        let merged = soft_merge_windows(&self.ranges.borrow(), display_merge_gap(file_size));
         let pixel = (file_size / ASSUMED_SCRUBBER_PX).max(1);
         let snap = |off: u64, round_up: bool| -> u64 {
             if round_up {
@@ -247,20 +235,16 @@ impl FetchMap {
     }
 
     fn set_only(&self, start: u64, end: u64) {
-        let Ok(mut ranges) = self.ranges.lock() else {
-            return;
-        };
-        if end <= start {
-            ranges.clear();
-            return;
-        }
+        let mut ranges = self.ranges.borrow_mut();
         ranges.clear();
-        ranges.push((start, end));
+        if end > start {
+            ranges.push((start, end));
+        }
     }
 
     #[cfg(test)]
     fn snapshot(&self) -> Vec<(u64, u64)> {
-        self.ranges.lock().map(|g| g.clone()).unwrap_or_default()
+        self.windows()
     }
 }
 

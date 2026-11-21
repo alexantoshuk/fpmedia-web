@@ -4,7 +4,6 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use re_mp4::{Mp4, TrackKind};
 
@@ -881,7 +880,7 @@ pub struct OpenedMp4 {
     pub video: Option<Mp4VideoTrack>,
     pub audio: Option<Mp4AudioTrack>,
     /// Resident [`CachedSource`] window for the demo gray scrubber strip.
-    pub fetch_map: Arc<FetchMap>,
+    pub fetch_map: Rc<FetchMap>,
 }
 
 impl OpenedMp4 {
@@ -903,7 +902,7 @@ impl OpenedMp4 {
 /// samples behind [`MemorySource`]. Prefer [`open_mp4`] for large Blobs.
 pub fn open_mp4_bytes(bytes: Vec<u8>) -> Result<OpenedMp4, MediaError> {
     let bytes = bytes::Bytes::from(bytes);
-    let fetch_map = Arc::new(FetchMap::new());
+    let fetch_map = Rc::new(FetchMap::new());
     fetch_map.mark_full(bytes.len() as u64);
     let mp4 = Mp4::read_bytes(bytes.as_ref())?;
     let source: Rc<dyn MediaSource> = Rc::new(MemorySource::new(bytes.clone()));
@@ -942,7 +941,7 @@ pub async fn open_mp4(
     options: OpenMp4Options,
     mut progress: impl FnMut(OpenPhase),
 ) -> Result<OpenedMp4, MediaError> {
-    let fetch_map = Arc::new(FetchMap::new());
+    let fetch_map = Rc::new(FetchMap::new());
     let parsed =
         crate::demux::parse_mp4_progressive_with_backfill(source.as_ref(), &mut progress).await?;
     let moov_bytes = parsed.moov_bytes;
@@ -951,7 +950,7 @@ pub async fn open_mp4(
     let mut opened = build_opened(
         parsed.mp4,
         Rc::clone(&source),
-        Arc::clone(&fetch_map),
+        Rc::clone(&fetch_map),
         OpenMp4Options {
             verify_avc_sync: false,
             defer_avc_sync: false,
@@ -991,7 +990,7 @@ pub async fn open_mp4(
 /// 8 MiB (`mediabunny: src/source.ts BlobSource` `maxCacheSize` default).
 fn wrap_cached_playback(
     source: Rc<dyn MediaSource>,
-    fetch_map: Arc<FetchMap>,
+    fetch_map: Rc<FetchMap>,
     cache_seed: Vec<(u64, Vec<u8>)>,
 ) -> Rc<dyn MediaSource> {
     let cached = CachedSource::with_fetch_map(source, fetch_map);
@@ -1056,7 +1055,7 @@ async fn resolve_timecode_start(
 fn build_opened(
     mp4: Mp4,
     source: Rc<dyn MediaSource>,
-    fetch_map: Arc<FetchMap>,
+    fetch_map: Rc<FetchMap>,
     options: OpenMp4Options,
     timecode_start: Option<fpmedia_timecode::Timecode>,
     moov_bytes: Option<&[u8]>,
