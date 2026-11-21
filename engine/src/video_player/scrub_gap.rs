@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 
 use crate::demux::Mp4VideoTrack;
+use crate::policy::ScrubDir;
 use crate::policy::scrub_plan::{
     covered_aim_band, covered_edge_margins, decide_next_gap, gop_sample_lead_frames,
 };
@@ -43,7 +44,7 @@ pub(super) fn next_gap_target(shared: &Shared) -> Option<FrameId> {
     let indexed_last = shared.track.indexed_frame_count().saturating_sub(1);
     let last_clamped = last.min(indexed_last);
     let playhead_clamped = playhead.min(last_clamped);
-    let dir = shared.scrub_dir.get();
+    let dir = shared.scrub_dir();
     let policy = shared.track.metadata_ref().scrub_policy();
     let (margin_left, margin_right) = (policy.margin_left, policy.margin_right);
     // Play keeps markers and trims Exact — ImageBitmap holes must still win
@@ -117,8 +118,8 @@ pub(super) fn next_gap_unbanned(
     let indexed_last = shared.track.indexed_frame_count().saturating_sub(1);
     let last = last.min(indexed_last);
     let playhead = playhead.min(last);
-    let dir = shared.scrub_dir.get();
-    let step: i64 = if dir < 0 { -1 } else { 1 };
+    let dir = shared.scrub_dir();
+    let step: i64 = if dir == ScrubDir::Behind { -1 } else { 1 };
     // Bound the unban walk to aim±Covered margin — extent±margin grew forever.
     let FrameRun {
         lo: walk_lo,

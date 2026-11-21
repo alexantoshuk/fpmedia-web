@@ -185,9 +185,8 @@ pub fn try_paint_vt(
     dest: &HtmlCanvasElement,
     width: u32,
     height: u32,
-    dir: i8,
 ) -> Option<GlobalFrame> {
-    let (id, bmp, tw, th) = cache.nearest(global, width, height, dir)?;
+    let (id, bmp, tw, th) = cache.nearest(global, width, height)?;
     paint_thumb_canvas(dest, bmp, tw, th).ok()?;
     Some(id)
 }

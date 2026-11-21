@@ -715,7 +715,6 @@ impl VideoPlaylistRef {
                 &dest,
                 max_w,
                 max_h,
-                0,
             )
             .is_some()
             {

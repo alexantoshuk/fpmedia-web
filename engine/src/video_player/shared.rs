@@ -27,7 +27,7 @@ use crate::model::engine_mode::EngineModel;
 use crate::model::play_phase::PlayPhase;
 use crate::model::session::SessionModel;
 use crate::policy::playback::{LoopSpec, LoopZone};
-use crate::policy::{ScrubCachePolicy, ThumbPolicy};
+use crate::policy::{ScrubCachePolicy, ScrubDir, ScrubDirTracker, ThumbPolicy};
 use crate::residency::ScrubChunkStore;
 use crate::types::{FrameId, Timestamp};
 
@@ -217,10 +217,9 @@ pub(super) struct Shared {
     /// Scrub settle / seek landed on a cold (unindexed or uncached) frame — soft
     /// present now; densify paints Exact when bytes arrive (`pending_cold_exact`).
     pub(super) pending_cold_exact: Cell<Option<FrameId>>,
-    /// Scrub drag direction for predictive densify: `+1` ahead, `-1` behind, `0` neutral.
-    pub(super) scrub_dir: Cell<i8>,
-    /// Last aim seen while updating `scrub_dir` (drag samples only).
-    pub(super) prev_scrub_aim: Cell<Option<FrameId>>,
+    /// Scrub drag direction for predictive densify + last aim it came from
+    /// (drag / step samples only). Read via [`Self::scrub_dir`].
+    pub(super) scrub_dir: Cell<ScrubDirTracker>,
     /// Optional AAC (etc.) sink — drives timeline when present and playing.
     pub(super) audio: RefCell<Option<Rc<AudioOutput>>>,
     /// Silent `AudioContext` timeline when there is no AAC track
@@ -268,6 +267,12 @@ impl Shared {
         let mut stats = self.underrun.get();
         f(&mut stats);
         self.underrun.set(stats);
+    }
+
+    /// Current scrub drag direction (predictive densify / soft-drag neighbor pick).
+    #[inline]
+    pub(super) fn scrub_dir(&self) -> ScrubDir {
+        self.scrub_dir.get().dir()
     }
 
     pub(super) fn state(&self) -> PlayerState {

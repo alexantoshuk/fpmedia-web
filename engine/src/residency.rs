@@ -22,7 +22,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
-use crate::policy::{nearer_gap_with_dir, scrub_gap_fill_armed, scrub_preview_neighbor};
+use crate::policy::{ScrubDir, nearer_gap_with_dir, scrub_gap_fill_armed, scrub_preview_neighbor};
 use crate::types::{FrameId, FrameRun};
 
 /// Resident densify marker in [`ScrubChunkStore`].
@@ -129,11 +129,11 @@ impl<V> AimWindow<V> {
 
     /// Closest resident to `target` (floor / ceil by `|id − target|`, tie → floor).
     pub fn nearest(&self, target: FrameId) -> Option<FrameId> {
-        self.nearest_with_dir(target, 0)
+        self.nearest_with_dir(target, ScrubDir::Neutral)
     }
 
     /// Soft-drag neighbor biased by scrub direction ([`scrub_preview_neighbor`]).
-    pub fn nearest_with_dir(&self, target: FrameId, dir: i8) -> Option<FrameId> {
+    pub fn nearest_with_dir(&self, target: FrameId, dir: ScrubDir) -> Option<FrameId> {
         let floor = self.items.range(..=target).next_back().map(|(id, _)| *id);
         let ceil = self.items.range(target..).next().map(|(id, _)| *id);
         scrub_preview_neighbor(target, floor, ceil, dir)
@@ -177,7 +177,7 @@ impl<V> AimWindow<V> {
         &self,
         playhead: FrameId,
         last: FrameId,
-        dir: i8,
+        dir: ScrubDir,
         margin_left: FrameId,
         margin_right: FrameId,
     ) -> Option<FrameId> {
@@ -337,8 +337,8 @@ impl FrameRunIndex {
 
     /// Nearest missing id to `playhead` within `[0, last]`.
     ///
-    /// `dir > 0` / `dir < 0` → predictive densify (prefer ahead / behind).
-    /// `dir == 0` → min distance, tie → behind.
+    /// `Ahead` / `Behind` → predictive densify (prefer ahead / behind).
+    /// `Neutral` → min distance, tie → behind.
     #[allow(clippy::too_many_arguments)] // gap search needs aim/playhead/extent/dir knobs
     pub fn search<V>(
         &self,
@@ -348,7 +348,7 @@ impl FrameRunIndex {
         last: FrameId,
         no_gaps: bool,
         extent: Option<FrameRun>,
-        dir: i8,
+        dir: ScrubDir,
     ) -> Option<FrameId> {
         if last == 0 && !frames.contains_key(&0) {
             return Some(0);
@@ -437,7 +437,7 @@ fn next_gap_outside_extent(
     playhead: FrameId,
     last: FrameId,
     extent: Option<FrameRun>,
-    dir: i8,
+    dir: ScrubDir,
 ) -> Option<FrameId> {
     let FrameRun { lo, hi } = extent?;
     let behind = lo.checked_sub(1);
@@ -579,7 +579,12 @@ impl ScrubChunkStore {
         }
     }
 
-    pub fn next_gap_frame(&self, playhead: FrameId, last: FrameId, dir: i8) -> Option<FrameId> {
+    pub fn next_gap_frame(
+        &self,
+        playhead: FrameId,
+        last: FrameId,
+        dir: ScrubDir,
+    ) -> Option<FrameId> {
         self.runs.search(
             self.window.items(),
             self.playhead(),
@@ -592,7 +597,7 @@ impl ScrubChunkStore {
     }
 
     /// No marker ceiling — saturated only when there is no gap left to aim.
-    pub fn gaps_saturated(&self, playhead: FrameId, last: FrameId, dir: i8) -> bool {
+    pub fn gaps_saturated(&self, playhead: FrameId, last: FrameId, dir: ScrubDir) -> bool {
         self.next_gap_frame(playhead, last, dir).is_none()
     }
 
@@ -645,19 +650,22 @@ mod tests {
     #[test]
     fn next_gap_prefers_nearest_behind_on_tie() {
         let c = ScrubChunkStore::new();
-        assert_eq!(c.next_gap_frame(5, 10, 0), Some(5));
+        assert_eq!(c.next_gap_frame(5, 10, ScrubDir::Neutral), Some(5));
     }
 
     #[test]
     fn next_gap_expands_both_directions() {
         let c = ScrubChunkStore::new();
-        assert_eq!(c.next_gap_frame(3, 9, 0), Some(3));
+        assert_eq!(c.next_gap_frame(3, 9, ScrubDir::Neutral), Some(3));
     }
 
     #[test]
     fn blit_next_gap_when_empty_returns_playhead() {
         let w: AimWindow<()> = AimWindow::new(8);
-        assert_eq!(w.capped_next_gap(12, 100, 0, 10, 5), Some(12));
+        assert_eq!(
+            w.capped_next_gap(12, 100, ScrubDir::Neutral, 10, 5),
+            Some(12)
+        );
     }
 
     #[test]
@@ -701,15 +709,15 @@ mod tests {
     fn nearest_with_dir_floors_forward_ceils_backward() {
         let w = window_with(8, 0, &[10, 20]);
         // Near trail: abs-nearest would pick 20 at aim 16 — forward must floor.
-        assert_eq!(w.nearest_with_dir(16, 1), Some(10));
-        assert_eq!(w.nearest_with_dir(16, -1), Some(20));
-        assert_eq!(w.nearest_with_dir(16, 0), Some(20));
+        assert_eq!(w.nearest_with_dir(16, ScrubDir::Ahead), Some(10));
+        assert_eq!(w.nearest_with_dir(16, ScrubDir::Behind), Some(20));
+        assert_eq!(w.nearest_with_dir(16, ScrubDir::Neutral), Some(20));
         // Hit under aim.
-        assert_eq!(w.nearest_with_dir(10, 1), Some(10));
-        assert_eq!(w.nearest_with_dir(10, -1), Some(10));
+        assert_eq!(w.nearest_with_dir(10, ScrubDir::Ahead), Some(10));
+        assert_eq!(w.nearest_with_dir(10, ScrubDir::Behind), Some(10));
         // Cold hole: floor beyond dir lag, ceil closer → next.
         let cold = window_with(8, 0, &[40, 105]);
-        assert_eq!(cold.nearest_with_dir(100, 1), Some(105));
+        assert_eq!(cold.nearest_with_dir(100, ScrubDir::Ahead), Some(105));
     }
 
     #[test]
@@ -733,7 +741,7 @@ mod tests {
         assert!(c.insert_chunk(20, ScrubChunk));
         assert_eq!(c.cached_frame_ids(), vec![8, 9, 10, 11, 20]);
         assert_eq!(c.max_frames(), 0);
-        assert!(!c.gaps_saturated(10, 30, 0));
+        assert!(!c.gaps_saturated(10, 30, ScrubDir::Neutral));
     }
 
     #[test]

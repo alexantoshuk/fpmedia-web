@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::policy::scrub_preview_neighbor;
+use crate::policy::{ScrubDir, scrub_preview_neighbor};
 use crate::residency::AimWindow;
 use crate::types::FrameId;
 use web_sys::ImageBitmap;
@@ -86,8 +86,8 @@ impl ScrubBlitLru {
     }
 
     /// Exact neighbor biased by scrub/hover `dir` (floor forward / ceil back;
-    /// `dir == 0` → abs-nearest).
-    pub fn nearest_frame_with_dir(&self, target: FrameId, dir: i8) -> Option<FrameId> {
+    /// `Neutral` → abs-nearest).
+    pub fn nearest_frame_with_dir(&self, target: FrameId, dir: ScrubDir) -> Option<FrameId> {
         self.window.nearest_with_dir(target, dir)
     }
 
@@ -100,7 +100,7 @@ impl ScrubBlitLru {
         &self,
         playhead: FrameId,
         last: FrameId,
-        dir: i8,
+        dir: ScrubDir,
         margin_left: FrameId,
         margin_right: FrameId,
     ) -> Option<FrameId> {
@@ -302,13 +302,13 @@ impl ThumbCache {
     }
 
     /// Closest ready thumb to `target` at size, biased by cursor `dir`
-    /// ([`scrub_preview_neighbor`]; `dir == 0` → abs-nearest).
+    /// ([`scrub_preview_neighbor`]; `Neutral` → abs-nearest).
     pub fn nearest_frame_with_dir(
         &self,
         target: FrameId,
         width: u32,
         height: u32,
-        dir: i8,
+        dir: ScrubDir,
     ) -> Option<(FrameId, FrameId)> {
         let mut floor: Option<(FrameId, FrameId, FrameId)> = None;
         let mut ceil: Option<(FrameId, FrameId, FrameId)> = None;

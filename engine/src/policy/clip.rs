@@ -103,10 +103,66 @@ pub fn scrub_gap_fill_armed(
     near_left || near_right
 }
 
+/// Scrub / hover motion direction (`sign(aim − prev_aim)`).
+///
+/// `Neutral` = no motion bias (after settle / play / pointer leave): abs-nearest
+/// picks, ties → behind. Not a boolean — `Neutral` differs from `Behind`.
+/// **no equivalent** (scrub local).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrubDir {
+    /// Aim moved toward lower frame ids (drag / hover backward).
+    Behind,
+    #[default]
+    Neutral,
+    /// Aim moved toward higher frame ids (drag / hover forward).
+    Ahead,
+}
+
+/// [`ScrubDir`] + the last aim it was derived from (one per drag / hover session).
+///
+/// Equal aim keeps the last direction (micro-jitter / hold); [`Self::clear`]
+/// returns to `Neutral` and forgets the aim.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    not(all(target_arch = "wasm32", feature = "webcodecs")),
+    allow(dead_code)
+)]
+pub(crate) struct ScrubDirTracker {
+    dir: ScrubDir,
+    prev_aim: Option<FrameId>,
+}
+
+#[cfg_attr(
+    not(all(target_arch = "wasm32", feature = "webcodecs")),
+    allow(dead_code)
+)]
+impl ScrubDirTracker {
+    pub(crate) fn dir(self) -> ScrubDir {
+        self.dir
+    }
+
+    /// Record a drag / hover sample; updates `dir` from the previous sample.
+    pub(crate) fn note(&mut self, aim: FrameId) {
+        if let Some(prev) = self.prev_aim {
+            if aim > prev {
+                self.dir = ScrubDir::Ahead;
+            } else if aim < prev {
+                self.dir = ScrubDir::Behind;
+            }
+        }
+        self.prev_aim = Some(aim);
+    }
+
+    /// Neutral pick after settle / play / pointer leave (no motion bias).
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Soft-drag Exact neighbor among floor (`≤ target`) / ceil (`≥ target`).
 ///
-/// Forward (`dir > 0`) → floor; backward (`dir < 0`) → ceil; neutral →
-/// abs-nearest (tie → floor). Dir side wins while within
+/// Forward ([`ScrubDir::Ahead`]) → floor; backward ([`ScrubDir::Behind`]) →
+/// ceil; neutral → abs-nearest (tie → floor). Dir side wins while within
 /// [`SCRUB_DIR_BIAS_MAX_LAG_FRAMES`] of aim (near-trail settle anti-reverse).
 /// When the preferred side is farther than that lag **and** the other side is
 /// strictly closer, take the closer side — cold Exact/Thumb holes otherwise
@@ -116,7 +172,7 @@ pub fn scrub_preview_neighbor(
     target: FrameId,
     floor: Option<FrameId>,
     ceil: Option<FrameId>,
-    dir: i8,
+    dir: ScrubDir,
 ) -> Option<FrameId> {
     let abs_nearest = |a: FrameId, b: FrameId| {
         if a.abs_diff(target) <= b.abs_diff(target) {
@@ -134,24 +190,22 @@ pub fn scrub_preview_neighbor(
             preferred
         }
     };
-    if dir > 0 {
-        match (floor, ceil) {
+    match dir {
+        ScrubDir::Ahead => match (floor, ceil) {
             (Some(f), Some(c)) if f != c => Some(dir_or_closer(f, c)),
             (Some(f), _) | (_, Some(f)) => Some(f),
             (None, None) => None,
-        }
-    } else if dir < 0 {
-        match (floor, ceil) {
+        },
+        ScrubDir::Behind => match (floor, ceil) {
             (Some(f), Some(c)) if f != c => Some(dir_or_closer(c, f)),
             (Some(f), _) | (_, Some(f)) => Some(f),
             (None, None) => None,
-        }
-    } else {
-        match (floor, ceil) {
+        },
+        ScrubDir::Neutral => match (floor, ceil) {
             (Some(a), Some(b)) if a != b => Some(abs_nearest(a, b)),
             (Some(a), _) | (_, Some(a)) => Some(a),
             (None, None) => None,
-        }
+        },
     }
 }
 
@@ -160,14 +214,15 @@ pub fn scrub_preview_neighbor(
 /// Prefer `cached` when it is at least as close as `key` (tie → cache, already
 /// decoded). Key only when strictly closer — avoids key-flicker across holes.
 ///
-/// When `dir != 0`, drop `key` if it sits on the wrong side of `target` for the
-/// gesture (backward must not re-pick a behind key over a directional ceil).
+/// When `dir` is not `Neutral`, drop `key` if it sits on the wrong side of
+/// `target` for the gesture (backward must not re-pick a behind key over a
+/// directional ceil).
 pub fn scrub_preview_choice(
     target: FrameId,
     key: Option<FrameId>,
     cached: Option<FrameId>,
 ) -> Option<FrameId> {
-    scrub_preview_choice_with_dir(target, key, cached, 0)
+    scrub_preview_choice_with_dir(target, key, cached, ScrubDir::Neutral)
 }
 
 /// [`scrub_preview_choice`] with scrub-direction bias (see [`scrub_preview_neighbor`]).
@@ -175,12 +230,12 @@ pub fn scrub_preview_choice_with_dir(
     target: FrameId,
     key: Option<FrameId>,
     cached: Option<FrameId>,
-    dir: i8,
+    dir: ScrubDir,
 ) -> Option<FrameId> {
     let key = match dir {
-        d if d > 0 => key.filter(|&k| k <= target),
-        d if d < 0 => key.filter(|&k| k >= target),
-        _ => key,
+        ScrubDir::Ahead => key.filter(|&k| k <= target),
+        ScrubDir::Behind => key.filter(|&k| k >= target),
+        ScrubDir::Neutral => key,
     };
     match (key, cached) {
         (Some(k), Some(c)) => {
@@ -231,7 +286,7 @@ pub fn hover_preview_choice(
 /// does not refresh `displayed`, so R→L ceil-bias otherwise re-picks the stale
 /// ahead VF (return flicker / skipped Exact aims).
 ///
-/// Backward (`dir < 0`) drops behind keys in the dir pick, so a **far** ceil
+/// Backward ([`ScrubDir::Behind`]) drops behind keys in the dir pick, so a **far** ceil
 /// (stale displayed / Exact strip) would freeze the stage — if the dir winner is
 /// farther from `aim` than `key`, fall back to distance [`scrub_preview_choice`]
 /// (unfiltered key). **no equivalent** (scrub local).
@@ -240,7 +295,7 @@ pub fn scrub_drag_stage_choice(
     key: FrameId,
     blit_cached: Option<FrameId>,
     displayed: Option<FrameId>,
-    dir: i8,
+    dir: ScrubDir,
 ) -> Option<FrameId> {
     if blit_cached == Some(aim) {
         return Some(aim);
@@ -265,11 +320,11 @@ pub fn scrub_drag_stage_near_aim(aim: FrameId, key: FrameId, stage: FrameId) -> 
 /// `shared.frame` after blit/`commit_frame` — not stale `displayed` VF alone).
 /// Mobile HW key decode often loses the race to the next GOP — skipping every
 /// supersede dropped keyframes. **no equivalent** (scrub local).
-pub fn scrub_drag_key_advances(dir: i8, painted: Option<FrameId>, key: FrameId) -> bool {
+pub fn scrub_drag_key_advances(dir: ScrubDir, painted: Option<FrameId>, key: FrameId) -> bool {
     match dir {
-        d if d > 0 => painted.is_none_or(|p| key >= p),
-        d if d < 0 => painted.is_none_or(|p| key <= p),
-        _ => true,
+        ScrubDir::Ahead => painted.is_none_or(|p| key >= p),
+        ScrubDir::Behind => painted.is_none_or(|p| key <= p),
+        ScrubDir::Neutral => true,
     }
 }
 
@@ -279,7 +334,7 @@ pub fn scrub_merge_dir_cached(
     aim: FrameId,
     a: Option<FrameId>,
     b: Option<FrameId>,
-    dir: i8,
+    dir: ScrubDir,
 ) -> Option<FrameId> {
     let mut floor = None;
     let mut ceil = None;
@@ -494,21 +549,21 @@ pub fn next_progressive_sync_key(
 ///
 /// **Distance-first:** always the gap with smaller `|gap − playhead|`. Far/edge
 /// fills lose to budget eviction anyway — spending densify there first wastes
-/// work. `dir` only breaks ties (`>0` → ahead, else behind / PREV-friendly).
+/// work. `dir` only breaks ties (`Ahead` → ahead, else behind / PREV-friendly).
 ///
 /// Local invention (predictive densify); mediabunny has no equivalent.
 pub fn nearer_gap_with_dir(
     playhead: FrameId,
     behind: Option<FrameId>,
     ahead: Option<FrameId>,
-    dir: i8,
+    dir: ScrubDir,
 ) -> Option<FrameId> {
     match (behind, ahead) {
         (Some(b), Some(a)) => match playhead.abs_diff(b).cmp(&playhead.abs_diff(a)) {
             std::cmp::Ordering::Less => Some(b),
             std::cmp::Ordering::Greater => Some(a),
             std::cmp::Ordering::Equal => {
-                if dir > 0 {
+                if dir == ScrubDir::Ahead {
                     Some(a)
                 } else {
                     Some(b)
@@ -934,32 +989,71 @@ mod tests {
     #[test]
     fn scrub_preview_neighbor_dir_avoids_reverse_jump() {
         // Near trail: ahead closer (16→20) must still floor — settle to 16 won't jump back.
-        assert_eq!(scrub_preview_neighbor(16, Some(10), Some(20), 1), Some(10));
+        assert_eq!(
+            scrub_preview_neighbor(16, Some(10), Some(20), ScrubDir::Ahead),
+            Some(10)
+        );
         // Near trail: behind closer must still ceil.
-        assert_eq!(scrub_preview_neighbor(16, Some(10), Some(20), -1), Some(20));
+        assert_eq!(
+            scrub_preview_neighbor(16, Some(10), Some(20), ScrubDir::Behind),
+            Some(20)
+        );
         // Neutral keeps abs-nearest (tie → floor).
-        assert_eq!(scrub_preview_neighbor(15, Some(10), Some(20), 0), Some(10));
-        assert_eq!(scrub_preview_neighbor(16, Some(10), Some(20), 0), Some(20));
+        assert_eq!(
+            scrub_preview_neighbor(15, Some(10), Some(20), ScrubDir::Neutral),
+            Some(10)
+        );
+        assert_eq!(
+            scrub_preview_neighbor(16, Some(10), Some(20), ScrubDir::Neutral),
+            Some(20)
+        );
         // Preferred side empty → other side.
-        assert_eq!(scrub_preview_neighbor(16, None, Some(20), 1), Some(20));
-        assert_eq!(scrub_preview_neighbor(16, Some(10), None, -1), Some(10));
+        assert_eq!(
+            scrub_preview_neighbor(16, None, Some(20), ScrubDir::Ahead),
+            Some(20)
+        );
+        assert_eq!(
+            scrub_preview_neighbor(16, Some(10), None, ScrubDir::Behind),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn scrub_dir_tracker_follows_aim_and_clears() {
+        let mut t = ScrubDirTracker::default();
+        assert_eq!(t.dir(), ScrubDir::Neutral);
+        // First sample has no previous aim → still neutral.
+        t.note(50);
+        assert_eq!(t.dir(), ScrubDir::Neutral);
+        t.note(60);
+        assert_eq!(t.dir(), ScrubDir::Ahead);
+        // Equal aim keeps the last direction (jitter / hold).
+        t.note(60);
+        assert_eq!(t.dir(), ScrubDir::Ahead);
+        t.note(40);
+        assert_eq!(t.dir(), ScrubDir::Behind);
+        t.clear();
+        assert_eq!(t, ScrubDirTracker::default());
+        // Cleared: the next sample is a fresh first sample.
+        t.note(10);
+        assert_eq!(t.dir(), ScrubDir::Neutral);
     }
 
     #[test]
     fn scrub_preview_neighbor_cold_hole_takes_closer_side() {
         // Forward cold hole: floor far behind lag, ceil closer → next (not stale prev).
         assert_eq!(
-            scrub_preview_neighbor(100, Some(40), Some(105), 1),
+            scrub_preview_neighbor(100, Some(40), Some(105), ScrubDir::Ahead),
             Some(105)
         );
         // Backward cold hole: ceil far ahead, floor closer → prev.
         assert_eq!(
-            scrub_preview_neighbor(100, Some(95), Some(160), -1),
+            scrub_preview_neighbor(100, Some(95), Some(160), ScrubDir::Behind),
             Some(95)
         );
         // Preferred side still within lag → keep dir bias even if other closer.
         assert_eq!(
-            scrub_preview_neighbor(100, Some(90), Some(105), 1),
+            scrub_preview_neighbor(100, Some(90), Some(105), ScrubDir::Ahead),
             Some(90)
         );
     }
@@ -968,17 +1062,17 @@ mod tests {
     fn scrub_preview_choice_dir_drops_wrong_side_key() {
         // Backward: behind key closer than ceil cache must not win.
         assert_eq!(
-            scrub_preview_choice_with_dir(16, Some(10), Some(100), -1),
+            scrub_preview_choice_with_dir(16, Some(10), Some(100), ScrubDir::Behind),
             Some(100)
         );
         // Forward: ahead-only cache still ok when no floor key.
         assert_eq!(
-            scrub_preview_choice_with_dir(16, None, Some(20), 1),
+            scrub_preview_choice_with_dir(16, None, Some(20), ScrubDir::Ahead),
             Some(20)
         );
         // Exact key under aim always allowed.
         assert_eq!(
-            scrub_preview_choice_with_dir(16, Some(16), Some(20), -1),
+            scrub_preview_choice_with_dir(16, Some(16), Some(20), ScrubDir::Behind),
             Some(16)
         );
     }
@@ -988,7 +1082,7 @@ mod tests {
         // Forward: nearer ahead thumb vs farther behind Exact. Scrub key filter
         // would drop thumb 120 (wrong side) and flash Exact 50.
         assert_eq!(
-            scrub_preview_choice_with_dir(100, Some(120), Some(50), 1),
+            scrub_preview_choice_with_dir(100, Some(120), Some(50), ScrubDir::Ahead),
             Some(50)
         );
         assert_eq!(hover_preview_choice(100, Some(120), Some(50)), Some(120));
@@ -1002,42 +1096,51 @@ mod tests {
     #[test]
     fn scrub_drag_stage_choice_keeps_warmer_blit_over_key() {
         // Forward: Exact blit at 50 closer than key 48 → do not flash key (reverse).
-        assert_eq!(scrub_drag_stage_choice(55, 48, Some(50), None, 1), Some(50));
-        assert_eq!(scrub_drag_stage_choice(55, 48, None, Some(50), 1), Some(50));
+        assert_eq!(
+            scrub_drag_stage_choice(55, 48, Some(50), None, ScrubDir::Ahead),
+            Some(50)
+        );
+        assert_eq!(
+            scrub_drag_stage_choice(55, 48, None, Some(50), ScrubDir::Ahead),
+            Some(50)
+        );
         // Forward: key closer than old blit → key ok.
-        assert_eq!(scrub_drag_stage_choice(55, 48, Some(20), None, 1), Some(48));
+        assert_eq!(
+            scrub_drag_stage_choice(55, 48, Some(20), None, ScrubDir::Ahead),
+            Some(48)
+        );
         // Backward: near ceil wins over behind key (dir bias, still near).
         assert_eq!(
-            scrub_drag_stage_choice(16, 10, Some(20), None, -1),
+            scrub_drag_stage_choice(16, 10, Some(20), None, ScrubDir::Behind),
             Some(20)
         );
         // Backward: far stale ceil → distance fallback to key (unfreeze).
         assert_eq!(
-            scrub_drag_stage_choice(70, 60, Some(100), None, -1),
+            scrub_drag_stage_choice(70, 60, Some(100), None, ScrubDir::Behind),
             Some(60)
         );
         assert_eq!(
-            scrub_drag_stage_choice(70, 60, None, Some(100), -1),
+            scrub_drag_stage_choice(70, 60, None, Some(100), ScrubDir::Behind),
             Some(60)
         );
         // Exact hit under aim: stale ahead displayed must not win (R→L return).
         assert_eq!(
-            scrub_drag_stage_choice(199, 192, Some(199), Some(200), -1),
+            scrub_drag_stage_choice(199, 192, Some(199), Some(200), ScrubDir::Behind),
             Some(199)
         );
         assert_eq!(
-            scrub_drag_stage_choice(50, 48, Some(50), Some(51), 1),
+            scrub_drag_stage_choice(50, 48, Some(50), Some(51), ScrubDir::Ahead),
             Some(50)
         );
         assert!(scrub_drag_stage_near_aim(70, 60, 65));
         assert!(scrub_drag_stage_near_aim(70, 60, 70));
         assert!(!scrub_drag_stage_near_aim(70, 60, 100));
 
-        assert!(scrub_drag_key_advances(1, Some(10), 48));
-        assert!(!scrub_drag_key_advances(1, Some(50), 48));
-        assert!(scrub_drag_key_advances(-1, Some(50), 48));
-        assert!(!scrub_drag_key_advances(-1, Some(40), 48));
-        assert!(scrub_drag_key_advances(0, Some(99), 1));
+        assert!(scrub_drag_key_advances(ScrubDir::Ahead, Some(10), 48));
+        assert!(!scrub_drag_key_advances(ScrubDir::Ahead, Some(50), 48));
+        assert!(scrub_drag_key_advances(ScrubDir::Behind, Some(50), 48));
+        assert!(!scrub_drag_key_advances(ScrubDir::Behind, Some(40), 48));
+        assert!(scrub_drag_key_advances(ScrubDir::Neutral, Some(99), 1));
     }
 
     #[test]
@@ -1104,20 +1207,50 @@ mod tests {
     #[test]
     fn nearer_gap_with_dir_distance_first() {
         // Closer behind wins even when scrubbing right (was: hard-prefer ahead).
-        assert_eq!(nearer_gap_with_dir(150, Some(149), Some(500), 1), Some(149));
-        assert_eq!(nearer_gap_with_dir(150, Some(0), Some(151), -1), Some(151));
+        assert_eq!(
+            nearer_gap_with_dir(150, Some(149), Some(500), ScrubDir::Ahead),
+            Some(149)
+        );
+        assert_eq!(
+            nearer_gap_with_dir(150, Some(0), Some(151), ScrubDir::Behind),
+            Some(151)
+        );
         // Equal distance — dir tie-break; neutral → behind.
-        assert_eq!(nearer_gap_with_dir(150, Some(99), Some(201), 1), Some(201));
-        assert_eq!(nearer_gap_with_dir(150, Some(99), Some(201), -1), Some(99));
-        assert_eq!(nearer_gap_with_dir(150, Some(99), Some(201), 0), Some(99));
-        assert_eq!(nearer_gap_with_dir(120, Some(99), Some(201), 0), Some(99));
-        assert_eq!(nearer_gap_with_dir(180, Some(99), Some(201), 0), Some(201));
+        assert_eq!(
+            nearer_gap_with_dir(150, Some(99), Some(201), ScrubDir::Ahead),
+            Some(201)
+        );
+        assert_eq!(
+            nearer_gap_with_dir(150, Some(99), Some(201), ScrubDir::Behind),
+            Some(99)
+        );
+        assert_eq!(
+            nearer_gap_with_dir(150, Some(99), Some(201), ScrubDir::Neutral),
+            Some(99)
+        );
+        assert_eq!(
+            nearer_gap_with_dir(120, Some(99), Some(201), ScrubDir::Neutral),
+            Some(99)
+        );
+        assert_eq!(
+            nearer_gap_with_dir(180, Some(99), Some(201), ScrubDir::Neutral),
+            Some(201)
+        );
         // One side only.
-        assert_eq!(nearer_gap_with_dir(0, None, Some(8), -1), Some(8));
-        assert_eq!(nearer_gap_with_dir(5, Some(3), None, 1), Some(3));
+        assert_eq!(
+            nearer_gap_with_dir(0, None, Some(8), ScrubDir::Behind),
+            Some(8)
+        );
+        assert_eq!(
+            nearer_gap_with_dir(5, Some(3), None, ScrubDir::Ahead),
+            Some(3)
+        );
         let behind = 0u32.checked_sub(1);
         let ahead = 7u32.checked_add(1).filter(|&a| a <= 100);
-        assert_eq!(nearer_gap_with_dir(0, behind, ahead, 0), Some(8));
+        assert_eq!(
+            nearer_gap_with_dir(0, behind, ahead, ScrubDir::Neutral),
+            Some(8)
+        );
     }
 
     #[test]

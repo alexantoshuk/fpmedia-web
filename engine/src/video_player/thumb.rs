@@ -307,7 +307,7 @@ impl VideoPlayer {
             .try_borrow()
             .ok()
             .and_then(|s| s.as_ref().map(|t| t.hover_dir()))
-            .unwrap_or(0);
+            .unwrap_or_default();
         let cached_exact = self
             .shared
             .scrub_blit

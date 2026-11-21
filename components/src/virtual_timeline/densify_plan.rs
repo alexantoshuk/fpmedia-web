@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 
 use fpmedia_web::{
-    AimWindow, FrameId, FrameRun, NextGapDecision, covered_edge_margins, decide_next_gap,
+    AimWindow, FrameId, FrameRun, NextGapDecision, ScrubDir, covered_edge_margins, decide_next_gap,
     scrub_edge_margins, scrub_gap_fill_armed,
 };
 
@@ -30,8 +30,8 @@ pub struct DensifyPlanInput {
     /// Exact edge margins (from `scrub_edge_margins` / ScrubPolicy).
     pub margin_left: FrameId,
     pub margin_right: FrameId,
-    /// Scrub direction (−1 / 0 / +1).
-    pub dir: i8,
+    /// Scrub direction.
+    pub dir: ScrubDir,
     /// Stall aim — skip Exact retries at this aim (engine densify stall).
     pub fill_stalled_aim: Option<FrameId>,
     /// Timeline FrameIds to treat as Exact-filled (VT soft-ban / skip).
@@ -57,7 +57,7 @@ impl DensifyPlanInput {
             covered,
             margin_left,
             margin_right,
-            dir: 0,
+            dir: ScrubDir::Neutral,
             fill_stalled_aim: None,
             skip_exact: BTreeSet::new(),
         }
@@ -70,7 +70,7 @@ impl DensifyPlanInput {
         timeline_last: FrameId,
         margin_left: FrameId,
         margin_right: FrameId,
-        dir: i8,
+        dir: ScrubDir,
     ) -> Self {
         Self {
             aim,
@@ -191,9 +191,9 @@ mod tests {
             "expected adjacent hole, got {:?}",
             d.target
         );
-        input.dir = 1;
+        input.dir = ScrubDir::Ahead;
         assert_eq!(plan_next_densify_gap(&input).target, Some(52));
-        input.dir = -1;
+        input.dir = ScrubDir::Behind;
         assert_eq!(plan_next_densify_gap(&input).target, Some(48));
     }
 

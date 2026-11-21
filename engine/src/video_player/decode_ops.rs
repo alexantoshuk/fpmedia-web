@@ -219,7 +219,7 @@ impl VideoPlayer {
         }
         let aim = self.shared.drag_aim.get();
         let aim_key = self.key_for(aim).unwrap_or(aim);
-        let dir = self.shared.scrub_dir.get();
+        let dir = self.shared.scrub_dir();
         // Baseline = last drag stage commit (`present_from_cache` + commit_frame),
         // not `displayed` VF alone — blit present does not refresh displayed, so
         // advances-vs-displayed allowed a later key to jump backward on canvas

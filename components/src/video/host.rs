@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use fpmedia_web::{
     BlobSource, FrameId, FrameRun, MediaSource, OpenPhase, OpenSourceKind, ScrubCachePolicy,
-    ThumbPolicy, TransportEvent, TransportState,
+    ScrubDir, ThumbPolicy, TransportEvent, TransportState,
 };
 use leptos::html::Canvas;
 use leptos::prelude::*;
@@ -452,8 +452,8 @@ impl VideoHost {
             .unwrap_or((12, 6))
     }
 
-    pub(crate) fn scrub_dir(&self) -> i8 {
-        self.ctx.with_player(|p| p.scrub_dir()).unwrap_or(0)
+    pub(crate) fn scrub_dir(&self) -> ScrubDir {
+        self.ctx.with_player(|p| p.scrub_dir()).unwrap_or_default()
     }
 
     pub(crate) fn vt_densify_banned_locals(&self) -> Vec<u32> {

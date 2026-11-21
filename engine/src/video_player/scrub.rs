@@ -11,8 +11,9 @@ use crate::error::MediaError;
 use crate::model::engine_mode::EngineEvent;
 use crate::policy::scrub_plan::{densify_should_ban_after_no_progress, densify_skip_bridge_ids};
 use crate::policy::{
-    ScrubCachePolicy, ScrubPolicy, exact_frames_to_free_for_play_vram, scrub_blit_cap_during_play,
-    scrub_blit_frame_budget, scrub_drag_stage_choice, scrub_drag_stage_near_aim,
+    ScrubCachePolicy, ScrubDir, ScrubPolicy, exact_frames_to_free_for_play_vram,
+    scrub_blit_cap_during_play, scrub_blit_frame_budget, scrub_drag_stage_choice,
+    scrub_drag_stage_near_aim,
 };
 use crate::residency::ScrubChunk;
 use crate::types::{FrameId, FrameRun};
@@ -204,21 +205,16 @@ impl VideoPlayer {
 
     /// Update predictive densify direction from a drag sample (`sign(aim − prev)`).
     pub(super) fn note_scrub_direction(&self, aim: FrameId) {
-        if let Some(prev) = self.shared.prev_scrub_aim.get() {
-            if aim > prev {
-                self.shared.scrub_dir.set(1);
-            } else if aim < prev {
-                self.shared.scrub_dir.set(-1);
-            }
-            // Equal aim: keep last dir (micro-jitter / hold).
-        }
-        self.shared.prev_scrub_aim.set(Some(aim));
+        let mut dir = self.shared.scrub_dir.get();
+        dir.note(aim);
+        self.shared.scrub_dir.set(dir);
     }
 
     /// Neutral gap pick after settle / play (no motion bias).
     pub(super) fn clear_scrub_direction(&self) {
-        self.shared.scrub_dir.set(0);
-        self.shared.prev_scrub_aim.set(None);
+        let mut dir = self.shared.scrub_dir.get();
+        dir.clear();
+        self.shared.scrub_dir.set(dir);
     }
 
     /// Pointer-up settle entry from the UI host — before the async op runs.
@@ -526,7 +522,7 @@ impl VideoPlayer {
                         continue;
                     }
                     let key = self.key_for(aim).unwrap_or(aim);
-                    let dir = self.shared.scrub_dir.get();
+                    let dir = self.shared.scrub_dir();
                     let displayed = self
                         .shared
                         .displayed
@@ -754,8 +750,8 @@ impl VideoPlayer {
         (p.margin_left, p.margin_right)
     }
 
-    pub fn scrub_dir(&self) -> i8 {
-        self.shared.scrub_dir.get()
+    pub fn scrub_dir(&self) -> ScrubDir {
+        self.shared.scrub_dir()
     }
 
     /// True while densify flight is busy or pending restart.
@@ -778,7 +774,7 @@ impl VideoPlayer {
     /// Exact does not jump opposite the drag; else nearest sync **if** it still
     /// has an Exact bitmap.
     pub(super) fn scrub_preview_frame(&self, target: FrameId) -> Option<FrameId> {
-        let dir = self.shared.scrub_dir.get();
+        let dir = self.shared.scrub_dir();
         let blit = self.shared.scrub_blit.borrow();
         let cached = blit.nearest_frame_with_dir(target, dir);
         let key = self.key_for(target).filter(|&k| blit.contains(k));

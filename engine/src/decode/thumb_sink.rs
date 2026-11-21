@@ -24,8 +24,9 @@ use crate::epoch::{Epoch, Ticket};
 use crate::error::MediaError;
 use crate::model::bg_task::{FlightGuard, SingleFlight};
 use crate::policy::{
-    DEFAULT_THUMB_CACHE_MIB, hover_thumb_dims, next_missing_sync_key, next_progressive_sync_key,
-    thumb_cache_frame_budget, thumb_progressive_coarse_count, thumb_progressive_rank,
+    DEFAULT_THUMB_CACHE_MIB, ScrubDir, ScrubDirTracker, hover_thumb_dims, next_missing_sync_key,
+    next_progressive_sync_key, thumb_cache_frame_budget, thumb_progressive_coarse_count,
+    thumb_progressive_rank,
 };
 use crate::types::FrameId;
 
@@ -111,9 +112,8 @@ pub struct ThumbSink {
     pending_aim: Cell<Option<FrameId>>,
     /// Hover client: paint nearest-to-this after decode.
     hover_aim: Cell<FrameId>,
-    /// Hover client: floor/ceil bias (`+1` / `-1` / `0`).
-    hover_dir: Cell<i8>,
-    prev_hover_aim: Cell<Option<FrameId>>,
+    /// Hover client: floor/ceil bias from the pointer aim ([`ScrubDirTracker`]).
+    hover_dir: Cell<ScrubDirTracker>,
     /// Current decode max box (host `set_thumb_max_size` → [`Self::note_size`]).
     last_box: Cell<ThumbBox>,
     /// Hover client: wall ms of last aim-decode start (Play throttle).
@@ -138,8 +138,7 @@ impl ThumbSink {
             flight: SingleFlight::new(),
             pending_aim: Cell::new(None),
             hover_aim: Cell::new(0),
-            hover_dir: Cell::new(0),
-            prev_hover_aim: Cell::new(None),
+            hover_dir: Cell::new(ScrubDirTracker::default()),
             last_box: Cell::new(last_box),
             last_aim_decode_ms: Cell::new(0.0),
             hover_active: Cell::new(false),
@@ -369,7 +368,7 @@ impl ThumbSink {
     }
 
     /// Cached thumb neighbor biased by `dir` (`scrub_preview_neighbor`).
-    pub fn nearest(&self, target: FrameId, dir: i8) -> Option<FrameId> {
+    pub fn nearest(&self, target: FrameId, dir: ScrubDir) -> Option<FrameId> {
         let meta = self.track.metadata();
         let (tw, th) = self.thumb_dims(meta.width, meta.height);
         self.nearest_frame_with_dir(target, tw, th, dir)
@@ -380,7 +379,7 @@ impl ThumbSink {
         target: FrameId,
         width: u32,
         height: u32,
-        dir: i8,
+        dir: ScrubDir,
     ) -> Option<FrameId> {
         let Ok(cache) = self.cache.try_borrow() else {
             return None;
@@ -396,7 +395,7 @@ impl ThumbSink {
         target: FrameId,
         width: u32,
         height: u32,
-        dir: i8,
+        dir: ScrubDir,
         f: impl FnOnce(&ImageBitmap) -> R,
     ) -> Option<(FrameId, R)> {
         let Ok(mut cache) = self.cache.try_borrow_mut() else {
@@ -445,14 +444,9 @@ impl ThumbSink {
 
     pub fn set_hover_aim(&self, aim: FrameId) {
         self.hover_active.set(true);
-        if let Some(prev) = self.prev_hover_aim.get() {
-            if aim > prev {
-                self.hover_dir.set(1);
-            } else if aim < prev {
-                self.hover_dir.set(-1);
-            }
-        }
-        self.prev_hover_aim.set(Some(aim));
+        let mut dir = self.hover_dir.get();
+        dir.note(aim);
+        self.hover_dir.set(dir);
         self.hover_aim.set(aim);
     }
 
@@ -460,13 +454,14 @@ impl ThumbSink {
         self.hover_aim.get()
     }
 
-    pub fn hover_dir(&self) -> i8 {
-        self.hover_dir.get()
+    pub fn hover_dir(&self) -> ScrubDir {
+        self.hover_dir.get().dir()
     }
 
     pub fn clear_hover_direction(&self) {
-        self.hover_dir.set(0);
-        self.prev_hover_aim.set(None);
+        let mut dir = self.hover_dir.get();
+        dir.clear();
+        self.hover_dir.set(dir);
     }
 
     pub fn take_decoder(&self) -> Option<WebCodecsDecoder> {

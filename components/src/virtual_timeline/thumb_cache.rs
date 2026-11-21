@@ -112,10 +112,8 @@ impl VtThumbCache {
         target: GlobalFrame,
         width: u32,
         height: u32,
-        dir: i8,
     ) -> Option<(GlobalFrame, &ImageBitmap, u32, u32)> {
         let target = target.get();
-        let _ = dir;
         let pick = |require_size: bool| -> Option<(FrameId, FrameId)> {
             let mut best: Option<(FrameId, FrameId)> = None;
             for (&id, e) in &self.by_frame {

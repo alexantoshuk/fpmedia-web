@@ -20,7 +20,7 @@ pub use fpmedia_web::{
 };
 pub use pipeline_interest::{PipelineInterestLease, PipelinePlane};
 
-use fpmedia_web::{FrameId, FrameRun};
+use fpmedia_web::{FrameId, FrameRun, ScrubDir};
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
@@ -632,8 +632,8 @@ impl VideoRef {
             .unwrap_or((12, 6))
     }
 
-    pub fn scrub_dir(&self) -> i8 {
-        self.host().map(|host| host.scrub_dir()).unwrap_or(0)
+    pub fn scrub_dir(&self) -> ScrubDir {
+        self.host().map(|host| host.scrub_dir()).unwrap_or_default()
     }
 
     /// VT densify soft-ban locals (skip in timeline plan).

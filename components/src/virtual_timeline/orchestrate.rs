@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use fpmedia_web::FrameId;
+use fpmedia_web::{FrameId, ScrubDir};
 
 use super::{
     BackendAim, DensifyPlanInput, ExactLedger, plan_next_densify_gap, resolve_playlist,
@@ -24,7 +24,7 @@ pub fn plan_timeline_densify_gap<V>(
     timeline_last: FrameId,
     margin_left: FrameId,
     margin_right: FrameId,
-    dir: i8,
+    dir: ScrubDir,
     skip_exact: BTreeSet<FrameId>,
 ) -> Option<FrameId> {
     let mut input =
