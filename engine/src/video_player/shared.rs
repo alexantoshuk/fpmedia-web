@@ -18,6 +18,7 @@ use crate::decode::scrub_blit::BlitCanvasSlot;
 use crate::decode::thumb_sink::ThumbSink;
 use crate::decode::webcodecs::{PlayIter, WebCodecsDecoder};
 use crate::demux::Mp4VideoTrack;
+use crate::epoch::Epoch;
 use crate::error::MediaError;
 use crate::model::bg_task::SingleFlight;
 use crate::model::clock_state::ClockState;
@@ -109,7 +110,7 @@ pub(super) struct Shared {
     /// Densify create failed permanently this clip (e.g. HEVC HW-only — no SW
     /// second decoder). Stops retry storms that would call `prefer-hardware`.
     pub(super) scrub_densify_blocked: Cell<bool>,
-    pub(super) scrub_epoch: Cell<u64>,
+    pub(super) scrub_epoch: Epoch,
     /// Densify single-flight (`busy` + `pending` restart).
     pub(super) densify: SingleFlight,
     /// When true, densify gaps come only from [`Self::vt_densify_target`] (VT
@@ -203,7 +204,7 @@ pub(super) struct Shared {
     /// Iterator / loop async failure for the next [`super::VideoPlayer::play_raf_tick`].
     pub(super) play_driver_error: RefCell<Option<String>>,
     /// Bumped to cancel in-flight decode (mediabunny dispose / asyncId).
-    pub(super) op_epoch: Cell<u64>,
+    pub(super) op_epoch: Epoch,
     /// Exclusive main-decoder checkout + reset-pending ([`DecoderSlotModel`]).
     pub(super) decoder_slot: Cell<DecoderSlotModel>,
     /// After fill stalls (no progress), skip restart until aim leaves this frame.

@@ -12,6 +12,7 @@ mod audio;
 mod bitstream;
 mod clock;
 mod demux;
+mod epoch;
 mod error;
 mod frame_index;
 mod host;
@@ -57,6 +58,8 @@ pub use error::{DecodeStall, MediaError};
 pub use frame_index::{FrameEntry, FrameIndex};
 // Host OpQueue / FSM — used by `fpmedia-web-components`; not part of the engine
 // consumer surface (VideoPlayer / demux / sources).
+#[doc(hidden)]
+pub use epoch::{Epoch, Ticket};
 #[doc(hidden)]
 pub use host::host_op_coalesce::{HostOp, apply_enqueue};
 #[doc(hidden)]

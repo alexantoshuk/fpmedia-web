@@ -8,6 +8,7 @@ use std::rc::Rc;
 use web_sys::HtmlCanvasElement;
 
 use super::api::PlayerState;
+use crate::epoch::Ticket;
 use crate::model::clock_state::ClockEvent;
 use crate::model::engine_mode::{EngineCmd, EngineEvent, reduce as engine_reduce};
 use crate::model::session::{SessionEvent, reduce as session_reduce};
@@ -238,8 +239,7 @@ impl VideoPlayer {
     /// Does **not** cancel background scrub fill — scrub/seek call [`Self::begin_op`]
     /// often; killing fill on every pointermove left the cache stuck on the old GOP.
     pub fn cancel_ops(&self) {
-        let next = self.shared.op_epoch.get().wrapping_add(1);
-        self.shared.op_epoch.set(next);
+        self.shared.op_epoch.bump();
     }
 
     /// Cancel decode **and** background dense fill (play / hard abort / drag).
@@ -250,13 +250,12 @@ impl VideoPlayer {
         self.clear_scrub_direction();
     }
 
-    pub(super) fn begin_op(&self) -> u64 {
-        self.cancel_ops();
-        self.shared.op_epoch.get()
+    pub(super) fn begin_op(&self) -> Ticket {
+        self.shared.op_epoch.bump()
     }
 
-    pub(super) fn is_current(&self, epoch: u64) -> bool {
-        self.shared.op_epoch.get() == epoch
+    pub(super) fn is_current(&self, epoch: Ticket) -> bool {
+        self.shared.op_epoch.is_current(epoch)
     }
 
     pub fn set_loop(&self, looping: bool) {

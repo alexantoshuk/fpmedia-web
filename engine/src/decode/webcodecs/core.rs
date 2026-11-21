@@ -21,6 +21,7 @@ use crate::bitstream::{
     sanitize_avc_packet_for_chromium, sanitize_hevc_packet_for_chromium,
 };
 use crate::decode::owned_video_frame::OwnedVideoFrame;
+use crate::epoch::Epoch;
 use crate::error::MediaError;
 use crate::types::{EncodedSample, FrameId, VideoMetadata};
 use crate::waiters::Waiters;
@@ -247,9 +248,9 @@ pub(super) struct DecoderCore {
     /// ([`crate::policy::PlayPolicy::decode_warm_ahead`]).
     pub(super) warm_ahead: usize,
     /// Bumped on teardown so late browser callbacks become no-ops.
-    pub(super) generation: Rc<Cell<u64>>,
+    pub(super) generation: Rc<Epoch>,
     /// Bumped on detach/reset/invalidate/Drop so in-flight pumps stop feeding.
-    pub(super) pump_epoch: Rc<Cell<u64>>,
+    pub(super) pump_epoch: Rc<Epoch>,
     pub(super) frames: Rc<RefCell<Vec<OwnedVideoFrame>>>,
     pub(super) error: Rc<RefCell<Option<String>>>,
     /// Resolvers waiting for the next `output` callback (mediabunny-style).
@@ -288,10 +289,10 @@ impl DecoderCore {
         optimize_for_latency: bool,
         hw_accel: HwAccel,
         warm_ahead: usize,
-        pump_epoch: Rc<Cell<u64>>,
+        pump_epoch: Rc<Epoch>,
         all_intra: bool,
     ) -> Result<Self, MediaError> {
-        let generation = Rc::new(Cell::new(0));
+        let generation = Rc::new(Epoch::new());
         let frames: Rc<RefCell<Vec<OwnedVideoFrame>>> = Rc::new(RefCell::new(Vec::new()));
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let output_waiters = Waiters::new();
@@ -299,12 +300,12 @@ impl DecoderCore {
         let not_empty_waiters = Waiters::new();
 
         let gen_cb = Rc::clone(&generation);
-        let my_gen = gen_cb.get();
+        let my_gen = gen_cb.ticket();
         let frames_cb = Rc::clone(&frames);
         let waiters_cb = output_waiters.clone();
         let dequeue_on_output = dequeue_waiters.clone();
         let on_output = Closure::wrap(Box::new(move |value: JsValue| {
-            if gen_cb.get() != my_gen {
+            if !gen_cb.is_current(my_gen) {
                 if let Ok(frame) = value.dyn_into::<VideoFrame>() {
                     drop(OwnedVideoFrame::new(frame));
                 }
@@ -323,10 +324,10 @@ impl DecoderCore {
         }) as Box<dyn FnMut(JsValue)>);
 
         let gen_err = Rc::clone(&generation);
-        let my_gen_err = gen_err.get();
+        let my_gen_err = gen_err.ticket();
         let error_cb = Rc::clone(&error);
         let on_error = Closure::wrap(Box::new(move |value: JsValue| {
-            if gen_err.get() != my_gen_err {
+            if !gen_err.is_current(my_gen_err) {
                 return;
             }
             let msg = value
@@ -341,10 +342,10 @@ impl DecoderCore {
         }) as Box<dyn FnMut(JsValue)>);
 
         let gen_dq = Rc::clone(&generation);
-        let my_gen_dq = gen_dq.get();
+        let my_gen_dq = gen_dq.ticket();
         let dequeue_cb = dequeue_waiters.clone();
         let on_dequeue = Closure::wrap(Box::new(move |_value: JsValue| {
-            if gen_dq.get() != my_gen_dq {
+            if !gen_dq.is_current(my_gen_dq) {
                 return;
             }
             dequeue_cb.wake_deferred();
@@ -410,9 +411,9 @@ impl DecoderCore {
     /// Close the browser decoder and retire callbacks without dropping Closures
     /// that JS may still invoke (would panic inside wasm-bindgen).
     pub(super) fn detach_decoder(&mut self) {
-        self.generation.set(self.generation.get().wrapping_add(1));
+        self.generation.bump();
         // Any pump still awaiting a sample read must not feed the next decoder.
-        self.pump_epoch.set(self.pump_epoch.get().wrapping_add(1));
+        self.pump_epoch.bump();
         self.decoder.set_ondequeue(None);
         let _ = self.decoder.close();
         for frame in self.frames.borrow_mut().drain(..) {

@@ -329,7 +329,7 @@ impl VideoPlayer {
                 return Ok(None);
             };
             slot.as_ref()
-                .map(|t| t.generation())
+                .map(|t| t.ticket())
                 .ok_or(MediaError::Cancelled)?
         };
         let cancelled = || {
@@ -337,7 +337,7 @@ impl VideoPlayer {
                 .thumb
                 .try_borrow()
                 .ok()
-                .and_then(|s| s.as_ref().map(|t| t.generation() != epoch))
+                .and_then(|s| s.as_ref().map(|t| !t.is_current(epoch)))
                 .unwrap_or(true)
         };
         if cancelled() {
@@ -425,7 +425,7 @@ impl VideoPlayer {
                     return Err(MediaError::Cancelled);
                 };
                 slot.as_ref()
-                    .map(|t| t.generation())
+                    .map(|t| t.ticket())
                     .ok_or(MediaError::Cancelled)?
             };
             let wait_start = now_ms().unwrap_or(0.0);
@@ -443,7 +443,7 @@ impl VideoPlayer {
                 let Some(thumbs) = slot.as_ref() else {
                     return Err(MediaError::Cancelled);
                 };
-                if thumbs.generation() != wait_epoch || thumbs.decode_blocked() {
+                if !thumbs.is_current(wait_epoch) || thumbs.decode_blocked() {
                     return Err(MediaError::Cancelled);
                 }
                 if thumbs.claim_decode(frame) {
@@ -469,14 +469,14 @@ impl VideoPlayer {
                 end_decode();
                 return Err(MediaError::Cancelled);
             };
-            thumbs.generation()
+            thumbs.ticket()
         };
         let cancelled = || {
             self.shared
                 .thumb
                 .try_borrow()
                 .ok()
-                .and_then(|s| s.as_ref().map(|t| t.generation() != epoch))
+                .and_then(|s| s.as_ref().map(|t| !t.is_current(epoch)))
                 .unwrap_or(true)
         };
 

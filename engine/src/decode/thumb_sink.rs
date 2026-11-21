@@ -20,6 +20,7 @@ use super::owned_video_frame::AsVideoFrame;
 use super::scrub_blit::{BlitCanvas, BlitCanvasSlot};
 use super::webcodecs::WebCodecsDecoder;
 use crate::demux::Mp4VideoTrack;
+use crate::epoch::{Epoch, Ticket};
 use crate::error::MediaError;
 use crate::model::bg_task::SingleFlight;
 use crate::policy::{
@@ -73,7 +74,7 @@ pub struct ThumbSink {
     track: Rc<Mp4VideoTrack>,
     cache: RefCell<ThumbCache>,
     /// Bumped to cancel in-flight decode / Exact downscale clients.
-    epoch: Cell<u64>,
+    epoch: Epoch,
     decoder: RefCell<Option<WebCodecsDecoder>>,
     /// Own blit surface — never share densify `encode_canvas` (RefCell re-entry).
     blit: BlitCanvasSlot,
@@ -106,7 +107,7 @@ impl ThumbSink {
         Self {
             track,
             cache: RefCell::new(ThumbCache::new(opts.max_gops, opts.max_thumbs)),
-            epoch: Cell::new(0),
+            epoch: Epoch::new(),
             decoder: RefCell::new(None),
             blit: BlitCanvasSlot::default(),
             decode_blocked: Cell::new(false),
@@ -128,7 +129,7 @@ impl ThumbSink {
     }
 
     pub fn cancel(&self) {
-        self.epoch.set(self.epoch.get().wrapping_add(1));
+        self.epoch.bump();
         self.pending_aim.set(None);
         self.clear_hover_direction();
         self.hover_active.set(false);
@@ -150,8 +151,13 @@ impl ThumbSink {
         self.progressive_done.set(true);
     }
 
-    pub fn generation(&self) -> u64 {
-        self.epoch.get()
+    pub fn ticket(&self) -> Ticket {
+        self.epoch.ticket()
+    }
+
+    /// `true` while no [`Self::cancel`] has retired `ticket`.
+    pub fn is_current(&self, ticket: Ticket) -> bool {
+        self.epoch.is_current(ticket)
     }
 
     pub fn decode_blocked(&self) -> bool {

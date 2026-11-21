@@ -30,6 +30,7 @@ use crate::audio::Mp4AudioTrack;
 use crate::audio::TimeStretcher;
 use crate::audio::owned_audio_data::OwnedAudioData;
 use crate::audio::pcm::slice_planar_for_stretch;
+use crate::epoch::{Epoch, Ticket};
 use crate::error::MediaError;
 use crate::normalize_playback_rate;
 use crate::types::AudioMetadata;
@@ -86,7 +87,7 @@ pub struct AudioOutput {
     /// Media seconds per context second (Frame.io review range).
     rate: Cell<f64>,
     /// Bumped on stop/seek so in-flight pumps exit.
-    epoch: Cell<u64>,
+    epoch: Epoch,
     /// `AudioContext.currentTime` when play started.
     ctx_origin: Cell<Option<f64>>,
     media_at_start: Cell<f64>,
@@ -215,7 +216,7 @@ impl AudioOutput {
             volume: Cell::new(1.0),
             muted: Cell::new(false),
             rate: Cell::new(1.0),
-            epoch: Cell::new(0),
+            epoch: Epoch::new(),
             ctx_origin: Cell::new(None),
             media_at_start: Cell::new(0.0),
             playing: Cell::new(false),
@@ -341,8 +342,7 @@ impl AudioOutput {
             return;
         }
         let t = self.media_time();
-        self.epoch.set(self.epoch.get().wrapping_add(1));
-        let epoch = self.epoch.get();
+        let epoch = self.epoch.bump();
         self.stop_queued_nodes();
         if let Ok(mut q) = self.pending.try_borrow_mut() {
             q.clear();
@@ -480,7 +480,7 @@ impl AudioOutput {
 
     fn cancel_pump_and_silence(&self) -> f64 {
         let t = self.media_time();
-        self.epoch.set(self.epoch.get().wrapping_add(1));
+        self.epoch.bump();
         self.playing.set(false);
         self.ctx_origin.set(None);
         self.media_at_start.set(t);
@@ -508,11 +508,11 @@ impl AudioOutput {
     /// the decode/schedule pump is started by [`Self::start_spawned`].
     ///
     /// Hard path (pause→play / seek): resets + reconfigures the decoder.
-    pub async fn begin(&self, media_time_secs: f64) -> Result<u64, MediaError> {
+    pub async fn begin(&self, media_time_secs: f64) -> Result<Ticket, MediaError> {
         self.stop();
         self.resume_context().await?;
 
-        let epoch = self.epoch.get();
+        let epoch = self.epoch.ticket();
         self.media_at_start.set(media_time_secs.max(0.0));
         self.ctx_origin.set(Some(self.context.current_time()));
         self.playing.set(true);
@@ -554,7 +554,7 @@ impl AudioOutput {
         let _ = self.cancel_pump_and_silence();
         self.resume_context().await?;
 
-        let epoch = self.epoch.get();
+        let epoch = self.epoch.ticket();
         let t = media_time_secs.max(0.0);
         self.media_at_start.set(t);
         self.ctx_origin.set(Some(self.context.current_time()));
@@ -609,7 +609,7 @@ impl AudioOutput {
 
     /// Decode + schedule until ~[`WARM_PRIME_SECS`] of audio is queued (or EOF).
     /// Returns the next sample index for the background pump.
-    async fn prime_schedule(&self, epoch: u64, sample_idx: u64) -> Result<u64, MediaError> {
+    async fn prime_schedule(&self, epoch: Ticket, sample_idx: u64) -> Result<u64, MediaError> {
         let prime_until = self.media_at_start.get() + WARM_PRIME_SECS;
         self.feed_and_schedule(epoch, sample_idx, Some(prime_until))
             .await
@@ -625,13 +625,13 @@ impl AudioOutput {
     /// Returns the next unfed sample (EOF, prime done, or cancelled).
     async fn feed_and_schedule(
         &self,
-        epoch: u64,
+        epoch: Ticket,
         mut sample_idx: u64,
         prime_until: Option<f64>,
     ) -> Result<u64, MediaError> {
         let mut slice = ScheduleSlice::start();
         loop {
-            if self.epoch.get() != epoch {
+            if !self.epoch.is_current(epoch) {
                 return Ok(sample_idx);
             }
             if let Some(err) = self.error.borrow().clone() {
@@ -646,7 +646,7 @@ impl AudioOutput {
                 let Some(pending) = next else {
                     break;
                 };
-                if self.epoch.get() != epoch {
+                if !self.epoch.is_current(epoch) {
                     return Ok(sample_idx);
                 }
                 let ts = pending.timestamp_secs;
@@ -677,7 +677,7 @@ impl AudioOutput {
             }
 
             let sample = self.track.encoded_sample(sample_idx).await?;
-            if self.epoch.get() != epoch {
+            if !self.epoch.is_current(epoch) {
                 return Ok(sample_idx);
             }
             self.feed_chunk(&sample)?;
@@ -691,7 +691,7 @@ impl AudioOutput {
     /// Visible: [`AHEAD_SECS`] (MB). Hidden: [`AHEAD_SECS_HIDDEN`]. Wake via
     /// node `onended` (audio thread) or a short poll — not only `setTimeout`
     /// (throttled to ~1 Hz in background tabs).
-    async fn throttle_ahead(&self, epoch: u64, ts: f64) -> bool {
+    async fn throttle_ahead(&self, epoch: Ticket, ts: f64) -> bool {
         loop {
             let target = self.ahead_target_secs();
             let ahead = if self.wants_stretch() {
@@ -702,7 +702,7 @@ impl AudioOutput {
             if ahead < target {
                 return true;
             }
-            if self.epoch.get() != epoch {
+            if !self.epoch.is_current(epoch) {
                 return false;
             }
             self.wait_ahead_slack().await;
@@ -751,7 +751,7 @@ impl AudioOutput {
     }
 
     /// Decode + schedule loop from `media_time_secs` (cancel via [`Self::stop`]).
-    pub async fn run_pump(&self, epoch: u64, media_time_secs: f64) -> Result<(), MediaError> {
+    pub async fn run_pump(&self, epoch: Ticket, media_time_secs: f64) -> Result<(), MediaError> {
         let start_sample = self.track.sample_at_or_after(media_time_secs).unwrap_or(0);
         self.pump(epoch, start_sample).await
     }
@@ -778,9 +778,9 @@ impl AudioOutput {
         Ok(())
     }
 
-    async fn pump(&self, epoch: u64, sample_idx: u64) -> Result<(), MediaError> {
+    async fn pump(&self, epoch: Ticket, sample_idx: u64) -> Result<(), MediaError> {
         self.feed_and_schedule(epoch, sample_idx, None).await?;
-        if self.epoch.get() != epoch {
+        if !self.epoch.is_current(epoch) {
             return Ok(());
         }
 
@@ -798,13 +798,13 @@ impl AudioOutput {
             let Some(pending) = next else {
                 break;
             };
-            if self.epoch.get() != epoch {
+            if !self.epoch.is_current(epoch) {
                 return Ok(());
             }
             self.schedule_pending_sample(pending.timestamp_secs, pending.payload)?;
             slice.tick(self.tab_hidden.get()).await;
         }
-        if self.epoch.get() != epoch {
+        if !self.epoch.is_current(epoch) {
             return Ok(());
         }
         self.finalize_stretch()?;
@@ -1024,7 +1024,7 @@ impl AudioOutput {
 
 impl Drop for AudioOutput {
     fn drop(&mut self) {
-        self.epoch.set(self.epoch.get().wrapping_add(1));
+        self.epoch.bump();
         self.stop_queued_nodes();
         let taken = self.decoder.borrow_mut().take();
         if let Some(dec) = taken {

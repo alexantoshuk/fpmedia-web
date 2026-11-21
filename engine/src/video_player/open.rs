@@ -15,6 +15,7 @@ use crate::decode::canvas::{canvas_2d, configure_canvas_for_video, reset_canvas_
 use crate::decode::frame_cache::ScrubBlitLru;
 use crate::decode::scrub_blit::BlitCanvasSlot;
 use crate::decode::webcodecs::WebCodecsDecoder;
+use crate::epoch::Epoch;
 use crate::error::MediaError;
 use crate::model::clock_state::ClockState;
 use crate::model::decoder_slot::DecoderSlotModel;
@@ -186,7 +187,7 @@ impl VideoPlayer {
             scrub_decoder: RefCell::new(None),
             scrub_cache_policy: Cell::new(crate::policy::ScrubCachePolicy::On),
             scrub_densify_blocked: Cell::new(false),
-            scrub_epoch: Cell::new(0),
+            scrub_epoch: Epoch::new(),
             densify: crate::SingleFlight::new(),
             vt_densify_authority: Cell::new(false),
             vt_thumb_authority: Cell::new(false),
@@ -227,7 +228,7 @@ impl VideoPlayer {
             resuming_clock: Cell::new(false),
             held_media_origin: Cell::new(None),
             play_driver_error: RefCell::new(None),
-            op_epoch: Cell::new(0),
+            op_epoch: Epoch::new(),
             decoder_slot: Cell::new(DecoderSlotModel::new()),
             fill_stalled_aim: Cell::new(None),
             pending_cold_exact: Cell::new(None),

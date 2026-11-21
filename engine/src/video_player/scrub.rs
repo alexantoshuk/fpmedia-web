@@ -6,6 +6,7 @@ use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::scrub_blit::draw_image_bitmap;
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::demux::Mp4VideoTrack;
+use crate::epoch::Ticket;
 use crate::error::MediaError;
 use crate::model::engine_mode::EngineEvent;
 use crate::policy::scrub_plan::{densify_should_ban_after_no_progress, densify_skip_bridge_ids};
@@ -141,8 +142,7 @@ impl VideoPlayer {
         // Latch `scrub_pending` *before* bumping the epoch so densify's adopt
         // check (`!scrub_pending` → exit for Play) cannot race a settle rearm.
         self.shared.densify.set_pending(rearm);
-        let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
-        self.shared.scrub_epoch.set(scrub);
+        self.shared.scrub_epoch.bump();
         // Take under a short borrow — do not `if let … borrow_mut().take()` (RefMut
         // spans the body; `reset` / Drop re-entry panics).
         let taken = self.shared.scrub_decoder.borrow_mut().take();
@@ -656,7 +656,7 @@ impl VideoPlayer {
     async fn settle_exact_seed_logged(
         &self,
         frame: FrameId,
-        epoch: u64,
+        epoch: Ticket,
         densify_yield_ms: f64,
         gop_warm_ms: Option<f64>,
     ) -> Result<(), MediaError> {
@@ -833,8 +833,7 @@ impl VideoPlayer {
     /// Drop Covered + Exact + thumbs (open / close teardown only — **not** loop).
     pub(super) fn clear_scrub_store(&self) {
         // Abort in-flight gap fill first so the fill task drops the decoder slot.
-        let scrub = self.shared.scrub_epoch.get().wrapping_add(1);
-        self.shared.scrub_epoch.set(scrub);
+        self.shared.scrub_epoch.bump();
         let taken = self.shared.scrub_decoder.borrow_mut().take();
         if let Some(mut d) = taken {
             let _ = d.reset();
@@ -942,7 +941,7 @@ fn note_vt_densify_ban(shared: &Shared, key: FrameId, gop_ids: &[FrameId]) {
 }
 
 pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), MediaError> {
-    let mut scrub_epoch = shared.scrub_epoch.get();
+    let mut scrub_epoch = shared.scrub_epoch.ticket();
     let result = async {
         let mut idle_passes = 0u8;
         // Keys that PreferSoftware densify finished with zero new residency —
@@ -980,7 +979,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
             // `scrub_pending` — exit so `scrub_busy` drops for PlayPrime fill.
             // `rearm=true` (settle/seek) keeps pending → adopt and continue.
             // mediabunny: seekToTime → iterator.return() ends the prior range.
-            if shared.scrub_epoch.get() != scrub_epoch {
+            if !shared.scrub_epoch.is_current(scrub_epoch) {
                 if shared.is_disposed()
                     || shared.engine.get().is_play()
                     || shared.playing.get()
@@ -989,7 +988,7 @@ pub(super) async fn scrub_cache_fill_task(shared: Rc<Shared>) -> Result<(), Medi
                 {
                     return Ok(());
                 }
-                scrub_epoch = shared.scrub_epoch.get();
+                scrub_epoch = shared.scrub_epoch.ticket();
                 // Do **not** clear `scrub_pending` — abort(rearm)/schedule may have
                 // latched another pass while we were cancelled mid-GOP.
             }
@@ -1276,7 +1275,7 @@ pub(super) fn ingest_scrub_frame_shared(
 pub(super) async fn fill_one_gap(
     shared: Rc<Shared>,
     target: FrameId,
-    scrub_epoch: u64,
+    scrub_epoch: Ticket,
 ) -> Result<bool, MediaError> {
     let key = shared
         .track
@@ -1286,7 +1285,7 @@ pub(super) async fn fill_one_gap(
 
     let cancelled = || {
         shared.is_disposed()
-            || shared.scrub_epoch.get() != scrub_epoch
+            || !shared.scrub_epoch.is_current(scrub_epoch)
             || shared.engine.get().is_play()
             || shared.playing.get()
             || shared.engine.get().holds_exact()

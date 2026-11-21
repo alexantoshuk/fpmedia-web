@@ -341,8 +341,8 @@ async fn pump(inner: &Inner, start: FrameId) -> Result<(), MediaError> {
         .core
         .borrow_mut()
         .begin_key_cascade(key_do, true, false)?;
-    let epoch = inner.core.borrow().pump_epoch.get();
-    let stopped = || inner.terminated.get() || inner.core.borrow().pump_epoch.get() != epoch;
+    let epoch = inner.core.borrow().pump_epoch.ticket();
+    let stopped = || inner.terminated.get() || !inner.core.borrow().pump_epoch.is_current(epoch);
 
     let lead = inner.index_lead;
     let mut after_do: Option<usize> = None;

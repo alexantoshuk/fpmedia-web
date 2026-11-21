@@ -21,7 +21,7 @@ mod pump;
 
 pub use play_iter::{PlayIter, PlayWaits};
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -29,6 +29,7 @@ use web_sys::VideoDecoder;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
+use crate::epoch::Epoch;
 use crate::error::{DecodeStall, MediaError};
 use crate::policy::{GopProfile, PlayPolicy};
 use crate::types::{FrameId, VideoMetadata};
@@ -57,7 +58,7 @@ const CONSUMER_STALL_MS: f64 = 5_000.0;
 /// though it outlives this value's borrow.
 pub struct WebCodecsDecoder {
     core: Rc<RefCell<DecoderCore>>,
-    pump_epoch: Rc<Cell<u64>>,
+    pump_epoch: Rc<Epoch>,
     /// Live range feeder cursor — retargeted on consumer take (no respawn).
     play_cursor: Rc<PumpPlayCursor>,
     /// Last spawned pump; skip respawn while this epoch is still feeding.
@@ -141,7 +142,7 @@ impl WebCodecsDecoder {
                 );
                 return Err(MediaError::CodecUnsupported(config.codec.clone()));
             }
-            let pump_epoch = Rc::new(Cell::new(0));
+            let pump_epoch = Rc::new(Epoch::new());
             let all_intra = matches!(meta.gop_profile, GopProfile::AllIntra);
             let core = DecoderCore::from_config(
                 config,
@@ -233,7 +234,7 @@ impl WebCodecsDecoder {
             }
         }
 
-        let pump_epoch = Rc::new(Cell::new(0));
+        let pump_epoch = Rc::new(Epoch::new());
         let all_intra = matches!(meta.gop_profile, GopProfile::AllIntra);
         let core = DecoderCore::from_config(
             config,
@@ -559,8 +560,7 @@ impl WebCodecsDecoder {
         // Bump epoch first so a prior background warm-fill / stray pump stops
         // before this range starts (only one feeder on the decoder).
         self.retarget_play_cursor(target_do, target_us);
-        self.pump_epoch.set(self.pump_epoch.get().wrapping_add(1));
-        let pump_epoch_now = self.pump_epoch.get();
+        let pump_epoch_now = self.pump_epoch.bump();
         let signals = Rc::new(PumpSignals::default());
         *self.live_pump.borrow_mut() = Some(LivePump {
             signals: Rc::clone(&signals),
@@ -618,7 +618,7 @@ impl WebCodecsDecoder {
                     // continuous mediabunny-style range loop under Play.
                     let want_ahead = core_bg.borrow().warm_ahead;
                     for _ in 0..80 {
-                        if pump_epoch_bg.get() != pump_epoch_now || signals_bg.stop.get() {
+                        if !pump_epoch_bg.is_current(pump_epoch_now) || signals_bg.stop.get() {
                             return;
                         }
                         let aim_us = cursor_bg.target_us.get();
@@ -887,8 +887,7 @@ impl WebCodecsDecoder {
         if self.pump_is_live() {
             return;
         }
-        self.pump_epoch.set(self.pump_epoch.get().wrapping_add(1));
-        let pump_epoch_now = self.pump_epoch.get();
+        let pump_epoch_now = self.pump_epoch.bump();
         let signals = Rc::new(PumpSignals::default());
         *self.live_pump.borrow_mut() = Some(LivePump {
             signals: Rc::clone(&signals),
@@ -915,11 +914,9 @@ impl WebCodecsDecoder {
     }
 
     fn pump_is_live(&self) -> bool {
-        let epoch = self.pump_epoch.get();
-        self.live_pump
-            .borrow()
-            .as_ref()
-            .is_some_and(|p| p.epoch == epoch && !p.signals.stop.get() && !p.signals.done.get())
+        self.live_pump.borrow().as_ref().is_some_and(|p| {
+            self.pump_epoch.is_current(p.epoch) && !p.signals.stop.get() && !p.signals.done.get()
+        })
     }
 
     /// Decode every presentation frame in the GOP starting at sync `key_frame`.
@@ -1095,7 +1092,7 @@ impl Drop for WebCodecsDecoder {
     fn drop(&mut self) {
         // Stop any pump that still holds an `Rc` to the core, then tear the
         // browser decoder down even if that pump keeps the core alive a turn.
-        self.pump_epoch.set(self.pump_epoch.get().wrapping_add(1));
+        self.pump_epoch.bump();
         if let Ok(mut core) = self.core.try_borrow_mut() {
             core.detach_decoder();
         }

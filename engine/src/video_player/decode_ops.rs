@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::decode::webcodecs::WebCodecsDecoder;
+use crate::epoch::Ticket;
 use crate::error::MediaError;
 use crate::model::decoder_slot::{DecoderSlotCmd, DecoderSlotEvent, reduce as decoder_slot_reduce};
 use crate::types::FrameId;
@@ -55,7 +56,7 @@ impl VideoPlayer {
         &self,
         track: &Rc<crate::demux::Mp4VideoTrack>,
         frame: FrameId,
-        epoch: u64,
+        epoch: Ticket,
     ) -> Result<OwnedVideoFrame, MediaError> {
         self.decode_frame_inner(track, frame, epoch, None).await
     }
@@ -64,7 +65,7 @@ impl VideoPlayer {
         &self,
         track: &Rc<crate::demux::Mp4VideoTrack>,
         frame: FrameId,
-        epoch: u64,
+        epoch: Ticket,
         on_interim: Box<dyn FnMut(FrameId, OwnedVideoFrame)>,
     ) -> Result<OwnedVideoFrame, MediaError> {
         self.decode_frame_inner(track, frame, epoch, Some(on_interim))
@@ -77,7 +78,7 @@ impl VideoPlayer {
         &self,
         track: &Rc<crate::demux::Mp4VideoTrack>,
         frame: FrameId,
-        epoch: u64,
+        epoch: Ticket,
         on_interim: Option<Box<dyn FnMut(FrameId, OwnedVideoFrame)>>,
     ) -> Result<OwnedVideoFrame, MediaError> {
         let mut decoder = self.take_decoder(epoch).await?;
@@ -120,7 +121,7 @@ impl VideoPlayer {
         *self.decoder.borrow_mut() = Some(decoder);
     }
 
-    pub(super) async fn take_decoder(&self, epoch: u64) -> Result<WebCodecsDecoder, MediaError> {
+    pub(super) async fn take_decoder(&self, epoch: Ticket) -> Result<WebCodecsDecoder, MediaError> {
         // Wait for a peer that holds the slot (prefetch / seek / GOP fill). Yield
         // macrotasks — microtask-only spins can return busy before the holder
         // resumes. Cap by wall-clock: Chromium often clamps `setTimeout(0)` to
@@ -184,7 +185,7 @@ impl VideoPlayer {
         ))
     }
 
-    pub(super) async fn goto_frame(&self, frame: FrameId, epoch: u64) -> Result<(), MediaError> {
+    pub(super) async fn goto_frame(&self, frame: FrameId, epoch: Ticket) -> Result<(), MediaError> {
         let track = self.shared.track.clone();
         let video_frame = self.decode_frame(&track, frame, epoch).await?;
         if !self.is_current(epoch) {
@@ -206,7 +207,7 @@ impl VideoPlayer {
     pub(super) async fn drag_key_chase(
         &self,
         key: FrameId,
-        epoch: u64,
+        epoch: Ticket,
     ) -> Result<bool, MediaError> {
         use crate::policy::{scrub_drag_key_advances, scrub_drag_stage_choice};
 
@@ -257,7 +258,7 @@ impl VideoPlayer {
     pub(super) async fn goto_frame_with_interim(
         &self,
         frame: FrameId,
-        epoch: u64,
+        epoch: Ticket,
     ) -> Result<(), MediaError> {
         let track = self.shared.track.clone();
         let shared = Rc::clone(&self.shared);
@@ -282,7 +283,7 @@ impl VideoPlayer {
     pub(super) async fn exact_goto_with_decoder_retry(
         &self,
         frame: FrameId,
-        epoch: u64,
+        epoch: Ticket,
     ) -> Result<(), MediaError> {
         match self.goto_frame_with_interim(frame, epoch).await {
             Ok(()) => Ok(()),
@@ -305,7 +306,7 @@ impl VideoPlayer {
     pub(super) async fn goto_frame_fill_behind(
         &self,
         frame: FrameId,
-        epoch: u64,
+        epoch: Ticket,
     ) -> Result<(), MediaError> {
         let track = self.shared.track.clone();
         let shared = Rc::clone(&self.shared);

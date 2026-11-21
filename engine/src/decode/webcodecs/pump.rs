@@ -12,6 +12,7 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
+use crate::epoch::{Epoch, Ticket};
 use crate::error::{DecodeStall, MediaError};
 use crate::types::{EncodedSample, FrameId};
 
@@ -60,7 +61,7 @@ pub(super) struct PumpPlayCursor {
 /// `pump_epoch` or the task is a zombie exiting after a hard bump.
 pub(super) struct LivePump {
     pub(super) signals: Rc<PumpSignals>,
-    pub(super) epoch: u64,
+    pub(super) epoch: Ticket,
 }
 
 /// Stops the pump on every consumer exit path (`?`, cancel, success).
@@ -77,8 +78,8 @@ impl Drop for PumpStopGuard {
 /// while the iterator consumer pulls samples).
 pub(super) struct FramePump {
     pub(super) core: Rc<RefCell<DecoderCore>>,
-    pub(super) pump_epoch: Rc<Cell<u64>>,
-    pub(super) epoch: u64,
+    pub(super) pump_epoch: Rc<Epoch>,
+    pub(super) epoch: Ticket,
     pub(super) track: Rc<Mp4VideoTrack>,
     pub(super) key_do: usize,
     /// Shared play cursor — reread each turn so consumer takes retarget without
@@ -92,7 +93,7 @@ pub(super) struct FramePump {
 
 impl FramePump {
     pub(super) async fn run(self) {
-        let stopped = || self.signals.stop.get() || self.pump_epoch.get() != self.epoch;
+        let stopped = || self.signals.stop.get() || !self.pump_epoch.is_current(self.epoch);
         // Feeding a little past the target (B/P reorder) is intentional; do not
         // drain the entire GOP — that amplified PTS desync on rapid PREV.
         // Cross-GOP warm: keep going until `warm_ahead` presentation frames

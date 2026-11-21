@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use crate::decode::canvas::draw_frame_with_context;
 use crate::decode::webcodecs::{PlayIter, WebCodecsDecoder};
+use crate::epoch::Ticket;
 use crate::error::MediaError;
 use crate::model::play_phase::{PlayPhase, PlayPhaseEvent, reduce as play_phase_reduce};
 use crate::policy::playback::{
@@ -204,7 +205,7 @@ impl VideoPlayer {
     pub(super) async fn start_play_iter(
         &self,
         start: FrameId,
-        epoch: u64,
+        epoch: Ticket,
     ) -> Result<(), MediaError> {
         self.end_play_iter();
         // Displayed / step VFs are stale once Play owns the canvas — free the pool.
@@ -385,7 +386,7 @@ impl VideoPlayer {
         self.shared.held_media_origin.set(Some(t));
         let player = Rc::clone(self);
         wasm_bindgen_futures::spawn_local(async move {
-            let epoch = player.shared.op_epoch.get();
+            let epoch = player.shared.op_epoch.ticket();
             // Finish (or start) loop-in warm under the held clock — hit path is cheap.
             let _ = player.warm_loop_in_bytes().await;
             if player.shared.play_phase.get() != PlayPhase::LoopSeam {
@@ -593,7 +594,7 @@ impl VideoPlayer {
     /// Remotion swap path: stash already has origin canvases — paint + seed
     /// `play_next` sync, then spawn main PlayIter catch-up under `play_updating`
     /// so the seam can resume the clock without awaiting origin decode on main.
-    fn start_loop_seam_with_stash(self: &Rc<Self>, stash: LoopOriginStash, epoch: u64) {
+    fn start_loop_seam_with_stash(self: &Rc<Self>, stash: LoopOriginStash, epoch: Ticket) {
         self.end_play_iter();
         self.shared.displayed.borrow_mut().take();
         self.clear_presentation();
@@ -877,7 +878,7 @@ impl VideoPlayer {
         head: FrameId,
         require_playing: bool,
     ) -> Result<(), MediaError> {
-        let epoch = self.shared.op_epoch.get();
+        let epoch = self.shared.op_epoch.ticket();
         let still_ok = || self.is_current(epoch) && (!require_playing || self.is_playing());
         let settle = self.shared.track.metadata_ref().settle_policy();
         // fMP4: arm a long index lead in bg, but only *await* one urgent batch
@@ -1360,7 +1361,7 @@ impl VideoPlayer {
         if !self.is_playing() {
             return Err(MediaError::Cancelled);
         }
-        let epoch = self.shared.op_epoch.get();
+        let epoch = self.shared.op_epoch.ticket();
         self.start_play_iter(frame, epoch).await?;
         if !self.is_playing() || !self.is_current(epoch) {
             return Err(MediaError::Cancelled);
@@ -1420,7 +1421,7 @@ impl VideoPlayer {
         let warm = self.shared.seam_audio_warm.replace(false);
         if restart_iter {
             // While still SeamHold — drop hold-aged decode queue (skip storm).
-            let epoch = self.shared.op_epoch.get();
+            let epoch = self.shared.op_epoch.ticket();
             self.start_play_iter(aim, epoch).await?;
             if !self.shared.play_phase.get().is_seam_hold() || !self.is_playing() {
                 return Err(MediaError::Cancelled);
@@ -1473,7 +1474,7 @@ impl VideoPlayer {
         if !self.is_playing() {
             return Ok(());
         }
-        let epoch = self.shared.op_epoch.get();
+        let epoch = self.shared.op_epoch.ticket();
         let head = self.state().frame;
         let loop_in = self.shared.loop_zone().in_frame;
         // Origin / loop-in: join near-EOF prewarm. Mid-clip: require Playing.
