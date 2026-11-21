@@ -291,9 +291,13 @@ export class DemoPlayer {
       );
   }
 
-  /** Parsed rate badge (`1.00x`, `-2.00x`). */
+  /**
+   * Parsed rate badge. At unity (±0.026) the demo shows the source fps label
+   * (`25fps`, `23.9fps`) instead of `1.00x`; otherwise `2.00x`, `-2.00x`.
+   */
   async readPlaybackRate(): Promise<number> {
     const text = (await this.playbackRate.innerText()).trim();
+    if (/^[\d.]+\s*fps$/i.test(text)) return 1;
     const m = text.match(/(-?[\d.]+)\s*x/i);
     if (!m) throw new Error(`playback-rate badge unreadable: ${text}`);
     return Number(m[1]);

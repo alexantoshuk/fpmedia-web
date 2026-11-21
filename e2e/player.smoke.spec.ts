@@ -92,7 +92,7 @@ test.describe("demo player smoke", () => {
     await expect(mute).toBeEnabled();
 
     await mute.click();
-    await expect(mute).toHaveClass(/is-on/);
+    // Mute is not an emerald latch (no `is-on`); state = label below.
     // Leptos `prop:aria-label` sets the IDL/reflected name; `toHaveAttribute`
     // often sees null. Prefer accessible name (+ title mirror).
     await expect(mute).toHaveAccessibleName("Unmute");

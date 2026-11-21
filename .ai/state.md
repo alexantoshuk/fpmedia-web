@@ -33,7 +33,9 @@ Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i
 
 ### E2E known state
 
-Browser e2e (`skills/media.md` Triage) — run before committing engine playback / ownership refactors. **Known e2e state:** the `trunk serve` **dev** build of the demo crashes on load (`RuntimeError: memory access out of bounds` in `player::__component_demo_player`; `trunk build --release` is fine — suspect dev-profile stack/frame size, undiagnosed), so run e2e against a release build (`trunk build --release --dist <dir>` + a Range-capable static server, `WEBMEDIA_BASE_URL`). Stale specs vs demo chrome (not engine): `player.jkl` (rate badge now `25fps`), `player.scrub.sticky-error` (`empty URL` text), `player.smoke` audio mute (`is-on` class). Also failing on baseline (undiagnosed): `player.fetchmap.fmp4-gap` (`engine frame did not reach 1102`), `perf.scrub.settle`.
+Browser e2e (`skills/media.md` Triage) — run before committing engine playback / ownership refactors; `trunk serve` dev build works (wasm stack size is set in `.cargo/config.toml`). Failing, undiagnosed: `perf.scrub.settle`.
+
+**Next up — fMP4 bg backfill livelock (`player.fetchmap.fmp4-gap`, flaky; page freezes, Chrome memory runs away):** `VideoPlayer::kick_fragment_backfill` (`video_player/open.rs`) loops `run_fragment_backfill_step()`; when `ensure_frame_indexed` holds the plan the step returns `(true, None)` with no await, and under `urgent` / Play / `ahead < 240` the loop `continue`s without yielding → synchronous spin (log spam) that starves the task holding the plan. `ensure_frame_indexed` already yields on `len == before`; the bg loop needs the same no-progress yield. Needs a plan with a mediabunny cite.
 
 ### Publish crates (`0.1.0-alpha`)
 

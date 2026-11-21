@@ -61,6 +61,9 @@ pub(super) fn open_demo_urls(
 ) {
     let parts = split_demo_urls(&raw);
     if parts.is_empty() {
+        // Empty field: let the component report `empty URL` (it returns before
+        // retiring the open clip) — keep clip label / playlist as they are.
+        video.open_url(raw.trim().to_string());
         return;
     }
     if parts.len() == 1 {
