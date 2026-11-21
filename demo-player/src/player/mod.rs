@@ -58,6 +58,8 @@ pub fn DemoPlayer() -> impl IntoView {
     // Demo A/B (debug panel): hide timeline chrome / drop thumb sink.
     let scrubber_on = RwSignal::new(true);
     let thumbs_on = RwSignal::new(true);
+    // Hover / Pause-progressive decode box (square, px); starts at the host default.
+    let thumb_box = RwSignal::new(video.thumb_max_size().0);
     // Touch-primary (phone/tablet): no hover UI → no ThumbSink / progressive.
     // Laptops with a touchscreen usually stay `(hover: hover)` via trackpad/mouse.
     let no_hover = use_media_query("(hover: none)");
@@ -119,6 +121,11 @@ pub fn DemoPlayer() -> impl IntoView {
         } else {
             video.set_thumb_policy(policy);
         }
+    });
+    // Active media follows the debug size select (re-applies when single↔playlist flips).
+    Effect::new(move |_| {
+        let n = thumb_box.get();
+        demo_media(video, playlist, use_playlist).set_thumb_max_size(n, n);
     });
 
     let UseTimeoutFnReturn {
@@ -942,6 +949,27 @@ pub fn DemoPlayer() -> impl IntoView {
                             }
                         />
                         "Thumbnails"
+                    </label>
+                    <label
+                        class="inline-flex items-center gap-1.5 text-sm text-zinc-300 select-none"
+                        title="Thumb decode box (set_thumb_max_size). Clears + refills hover / Pause thumbs."
+                    >
+                        "Thumb size"
+                        <select
+                            class="rounded bg-zinc-800 px-1 text-zinc-200"
+                            data-testid="sel-thumb-size"
+                            prop:value=move || thumb_box.get().to_string()
+                            prop:disabled=move || !scrubber_on.get() || !thumbs_on.get() || no_hover.get()
+                            on:change=move |ev| {
+                                if let Ok(n) = event_target_value(&ev).parse::<u32>() {
+                                    thumb_box.set(n);
+                                }
+                            }
+                        >
+                            <option value="80">"80"</option>
+                            <option value="160">"160"</option>
+                            <option value="320">"320"</option>
+                        </select>
                     </label>
                 </div>
                 <div class="wm-stats-head flex items-start gap-2">

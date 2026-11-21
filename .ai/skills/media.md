@@ -90,7 +90,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | fMP4 page freezes, Chrome memory runs away (open + early seek) | `kick_fragment_backfill` / `fragment_backfill_should_idle_yield` | bg backfill loop must yield on a no-progress step (gotcha *fMP4 bg backfill spin*); `e2e/player.fetchmap.fmp4-gap.spec.ts` |
 | UI stuck (not decode) | `skills/leptos.md` | OpQueue / playing / spawn |
 
-**Probes (paths):** `e2e/player.smoke.spec.ts`, `e2e/player.matrix.spec.ts`, `e2e/player.play.long-gop.spec.ts`, `e2e/player.play.gop12-url-vs-local.spec.ts`, `e2e/player.play.residual.spec.ts`, `e2e/player.play.fmp4-warm-seam.spec.ts`, `e2e/player.scrub.cold-open.spec.ts`, `e2e/player.scrub.cold-resume.spec.ts`, `e2e/player.scrub.sticky-error.spec.ts`, `e2e/player.play.gray-first.spec.ts`, `e2e/player.stress.scrub-av.spec.ts`, `e2e/player.play.eof-loop.spec.ts`, `e2e/player.jkl.spec.ts`, `e2e/player.fetchmap.fmp4-gap.spec.ts`, `e2e/perf.scrub.*.spec.ts`, `e2e/perf.scrub.baseline.spec.ts`.
+**Probes (paths):** `e2e/player.smoke.spec.ts`, `e2e/player.matrix.spec.ts`, `e2e/player.play.long-gop.spec.ts`, `e2e/player.play.gop12-url-vs-local.spec.ts`, `e2e/player.play.residual.spec.ts`, `e2e/player.play.fmp4-warm-seam.spec.ts`, `e2e/player.scrub.cold-open.spec.ts`, `e2e/player.scrub.cold-resume.spec.ts`, `e2e/player.scrub.sticky-error.spec.ts`, `e2e/player.play.gray-first.spec.ts`, `e2e/player.stress.scrub-av.spec.ts`, `e2e/player.play.eof-loop.spec.ts`, `e2e/player.jkl.spec.ts`, `e2e/player.fetchmap.fmp4-gap.spec.ts`, `e2e/player.thumbs.resize.spec.ts`, `e2e/perf.scrub.*.spec.ts`, `e2e/perf.scrub.baseline.spec.ts`.
 
 ## Module map (`engine/src`)
 
