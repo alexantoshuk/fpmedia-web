@@ -26,7 +26,7 @@ use crate::model::decoder_slot::DecoderSlotModel;
 use crate::model::engine_mode::EngineModel;
 use crate::model::play_phase::PlayPhase;
 use crate::model::session::SessionModel;
-use crate::policy::playback::LoopZone;
+use crate::policy::playback::{LoopSpec, LoopZone};
 use crate::policy::{ScrubCachePolicy, ThumbPolicy};
 use crate::residency::ScrubChunkStore;
 use crate::types::{FrameId, Timestamp};
@@ -73,12 +73,8 @@ pub(super) struct Shared {
     /// Host-visible play flag. Not derived from [`EngineModel`] — mode can be
     /// `ExactHold` / `Scrub` mid-play.
     pub(super) playing: Cell<bool>,
-    /// HTML `<video loop>`.
-    pub(super) looping: Cell<bool>,
-    /// Inclusive loop-in ([`crate::LoopZone::in_frame`]). Default 0.
-    pub(super) loop_in: Cell<FrameId>,
-    /// Exclusive loop-out; `None` = full `frame_count` (tracks fMP4 growth).
-    pub(super) loop_out: Cell<Option<FrameId>>,
+    /// `<video loop>` flag + stored loop zone edges; resolve via [`Self::loop_zone`].
+    pub(super) loop_spec: Cell<LoopSpec>,
     /// Ahead of playhead (presentation order). Cap [`PRESENTATION_QUEUE_CAP`].
     pub(super) presentation: RefCell<VecDeque<QueuedFrame>>,
     /// VF currently matching canvas / committed playhead (not yet in behind).
@@ -266,16 +262,14 @@ impl Shared {
             frame,
             timestamp,
             playing: self.playing.get(),
-            looping: self.looping.get(),
+            looping: self.loop_spec.get().looping,
             frame_count: self.track.frame_count(),
         }
     }
 
     /// Resolved half-open loop range (tracks fMP4 `frame_count` when out is open).
     pub(super) fn loop_zone(&self) -> LoopZone {
-        let count = self.track.frame_count();
-        let out = self.loop_out.get().unwrap_or(count);
-        LoopZone::normalize(self.loop_in.get(), out, count)
+        self.loop_spec.get().zone(self.track.frame_count())
     }
 
     /// Commit the playhead to `frame` (after a successful decode / present).

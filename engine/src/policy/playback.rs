@@ -79,6 +79,53 @@ impl LoopZone {
     }
 }
 
+/// Player loop state: `<video loop>` flag + the stored (un-normalized) zone
+/// edges. One `Copy` value so the three fields change together; the resolved
+/// half-open range comes from [`Self::zone`] (the only `normalize` call for
+/// stored state). **no equivalent** (loop zone local).
+///
+/// Used by `video_player` (`wasm32` + `webcodecs` only); native builds compile
+/// it for unit tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    not(all(target_arch = "wasm32", feature = "webcodecs")),
+    allow(dead_code)
+)]
+pub(crate) struct LoopSpec {
+    /// HTML `<video loop>`.
+    pub looping: bool,
+    /// Inclusive loop-in ([`LoopZone::in_frame`]). Default 0.
+    pub loop_in: FrameId,
+    /// Exclusive loop-out; `None` = full `frame_count` (tracks fMP4 growth).
+    pub loop_out: Option<FrameId>,
+}
+
+#[cfg_attr(
+    not(all(target_arch = "wasm32", feature = "webcodecs")),
+    allow(dead_code)
+)]
+impl LoopSpec {
+    /// Resolved zone (`out` follows `frame_count` when unset).
+    pub fn zone(self, frame_count: FrameId) -> LoopZone {
+        let out = self.loop_out.unwrap_or(frame_count);
+        LoopZone::normalize(self.loop_in, out, frame_count)
+    }
+
+    /// Store an already-normalized `zone`; the open end stays `None` on the
+    /// full axis so it keeps tracking fMP4 growth.
+    pub fn with_zone(self, zone: LoopZone, frame_count: FrameId) -> Self {
+        Self {
+            loop_in: zone.in_frame,
+            loop_out: if zone.is_full(frame_count) {
+                None
+            } else {
+                Some(zone.out_frame)
+            },
+            ..self
+        }
+    }
+}
+
 /// fMP4 warm-open: while the index is shorter than provisional `frame_count`,
 /// use `max(last_sample_end, metadata_duration)` so EOF is not early.
 pub fn eof_timeline_end(
@@ -216,6 +263,36 @@ mod tests {
         assert!(!LoopZone::full(100).needs_play_snap(50));
         assert!(LoopZone::full(100).is_full(100));
         assert!(!LoopZone::normalize(2, 8, 100).is_full(100));
+    }
+
+    #[test]
+    fn loop_spec_default_is_full_axis_not_looping() {
+        let s = LoopSpec::default();
+        assert!(!s.looping);
+        assert_eq!(s.zone(100), LoopZone::full(100));
+        assert_eq!(s.zone(0), LoopZone::full(0));
+    }
+
+    #[test]
+    fn loop_spec_with_zone_keeps_open_end_on_full_axis() {
+        let s = LoopSpec {
+            looping: true,
+            ..LoopSpec::default()
+        };
+        let full = s.with_zone(LoopZone::full(100), 100);
+        assert_eq!(full.loop_out, None);
+        assert!(full.looping);
+        // Open end follows fMP4 growth.
+        assert_eq!(full.zone(150), LoopZone::full(150));
+    }
+
+    #[test]
+    fn loop_spec_with_zone_stores_subset_edges() {
+        let z = LoopZone::normalize(10, 40, 100);
+        let s = LoopSpec::default().with_zone(z, 100);
+        assert_eq!(s.loop_in, 10);
+        assert_eq!(s.loop_out, Some(40));
+        assert_eq!(s.zone(100), z);
     }
 
     #[test]
