@@ -78,7 +78,25 @@ struct PendingSample {
 }
 
 /// Optional audio sink attached to [`crate::VideoPlayer`].
-pub struct AudioOutput {
+///
+/// `Clone` handle over [`AudioInner`] (same shape as `VideoPlayer`): methods
+/// that spawn pump tasks live here (`&self` + `self.clone()`); the rest on the
+/// inner type, reached through `Deref`.
+#[derive(Clone)]
+pub struct AudioOutput(Rc<AudioInner>);
+
+/// Non-owning [`AudioOutput`] (fragment backfill must not pin the `AudioContext`).
+#[derive(Clone)]
+pub struct WeakAudioOutput(std::rc::Weak<AudioInner>);
+
+impl WeakAudioOutput {
+    pub fn upgrade(&self) -> Option<AudioOutput> {
+        self.0.upgrade().map(AudioOutput)
+    }
+}
+
+#[doc(hidden)]
+pub struct AudioInner {
     track: Rc<Mp4AudioTrack>,
     context: AudioContext,
     gain: GainNode,
@@ -114,8 +132,171 @@ pub struct AudioOutput {
     on_ended: Closure<dyn FnMut(JsValue)>,
 }
 
+impl std::ops::Deref for AudioOutput {
+    type Target = AudioInner;
+    fn deref(&self) -> &AudioInner {
+        &self.0
+    }
+}
+
 impl AudioOutput {
     pub async fn create(track: Mp4AudioTrack) -> Result<Self, MediaError> {
+        Ok(Self(Rc::new(AudioInner::open(track).await?)))
+    }
+
+    pub fn downgrade(&self) -> WeakAudioOutput {
+        WeakAudioOutput(Rc::downgrade(&self.0))
+    }
+
+    /// Set review playback rate. While playing, snaps origins and restarts the pump.
+    ///
+    /// Callers must not invoke this above [`crate::PLAYBACK_RATE_AUDIO_MAX`]
+    /// while wanting audio — use [`Self::store_playback_rate`] + stop instead
+    /// ([`crate::is_wall_clock_rate`]).
+    pub fn set_playback_rate(&self, rate: f64) {
+        let rate = normalize_playback_rate(rate);
+        if crate::is_wall_clock_rate(rate) {
+            // Above audio ceiling (e.g. 8×): keep cell updated, never schedule.
+            if self.playing.get() {
+                let _ = self.stop();
+            }
+            self.rate.set(rate);
+            return;
+        }
+        if (self.rate.get() - rate).abs() < 1e-12 {
+            return;
+        }
+        if !self.playing.get() {
+            self.rate.set(rate);
+            return;
+        }
+        let t = self.media_time();
+        let epoch = self.epoch.bump();
+        self.stop_queued_nodes();
+        if let Ok(mut q) = self.pending.try_borrow_mut() {
+            q.clear();
+        }
+        self.clear_stretch();
+        self.rate.set(rate);
+        self.media_at_start.set(t.max(0.0));
+        self.ctx_origin.set(Some(self.context.current_time()));
+        self.reset_stretch_for_rate();
+
+        let this = self.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let taken = this.decoder.borrow_mut().take();
+            if let Some(dec) = taken {
+                let _ = dec.reset();
+                let meta = this.track.metadata();
+                let codec = match meta.codec.codec_string.as_deref() {
+                    Some(c) => c,
+                    None => {
+                        *this.decoder.borrow_mut() = Some(dec);
+                        return;
+                    }
+                };
+                if let Err(e) = configure_decoder(&dec, &meta, codec).await {
+                    web_sys::console::warn_1(
+                        &format!("fpmedia-web: audio rate-rearm configure: {e}").into(),
+                    );
+                    *this.decoder.borrow_mut() = Some(dec);
+                    return;
+                }
+                *this.decoder.borrow_mut() = Some(dec);
+            }
+            if let Err(e) = this.run_pump(epoch, t).await {
+                web_sys::console::warn_1(
+                    &format!("fpmedia-web: audio rate-rearm pump: {e}").into(),
+                );
+            }
+        });
+    }
+
+    /// Warm restart after [`Self::hold_underrun`] or loop seam — no decoder
+    /// teardown. Primes the first scheduled buffer(s) before returning so the
+    /// canvas seam is not silent while the pump catches up.
+    pub async fn restart_warm(&self, media_time_secs: f64) -> Result<(), MediaError> {
+        let _ = self.cancel_pump_and_silence();
+        self.resume_context().await?;
+
+        let epoch = self.epoch.ticket();
+        let t = media_time_secs.max(0.0);
+        self.media_at_start.set(t);
+        self.ctx_origin.set(Some(self.context.current_time()));
+        self.playing.set(true);
+        *self.error.borrow_mut() = None;
+        self.reset_stretch_for_rate();
+
+        // Keep the decoder instance; soft reset+configure without repeating
+        // `isConfigSupported` (already passed on open). Needed so loop seam
+        // can seek to t=0 after an EOF flush without a cold `begin`.
+        // PCM has no AudioDecoder — skip.
+        if !self.is_pcm() {
+            let taken = self.decoder.borrow_mut().take();
+            if let Some(dec) = taken {
+                let meta = self.track.metadata();
+                let codec = meta
+                    .codec
+                    .codec_string
+                    .as_deref()
+                    .ok_or(MediaError::UnsupportedCodec)?;
+                let _ = dec.reset();
+                reconfigure_decoder_fast(&dec, &meta, codec)?;
+                *self.decoder.borrow_mut() = Some(dec);
+            } else {
+                return Err(MediaError::WebCodecs("audio decoder missing".into()));
+            }
+        }
+
+        web_sys::console::log_1(
+            &format!(
+                "fpmedia-web: audio restart_warm t={:.3}s rate={}",
+                t,
+                self.rate.get()
+            )
+            .into(),
+        );
+
+        let start_sample = self.track.sample_at_or_after(t).unwrap_or(0);
+        let next = self.prime_schedule(epoch, start_sample).await?;
+        let this = self.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = this.pump(epoch, next).await
+                && !e.is_cancelled()
+            {
+                web_sys::console::warn_1(
+                    &format!("fpmedia-web: audio warm pump error: {e}").into(),
+                );
+            }
+        });
+        Ok(())
+    }
+
+    /// Convenience: begin, prime the
+    /// first buffers, then spawn the background pump.
+    ///
+    /// Must await [`Self::prime_schedule`] before returning — otherwise video
+    /// presents on a running `AudioContext` clock while AAC is still Range-
+    /// fetching (URL: seconds of silent play). Same gate as [`Self::restart_warm`].
+    /// `mediabunny: examples/media-player/media-player.ts` `play` → `runAudioIterator`.
+    pub async fn start_spawned(&self, media_time_secs: f64) -> Result<(), MediaError> {
+        let epoch = self.begin(media_time_secs).await?;
+        let start_sample = self.track.sample_at_or_after(media_time_secs).unwrap_or(0);
+        let next = self.prime_schedule(epoch, start_sample).await?;
+        let this = self.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = this.pump(epoch, next).await
+                && !e.is_cancelled()
+            {
+                web_sys::console::warn_1(&format!("fpmedia-web: audio pump error: {e}").into());
+            }
+        });
+        Ok(())
+    }
+}
+
+impl AudioInner {
+    async fn open(track: Mp4AudioTrack) -> Result<Self, MediaError> {
         let meta = track.metadata();
         let is_pcm = meta.codec.codec == crate::types::AudioCodec::Pcm;
         if !is_pcm {
@@ -319,70 +500,6 @@ impl AudioOutput {
         self.rate.set(normalize_playback_rate(rate));
     }
 
-    /// Set review playback rate. While playing, snaps origins and restarts the pump.
-    ///
-    /// Callers must not invoke this above [`crate::PLAYBACK_RATE_AUDIO_MAX`]
-    /// while wanting audio — use [`Self::store_playback_rate`] + stop instead
-    /// ([`crate::is_wall_clock_rate`]).
-    pub fn set_playback_rate(self: &Rc<Self>, rate: f64) {
-        let rate = normalize_playback_rate(rate);
-        if crate::is_wall_clock_rate(rate) {
-            // Above audio ceiling (e.g. 8×): keep cell updated, never schedule.
-            if self.playing.get() {
-                let _ = self.stop();
-            }
-            self.rate.set(rate);
-            return;
-        }
-        if (self.rate.get() - rate).abs() < 1e-12 {
-            return;
-        }
-        if !self.playing.get() {
-            self.rate.set(rate);
-            return;
-        }
-        let t = self.media_time();
-        let epoch = self.epoch.bump();
-        self.stop_queued_nodes();
-        if let Ok(mut q) = self.pending.try_borrow_mut() {
-            q.clear();
-        }
-        self.clear_stretch();
-        self.rate.set(rate);
-        self.media_at_start.set(t.max(0.0));
-        self.ctx_origin.set(Some(self.context.current_time()));
-        self.reset_stretch_for_rate();
-
-        let this = Rc::clone(self);
-        wasm_bindgen_futures::spawn_local(async move {
-            let taken = this.decoder.borrow_mut().take();
-            if let Some(dec) = taken {
-                let _ = dec.reset();
-                let meta = this.track.metadata();
-                let codec = match meta.codec.codec_string.as_deref() {
-                    Some(c) => c,
-                    None => {
-                        *this.decoder.borrow_mut() = Some(dec);
-                        return;
-                    }
-                };
-                if let Err(e) = configure_decoder(&dec, &meta, codec).await {
-                    web_sys::console::warn_1(
-                        &format!("fpmedia-web: audio rate-rearm configure: {e}").into(),
-                    );
-                    *this.decoder.borrow_mut() = Some(dec);
-                    return;
-                }
-                *this.decoder.borrow_mut() = Some(dec);
-            }
-            if let Err(e) = this.run_pump(epoch, t).await {
-                web_sys::console::warn_1(
-                    &format!("fpmedia-web: audio rate-rearm pump: {e}").into(),
-                );
-            }
-        });
-    }
-
     fn clear_stretch(&self) {
         *self.stretch.borrow_mut() = None;
         self.stretch_next_ctx.set(0.0);
@@ -547,66 +664,6 @@ impl AudioOutput {
         Ok(epoch)
     }
 
-    /// Warm restart after [`Self::hold_underrun`] or loop seam — no decoder
-    /// teardown. Primes the first scheduled buffer(s) before returning so the
-    /// canvas seam is not silent while the pump catches up.
-    pub async fn restart_warm(self: &Rc<Self>, media_time_secs: f64) -> Result<(), MediaError> {
-        let _ = self.cancel_pump_and_silence();
-        self.resume_context().await?;
-
-        let epoch = self.epoch.ticket();
-        let t = media_time_secs.max(0.0);
-        self.media_at_start.set(t);
-        self.ctx_origin.set(Some(self.context.current_time()));
-        self.playing.set(true);
-        *self.error.borrow_mut() = None;
-        self.reset_stretch_for_rate();
-
-        // Keep the decoder instance; soft reset+configure without repeating
-        // `isConfigSupported` (already passed on open). Needed so loop seam
-        // can seek to t=0 after an EOF flush without a cold `begin`.
-        // PCM has no AudioDecoder — skip.
-        if !self.is_pcm() {
-            let taken = self.decoder.borrow_mut().take();
-            if let Some(dec) = taken {
-                let meta = self.track.metadata();
-                let codec = meta
-                    .codec
-                    .codec_string
-                    .as_deref()
-                    .ok_or(MediaError::UnsupportedCodec)?;
-                let _ = dec.reset();
-                reconfigure_decoder_fast(&dec, &meta, codec)?;
-                *self.decoder.borrow_mut() = Some(dec);
-            } else {
-                return Err(MediaError::WebCodecs("audio decoder missing".into()));
-            }
-        }
-
-        web_sys::console::log_1(
-            &format!(
-                "fpmedia-web: audio restart_warm t={:.3}s rate={}",
-                t,
-                self.rate.get()
-            )
-            .into(),
-        );
-
-        let start_sample = self.track.sample_at_or_after(t).unwrap_or(0);
-        let next = self.prime_schedule(epoch, start_sample).await?;
-        let this = Rc::clone(self);
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = this.pump(epoch, next).await
-                && !e.is_cancelled()
-            {
-                web_sys::console::warn_1(
-                    &format!("fpmedia-web: audio warm pump error: {e}").into(),
-                );
-            }
-        });
-        Ok(())
-    }
-
     /// Decode + schedule until ~[`WARM_PRIME_SECS`] of audio is queued (or EOF).
     /// Returns the next sample index for the background pump.
     async fn prime_schedule(&self, epoch: Ticket, sample_idx: u64) -> Result<u64, MediaError> {
@@ -754,28 +811,6 @@ impl AudioOutput {
     pub async fn run_pump(&self, epoch: Ticket, media_time_secs: f64) -> Result<(), MediaError> {
         let start_sample = self.track.sample_at_or_after(media_time_secs).unwrap_or(0);
         self.pump(epoch, start_sample).await
-    }
-
-    /// Convenience when the caller already holds `Rc<Self>`: begin, prime the
-    /// first buffers, then spawn the background pump.
-    ///
-    /// Must await [`Self::prime_schedule`] before returning — otherwise video
-    /// presents on a running `AudioContext` clock while AAC is still Range-
-    /// fetching (URL: seconds of silent play). Same gate as [`Self::restart_warm`].
-    /// `mediabunny: examples/media-player/media-player.ts` `play` → `runAudioIterator`.
-    pub async fn start_spawned(self: &Rc<Self>, media_time_secs: f64) -> Result<(), MediaError> {
-        let epoch = self.begin(media_time_secs).await?;
-        let start_sample = self.track.sample_at_or_after(media_time_secs).unwrap_or(0);
-        let next = self.prime_schedule(epoch, start_sample).await?;
-        let this = Rc::clone(self);
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = this.pump(epoch, next).await
-                && !e.is_cancelled()
-            {
-                web_sys::console::warn_1(&format!("fpmedia-web: audio pump error: {e}").into());
-            }
-        });
-        Ok(())
     }
 
     async fn pump(&self, epoch: Ticket, sample_idx: u64) -> Result<(), MediaError> {
@@ -1022,7 +1057,7 @@ impl AudioOutput {
     }
 }
 
-impl Drop for AudioOutput {
+impl Drop for AudioInner {
     fn drop(&mut self) {
         self.epoch.bump();
         self.stop_queued_nodes();

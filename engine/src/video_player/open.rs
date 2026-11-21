@@ -132,7 +132,7 @@ impl VideoPlayer {
                         )
                         .into(),
                     );
-                    Some(Rc::new(a))
+                    Some(a)
                 }
                 Err(e) => {
                     web_sys::console::warn_1(&format!("fpmedia-web: audio disabled ({e})").into());
@@ -235,9 +235,7 @@ impl VideoPlayer {
         });
         apply_clip_budgets(&shared);
         if let Some(a) = shared.audio.borrow().as_ref() {
-            shared
-                .track
-                .set_backfill_audio_sink(std::rc::Rc::downgrade(a));
+            shared.track.set_backfill_audio_sink(a.downgrade());
         }
         Self::kick_deferred_sync_verify(&shared);
         Self::kick_fragment_backfill(&shared);

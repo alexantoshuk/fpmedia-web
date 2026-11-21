@@ -952,7 +952,7 @@ impl PlayerInner {
         }
         // Audio bulk warm is 0..t — only near start (mid-clip pump primes at origin).
         if warm_secs > 0.0 && warm_key == 0 {
-            let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+            let audio = self.shared.audio.borrow().clone();
             if let Some(a) = audio {
                 a.warm_bytes_through(warm_secs).await?;
                 if !still_ok() {
@@ -1531,7 +1531,7 @@ impl PlayerInner {
         let Ok(t) = self.frame_timestamp_seconds(playhead) else {
             return;
         };
-        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        let audio = self.shared.audio.borrow().clone();
         if let Some(a) = audio.filter(|a| a.is_playing()) {
             let _ = a.hold_underrun();
             self.shared.clock.borrow_mut().start(t);
@@ -1541,7 +1541,7 @@ impl PlayerInner {
                 if shared.is_disposed() || !shared.playing.get() {
                     return;
                 }
-                let audio = shared.audio.borrow().as_ref().map(Rc::clone);
+                let audio = shared.audio.borrow().clone();
                 if let Some(a) = audio
                     && let Err(e) = a.restart_warm(t).await
                 {

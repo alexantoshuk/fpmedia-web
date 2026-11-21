@@ -64,7 +64,7 @@ impl PlayerInner {
     pub fn set_playback_rate(&self, rate: f64) {
         let rate = crate::normalize_playback_rate(rate);
         let wall = crate::is_wall_clock_rate(rate);
-        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        let audio = self.shared.audio.borrow().clone();
         let old_rate = self.shared.clock.borrow().playback_rate();
         let clock_t = self.media_time().max(0.0);
         let t = if rate < old_rate - 1e-9 {
@@ -95,7 +95,7 @@ impl PlayerInner {
                     self.shared.clock.borrow_mut().start(t);
                     self.shared.wall_origin.set(None);
                     a.store_playback_rate(rate);
-                    let audio = Rc::clone(&a);
+                    let audio = a.clone();
                     let shared = Rc::clone(&self.shared);
                     let start_t = t;
                     wasm_bindgen_futures::spawn_local(async move {
@@ -191,7 +191,7 @@ impl PlayerInner {
     /// Resume `AudioContext` while the Play click gesture is still warm.
     /// Call **before** long `prime_playback` awaits.
     pub async fn resume_audio_context(&self) -> Result<(), MediaError> {
-        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        let audio = self.shared.audio.borrow().clone();
         if let Some(a) = audio {
             a.resume_context().await?;
         } else if let Some(c) = self.shared.playback_clock.as_ref() {
@@ -214,7 +214,7 @@ impl PlayerInner {
     pub async fn start_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.apply_clock_event(ClockEvent::Start);
         self.shared.clock.borrow_mut().start(media_time_secs);
-        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        let audio = self.shared.audio.borrow().clone();
         if crate::is_wall_clock_rate(self.playback_rate()) {
             if let Some(a) = audio {
                 let _ = a.stop();
@@ -398,7 +398,7 @@ impl PlayerInner {
     /// `startVideoIterator`, never adopting an audio clock that ran ahead.
     pub async fn resume_media_clock(&self, media_time_secs: f64) -> Result<(), MediaError> {
         self.apply_clock_event(ClockEvent::Resume);
-        let audio = self.shared.audio.borrow().as_ref().map(Rc::clone);
+        let audio = self.shared.audio.borrow().clone();
         if crate::is_wall_clock_rate(self.playback_rate()) {
             self.shared.clock.borrow_mut().start(media_time_secs);
             if let Some(a) = audio {

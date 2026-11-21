@@ -28,7 +28,7 @@ pub use pcm::PcmFormat;
 pub use stretch::TimeStretcher;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
-pub use output::AudioOutput;
+pub use output::{AudioOutput, WeakAudioOutput};
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use owned_audio_data::OwnedAudioData;
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]

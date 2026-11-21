@@ -89,9 +89,9 @@ struct FragmentBackfillState {
     error: Option<String>,
     /// Play/decode needs at least this frame — use small urgent chunks, no idle yield.
     urgent_through: Option<FrameId>,
-    /// Live audio sink so ensure-driven steps can extend AAC (Weak → AudioOutput).
+    /// Live audio sink so ensure-driven steps can extend AAC (`WeakAudioOutput`).
     #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
-    audio_sink: Option<std::rc::Weak<crate::audio::AudioOutput>>,
+    audio_sink: Option<crate::audio::WeakAudioOutput>,
 }
 
 impl fmt::Debug for Mp4VideoTrack {
@@ -182,7 +182,7 @@ impl Mp4VideoTrack {
 
     /// Wire live [`crate::audio::AudioOutput`] so ensure/bg backfill can grow AAC.
     #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
-    pub fn set_backfill_audio_sink(&self, sink: std::rc::Weak<crate::audio::AudioOutput>) {
+    pub fn set_backfill_audio_sink(&self, sink: crate::audio::WeakAudioOutput) {
         if let Some(state) = self.fragment_backfill.borrow_mut().as_mut() {
             state.audio_sink = Some(sink);
         }

@@ -221,7 +221,7 @@ pub(super) struct Shared {
     /// (drag / step samples only). Read via [`Self::scrub_dir`].
     pub(super) scrub_dir: Cell<ScrubDirTracker>,
     /// Optional AAC (etc.) sink — drives timeline when present and playing.
-    pub(super) audio: RefCell<Option<Rc<AudioOutput>>>,
+    pub(super) audio: RefCell<Option<AudioOutput>>,
     /// Silent `AudioContext` timeline when there is no AAC track
     /// (`mediabunny: media-player getPlaybackTime` always uses AudioContext).
     pub(super) playback_clock: Option<Rc<crate::audio::PlaybackClock>>,
