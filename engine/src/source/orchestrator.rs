@@ -14,9 +14,11 @@
     allow(dead_code)
 )]
 
+use std::cell::RefCell;
 use std::future::Future;
+use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
@@ -33,11 +35,8 @@ const MAX_EXTENSION: u64 = 8 * 1024 * 1024;
 const SEQ_START_PAD: u64 = 64 * 1024;
 const GAP_TOLERANCE: u64 = 1 << 17;
 
-type RunWorkerFn = Arc<
-    dyn Fn(Arc<ReadOrchestrator>, WorkerId) -> Pin<Box<dyn Future<Output = ()> + 'static>>
-        + Send
-        + Sync,
->;
+type RunWorkerFn =
+    Box<dyn Fn(ReadOrchestrator, WorkerId) -> Pin<Box<dyn Future<Output = ()> + 'static>>>;
 
 /// Opaque worker handle for [`ReadOrchestratorOptions::run_worker`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -53,7 +52,7 @@ struct PendingSlice {
     start: u64,
     bytes: Vec<u8>,
     holes: Vec<Hole>,
-    complete: Arc<CompleteCell>,
+    complete: Rc<CompleteCell>,
 }
 
 struct CacheEntry {
@@ -71,14 +70,14 @@ struct ReadWorker {
     strict_target: bool,
     running: bool,
     aborted: bool,
-    pending_slices: Vec<Arc<Mutex<PendingSlice>>>,
+    pending_slices: Vec<Rc<RefCell<PendingSlice>>>,
     age: u64,
 }
 
 struct QueuedRead {
     hole: Hole,
     strict_target: bool,
-    pending_slices: Vec<Arc<Mutex<PendingSlice>>>,
+    pending_slices: Vec<Rc<RefCell<PendingSlice>>>,
     age: u64,
 }
 
@@ -108,13 +107,26 @@ pub struct ReadOrchestratorOptions {
     pub max_worker_count: usize,
     pub prefetch_profile: PrefetchProfile,
     pub run_worker: RunWorkerFn,
-    pub on_idle_worker_removed: Option<Arc<dyn Fn(WorkerId) + Send + Sync>>,
+    pub on_idle_worker_removed: Option<Box<dyn Fn(WorkerId)>>,
 }
 
-/// mediabunny `ReadOrchestrator`.
-pub struct ReadOrchestrator {
-    state: Mutex<OrchState>,
+/// mediabunny `ReadOrchestrator`. `Clone` handle over `Rc<OrchInner>`: worker
+/// tasks hold a clone (methods that spawn them live on the handle).
+#[derive(Clone)]
+pub struct ReadOrchestrator(Rc<OrchInner>);
+
+#[doc(hidden)]
+pub struct OrchInner {
+    state: RefCell<OrchState>,
     options: ReadOrchestratorOptions,
+}
+
+impl Deref for ReadOrchestrator {
+    type Target = OrchInner;
+
+    fn deref(&self) -> &OrchInner {
+        &self.0
+    }
 }
 
 impl std::fmt::Debug for ReadOrchestrator {
@@ -136,29 +148,13 @@ pub struct WorkerSnapshot {
     pub running: bool,
 }
 
-impl ReadOrchestrator {
-    pub fn new(options: ReadOrchestratorOptions) -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::new(OrchState {
-                file_size: None,
-                next_age: 0,
-                next_worker_id: 1,
-                workers: Vec::new(),
-                cache: Vec::new(),
-                current_cache_size: 0,
-                queued_reads: Vec::new(),
-                disposed: false,
-            }),
-            options,
-        })
-    }
-
+impl OrchInner {
     pub fn max_worker_count(&self) -> usize {
         self.options.max_worker_count.max(1)
     }
 
     pub fn supply_file_size(&self, size: u64) {
-        let mut g = self.state.lock().expect("orch");
+        let mut g = self.state.borrow_mut();
         if g.file_size.is_some() {
             return;
         }
@@ -187,15 +183,46 @@ impl ReadOrchestrator {
     #[cfg(test)]
     pub fn cache_windows(&self) -> Vec<(u64, u64)> {
         self.state
-            .lock()
-            .expect("orch")
+            .borrow()
             .cache
             .iter()
             .map(|e| (e.start, e.end))
             .collect()
     }
 
-    pub async fn read(self: &Arc<Self>, start: u64, end: u64) -> Result<Bytes, MediaError> {
+    pub fn worker_snapshot(&self, id: WorkerId) -> Option<WorkerSnapshot> {
+        let g = self.state.borrow();
+        g.workers
+            .iter()
+            .find(|w| w.id == id)
+            .map(|w| WorkerSnapshot {
+                current_pos: w.current_pos,
+                target_pos: w.target_pos,
+                strict_target: w.strict_target,
+                aborted: w.aborted,
+                running: w.running,
+            })
+    }
+}
+
+impl ReadOrchestrator {
+    pub fn new(options: ReadOrchestratorOptions) -> Self {
+        Self(Rc::new(OrchInner {
+            state: RefCell::new(OrchState {
+                file_size: None,
+                next_age: 0,
+                next_worker_id: 1,
+                workers: Vec::new(),
+                cache: Vec::new(),
+                current_cache_size: 0,
+                queued_reads: Vec::new(),
+                disposed: false,
+            }),
+            options,
+        }))
+    }
+
+    pub async fn read(&self, start: u64, end: u64) -> Result<Bytes, MediaError> {
         if end <= start {
             return Ok(Bytes::new());
         }
@@ -208,28 +235,14 @@ impl ReadOrchestrator {
         }
     }
 
-    pub fn worker_snapshot(&self, id: WorkerId) -> Option<WorkerSnapshot> {
-        let g = self.state.lock().expect("orch");
-        g.workers
-            .iter()
-            .find(|w| w.id == id)
-            .map(|w| WorkerSnapshot {
-                current_pos: w.current_pos,
-                target_pos: w.target_pos,
-                strict_target: w.strict_target,
-                aborted: w.aborted,
-                running: w.running,
-            })
-    }
-
     /// mediabunny `supplyWorkerData`.
-    pub fn supply_worker_data(self: &Arc<Self>, id: WorkerId, bytes: &[u8]) {
+    pub fn supply_worker_data(&self, id: WorkerId, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
         let mut remove_idle: Vec<WorkerId> = Vec::new();
         {
-            let mut g = self.state.lock().expect("orch");
+            let mut g = self.state.borrow_mut();
             if g.disposed {
                 return;
             }
@@ -252,9 +265,7 @@ impl ReadOrchestrator {
             let slices = g.workers[idx].pending_slices.clone();
             let mut drop_idx = Vec::new();
             for (si, slice_arc) in slices.iter().enumerate() {
-                let Ok(mut slice) = slice_arc.lock() else {
-                    continue;
-                };
+                let mut slice = slice_arc.borrow_mut();
                 let clamped_start = start.max(slice.start);
                 let slice_end = slice.start + slice.bytes.len() as u64;
                 let clamped_end = end.min(slice_end);
@@ -309,10 +320,10 @@ impl ReadOrchestrator {
     }
 
     /// mediabunny `signalWorkerStoppedRunning`.
-    pub fn signal_worker_stopped_running(self: &Arc<Self>, id: WorkerId) {
+    pub fn signal_worker_stopped_running(&self, id: WorkerId) {
         let mut to_kick: Option<WorkerId> = None;
         {
-            let mut g = self.state.lock().expect("orch");
+            let mut g = self.state.borrow_mut();
             let Some(w) = g.workers.iter_mut().find(|w| w.id == id) else {
                 return;
             };
@@ -359,8 +370,8 @@ impl ReadOrchestrator {
     }
 
     /// mediabunny `onWorkerFinished`.
-    pub fn on_worker_finished(self: &Arc<Self>, id: WorkerId) {
-        let mut g = self.state.lock().expect("orch");
+    pub fn on_worker_finished(&self, id: WorkerId) {
+        let mut g = self.state.borrow_mut();
         let Some(idx) = g.workers.iter().position(|w| w.id == id) else {
             return;
         };
@@ -379,9 +390,9 @@ impl ReadOrchestrator {
     }
 
     /// Fail a worker's pending slices with `err`, then remove it.
-    pub fn fail_worker(self: &Arc<Self>, id: WorkerId, err: MediaError) {
+    pub fn fail_worker(&self, id: WorkerId, err: MediaError) {
         let msg = err.to_string();
-        let mut g = self.state.lock().expect("orch");
+        let mut g = self.state.borrow_mut();
         let Some(idx) = g.workers.iter().position(|w| w.id == id) else {
             return;
         };
@@ -389,8 +400,11 @@ impl ReadOrchestrator {
         worker.running = false;
         worker.aborted = true;
         for slice in worker.pending_slices.drain(..) {
-            if let Ok(s) = slice.lock() {
-                s.complete.complete(Err(MediaError::Source(msg.clone())));
+            {
+                slice
+                    .borrow()
+                    .complete
+                    .complete(Err(MediaError::Source(msg.clone())));
             }
         }
         drop(g);
@@ -400,10 +414,10 @@ impl ReadOrchestrator {
         self.signal_worker_stopped_running_after_remove();
     }
 
-    fn signal_worker_stopped_running_after_remove(self: &Arc<Self>) {
+    fn signal_worker_stopped_running_after_remove(&self) {
         let mut to_kick: Option<WorkerId> = None;
         {
-            let mut g = self.state.lock().expect("orch");
+            let mut g = self.state.borrow_mut();
             if g.queued_reads.is_empty() || g.disposed {
                 return;
             }
@@ -444,32 +458,32 @@ impl ReadOrchestrator {
 
     /// Abort workers + pending reads (mediabunny `UrlSource._dispose` → orch).
     /// Called from [`super::UrlSource`] Drop when the last host ref releases.
-    pub fn dispose(self: &Arc<Self>) {
-        let mut g = self.state.lock().expect("orch");
+    pub fn dispose(&self) {
+        let mut g = self.state.borrow_mut();
         if g.disposed {
             return;
         }
         g.disposed = true;
-        let idle_cb = self.options.on_idle_worker_removed.clone();
+        let idle_cb = &self.options.on_idle_worker_removed;
         for w in &mut g.workers {
             w.aborted = true;
             for s in w.pending_slices.drain(..) {
-                if let Ok(slice) = s.lock() {
-                    slice
+                {
+                    s.borrow()
                         .complete
                         .complete(Err(MediaError::Source("disposed".into())));
                 }
             }
             // Always abort fetch controllers — including in-flight workers
             // (idle-only path left open Ranges alive after clip switch).
-            if let Some(cb) = &idle_cb {
+            if let Some(cb) = idle_cb {
                 cb(w.id);
             }
         }
         for q in g.queued_reads.drain(..) {
             for s in q.pending_slices {
-                if let Ok(slice) = s.lock() {
-                    slice
+                {
+                    s.borrow()
                         .complete
                         .complete(Err(MediaError::Source("disposed".into())));
                 }
@@ -480,14 +494,10 @@ impl ReadOrchestrator {
         g.current_cache_size = 0;
     }
 
-    fn begin_read(
-        self: &Arc<Self>,
-        inner_start: u64,
-        inner_end: u64,
-    ) -> Result<ReadKick, MediaError> {
+    fn begin_read(&self, inner_start: u64, inner_end: u64) -> Result<ReadKick, MediaError> {
         let mut to_kick: Vec<WorkerId> = Vec::new();
         let kick_result = {
-            let mut g = self.state.lock().expect("orch");
+            let mut g = self.state.borrow_mut();
             if g.disposed {
                 return Err(MediaError::Source("disposed".into()));
             }
@@ -596,7 +606,7 @@ impl ReadOrchestrator {
                 return Ok(ReadKick::Ready(result.unwrap_or_default()));
             }
 
-            let cell = Arc::new(CompleteCell::new());
+            let cell = Rc::new(CompleteCell::new());
             let pending_slice = bytes_buf.map(|buf| {
                 let mut inner_holes = Vec::new();
                 for outer in &outer_holes {
@@ -608,11 +618,11 @@ impl ReadOrchestrator {
                         inner_holes.push(Hole { start: cs, end: ce });
                     }
                 }
-                Arc::new(Mutex::new(PendingSlice {
+                Rc::new(RefCell::new(PendingSlice {
                     start: inner_start,
                     bytes: buf,
                     holes: inner_holes,
-                    complete: Arc::clone(&cell),
+                    complete: Rc::clone(&cell),
                 }))
             });
 
@@ -646,7 +656,7 @@ impl ReadOrchestrator {
                         if let Some(slice) = &pending_slice
                             && let Some(wi) = g.workers.iter().position(|w| w.id == new_id)
                         {
-                            g.workers[wi].pending_slices = vec![Arc::clone(slice)];
+                            g.workers[wi].pending_slices = vec![Rc::clone(slice)];
                         }
                         to_kick.push(new_id);
                     }
@@ -671,9 +681,9 @@ impl ReadOrchestrator {
         Ok(out)
     }
 
-    fn kick_worker(self: &Arc<Self>, id: WorkerId) {
+    fn kick_worker(&self, id: WorkerId) {
         {
-            let mut g = self.state.lock().expect("orch");
+            let mut g = self.state.borrow_mut();
             let Some(wi) = g.workers.iter().position(|w| w.id == id) else {
                 return;
             };
@@ -686,8 +696,8 @@ impl ReadOrchestrator {
             g.workers[wi].running = true;
             g.workers[wi].age = age;
         }
-        let orch = Arc::clone(self);
-        let fut = (self.options.run_worker)(Arc::clone(&orch), id);
+        let orch = self.clone();
+        let fut = (self.options.run_worker)(orch.clone(), id);
         let wrapped = async move {
             fut.await;
             // mediabunny `.finally`: only act if still marked running
@@ -718,7 +728,7 @@ fn try_extend_worker(
     g: &mut OrchState,
     wi: usize,
     hole: Hole,
-    pending: Option<&Arc<Mutex<PendingSlice>>>,
+    pending: Option<&Rc<RefCell<PendingSlice>>>,
 ) -> ExtendResult {
     let w = &g.workers[wi];
     if !closed_overlap(
@@ -733,8 +743,8 @@ fn try_extend_worker(
     g.workers[wi].target_pos = g.workers[wi].target_pos.max(hole.end);
     if let Some(slice) = pending {
         let slices = &mut g.workers[wi].pending_slices;
-        if !slices.iter().any(|s| Arc::ptr_eq(s, slice)) {
-            slices.push(Arc::clone(slice));
+        if !slices.iter().any(|s| Rc::ptr_eq(s, slice)) {
+            slices.push(Rc::clone(slice));
         }
     }
     ExtendResult::Attached { kick: !was_running }
@@ -758,7 +768,7 @@ fn attach_queued_reads(g: &mut OrchState, wi: usize) {
                 if !g.workers[wi]
                     .pending_slices
                     .iter()
-                    .any(|s| Arc::ptr_eq(s, &slice))
+                    .any(|s| Rc::ptr_eq(s, &slice))
                 {
                     g.workers[wi].pending_slices.push(slice);
                 }
@@ -777,7 +787,7 @@ fn queue_hole(
     g: &mut OrchState,
     outer_hole: Hole,
     strict_target: bool,
-    pending: Option<&Arc<Mutex<PendingSlice>>>,
+    pending: Option<&Rc<RefCell<PendingSlice>>>,
 ) {
     let mut index = bsearch_le(&g.queued_reads, outer_hole.start, |q| q.hole.start)
         .map(|i| i as isize)
@@ -789,7 +799,7 @@ fn queue_hole(
             entry.hole.end = entry.hole.end.max(outer_hole.end);
             entry.strict_target &= strict_target;
             if let Some(slice) = pending {
-                entry.pending_slices.push(Arc::clone(slice));
+                entry.pending_slices.push(Rc::clone(slice));
             }
             merged = true;
         }
@@ -832,7 +842,7 @@ fn create_worker(
     target_pos: u64,
     strict_target: bool,
     max_workers: usize,
-    on_idle_removed: &Option<Arc<dyn Fn(WorkerId) + Send + Sync>>,
+    on_idle_removed: &Option<Box<dyn Fn(WorkerId)>>,
 ) -> Option<WorkerId> {
     if g.workers.len() >= max_workers {
         let mut oldest_i: Option<usize> = None;
@@ -1040,19 +1050,17 @@ fn bsearch_le<T>(items: &[T], key: u64, f: impl Fn(&T) -> u64) -> Option<usize> 
     ans
 }
 
-fn complete_empty(slice: &Arc<Mutex<PendingSlice>>) {
-    if let Ok(s) = slice.lock() {
-        s.complete.complete(Ok(Vec::new()));
-    }
+fn complete_empty(slice: &Rc<RefCell<PendingSlice>>) {
+    slice.borrow().complete.complete(Ok(Vec::new()));
 }
 
 enum ReadKick {
     Ready(Vec<u8>),
-    Pending(Arc<CompleteCell>),
+    Pending(Rc<CompleteCell>),
 }
 
 struct CompleteCell {
-    inner: Mutex<CompleteInner>,
+    inner: RefCell<CompleteInner>,
 }
 
 struct CompleteInner {
@@ -1064,7 +1072,7 @@ struct CompleteInner {
 impl CompleteCell {
     fn new() -> Self {
         Self {
-            inner: Mutex::new(CompleteInner {
+            inner: RefCell::new(CompleteInner {
                 value: None,
                 waker: None,
                 done: false,
@@ -1073,7 +1081,7 @@ impl CompleteCell {
     }
 
     fn complete(&self, value: Result<Vec<u8>, MediaError>) {
-        let mut g = self.inner.lock().expect("complete");
+        let mut g = self.inner.borrow_mut();
         if g.done {
             return;
         }
@@ -1085,13 +1093,13 @@ impl CompleteCell {
     }
 }
 
-struct CompleteFut(Arc<CompleteCell>);
+struct CompleteFut(Rc<CompleteCell>);
 
 impl Future for CompleteFut {
     type Output = Option<Result<Vec<u8>, MediaError>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut g = self.0.inner.lock().expect("complete");
+        let mut g = self.0.inner.borrow_mut();
         if g.done {
             return Poll::Ready(g.value.take());
         }
@@ -1107,28 +1115,28 @@ impl Future for CompleteFut {
 /// on EOF before `target_pos`.
 #[cfg(test)]
 pub fn memory_backed_orchestrator(
-    data: Arc<Vec<u8>>,
+    data: Rc<Vec<u8>>,
     max_workers: usize,
     max_cache: usize,
-) -> Arc<ReadOrchestrator> {
+) -> ReadOrchestrator {
     memory_backed_orchestrator_with(data, max_workers, max_cache, PrefetchProfile::Network)
 }
 
 #[cfg(test)]
 pub fn memory_backed_orchestrator_with(
-    data: Arc<Vec<u8>>,
+    data: Rc<Vec<u8>>,
     max_workers: usize,
     max_cache: usize,
     prefetch_profile: PrefetchProfile,
-) -> Arc<ReadOrchestrator> {
-    let data_for_fn = Arc::clone(&data);
+) -> ReadOrchestrator {
+    let data_for_fn = Rc::clone(&data);
     ReadOrchestrator::new(ReadOrchestratorOptions {
         max_cache_size: max_cache,
         max_worker_count: max_workers,
         prefetch_profile,
         on_idle_worker_removed: None,
-        run_worker: Arc::new(move |orch, id| {
-            let data = Arc::clone(&data_for_fn);
+        run_worker: Box::new(move |orch, id| {
+            let data = Rc::clone(&data_for_fn);
             Box::pin(async move {
                 loop {
                     let Some(snap) = orch.worker_snapshot(id) else {
@@ -1166,14 +1174,14 @@ mod tests {
     use super::*;
     use crate::util::block_on;
 
-    fn fill_data(n: usize) -> Arc<Vec<u8>> {
-        Arc::new((0..n).map(|i| (i % 251) as u8).collect())
+    fn fill_data(n: usize) -> Rc<Vec<u8>> {
+        Rc::new((0..n).map(|i| (i % 251) as u8).collect())
     }
 
     #[test]
     fn inner_slice_resolves_before_outer_prefetch_finishes() {
         let data = fill_data(2 * 1024 * 1024);
-        let orch = memory_backed_orchestrator(Arc::clone(&data), 2, URL_ORCH_CACHE_SIZE);
+        let orch = memory_backed_orchestrator(Rc::clone(&data), 2, URL_ORCH_CACHE_SIZE);
         orch.supply_file_size(data.len() as u64);
 
         let got = block_on(orch.read(100, 200)).expect("read");
@@ -1185,7 +1193,7 @@ mod tests {
     #[test]
     fn cache_hit_is_fast() {
         let data = fill_data(64 * 1024);
-        let orch = memory_backed_orchestrator(Arc::clone(&data), 2, URL_ORCH_CACHE_SIZE);
+        let orch = memory_backed_orchestrator(Rc::clone(&data), 2, URL_ORCH_CACHE_SIZE);
         orch.supply_file_size(data.len() as u64);
         let _ = block_on(orch.read(0, 8192)).unwrap();
         let got = block_on(orch.read(100, 200)).unwrap();
@@ -1195,7 +1203,7 @@ mod tests {
     #[test]
     fn two_overlapping_reads_share_worker_stream() {
         let data = fill_data(256 * 1024);
-        let orch = memory_backed_orchestrator(Arc::clone(&data), 1, URL_ORCH_CACHE_SIZE);
+        let orch = memory_backed_orchestrator(Rc::clone(&data), 1, URL_ORCH_CACHE_SIZE);
         orch.supply_file_size(data.len() as u64);
         let a = block_on(orch.read(0, 1000)).unwrap();
         let b = block_on(orch.read(500, 1500)).unwrap();
@@ -1216,7 +1224,7 @@ mod tests {
     fn file_system_profile_reads_padded_window() {
         let data = fill_data(1024 * 1024);
         let orch = memory_backed_orchestrator_with(
-            Arc::clone(&data),
+            Rc::clone(&data),
             4,
             8 * 1024 * 1024,
             PrefetchProfile::FileSystem,

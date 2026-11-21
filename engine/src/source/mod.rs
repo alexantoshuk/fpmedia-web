@@ -67,7 +67,7 @@ pub trait MediaSource {
     ///
     /// Default no-op. [`UrlSource`] aborts Range workers immediately so a clip
     /// switch does not leave zombie fetches while `Shared` bg tasks still hold
-    /// Arcs. Idempotent.
+    /// clones. Idempotent.
     fn dispose(&self) {}
 
     /// True when sample-miss blocking reads should floor at

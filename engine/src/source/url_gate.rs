@@ -8,7 +8,8 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// mediabunny `UrlSource` default `parallelism` / `maxWorkerCount`.
 pub const DEFAULT_URL_PARALLELISM: usize = 2;
@@ -26,7 +27,7 @@ pub const GATE_LARGE_BYTES: usize = 2 * 1024 * 1024;
 /// Shared slot limiter — legacy closed-Range semaphore (unit tests).
 #[derive(Clone, Debug)]
 pub struct UrlFetchGate {
-    inner: Arc<Mutex<GateState>>,
+    inner: Rc<RefCell<GateState>>,
 }
 
 #[derive(Debug)]
@@ -38,7 +39,7 @@ struct GateState {
 impl UrlFetchGate {
     pub fn new(parallelism: usize) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(GateState {
+            inner: Rc::new(RefCell::new(GateState {
                 max: parallelism.max(1),
                 active: 0,
             })),
@@ -46,7 +47,7 @@ impl UrlFetchGate {
     }
 
     pub fn max(&self) -> usize {
-        self.inner.lock().expect("UrlFetchGate").max
+        self.inner.borrow().max
     }
 
     /// Run `fut` while holding one worker slot (released on drop / cancel).
@@ -59,7 +60,7 @@ impl UrlFetchGate {
     async fn acquire(&self) {
         loop {
             {
-                let mut g = self.inner.lock().expect("UrlFetchGate");
+                let mut g = self.inner.borrow_mut();
                 if g.active < g.max {
                     g.active += 1;
                     return;
@@ -70,7 +71,7 @@ impl UrlFetchGate {
     }
 
     fn release(&self) {
-        let mut g = self.inner.lock().expect("UrlFetchGate");
+        let mut g = self.inner.borrow_mut();
         debug_assert!(g.active > 0, "UrlFetchGate release with active=0");
         g.active = g.active.saturating_sub(1);
     }
@@ -94,14 +95,14 @@ mod tests {
         crate::util::block_on(async {
             gate.acquire().await;
             gate.acquire().await;
-            assert_eq!(gate.inner.lock().unwrap().active, 2);
+            assert_eq!(gate.inner.borrow().active, 2);
             gate.release();
-            assert_eq!(gate.inner.lock().unwrap().active, 1);
+            assert_eq!(gate.inner.borrow().active, 1);
             gate.acquire().await;
-            assert_eq!(gate.inner.lock().unwrap().active, 2);
+            assert_eq!(gate.inner.borrow().active, 2);
             gate.release();
             gate.release();
-            assert_eq!(gate.inner.lock().unwrap().active, 0);
+            assert_eq!(gate.inner.borrow().active, 0);
         });
     }
 
@@ -111,7 +112,7 @@ mod tests {
         crate::util::block_on(async {
             let v = gate.with_slot(async { 7u32 }).await;
             assert_eq!(v, 7);
-            assert_eq!(gate.inner.lock().unwrap().active, 0);
+            assert_eq!(gate.inner.borrow().active, 0);
         });
     }
 

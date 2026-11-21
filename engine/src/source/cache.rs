@@ -31,8 +31,8 @@
 //! slices when their bytes arrive, not when the outer prefetch hole completes.
 //! Do **not** chain fills to budget. `FetchMap` mirrors resident windows.
 
+use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 
@@ -335,7 +335,7 @@ fn note_local_gray(fetch_map: &Option<Rc<FetchMap>>, offset: u64, len: usize, fi
 struct Shared {
     quantum: usize,
     budget: usize,
-    state: Mutex<CacheState>,
+    state: RefCell<CacheState>,
     fetch_map: Option<Rc<FetchMap>>,
 }
 
@@ -345,7 +345,7 @@ struct Shared {
 /// window (network-style sequential extend), then evict oldest until under budget.
 /// Hits that enter the right margin kick a non-blocking ahead fill.
 pub struct CachedSource<S> {
-    inner: Arc<S>,
+    inner: Rc<S>,
     shared: Rc<Shared>,
 }
 
@@ -389,18 +389,18 @@ impl<S> CachedSource<S> {
         fetch_map: Option<Rc<FetchMap>>,
     ) -> Self {
         Self {
-            inner: Arc::new(inner),
+            inner: Rc::new(inner),
             shared: Rc::new(Shared {
                 quantum: quantum.max(1),
                 budget: budget.max(1),
-                state: Mutex::new(CacheState::default()),
+                state: RefCell::new(CacheState::default()),
                 fetch_map,
             }),
         }
     }
 
     pub fn into_inner(self) -> S {
-        Arc::try_unwrap(self.inner)
+        Rc::try_unwrap(self.inner)
             .unwrap_or_else(|_| panic!("CachedSource::into_inner while prefetch still holds inner"))
     }
 
@@ -425,9 +425,7 @@ impl<S> CachedSource<S> {
     where
         S: MediaSource,
     {
-        let Ok(mut state) = self.shared.state.lock() else {
-            return;
-        };
+        let mut state = self.shared.state.borrow_mut();
         for (offset, bytes) in windows {
             if bytes.len() <= NO_PREFETCH_MAX {
                 continue;
@@ -448,9 +446,11 @@ impl<S> CachedSource<S> {
     fn debug_windows(&self) -> Vec<(u64, u64)> {
         self.shared
             .state
-            .lock()
-            .map(|s| s.windows.iter().map(|w| (w.offset, w.end())).collect())
-            .unwrap_or_default()
+            .borrow()
+            .windows
+            .iter()
+            .map(|w| (w.offset, w.end()))
+            .collect()
     }
 }
 
@@ -458,11 +458,12 @@ impl<S: MediaSource + 'static> CachedSource<S> {
     /// Arm + run ahead fill. On wasm, `spawn_local` so the hit path stays cold;
     /// on native, poll once (MemorySource completes inline — unit tests).
     fn kick_prefetch(&self, start: u64, len: usize) {
-        let inner = Arc::clone(&self.inner);
+        let inner = Rc::clone(&self.inner);
         let shared = Rc::clone(&self.shared);
         let run = async move {
             let result = inner.read(start, len).await;
-            if let Ok(mut state) = shared.state.lock() {
+            {
+                let mut state = shared.state.borrow_mut();
                 state.prefetch_inflight = false;
                 match result {
                     Ok(bytes) if !bytes.is_empty() => {
@@ -505,14 +506,14 @@ impl<S: MediaSource + 'static> CachedSource<S> {
         if len == 0 {
             return;
         }
-        let inner = Arc::clone(&self.inner);
+        let inner = Rc::clone(&self.inner);
         let shared = Rc::clone(&self.shared);
         let run = async move {
             let result = inner.read(start, len).await;
-            if let Ok(mut state) = shared.state.lock()
-                && let Ok(bytes) = result
+            if let Ok(bytes) = result
                 && !bytes.is_empty()
             {
+                let mut state = shared.state.borrow_mut();
                 state.insert(
                     Window {
                         offset: start,
@@ -567,11 +568,7 @@ impl<S: MediaSource + 'static> MediaSource for CachedSource<S> {
 
             let network = self.inner.network_min_load();
             {
-                let mut state = self
-                    .shared
-                    .state
-                    .lock()
-                    .map_err(|_| MediaError::Source("cache lock poisoned".into()))?;
+                let mut state = self.shared.state.borrow_mut();
                 if let Some((hit, win_start, win_end)) = state.hit(offset, want) {
                     // Margin ahead-fill is a UrlSource concern (RTT). Local Blob
                     // already lives in JS — do not mirror multi-MiB into WASM.
@@ -597,11 +594,7 @@ impl<S: MediaSource + 'static> MediaSource for CachedSource<S> {
             }
 
             let fill_len = if network {
-                let state = self
-                    .shared
-                    .state
-                    .lock()
-                    .map_err(|_| MediaError::Source("cache lock poisoned".into()))?;
+                let state = self.shared.state.borrow();
                 plan_fill_len(&state, offset, want, available, self.shared.quantum)
             } else {
                 // Local: cache the sample only — no planned 8 MiB WASM window.
@@ -631,11 +624,7 @@ impl<S: MediaSource + 'static> MediaSource for CachedSource<S> {
 
             // Tiny ISOBMFF header reads must not occupy budget.
             if filled.len() > NO_PREFETCH_MAX {
-                let mut state = self
-                    .shared
-                    .state
-                    .lock()
-                    .map_err(|_| MediaError::Source("cache lock poisoned".into()))?;
+                let mut state = self.shared.state.borrow_mut();
                 state.insert(
                     Window {
                         offset,
@@ -692,10 +681,12 @@ impl<S: MediaSource + 'static> MediaSource for CachedSource<S> {
         if len == 0 {
             return;
         }
-        if let Ok(state) = self.shared.state.lock()
-            && state.covers_byte(offset)
-            && state.covers_byte(offset.saturating_add(len as u64).saturating_sub(1))
-        {
+        let covered = {
+            let state = self.shared.state.borrow();
+            state.covers_byte(offset)
+                && state.covers_byte(offset.saturating_add(len as u64).saturating_sub(1))
+        };
+        if covered {
             return;
         }
         self.kick_prefetch_explicit(offset, len);

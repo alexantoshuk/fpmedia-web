@@ -8,8 +8,9 @@
 //! no-Range servers still fail connect with `no_http_range:` (host full-download);
 //! sequential-mode / `ReadableStreamSource` stays deferred (`.ai/state.md`).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
@@ -45,7 +46,7 @@ impl Default for UrlSourceOptions {
 }
 
 /// Abort controllers keyed by worker (mediabunny `_abortControllers`).
-type AbortMap = Arc<Mutex<HashMap<WorkerId, AbortController>>>;
+type AbortMap = Rc<RefCell<HashMap<WorkerId, AbortController>>>;
 
 /// Ranged HTTP(S) byte source (progressive open without full download).
 ///
@@ -55,7 +56,7 @@ type AbortMap = Arc<Mutex<HashMap<WorkerId, AbortController>>>;
 pub struct UrlSource {
     url: String,
     size: u64,
-    orch: Arc<ReadOrchestrator>,
+    orch: ReadOrchestrator,
 }
 
 impl Drop for UrlSource {
@@ -133,7 +134,7 @@ impl MediaSource for UrlSource {
     }
 
     fn read(&self, offset: u64, len: usize) -> ReadFuture<'_> {
-        let orch = Arc::clone(&self.orch);
+        let orch = self.orch.clone();
         let size = self.size;
         Box::pin(async move {
             if offset > size {
@@ -158,26 +159,25 @@ impl MediaSource for UrlSource {
     }
 }
 
-fn build_orchestrator(url: String, parallelism: usize) -> Arc<ReadOrchestrator> {
-    let aborts: AbortMap = Arc::new(Mutex::new(HashMap::new()));
-    let aborts_for_run = Arc::clone(&aborts);
-    let aborts_for_idle = Arc::clone(&aborts);
+fn build_orchestrator(url: String, parallelism: usize) -> ReadOrchestrator {
+    let aborts: AbortMap = Rc::new(RefCell::new(HashMap::new()));
+    let aborts_for_run = Rc::clone(&aborts);
+    let aborts_for_idle = Rc::clone(&aborts);
     let url_for_run = url;
 
     ReadOrchestrator::new(ReadOrchestratorOptions {
         max_cache_size: URL_ORCH_CACHE_SIZE,
         max_worker_count: parallelism,
         prefetch_profile: PrefetchProfile::Network,
-        on_idle_worker_removed: Some(Arc::new(move |id| {
-            if let Ok(mut m) = aborts_for_idle.lock()
-                && let Some(ctrl) = m.remove(&id)
-            {
+        on_idle_worker_removed: Some(Box::new(move |id| {
+            let ctrl = aborts_for_idle.borrow_mut().remove(&id);
+            if let Some(ctrl) = ctrl {
                 ctrl.abort();
             }
         })),
-        run_worker: Arc::new(move |orch, id| {
+        run_worker: Box::new(move |orch, id| {
             let url = url_for_run.clone();
-            let aborts = Arc::clone(&aborts_for_run);
+            let aborts = Rc::clone(&aborts_for_run);
             Box::pin(async move {
                 run_worker_loop(orch, id, &url, &aborts).await;
             })
@@ -186,7 +186,7 @@ fn build_orchestrator(url: String, parallelism: usize) -> Arc<ReadOrchestrator> 
 }
 
 /// mediabunny `UrlSource._runWorker` — open-ended Range + body stream.
-async fn run_worker_loop(orch: Arc<ReadOrchestrator>, id: WorkerId, url: &str, aborts: &AbortMap) {
+async fn run_worker_loop(orch: ReadOrchestrator, id: WorkerId, url: &str, aborts: &AbortMap) {
     // Outer loop: resume if the response dies mid-stream (mediabunny while(true)).
     loop {
         let Some(snap) = orch.worker_snapshot(id) else {
@@ -204,9 +204,7 @@ async fn run_worker_loop(orch: Arc<ReadOrchestrator>, id: WorkerId, url: &str, a
                 return;
             }
         };
-        if let Ok(mut m) = aborts.lock() {
-            m.insert(id, controller.clone());
-        }
+        aborts.borrow_mut().insert(id, controller.clone());
 
         let start = snap.current_pos;
         let resp = match range_get_open(url, start, &controller).await {
@@ -354,14 +352,14 @@ async fn run_worker_loop(orch: Arc<ReadOrchestrator>, id: WorkerId, url: &str, a
     }
 }
 
-fn reject_worker(orch: &Arc<ReadOrchestrator>, id: WorkerId, err: MediaError) {
+fn reject_worker(orch: &ReadOrchestrator, id: WorkerId, err: MediaError) {
     web_sys::console::error_1(&format!("fpmedia-web: UrlSource worker {id:?} err: {err}").into());
     orch.fail_worker(id, err);
 }
 
 /// Abort while `worker.aborted` → dispose already completed slices; otherwise
 /// first-byte / stray abort must `fail_worker` (pending clear without complete hangs).
-fn stop_or_fail_aborted(orch: &Arc<ReadOrchestrator>, id: WorkerId, start: u64) {
+fn stop_or_fail_aborted(orch: &ReadOrchestrator, id: WorkerId, start: u64) {
     let aborted = orch.worker_snapshot(id).is_some_and(|s| s.aborted);
     if aborted {
         orch.signal_worker_stopped_running(id);

@@ -7,8 +7,9 @@
 //! A per-sample `arrayBuffer()` re-opens the file on Android (IPC) and
 //! starves Play.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 use bytes::Bytes;
 use js_sys::Uint8Array;
@@ -27,7 +28,7 @@ const BLOB_MAX_WORKERS: usize = 4;
 const BLOB_ORCH_CACHE_SIZE: usize = 8 * 1024 * 1024;
 
 /// Stream readers kept per worker (mediabunny `_readers` WeakMap).
-type ReaderMap = Arc<Mutex<HashMap<WorkerId, ReadableStreamDefaultReader>>>;
+type ReaderMap = Rc<RefCell<HashMap<WorkerId, ReadableStreamDefaultReader>>>;
 
 /// Ranged reads from a browser [`Blob`] (including `File`).
 ///
@@ -35,7 +36,7 @@ type ReaderMap = Arc<Mutex<HashMap<WorkerId, ReadableStreamDefaultReader>>>;
 #[derive(Debug)]
 pub struct BlobSource {
     blob: Blob,
-    orch: Arc<ReadOrchestrator>,
+    orch: ReadOrchestrator,
 }
 
 impl Drop for BlobSource {
@@ -62,7 +63,7 @@ impl MediaSource for BlobSource {
     }
 
     fn read(&self, offset: u64, len: usize) -> ReadFuture<'_> {
-        let orch = Arc::clone(&self.orch);
+        let orch = self.orch.clone();
         let size = self.size();
         Box::pin(async move {
             if offset > size {
@@ -82,22 +83,23 @@ impl MediaSource for BlobSource {
     }
 }
 
-fn build_orchestrator(blob: Blob, use_stream: bool) -> Arc<ReadOrchestrator> {
-    let readers: ReaderMap = Arc::new(Mutex::new(HashMap::new()));
-    let readers_for_idle = Arc::clone(&readers);
+fn build_orchestrator(blob: Blob, use_stream: bool) -> ReadOrchestrator {
+    let readers: ReaderMap = Rc::new(RefCell::new(HashMap::new()));
+    let readers_for_idle = Rc::clone(&readers);
     ReadOrchestrator::new(ReadOrchestratorOptions {
         max_cache_size: BLOB_ORCH_CACHE_SIZE,
         max_worker_count: BLOB_MAX_WORKERS,
         prefetch_profile: PrefetchProfile::FileSystem,
-        on_idle_worker_removed: Some(Arc::new(move |id| {
+        on_idle_worker_removed: Some(Box::new(move |id| {
             // mediabunny: cancel the idle worker's reader or memory leaks.
-            if let Some(reader) = readers_for_idle.lock().ok().and_then(|mut m| m.remove(&id)) {
+            let reader = readers_for_idle.borrow_mut().remove(&id);
+            if let Some(reader) = reader {
                 let _ = reader.cancel();
             }
         })),
-        run_worker: Arc::new(move |orch, id| {
+        run_worker: Box::new(move |orch, id| {
             let blob = blob.clone();
-            let readers = Arc::clone(&readers);
+            let readers = Rc::clone(&readers);
             Box::pin(async move {
                 run_worker(orch, id, &blob, &readers, use_stream).await;
             })
@@ -107,7 +109,7 @@ fn build_orchestrator(blob: Blob, use_stream: bool) -> Arc<ReadOrchestrator> {
 
 /// mediabunny `BlobSource._runWorker`.
 async fn run_worker(
-    orch: Arc<ReadOrchestrator>,
+    orch: ReadOrchestrator,
     id: WorkerId,
     blob: &Blob,
     readers: &ReaderMap,
@@ -118,7 +120,8 @@ async fn run_worker(
             return;
         };
         if snap.aborted {
-            if let Some(reader) = readers.lock().ok().and_then(|mut m| m.remove(&id)) {
+            let reader = readers.borrow_mut().remove(&id);
+            if let Some(reader) = reader {
                 let _ = reader.cancel();
             }
             return;
@@ -149,7 +152,8 @@ async fn run_worker(
             if done {
                 // Stream ended before `target_pos` (file size is known, so only
                 // a truncated Blob gets here) — resolve pending slices short.
-                if let Some(reader) = readers.lock().ok().and_then(|mut m| m.remove(&id)) {
+                let reader = readers.borrow_mut().remove(&id);
+                if let Some(reader) = reader {
                     let _ = reader.cancel();
                 }
                 orch.on_worker_finished(id);
@@ -194,9 +198,7 @@ fn stream_reader(
     id: WorkerId,
     pos: u64,
 ) -> Result<ReadableStreamDefaultReader, MediaError> {
-    let mut map = readers
-        .lock()
-        .map_err(|_| MediaError::Source("blob readers lock poisoned".into()))?;
+    let mut map = readers.borrow_mut();
     if let Some(r) = map.get(&id) {
         return Ok(r.clone());
     }
