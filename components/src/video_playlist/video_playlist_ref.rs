@@ -1,8 +1,5 @@
 //! [`VideoPlaylistRef`] — host handle for a mounted [`super::VideoPlaylist`].
 
-use std::collections::{HashMap, HashSet};
-
-use fpmedia_web::FrameId;
 use leptos::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -13,6 +10,7 @@ use crate::video_playlist::{PlaylistModel, PlaylistPos};
 use crate::virtual_timeline::{resolve_zone, store_zone};
 
 use super::host::PlaylistHost;
+use super::latches::{HostLatches, ThumbFillState};
 use super::loop_seam::{loop_owner, seam_busy};
 use super::loop_seam_exec::start_host_wrap;
 use super::plan::{ScrubUpCtx, ScrubUpPlan, plan_scrub_up};
@@ -65,14 +63,8 @@ pub struct VideoPlaylistRef {
     pub(crate) mounted: StoredValue<bool, LocalStorage>,
     pub(crate) sources: StoredValue<Vec<PlaylistSource>, LocalStorage>,
     pub(crate) open_gen: LocalEpoch,
-    /// Clip index already kicked for near-EOF origin warm this lap (`None` = none).
-    pub(crate) seam_warm_for: StoredValue<Option<u32>, LocalStorage>,
-    /// In-flight [`super::slots::ensure_clip_on_idle`] target — coalesce Move stampede.
-    pub(crate) ensure_idle_for: StoredValue<Option<u32>, LocalStorage>,
-    /// In-flight cut-join Exact warm `(idle_clip, join_local)` — one-shot coalesce.
-    pub(crate) cut_join_warm_for: StoredValue<Option<(u32, u32)>, LocalStorage>,
-    /// Cross-clip scrub: outgoing hard-paused once per gesture (not every Move).
-    pub(crate) scrub_cross_paused: StoredValue<bool, LocalStorage>,
+    /// Coalesce latches (seam warm / ensure idle / cut-join warm / scrub cross pause).
+    pub(crate) latches: StoredValue<HostLatches, LocalStorage>,
     /// Host cut/wrap seam phase — RwSignal so EOF Effect re-runs when Idle.
     pub(crate) seam_phase: RwSignal<super::loop_seam::SeamPhase>,
     /// VT ledger — Covered sole on VT; Exact write unused (slot blit).
@@ -80,14 +72,8 @@ pub struct VideoPlaylistRef {
         StoredValue<Option<crate::virtual_timeline::LedgerHandle>, LocalStorage>,
     /// Bumps when VT Covered changes (TimelineMeta Covered subscribe).
     pub exact_residency_epoch: RwSignal<u64>,
-    /// Per-clip sync FrameIds (local) for VT thumb progressive — survives idle rebind.
-    pub(crate) thumb_sync_keys: StoredValue<HashMap<u32, Vec<FrameId>>, LocalStorage>,
-    /// One VT progressive fill in flight (coalesce Effect kicks).
-    pub(crate) thumb_fill_inflight: StoredValue<bool, LocalStorage>,
-    /// Globals skipped after admit/cap refuse (must not spin; not “bitmap ready”).
-    pub(crate) thumb_fill_skip: StoredValue<HashSet<FrameId>, LocalStorage>,
-    /// Clips whose open-slot progressive walk finished this session (idle walk gate).
-    pub(crate) thumb_clips_done: StoredValue<HashSet<u32>, LocalStorage>,
+    /// VT progressive thumb fill bookkeeping (sync keys / inflight / skip / clips done).
+    pub(crate) thumb_fill: StoredValue<ThumbFillState, LocalStorage>,
     /// VT global thumb bitmap wallet (≤1 producer). Feature `thumbs`.
     #[cfg(feature = "thumbs")]
     pub(crate) thumb_cache:
@@ -133,19 +119,13 @@ impl VideoPlaylistRef {
             mounted: StoredValue::new_local(false),
             sources: StoredValue::new_local(Vec::new()),
             open_gen: LocalEpoch::new(),
-            seam_warm_for: StoredValue::new_local(None),
-            ensure_idle_for: StoredValue::new_local(None),
-            cut_join_warm_for: StoredValue::new_local(None),
-            scrub_cross_paused: StoredValue::new_local(false),
+            latches: StoredValue::new_local(HostLatches::default()),
             seam_phase: RwSignal::new(super::loop_seam::SeamPhase::Idle),
             exact_ledger: StoredValue::new_local(
                 Some(crate::virtual_timeline::new_ledger_handle()),
             ),
             exact_residency_epoch: RwSignal::new(0),
-            thumb_sync_keys: StoredValue::new_local(HashMap::new()),
-            thumb_fill_inflight: StoredValue::new_local(false),
-            thumb_fill_skip: StoredValue::new_local(HashSet::new()),
-            thumb_clips_done: StoredValue::new_local(HashSet::new()),
+            thumb_fill: StoredValue::new_local(ThumbFillState::default()),
             #[cfg(feature = "thumbs")]
             thumb_cache: StoredValue::new_local(Some(
                 crate::virtual_timeline::new_thumb_cache_handle(),
@@ -488,7 +468,7 @@ impl VideoPlaylistRef {
         match phase {
             ScrubPhase::Down => {
                 self.scrubbing.set(true);
-                self.scrub_cross_paused.set_value(false);
+                self.latches.update_value(|l| l.scrub_cross_paused = false);
                 // Latch playlist intent (not slot `playing` — soft-pause / seam
                 // hard-stop clear the slot while facade stays true).
                 // Per-slot `then_play` does not survive promote — playlist owns resume.
@@ -498,7 +478,7 @@ impl VideoPlaylistRef {
             // Clear scrubbing after playhead/pos aim — else mirror can run on a
             // stale slot `frame` and yank the tip before settle. **no equivalent**.
             ScrubPhase::Up => {
-                self.scrub_cross_paused.set_value(false);
+                self.latches.update_value(|l| l.scrub_cross_paused = false);
             }
         }
         self.playhead.set(global_frame);
@@ -523,12 +503,12 @@ impl VideoPlaylistRef {
             // `PausePressed` alone is wrong: Ready → no-op; Playing → SoftPause densify.
             // **no equivalent** (playlist scrub local).
             if matches!(phase, ScrubPhase::Down | ScrubPhase::Move)
-                && !self.scrub_cross_paused.get_value()
+                && !self.latches.get_value().scrub_cross_paused
             {
                 let outgoing = self.live_video();
                 outgoing.pause_hard_no_densify();
                 outgoing.pause();
-                self.scrub_cross_paused.set_value(true);
+                self.latches.update_value(|l| l.scrub_cross_paused = true);
             }
             promoted = try_promote_idle(self, aim.clip_index);
             if promoted {

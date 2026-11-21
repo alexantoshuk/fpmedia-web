@@ -77,7 +77,7 @@ async fn promote_idle_at(
     ));
     set_seam_phase(pl, SeamPhase::Swapping);
     swap_live_idle(pl, clip_index);
-    pl.seam_warm_for.set_value(None);
+    pl.latches.update_value(|l| l.seam_warm_for = None);
     // Facade must match new live — else mirror `pos.clip ≠ live` skip (tip-jump
     // guard) freezes the progress bar while Play continues. **no equivalent**.
     let facade = PlaylistPos::new(clip_index, ClipFrame::from_source(local));
@@ -139,7 +139,7 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: Ticket) -> Resu
             return Err("LoopZone in out of range".into());
         };
         pl.status.set(format!("LoopZone → frame {zone_in}…"));
-        pl.seam_warm_for.set_value(None);
+        pl.latches.update_value(|l| l.seam_warm_for = None);
         pl.ended.set(false);
         if let Some(g) = model.global_frame_at(aim).map(GlobalFrame::get) {
             pl.playhead.set(g);

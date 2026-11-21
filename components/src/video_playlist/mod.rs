@@ -4,6 +4,7 @@
 //! Vocab: `.ai/glossary.md` § PlaylistPos.
 
 mod host_zone;
+mod latches;
 mod model;
 mod plan;
 mod position;

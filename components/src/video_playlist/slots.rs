@@ -67,7 +67,7 @@ pub(crate) fn kick_ensure_idle(pl: VideoPlaylistRef, want: u32) {
         kick_cut_join_exact_warm(pl);
         return;
     }
-    if pl.ensure_idle_for.get_value() == Some(want) {
+    if pl.latches.get_value().ensure_idle_for == Some(want) {
         return;
     }
     let epoch = pl.open_gen.ticket();
@@ -101,15 +101,16 @@ pub(crate) fn kick_cut_join_exact_warm(pl: VideoPlaylistRef) {
     if !idle.ready.get_untracked() || idle.has_scrub_exact_blit(join) {
         return;
     }
-    if pl.cut_join_warm_for.get_value() == Some((idle_i, join)) {
+    if pl.latches.get_value().cut_join_warm_for == Some((idle_i, join)) {
         return;
     }
-    pl.cut_join_warm_for.set_value(Some((idle_i, join)));
+    pl.latches
+        .update_value(|l| l.cut_join_warm_for = Some((idle_i, join)));
     let epoch = pl.open_gen.ticket();
     wasm_bindgen_futures::spawn_local(async move {
         let _ = warm_cut_join_exact(pl, idle_i, join, epoch).await;
-        if pl.cut_join_warm_for.get_value() == Some((idle_i, join)) {
-            pl.cut_join_warm_for.set_value(None);
+        if pl.latches.get_value().cut_join_warm_for == Some((idle_i, join)) {
+            pl.latches.update_value(|l| l.cut_join_warm_for = None);
         }
     });
 }
@@ -240,7 +241,7 @@ pub(crate) async fn ensure_clip_on_idle(
         return Ok(());
     }
     // Coalesce Move stampede (2→1 reverse cut) — in-flight same clip: wait for ready.
-    if pl.ensure_idle_for.get_value() == Some(clip_index) {
+    if pl.latches.get_value().ensure_idle_for == Some(clip_index) {
         loop {
             if !pl.open_gen.is_current(epoch) {
                 return Err("cancelled".into());
@@ -255,7 +256,7 @@ pub(crate) async fn ensure_clip_on_idle(
                 kick_cut_join_exact_warm(pl);
                 return Ok(());
             }
-            if pl.ensure_idle_for.get_value() != Some(clip_index) {
+            if pl.latches.get_value().ensure_idle_for != Some(clip_index) {
                 break;
             }
             sleep_ms(PROBE_POLL_MS).await;
@@ -277,7 +278,8 @@ pub(crate) async fn ensure_clip_on_idle(
         .ok_or_else(|| format!("missing source for clip {}", clip_index + 1))?;
     let opening_is_a = !pl.live_is_a.get_untracked();
     let idle = slot_is_a(pl, opening_is_a);
-    pl.ensure_idle_for.set_value(Some(clip_index));
+    pl.latches
+        .update_value(|l| l.ensure_idle_for = Some(clip_index));
     idle.set_loop(false);
     // Teardown wipe old media Exact; after open park (densify off, no wipe).
     // Promote → On. Stale task must not close/park after promote. **no equivalent**.
@@ -285,8 +287,8 @@ pub(crate) async fn ensure_clip_on_idle(
     idle.close();
     sleep_ms(0).await;
     let clear_flight = |pl: VideoPlaylistRef, want: u32| {
-        if pl.ensure_idle_for.get_value() == Some(want) {
-            pl.ensure_idle_for.set_value(None);
+        if pl.latches.get_value().ensure_idle_for == Some(want) {
+            pl.latches.update_value(|l| l.ensure_idle_for = None);
         }
     };
     if !pl.open_gen.is_current(epoch) {
@@ -777,7 +779,7 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
     let Some(target) = seam_warm_schedule(pl) else {
         return;
     };
-    if pl.seam_warm_for.get_value() == Some(target.clip_index) {
+    if pl.latches.get_value().seam_warm_for == Some(target.clip_index) {
         return;
     }
     // Idle only — live `kick_prepare` while Playing clears the play session
@@ -796,6 +798,7 @@ pub(crate) fn maybe_kick_idle_seam_warm(pl: VideoPlaylistRef) {
     if !idle.ready.get_untracked() {
         return;
     }
-    pl.seam_warm_for.set_value(Some(target.clip_index));
+    pl.latches
+        .update_value(|l| l.seam_warm_for = Some(target.clip_index));
     target.lead.kick_warm(idle);
 }

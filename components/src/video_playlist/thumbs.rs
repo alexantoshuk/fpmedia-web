@@ -6,8 +6,6 @@
 //! `open_mp4` track. Ready = VT cache hit. **no equivalent** (filmstrip local).
 //! Decode: `mediabunny:` CanvasSink.
 
-use std::collections::{HashMap, HashSet};
-
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
@@ -18,6 +16,7 @@ use crate::virtual_timeline::{
 };
 use fpmedia_web::FrameId;
 
+use super::latches::ThumbFillState;
 use super::video_playlist_ref::VideoPlaylistRef;
 
 /// Host thumb decode box (API [`VideoPlaylistRef::thumb_max_size`]).
@@ -25,9 +24,17 @@ fn thumb_box(pl: VideoPlaylistRef) -> (u32, u32) {
     pl.thumb_max_size()
 }
 
+fn fill_inflight(pl: VideoPlaylistRef) -> bool {
+    pl.thumb_fill.with_value(|s| s.inflight)
+}
+
+fn set_fill_inflight(pl: VideoPlaylistRef, inflight: bool) {
+    pl.thumb_fill.update_value(|s| s.inflight = inflight);
+}
+
 /// Refresh per-clip sync key cache from open live/idle **and** producer clip.
 pub(crate) fn refresh_thumb_sync_keys(pl: VideoPlaylistRef) {
-    let mut cache = pl.thumb_sync_keys.get_value();
+    let mut cache = pl.thumb_fill.with_value(|s| s.sync_keys.clone());
     let live_clip = pl.live_clip.get_untracked();
     let live = pl.live_video();
     if live.ready.get_untracked() {
@@ -54,7 +61,7 @@ pub(crate) fn refresh_thumb_sync_keys(pl: VideoPlaylistRef) {
             cache.insert(clip, keys);
         }
     }
-    pl.thumb_sync_keys.set_value(cache);
+    pl.thumb_fill.update_value(|s| s.sync_keys = cache);
 }
 
 /// Kick one VT progressive step (any clip via producer). No-op while Play/scrub.
@@ -65,7 +72,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
     if pl.playing.get_untracked() || pl.scrubbing.get_untracked() {
         return;
     }
-    if pl.thumb_fill_inflight.get_value() {
+    if fill_inflight(pl) {
         return;
     }
     if seam_busy_for_thumbs(pl) {
@@ -93,25 +100,25 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
         }
 
         // Discover sync keys for clips we have not opened yet (one clip per kick).
-        let key_cache = pl.thumb_sync_keys.get_value();
+        let key_cache = pl.thumb_fill.with_value(|s| s.sync_keys.clone());
         let clip_count = model.len() as u32;
         if let Some(missing) = (0..clip_count).find(|i| !key_cache.contains_key(i)) {
-            pl.thumb_fill_inflight.set_value(true);
+            set_fill_inflight(pl, true);
             let epoch = pl.open_gen.ticket();
             spawn_local(async move {
                 let ok = prod_h.ensure_clip(pl, missing).await.is_ok();
                 if !pl.open_gen.is_current(epoch) {
-                    pl.thumb_fill_inflight.set_value(false);
+                    set_fill_inflight(pl, false);
                     return;
                 }
                 if ok {
                     refresh_thumb_sync_keys(pl);
                 } else {
-                    let mut skip_clips = pl.thumb_clips_done.get_value();
-                    skip_clips.insert(missing);
-                    pl.thumb_clips_done.set_value(skip_clips);
+                    pl.thumb_fill.update_value(|s| {
+                        s.clips_done.insert(missing);
+                    });
                 }
-                pl.thumb_fill_inflight.set_value(false);
+                set_fill_inflight(pl, false);
                 kick_vt_thumb_fill(pl);
             });
             return;
@@ -128,7 +135,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
         }
 
         let max_thumbs = cache_h.borrow().max_thumbs();
-        let skip = pl.thumb_fill_skip.get_value();
+        let skip = pl.thumb_fill.with_value(|s| s.skip.clone());
         let ready = |g: FrameId| skip.contains(&g) || cache_h.borrow().has_any(GlobalFrame::new(g));
 
         let input = ThumbFillPlanInput {
@@ -151,7 +158,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
             max_thumbs,
         );
         let (max_w, max_h) = thumb_box(pl);
-        pl.thumb_fill_inflight.set_value(true);
+        set_fill_inflight(pl, true);
         let epoch = pl.open_gen.ticket();
         spawn_local(async move {
             let filled = fill_one(FillOne {
@@ -167,7 +174,7 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
             })
             .await;
             if !pl.open_gen.is_current(epoch) {
-                pl.thumb_fill_inflight.set_value(false);
+                set_fill_inflight(pl, false);
                 return;
             }
             if filled {
@@ -176,11 +183,11 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
                 }
                 pl.bump_thumb_residency();
             } else {
-                let mut skip = pl.thumb_fill_skip.get_value();
-                skip.insert(global);
-                pl.thumb_fill_skip.set_value(skip);
+                pl.thumb_fill.update_value(|s| {
+                    s.skip.insert(global);
+                });
             }
-            pl.thumb_fill_inflight.set_value(false);
+            set_fill_inflight(pl, false);
             kick_vt_thumb_fill(pl);
         });
     }
@@ -274,10 +281,7 @@ pub(crate) fn install_vt_thumb_effects(pl: VideoPlaylistRef) {
 
 /// Clear sync-key cache + VT thumb wallet on playlist close/open.
 pub(crate) fn clear_thumb_sync_keys(pl: VideoPlaylistRef) {
-    pl.thumb_sync_keys.set_value(HashMap::new());
-    pl.thumb_fill_inflight.set_value(false);
-    pl.thumb_fill_skip.set_value(HashSet::new());
-    pl.thumb_clips_done.set_value(HashSet::new());
+    pl.thumb_fill.set_value(ThumbFillState::default());
     if let Some(h) = pl.exact_ledger() {
         h.borrow_mut().clear_thumbs();
     }
@@ -299,7 +303,7 @@ pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u3
     if pl.playing.get_untracked() || pl.scrubbing.get_untracked() {
         return;
     }
-    if pl.thumb_fill_inflight.get_value() {
+    if fill_inflight(pl) {
         return;
     }
     let Some(pos) = pl
@@ -318,7 +322,7 @@ pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u3
     if cache_h.borrow().has_any(GlobalFrame::new(global_frame)) {
         return;
     }
-    pl.thumb_fill_inflight.set_value(true);
+    set_fill_inflight(pl, true);
     let epoch = pl.open_gen.ticket();
     let global = FrameId::from(global_frame);
     let local = pos.frame.source();
@@ -344,7 +348,7 @@ pub(crate) fn kick_hover_fill(pl: VideoPlaylistRef, global_frame: u32, max_w: u3
             pl.bump_thumb_residency();
         }
         if pl.open_gen.is_current(epoch) {
-            pl.thumb_fill_inflight.set_value(false);
+            set_fill_inflight(pl, false);
         }
     });
 }

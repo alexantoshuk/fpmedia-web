@@ -14,6 +14,7 @@ use crate::video_playlist::{PlaylistClip, PlaylistModel, PlaylistPos};
 use fpmedia_web::Ticket;
 
 use super::host_zone::is_soft_seam_cancel;
+use super::latches::HostLatches;
 use super::loop_seam::{LoopOwner, end_seam, loop_owner, seam_busy};
 use super::loop_seam_exec::{note_host_seam_err, start_host_wrap};
 use super::plan::{
@@ -52,9 +53,7 @@ impl PlaylistHost {
     pub(crate) fn bump_gen(self) -> Ticket {
         let pl = self.0;
         let g = pl.open_gen.bump();
-        pl.ensure_idle_for.set_value(None);
-        pl.cut_join_warm_for.set_value(None);
-        pl.scrub_cross_paused.set_value(false);
+        pl.latches.update_value(HostLatches::reset_for_new_gen);
         g
     }
 
@@ -78,8 +77,8 @@ impl PlaylistHost {
         pl.live_is_a.set(true);
         pl.scrubbing.set(false);
         pl.scrub_resume.set(false);
-        pl.seam_warm_for.set_value(None);
-        pl.cut_join_warm_for.set_value(None);
+        // `bump_gen` above cleared the per-gen latches; `seam_warm_for` is per-lap.
+        pl.latches.update_value(|l| l.seam_warm_for = None);
         end_seam(pl);
         super::thumbs::clear_thumb_sync_keys(pl);
         pl.sources.set_value(Vec::new());
