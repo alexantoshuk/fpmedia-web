@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use fpmedia_web::{AimWindow, FrameId, MIN_SCRUB_BLIT_FRAMES};
+use fpmedia_web::{AimWindow, FrameId, FrameRun, MIN_SCRUB_BLIT_FRAMES, merge_frame_runs};
 
 /// Outcome of [`ExactLedger::put_exact`] — caller releases bitmaps on wasm.
 #[derive(Debug)]
@@ -27,7 +27,7 @@ pub struct ExactLedger<V> {
     /// Uncapped Covered markers (gap / dim strip) in **global** FrameIds.
     covered: BTreeSet<FrameId>,
     /// Inclusive playable Fetch runs in **global** FrameIds (interval-merged; dense OK).
-    fetch: Vec<(FrameId, FrameId)>,
+    fetch: Vec<FrameRun>,
     /// Pause progressive thumb keys filled at least once this session (global FrameIds).
     /// Bitmaps = VT `VtThumbCache`; markers are optional trail / strip hints.
     thumbs: BTreeSet<FrameId>,
@@ -166,12 +166,12 @@ impl<V> ExactLedger<V> {
     }
 
     /// Exact strip runs in **global** FrameIds (`ReadyFrameMark` / TimelineMeta).
-    pub fn exact_ready_marks(&self) -> Vec<(FrameId, FrameId)> {
+    pub fn exact_ready_marks(&self) -> Vec<FrameRun> {
         fpmedia_web::coalesce_frame_runs(self.exact.keys())
     }
 
     /// Covered strip runs in **global** FrameIds.
-    pub fn covered_ready_marks(&self) -> Vec<(FrameId, FrameId)> {
+    pub fn covered_ready_marks(&self) -> Vec<FrameRun> {
         fpmedia_web::coalesce_frame_runs(self.covered.iter().copied())
     }
 
@@ -186,18 +186,18 @@ impl<V> ExactLedger<V> {
         if self.fetch_covers(lo, hi) {
             return false;
         }
-        self.fetch.push((lo, hi));
-        self.fetch = merge_inclusive_runs(std::mem::take(&mut self.fetch));
+        self.fetch.push(FrameRun { lo, hi });
+        self.fetch = merge_frame_runs(std::mem::take(&mut self.fetch));
         true
     }
 
     /// `true` when `[lo, hi]` is already ⊆ some resident Fetch run.
     pub fn fetch_covers(&self, lo: FrameId, hi: FrameId) -> bool {
-        self.fetch.iter().any(|&(a, b)| a <= lo && hi <= b)
+        self.fetch.iter().any(|r| r.lo <= lo && hi <= r.hi)
     }
 
     /// Fetch strip runs in **global** FrameIds (already coalesced).
-    pub fn fetch_ready_marks(&self) -> Vec<(FrameId, FrameId)> {
+    pub fn fetch_ready_marks(&self) -> Vec<FrameRun> {
         self.fetch.clone()
     }
 
@@ -235,27 +235,6 @@ impl<V> ExactLedger<V> {
     pub fn clear_thumbs(&mut self) {
         self.thumbs.clear();
     }
-}
-
-/// Merge inclusive `[lo, hi]` runs (overlap or abut → one run).
-fn merge_inclusive_runs(mut runs: Vec<(FrameId, FrameId)>) -> Vec<(FrameId, FrameId)> {
-    if runs.is_empty() {
-        return runs;
-    }
-    runs.sort_by_key(|&(a, _)| a);
-    let mut out = Vec::with_capacity(runs.len());
-    let (mut lo, mut hi) = runs[0];
-    for &(a, b) in &runs[1..] {
-        if a <= hi.saturating_add(1) {
-            hi = hi.max(b);
-        } else {
-            out.push((lo, hi));
-            lo = a;
-            hi = b;
-        }
-    }
-    out.push((lo, hi));
-    out
 }
 
 impl<V> Default for ExactLedger<V> {
@@ -332,7 +311,7 @@ mod tests {
         assert!(led.has_covered(10));
         assert!(led.has_covered(19));
         assert_eq!(led.covered_frame_ids().len(), 20);
-        assert_eq!(led.covered_ready_marks(), vec![(0, 19)]);
+        assert_eq!(led.covered_ready_marks(), vec![FrameRun::new(0, 19)]);
         // Idle park must not clear — only session wipe (Scrub Off / close·open).
         led.clear_covered();
         assert!(led.covered_frame_ids().is_empty());
@@ -343,13 +322,19 @@ mod tests {
         let mut led = ExactLedger::<u32>::new();
         assert!(led.note_fetch_run(0, 9)); // clip A
         assert!(led.note_fetch_run(10, 19)); // clip B abut → merge
-        assert_eq!(led.fetch_ready_marks(), vec![(0, 19)]);
+        assert_eq!(led.fetch_ready_marks(), vec![FrameRun::new(0, 19)]);
         assert!(!led.note_fetch_run(3, 12)); // already covered
         assert!(led.note_fetch_run(30, 35));
-        assert_eq!(led.fetch_ready_marks(), vec![(0, 19), (30, 35)]);
+        assert_eq!(
+            led.fetch_ready_marks(),
+            vec![FrameRun::new(0, 19), FrameRun::new(30, 35)]
+        );
         // Scrub Off clears Covered only — Fetch survives until session wipe.
         led.clear_covered();
-        assert_eq!(led.fetch_ready_marks(), vec![(0, 19), (30, 35)]);
+        assert_eq!(
+            led.fetch_ready_marks(),
+            vec![FrameRun::new(0, 19), FrameRun::new(30, 35)]
+        );
         led.clear_fetch();
         assert!(led.fetch_ready_marks().is_empty());
     }
@@ -384,7 +369,7 @@ mod tests {
             assert!(led.put_exact(g, g).accepted);
         }
         let runs = led.exact_ready_marks();
-        assert_eq!(runs, vec![(1, 3), (10, 11)]);
+        assert_eq!(runs, vec![FrameRun::new(1, 3), FrameRun::new(10, 11)]);
     }
 
     /// Densify bulk sync must keep playhead aim fixed while inserting sorted ids.

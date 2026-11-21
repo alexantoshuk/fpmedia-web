@@ -19,7 +19,7 @@
 
 use std::sync::Mutex;
 
-use crate::types::FrameId;
+use crate::types::{FrameId, FrameRun, merge_frame_runs};
 
 /// Floor for gray-strip soft-merge (fMP4 `moof` between `mdat` is typically
 /// ≤2 KiB; 8 KiB leaves headroom without swallowing real unread islands on
@@ -163,7 +163,7 @@ impl FetchMap {
     pub fn playable_frame_runs(
         &self,
         samples: impl IntoIterator<Item = (FrameId, u64, u64)>,
-    ) -> Vec<(FrameId, FrameId)> {
+    ) -> Vec<FrameRun> {
         let samples: Vec<(FrameId, u64, u64)> = samples.into_iter().collect();
         if samples.is_empty() {
             return Vec::new();
@@ -172,7 +172,7 @@ impl FetchMap {
         if windows.is_empty() {
             return Vec::new();
         }
-        let mut runs: Vec<(FrameId, FrameId)> = Vec::new();
+        let mut runs: Vec<FrameRun> = Vec::new();
         for &(ws, we) in &windows {
             if we <= ws {
                 continue;
@@ -191,10 +191,10 @@ impl FetchMap {
                 }
             }
             if let (Some(a), Some(b)) = (lo, hi) {
-                runs.push((a, b.max(a)));
+                runs.push(FrameRun::new(a, b));
             }
         }
-        merge_inclusive_frame_runs(runs)
+        merge_frame_runs(runs)
     }
 
     /// Coverage as fractions of `file_size` in `0.0..1.0` (diagnostic / e2e).
@@ -280,26 +280,6 @@ fn merge_touching(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64) {
     ranges.insert(i, (merged_start, merged_end));
 }
 
-/// Sort + merge inclusive FrameId runs that overlap or abut.
-fn merge_inclusive_frame_runs(mut runs: Vec<(FrameId, FrameId)>) -> Vec<(FrameId, FrameId)> {
-    if runs.is_empty() {
-        return runs;
-    }
-    runs.sort_by_key(|&(lo, _)| lo);
-    let mut out: Vec<(FrameId, FrameId)> = Vec::with_capacity(runs.len());
-    for (lo, hi) in runs {
-        let hi = hi.max(lo);
-        if let Some((_, prev_hi)) = out.last_mut()
-            && lo <= prev_hi.saturating_add(1)
-        {
-            *prev_hi = (*prev_hi).max(hi);
-            continue;
-        }
-        out.push((lo, hi));
-    }
-    out
-}
-
 /// Paint-time merge: close holes of at most `max_gap` bytes.
 fn soft_merge_windows(windows: &[(u64, u64)], max_gap: u64) -> Vec<(u64, u64)> {
     let mut out: Vec<(u64, u64)> = Vec::new();
@@ -353,7 +333,7 @@ mod tests {
         m.note_window(100, 200);
         // Same byte chunk → one presentation span (fills B-order holes).
         let runs = m.playable_frame_runs([(0, 100, 50), (1, 180, 40), (2, 150, 20)]);
-        assert_eq!(runs, vec![(0, 2)]);
+        assert_eq!(runs, vec![FrameRun::new(0, 2)]);
     }
 
     #[test]
@@ -362,7 +342,7 @@ mod tests {
         m.set_windows(&[(100, 160), (500, 600)]);
         // Mid presentation frame has no overlapping bytes — must not fill 0…10.
         let runs = m.playable_frame_runs([(0, 100, 50), (5, 200, 50), (10, 500, 50)]);
-        assert_eq!(runs, vec![(0, 0), (10, 10)]);
+        assert_eq!(runs, vec![FrameRun::single(0), FrameRun::single(10)]);
     }
 
     #[test]
@@ -372,7 +352,7 @@ mod tests {
         // Decode/file order ≠ presentation — one window still one span.
         let runs =
             m.playable_frame_runs([(0, 0, 100), (5, 100, 100), (1, 200, 100), (2, 300, 100)]);
-        assert_eq!(runs, vec![(0, 5)]);
+        assert_eq!(runs, vec![FrameRun::new(0, 5)]);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::policy::{
     scrub_blit_frame_budget, scrub_drag_stage_choice, scrub_drag_stage_near_aim,
 };
 use crate::residency::ScrubChunk;
-use crate::types::FrameId;
+use crate::types::{FrameId, FrameRun};
 
 use super::scrub_cold::{
     exact_scrub_ready, schedule_fetchmap_gap_fill, scrub_gop_bytes_warm, soft_cold_scrub_settle,
@@ -343,7 +343,7 @@ impl VideoPlayer {
     /// Local playable Fetch runs (FetchMap → presentation spans) for VT mirror.
     /// Same geometry as [`PipelineStats::fetch_playable_runs`]; no pipeline interest.
     /// **no equivalent** (strip local).
-    pub fn scrub_fetch_playable_runs(&self) -> Vec<(FrameId, FrameId)> {
+    pub fn scrub_fetch_playable_runs(&self) -> Vec<FrameRun> {
         self.shared.fetch_map.playable_frame_runs(
             self.shared
                 .track

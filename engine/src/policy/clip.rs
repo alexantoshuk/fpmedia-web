@@ -1,6 +1,6 @@
 //! Clip policies (Gop / Scrub / Play / Settle / Thumb) + cache budgets and scrub pick math.
 
-use crate::types::FrameId;
+use crate::types::{FrameId, FrameRun};
 
 /// Max GOP length (frames) still treated as short for scrub policy.
 ///
@@ -84,7 +84,7 @@ pub fn scrub_edge_margins(gop_hint: u32) -> (FrameId, FrameId) {
 pub fn scrub_gap_fill_armed(
     no_gaps: bool,
     playhead: FrameId,
-    extent: Option<(FrameId, FrameId)>,
+    extent: Option<FrameRun>,
     last: FrameId,
     margin_left: FrameId,
     margin_right: FrameId,
@@ -92,7 +92,7 @@ pub fn scrub_gap_fill_armed(
     if !no_gaps {
         return true;
     }
-    let Some((start, end)) = extent else {
+    let Some(FrameRun { lo: start, hi: end }) = extent else {
         return true;
     };
     if playhead < start || playhead > end {
@@ -1237,12 +1237,19 @@ mod tests {
 
     #[test]
     fn scrub_gap_fill_armed_while_holes() {
-        assert!(scrub_gap_fill_armed(false, 50, Some((40, 60)), 1000, 16, 8));
+        assert!(scrub_gap_fill_armed(
+            false,
+            50,
+            Some(FrameRun::new(40, 60)),
+            1000,
+            16,
+            8
+        ));
     }
 
     #[test]
     fn scrub_gap_fill_armed_near_edges_when_contiguous() {
-        let extent = Some((100, 200));
+        let extent = Some(FrameRun::new(100, 200));
         let last = 1000;
         assert!(!scrub_gap_fill_armed(true, 150, extent, last, 16, 16));
         assert!(scrub_gap_fill_armed(true, 110, extent, last, 16, 16));
@@ -1253,7 +1260,7 @@ mod tests {
 
     #[test]
     fn scrub_gap_fill_armed_asymmetric_left_wider() {
-        let extent = Some((100, 200));
+        let extent = Some(FrameRun::new(100, 200));
         let last = 1000;
         let left = 20;
         let right = 8;
@@ -1266,7 +1273,7 @@ mod tests {
     #[test]
     fn scrub_gap_fill_armed_right_edge_slides_before_hard_edge() {
         // start==0: left margin must not arm (nowhere to expand behind).
-        let extent = Some((0u32, 40u32));
+        let extent = Some(FrameRun::new(0, 40));
         let last = 1000;
         assert!(scrub_gap_fill_armed(true, 38, extent, last, 8, 3));
         assert!(!scrub_gap_fill_armed(true, 20, extent, last, 8, 3));
@@ -1277,7 +1284,7 @@ mod tests {
     fn scrub_gap_fill_armed_idle_at_pinned_timeline_edges() {
         // Playhead at origin with window pinned to 0 — was thrash (expand ahead,
         // evict far end, repeat).
-        let at_start = Some((0u32, 50u32));
+        let at_start = Some(FrameRun::new(0, 50));
         assert!(!scrub_gap_fill_armed(true, 0, at_start, 200, 16, 8));
         assert!(!scrub_gap_fill_armed(true, 10, at_start, 200, 16, 8));
         // Still arm near the expandable right edge.
@@ -1285,7 +1292,7 @@ mod tests {
 
         // Playhead at EOF with window pinned to last.
         let last = 200u32;
-        let at_end = Some((150u32, last));
+        let at_end = Some(FrameRun::new(150, last));
         assert!(!scrub_gap_fill_armed(true, last, at_end, last, 16, 8));
         assert!(!scrub_gap_fill_armed(true, 195, at_end, last, 16, 8));
         // Still arm near the expandable left edge.

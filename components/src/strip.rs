@@ -6,7 +6,7 @@
 
 #[cfg(target_arch = "wasm32")]
 use crate::video::{ReadyFrameKind, ReadyFrameMark};
-use fpmedia_web::FrameId;
+use fpmedia_web::{FrameId, FrameRun};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
@@ -32,12 +32,12 @@ pub fn cache_strip_runs_for_width(
     frame_count: f64,
     width: f64,
 ) -> Vec<StripRun> {
-    let mut runs: Vec<(FrameId, FrameId)> = marks
+    let mut runs: Vec<FrameRun> = marks
         .iter()
         .filter(|m| m.kind == kind)
-        .map(|m| (m.frame, m.end.max(m.frame)))
+        .map(ReadyFrameMark::span)
         .collect();
-    runs.sort_by_key(|&(lo, _)| lo);
+    runs.sort_by_key(|r| r.lo);
     match kind {
         ReadyFrameKind::Keyframes => keyframe_runs_to_width(&runs, frame_count, width),
         ReadyFrameKind::Covered | ReadyFrameKind::Exact => {
@@ -48,39 +48,23 @@ pub fn cache_strip_runs_for_width(
 
 /// Sorted inclusive ready runs → continuous runs on `width`.
 /// View = data feedback: holes stay; no min-px inflate (hairlines OK).
-pub fn ready_runs_to_width(
-    runs: &[(FrameId, FrameId)],
-    frame_count: f64,
-    width: f64,
-) -> Vec<StripRun> {
+pub fn ready_runs_to_width(runs: &[FrameRun], frame_count: f64, width: f64) -> Vec<StripRun> {
     frame_runs_to_width(runs, frame_count.max(1.0), 0, width)
 }
 
 /// Sync / keyframe ticks → continuous runs; inflate to ≥1 px.
-pub fn keyframe_runs_to_width(
-    runs: &[(FrameId, FrameId)],
-    frame_count: f64,
-    width: f64,
-) -> Vec<StripRun> {
+pub fn keyframe_runs_to_width(runs: &[FrameRun], frame_count: f64, width: f64) -> Vec<StripRun> {
     let n = frame_count.max(1.0);
     if runs.is_empty() {
         return Vec::new();
     }
-    snap_pct_runs_to_width(
-        runs.iter().map(|&(lo, hi)| {
-            let start = (lo as f64 / n) * 100.0;
-            let end = ((hi as f64 + 1.0) / n) * 100.0;
-            (start, end)
-        }),
-        width,
-        1.0,
-    )
+    snap_pct_runs_to_width(runs.iter().map(|r| run_pct(*r, n)), width, 1.0)
 }
 
 /// Sorted inclusive ready runs → snapped integer pixel runs on `width_px`.
 /// Kept for sticky/unit probes; paint path uses [`ready_runs_to_width`].
 pub fn ready_runs_to_width_px(
-    runs: &[(FrameId, FrameId)],
+    runs: &[FrameRun],
     frame_count: f64,
     width_px: u16,
 ) -> Vec<StripPxRun> {
@@ -89,7 +73,7 @@ pub fn ready_runs_to_width_px(
 
 /// Sync / keyframe ticks → snapped integer runs; inflate to ≥1 device px.
 pub fn keyframe_runs_to_width_px(
-    runs: &[(FrameId, FrameId)],
+    runs: &[FrameRun],
     frame_count: f64,
     width_px: u16,
 ) -> Vec<StripPxRun> {
@@ -97,15 +81,7 @@ pub fn keyframe_runs_to_width_px(
     if runs.is_empty() {
         return Vec::new();
     }
-    snap_pct_runs_to_width_px(
-        runs.iter().map(|&(lo, hi)| {
-            let start = (lo as f64 / n) * 100.0;
-            let end = ((hi as f64 + 1.0) / n) * 100.0;
-            (start, end)
-        }),
-        width_px,
-        1,
-    )
+    snap_pct_runs_to_width_px(runs.iter().map(|r| run_pct(*r, n)), width_px, 1)
 }
 
 /// Device-pixel buffer width for a 1 px-tall strip canvas (`css_w × dpr`).
@@ -158,27 +134,29 @@ pub fn strip_merge_gap_frames(max_frame: f64) -> FrameId {
     (max / STRIP_ASSUMED_SCRUBBER_PX).floor() as FrameId
 }
 
-/// Paint-only: merge inclusive `(lo, hi)` densify runs when the hole is ≤
-/// `max_gap` frames. Engine / densify geometry stays exact via
-/// [`fpmedia_web::coalesce_frame_runs`].
-pub fn soft_merge_frame_runs(
-    runs: &[(FrameId, FrameId)],
-    max_gap: FrameId,
-) -> Vec<(FrameId, FrameId)> {
-    let mut out: Vec<(FrameId, FrameId)> = Vec::new();
-    for &(start, end) in runs {
-        let end = end.max(start);
-        if let Some((_, prev_end)) = out.last_mut()
-            && start <= prev_end.saturating_add(1).saturating_add(max_gap)
+/// Paint-only: merge inclusive densify runs when the hole is ≤ `max_gap` frames.
+/// Engine / densify geometry stays exact via [`fpmedia_web::coalesce_frame_runs`].
+pub fn soft_merge_frame_runs(runs: &[FrameRun], max_gap: FrameId) -> Vec<FrameRun> {
+    let mut out: Vec<FrameRun> = Vec::new();
+    for &run in runs {
+        let run = FrameRun::new(run.lo, run.hi);
+        if let Some(prev) = out.last_mut()
+            && run.lo <= prev.hi.saturating_add(1).saturating_add(max_gap)
         {
-            *prev_end = (*prev_end).max(end);
+            prev.hi = prev.hi.max(run.hi);
             continue;
         }
-        out.push((start, end));
+        out.push(run);
     }
     out
 }
 
+/// Run → `[start%, end%)` on a `frame_count`-wide axis.
+fn run_pct(run: FrameRun, n: f64) -> (f64, f64) {
+    let start = (f64::from(run.lo) / n) * 100.0;
+    let end = ((f64::from(run.hi) + 1.0) / n) * 100.0;
+    (start, end)
+}
 /// Hold a painted scrubber edge until rasterized coverage moves by more than
 /// this many assumed scrubber pixels. Kills ±1 px densify / FetchMap swim
 /// (“sometimes” blur). mediabunny: no equivalent meter.
@@ -402,7 +380,7 @@ pub fn fetch_strip_runs_for_width(ranges: &[(f32, f32)], width: f64) -> Vec<Stri
 /// Soft-merges sub-pixel holes (`strip_merge_gap_frames`); min 1 px ticks.
 /// **no equivalent** (strip local).
 pub fn fetch_playable_runs_to_width(
-    runs: &[(FrameId, FrameId)],
+    runs: &[FrameRun],
     frame_count: f64,
     width: f64,
 ) -> Vec<StripRun> {
@@ -412,15 +390,7 @@ pub fn fetch_playable_runs_to_width(
     if merged.is_empty() {
         return Vec::new();
     }
-    snap_pct_runs_to_width(
-        merged.iter().map(|&(lo, hi)| {
-            let start = (lo as f64 / n) * 100.0;
-            let end = ((hi as f64 + 1.0) / n) * 100.0;
-            (start, end)
-        }),
-        width,
-        1.0,
-    )
+    snap_pct_runs_to_width(merged.iter().map(|r| run_pct(*r, n)), width, 1.0)
 }
 
 /// File-byte fetch fractions (`0…1`) → snapped pixel runs on `width_px`.
@@ -445,7 +415,7 @@ pub fn fetch_strip_px_runs(ranges: &[(f32, f32)]) -> Vec<StripPxRun> {
 /// Inclusive frame runs → continuous scrubber spans (after optional soft-merge).
 /// Ready greens: `merge_gap = 0` + `min_run_px = 0` (view mirrors data).
 pub fn frame_runs_to_width(
-    runs: &[(FrameId, FrameId)],
+    runs: &[FrameRun],
     frame_count: f64,
     merge_gap: FrameId,
     width: f64,
@@ -455,20 +425,12 @@ pub fn frame_runs_to_width(
     if merged.is_empty() {
         return Vec::new();
     }
-    snap_pct_runs_to_width(
-        merged.iter().map(|&(lo, hi)| {
-            let start = (lo as f64 / n) * 100.0;
-            let end = ((hi as f64 + 1.0) / n) * 100.0;
-            (start, end)
-        }),
-        width,
-        0.0,
-    )
+    snap_pct_runs_to_width(merged.iter().map(|r| run_pct(*r, n)), width, 0.0)
 }
 
 /// Inclusive frame runs → snapped scrubber pixels (after optional soft-merge).
 pub fn frame_runs_to_width_px(
-    runs: &[(FrameId, FrameId)],
+    runs: &[FrameRun],
     frame_count: f64,
     merge_gap: FrameId,
     width_px: u16,
@@ -478,20 +440,12 @@ pub fn frame_runs_to_width_px(
     if merged.is_empty() {
         return Vec::new();
     }
-    snap_pct_runs_to_width_px(
-        merged.iter().map(|&(lo, hi)| {
-            let start = (lo as f64 / n) * 100.0;
-            let end = ((hi as f64 + 1.0) / n) * 100.0;
-            (start, end)
-        }),
-        width_px,
-        0,
-    )
+    snap_pct_runs_to_width_px(merged.iter().map(|r| run_pct(*r, n)), width_px, 0)
 }
 
 /// Inclusive frame runs → snapped pixels on the assumed 800 px scrubber.
 pub fn frame_runs_to_px(
-    runs: &[(FrameId, FrameId)],
+    runs: &[FrameRun],
     frame_count: f64,
     merge_gap: FrameId,
 ) -> Vec<StripPxRun> {
@@ -600,7 +554,7 @@ mod tests {
 
     #[test]
     fn fetch_playable_runs_paint_half_timeline() {
-        let runs = fetch_playable_runs_to_width(&[(0, 49)], 100.0, 800.0);
+        let runs = fetch_playable_runs_to_width(&[FrameRun::new(0, 49)], 100.0, 800.0);
         assert_eq!(runs.len(), 1);
         assert!((runs[0].0 - 0.0).abs() < 1e-6);
         assert!((runs[0].1 - 400.0).abs() < 1.0);
@@ -621,20 +575,24 @@ mod tests {
 
     #[test]
     fn ready_greens_keep_holes_no_soft_merge() {
-        let far = [(0, 0), (100, 100)];
+        let far = [FrameRun::new(0, 0), FrameRun::new(100, 100)];
         let exact = ready_runs_to_width_px(&far, 8000.0, 800);
         let covered = ready_runs_to_width_px(&far, 8000.0, 800);
         // On 8000 frames / 800 px each single frame is sub-pixel → both drop.
         assert!(exact.is_empty(), "sub-pixel Exact drops: {exact:?}");
         assert!(covered.is_empty(), "sub-pixel Covered drops: {covered:?}");
         // Visible multi-frame runs keep a real hole between them.
-        let split = ready_runs_to_width_px(&[(0, 50), (200, 250)], 8000.0, 800);
+        let split = ready_runs_to_width_px(
+            &[FrameRun::new(0, 50), FrameRun::new(200, 250)],
+            8000.0,
+            800,
+        );
         assert_eq!(split.len(), 2, "ready greens keep holes: {split:?}");
     }
 
     #[test]
     fn keyframe_ticks_inflate_to_one_px() {
-        let far = [(0, 0), (100, 100)];
+        let far = [FrameRun::new(0, 0), FrameRun::new(100, 100)];
         let ticks = keyframe_runs_to_width_px(&far, 8000.0, 800);
         assert_eq!(ticks.len(), 2, "keyframe ticks stay visible: {ticks:?}");
         assert!(
@@ -649,8 +607,13 @@ mod tests {
         // longer band than the later coalesced run (capacity-looking trail).
         let max = 14_400.0;
         let w = 800u16;
-        let sparse = [(100u32, 100), (102, 102), (104, 104), (106, 106)];
-        let coalesced = [(100u32, 106)];
+        let sparse = [
+            FrameRun::new(100, 100),
+            FrameRun::new(102, 102),
+            FrameRun::new(104, 104),
+            FrameRun::new(106, 106),
+        ];
+        let coalesced = [FrameRun::new(100, 106)];
         let sparse_px = ready_runs_to_width_px(&sparse, max, w);
         let solid_px = ready_runs_to_width_px(&coalesced, max, w);
         let sparse_w: u32 = sparse_px
@@ -676,24 +639,32 @@ mod tests {
 
     #[test]
     fn soft_merge_frame_runs_closes_subpixel_holes() {
-        let runs = [(0u32, 10), (15, 30), (100, 110)];
+        let runs = [
+            FrameRun::new(0, 10),
+            FrameRun::new(15, 30),
+            FrameRun::new(100, 110),
+        ];
         assert_eq!(
             soft_merge_frame_runs(&runs, 0),
-            vec![(0, 10), (15, 30), (100, 110)]
+            vec![
+                FrameRun::new(0, 10),
+                FrameRun::new(15, 30),
+                FrameRun::new(100, 110)
+            ]
         );
         assert_eq!(
             soft_merge_frame_runs(&runs, 4),
-            vec![(0, 30), (100, 110)],
+            vec![FrameRun::new(0, 30), FrameRun::new(100, 110)],
             "4-frame hole (11..=14) merges; 69-frame hole stays"
         );
         // Long-clip paint path: gap of 10 < floor(14400/800)=18.
         let gap = strip_merge_gap_frames(14_400.0);
         assert_eq!(
-            soft_merge_frame_runs(&[(0, 100), (111, 200)], gap),
-            vec![(0, 200)]
+            soft_merge_frame_runs(&[FrameRun::new(0, 100), FrameRun::new(111, 200)], gap),
+            vec![FrameRun::new(0, 200)]
         );
         assert_eq!(
-            soft_merge_frame_runs(&[(0, 100), (200, 300)], gap).len(),
+            soft_merge_frame_runs(&[FrameRun::new(0, 100), FrameRun::new(200, 300)], gap).len(),
             2,
             "visible multi-px hole stays split"
         );
@@ -782,8 +753,8 @@ mod tests {
     fn latch_holds_edge_thrash_on_visible_ready_runs() {
         let w = 800u16;
         let wf = f64::from(w);
-        let a = ready_runs_to_width(&[(0, 399)], 8000.0, wf); // → 40.0
-        let b = ready_runs_to_width(&[(0, 409)], 8000.0, wf); // → 41.0
+        let a = ready_runs_to_width(&[FrameRun::new(0, 399)], 8000.0, wf); // → 40.0
+        let b = ready_runs_to_width(&[FrameRun::new(0, 409)], 8000.0, wf); // → 41.0
         assert_eq!(a.len(), 1);
         assert!((a[0].1 - 40.0).abs() < 1e-9);
         assert!((b[0].1 - 41.0).abs() < 1e-9);
@@ -793,7 +764,7 @@ mod tests {
         unique.insert(format!("{:?}", latch.accepted()));
         for i in 0..40 {
             let end = if i % 2 == 0 { 399u32 } else { 409 };
-            let cand = ready_runs_to_width(&[(0, end)], 8000.0, wf);
+            let cand = ready_runs_to_width(&[FrameRun::new(0, end)], 8000.0, wf);
             unique.insert(format!("{:?}", latch.resolve(&cand, w)));
         }
         assert_eq!(unique.len(), 1, "sub-sticky ready edge thrash must hold");
@@ -822,11 +793,15 @@ mod tests {
     #[test]
     fn ready_keeps_equal_step_hairlines() {
         // Continuous grid: single-frame marks stay as w/n hairlines (not dropped).
-        let far = [(0u32, 0), (100, 100)];
+        let far = [FrameRun::new(0, 0), FrameRun::new(100, 100)];
         let runs = ready_runs_to_width(&far, 8000.0, 800.0);
         assert_eq!(runs.len(), 2);
         assert!((runs[0].1 - runs[0].0 - 0.1).abs() < 1e-9);
-        let split = ready_runs_to_width(&[(0, 50), (200, 250)], 8000.0, 800.0);
+        let split = ready_runs_to_width(
+            &[FrameRun::new(0, 50), FrameRun::new(200, 250)],
+            8000.0,
+            800.0,
+        );
         assert_eq!(split.len(), 2, "ready greens keep holes: {split:?}");
     }
 

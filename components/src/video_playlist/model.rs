@@ -3,7 +3,7 @@
 //! Scrub / tip / zebra / strips use Σ presentation frames (same `w/n` as a single
 //! clip). Wall-time helpers remain for diagnostics; Play clock stays in the engine.
 
-use fpmedia_web::VideoMetadata;
+use fpmedia_web::{FrameRun, VideoMetadata};
 
 use super::PlaylistPos;
 
@@ -167,6 +167,13 @@ impl PlaylistModel {
         let start = *self.frame_starts.get(i)?;
         let local = pos.local_frame.min(clip.last_frame());
         Some(start.saturating_add(local))
+    }
+
+    /// Inclusive clip-local `run` → global run (both ends clamped to the clip).
+    pub fn global_run_at(&self, clip_index: u32, run: FrameRun) -> Option<FrameRun> {
+        let lo = self.global_frame_at(PlaylistPos::new(clip_index, run.lo))?;
+        let hi = self.global_frame_at(PlaylistPos::new(clip_index, run.hi))?;
+        Some(FrameRun::new(lo, hi))
     }
 
     /// Global time at the start of a clip.

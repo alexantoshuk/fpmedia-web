@@ -6,7 +6,7 @@
 use crate::decode::canvas::{configure_canvas_for_video, draw_frame_with_context};
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::error::MediaError;
-use crate::types::{FrameId, coalesce_frame_runs};
+use crate::types::{FrameId, FrameRun, coalesce_frame_runs};
 
 use super::scrub::{apply_clip_budgets, ingest_scrub_bitmap_only};
 use super::shared::{QueuedFrame, STEP_BEHIND_CAP, STEP_BEHIND_CAP_PLAY};
@@ -129,22 +129,25 @@ impl VideoPlayer {
                 out.cache_frames = cache.frame_count();
                 out.cache_cap = cache.max_frames();
                 out.cache_no_gaps = cache.no_gaps();
-                out.scrub_window_from = extent.map(|(a, _)| a);
-                out.scrub_window_to = extent.map(|(_, b)| b);
+                out.scrub_window_from = extent.map(|r| r.lo);
+                out.scrub_window_to = extent.map(|r| r.hi);
             }
             if want.ready {
                 let mut ready = Vec::new();
                 // Structural sync ticks (GOP starts) — not densify residency.
                 for id in self.shared.track.index().sync_frame_ids() {
-                    ready.push(ReadyFrameMark::run(id, id, ReadyFrameKind::Keyframes));
+                    ready.push(ReadyFrameMark::run(
+                        FrameRun::single(id),
+                        ReadyFrameKind::Keyframes,
+                    ));
                 }
                 // Solid strip runs only (markers + blit). Prefetch VF rings are meters,
                 // not painted on the scrubber (no ahead/behind ticks).
-                for (lo, hi) in coalesce_frame_runs(cache.cached_frame_ids()) {
-                    ready.push(ReadyFrameMark::run(lo, hi, ReadyFrameKind::Covered));
+                for run in coalesce_frame_runs(cache.cached_frame_ids()) {
+                    ready.push(ReadyFrameMark::run(run, ReadyFrameKind::Covered));
                 }
-                for (lo, hi) in coalesce_frame_runs(blit.cached_frame_ids()) {
-                    ready.push(ReadyFrameMark::run(lo, hi, ReadyFrameKind::Exact));
+                for run in coalesce_frame_runs(blit.cached_frame_ids()) {
+                    ready.push(ReadyFrameMark::run(run, ReadyFrameKind::Exact));
                 }
                 ready.sort_by(|a, b| {
                     a.frame.cmp(&b.frame).then_with(|| {

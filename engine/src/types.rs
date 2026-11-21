@@ -11,11 +11,48 @@ use crate::policy::{
 /// PTS and epochs stay `u64` / `i64`. `architecture.md` § Ownership & types.
 pub type FrameId = u32;
 
+/// Inclusive presentation-frame span `[lo, hi]` (`hi >= lo`; a single frame has `lo == hi`).
+///
+/// Strip runs, Covered / Exact / Fetch marks, residency extents. Not the half-open
+/// `[in, out)` of [`crate::LoopZone`] — never mix the two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FrameRun {
+    pub lo: FrameId,
+    pub hi: FrameId,
+}
+
+impl FrameRun {
+    /// Build a run; `hi < lo` is raised to `lo`.
+    pub const fn new(lo: FrameId, hi: FrameId) -> Self {
+        Self {
+            lo,
+            hi: if hi < lo { lo } else { hi },
+        }
+    }
+
+    /// One-frame run.
+    pub const fn single(frame: FrameId) -> Self {
+        Self {
+            lo: frame,
+            hi: frame,
+        }
+    }
+
+    pub const fn contains(self, frame: FrameId) -> bool {
+        frame >= self.lo && frame <= self.hi
+    }
+
+    /// Overlaps or abuts `other` (no frame between them).
+    pub const fn touches(self, other: Self) -> bool {
+        self.lo <= other.hi.saturating_add(1) && other.lo <= self.hi.saturating_add(1)
+    }
+}
+
 /// Merge sorted unique frame ids into inclusive `[lo, hi]` runs.
 ///
 /// Used by the demo ready strip so Play can show densify coverage without
 /// one DOM node per frame (was: skip marks while playing → strip vanished).
-pub fn coalesce_frame_runs(ids: impl IntoIterator<Item = FrameId>) -> Vec<(FrameId, FrameId)> {
+pub fn coalesce_frame_runs(ids: impl IntoIterator<Item = FrameId>) -> Vec<FrameRun> {
     let mut out = Vec::new();
     let mut iter = ids.into_iter();
     let Some(mut lo) = iter.next() else {
@@ -26,15 +63,35 @@ pub fn coalesce_frame_runs(ids: impl IntoIterator<Item = FrameId>) -> Vec<(Frame
         if id == hi.saturating_add(1) {
             hi = id;
         } else {
-            out.push((lo, hi));
+            out.push(FrameRun { lo, hi });
             lo = id;
             hi = id;
         }
     }
-    out.push((lo, hi));
+    out.push(FrameRun { lo, hi });
     out
 }
 
+/// Sort + merge inclusive runs that overlap or abut (one run per island).
+///
+/// The one merge for FetchMap playable spans and the VT Fetch ledger.
+pub fn merge_frame_runs(mut runs: Vec<FrameRun>) -> Vec<FrameRun> {
+    if runs.is_empty() {
+        return runs;
+    }
+    runs.sort_by_key(|r| r.lo);
+    let mut out: Vec<FrameRun> = Vec::with_capacity(runs.len());
+    for run in runs {
+        if let Some(prev) = out.last_mut()
+            && prev.touches(run)
+        {
+            prev.hi = prev.hi.max(run.hi);
+            continue;
+        }
+        out.push(run);
+    }
+    out
+}
 /// Media timestamp in seconds (f64 for UI; prefer [`Timestamp::from_ticks`] internally).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timestamp {
@@ -266,10 +323,14 @@ mod tests {
     #[test]
     fn coalesce_frame_runs_merges_contiguous() {
         assert!(coalesce_frame_runs([] as [FrameId; 0]).is_empty());
-        assert_eq!(coalesce_frame_runs([3u32]), vec![(3, 3)]);
+        assert_eq!(coalesce_frame_runs([3u32]), vec![FrameRun::single(3)]);
         assert_eq!(
             coalesce_frame_runs([0u32, 1, 2, 5, 6, 10]),
-            vec![(0, 2), (5, 6), (10, 10)]
+            vec![
+                FrameRun::new(0, 2),
+                FrameRun::new(5, 6),
+                FrameRun::single(10)
+            ]
         );
     }
 }

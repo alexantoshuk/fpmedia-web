@@ -8,8 +8,8 @@
 use std::rc::Rc;
 
 use fpmedia_web::{
-    BlobSource, FrameId, MediaSource, OpenPhase, OpenSourceKind, ScrubCachePolicy, ThumbPolicy,
-    TransportEvent, TransportState,
+    BlobSource, FrameId, FrameRun, MediaSource, OpenPhase, OpenSourceKind, ScrubCachePolicy,
+    ThumbPolicy, TransportEvent, TransportState,
 };
 use leptos::html::Canvas;
 use leptos::prelude::*;
@@ -383,7 +383,7 @@ impl VideoHost {
             .unwrap_or_default()
     }
 
-    pub(crate) fn scrub_fetch_playable_runs(&self) -> Vec<(FrameId, FrameId)> {
+    pub(crate) fn scrub_fetch_playable_runs(&self) -> Vec<FrameRun> {
         self.ctx
             .with_player(|p| p.scrub_fetch_playable_runs())
             .unwrap_or_default()

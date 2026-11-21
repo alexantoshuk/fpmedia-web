@@ -10,7 +10,7 @@ use web_sys::HtmlCanvasElement;
 
 use leptos::prelude::*;
 
-use fpmedia_web::FrameId;
+use fpmedia_web::FrameRun;
 
 use crate::ReadyFrameKind;
 use crate::ReadyFrameMark;
@@ -206,12 +206,12 @@ impl TimelineRef {
         h.borrow()
             .covered_ready_marks()
             .into_iter()
-            .map(|(lo, hi)| ReadyFrameMark::run(lo, hi, ReadyFrameKind::Covered))
+            .map(|run| ReadyFrameMark::run(run, ReadyFrameKind::Covered))
             .collect()
     }
 
     /// Fetch gray runs from VT ledger (global FrameIds). Survives clip leave.
-    pub fn strip_fetch_marks(self) -> Vec<(FrameId, FrameId)> {
+    pub fn strip_fetch_marks(self) -> Vec<FrameRun> {
         let Some(h) = self.exact_ledger() else {
             return Vec::new();
         };
@@ -237,9 +237,8 @@ impl TimelineRef {
                         .iter()
                         .filter(|m| m.kind != ReadyFrameKind::Covered)
                         .filter_map(|m| {
-                            let lo = model.global_frame_at(PlaylistPos::new(clip, m.frame))?;
-                            let hi = model.global_frame_at(PlaylistPos::new(clip, m.end))?;
-                            Some(ReadyFrameMark::run(lo, hi, m.kind))
+                            let run = model.global_run_at(clip, m.span())?;
+                            Some(ReadyFrameMark::run(run, m.kind))
                         })
                         .collect()
                 };
@@ -281,18 +280,14 @@ impl TimelineRef {
 
     /// Diagnostic: remap local playable runs → timeline units (live clip only).
     /// Strip paint uses [`Self::strip_fetch_marks`] (VT sole). **no equivalent**.
-    pub fn strip_fetch_playable_runs(self, runs: &[(FrameId, FrameId)]) -> Vec<(FrameId, FrameId)> {
+    pub fn strip_fetch_playable_runs(self, runs: &[FrameRun]) -> Vec<FrameRun> {
         match self.inner {
             TimelineInner::Video(_) => runs.to_vec(),
             TimelineInner::Playlist(p) => {
                 let live_clip = p.live_clip.get();
                 let model = p.model.get();
                 runs.iter()
-                    .filter_map(|&(lo, hi)| {
-                        let glo = model.global_frame_at(PlaylistPos::new(live_clip, lo))?;
-                        let ghi = model.global_frame_at(PlaylistPos::new(live_clip, hi))?;
-                        Some((glo, ghi))
-                    })
+                    .filter_map(|&run| model.global_run_at(live_clip, run))
                     .collect()
             }
         }

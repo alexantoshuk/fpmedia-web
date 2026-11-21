@@ -8,8 +8,8 @@
 use std::collections::BTreeSet;
 
 use fpmedia_web::{
-    AimWindow, FrameId, NextGapDecision, covered_edge_margins, decide_next_gap, scrub_edge_margins,
-    scrub_gap_fill_armed,
+    AimWindow, FrameId, FrameRun, NextGapDecision, covered_edge_margins, decide_next_gap,
+    scrub_edge_margins, scrub_gap_fill_armed,
 };
 
 /// Inputs for [`plan_next_densify_gap`] (native-testable; no bitmaps).
@@ -150,14 +150,14 @@ pub fn plan_next_densify_gap(input: &DensifyPlanInput) -> NextGapDecision {
     )
 }
 
-fn covered_extent(covered: &BTreeSet<FrameId>) -> Option<(FrameId, FrameId)> {
+fn covered_extent(covered: &BTreeSet<FrameId>) -> Option<FrameRun> {
     let lo = *covered.iter().next()?;
     let hi = *covered.iter().next_back()?;
-    Some((lo, hi))
+    Some(FrameRun { lo, hi })
 }
 
-fn covered_no_gaps(covered: &BTreeSet<FrameId>, extent: Option<(FrameId, FrameId)>) -> bool {
-    let Some((lo, hi)) = extent else {
+fn covered_no_gaps(covered: &BTreeSet<FrameId>, extent: Option<FrameRun>) -> bool {
+    let Some(FrameRun { lo, hi }) = extent else {
         return false;
     };
     hi.saturating_sub(lo)

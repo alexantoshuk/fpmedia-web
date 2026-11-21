@@ -8,7 +8,7 @@ use crate::demux::Mp4VideoTrack;
 use crate::policy::scrub_plan::{
     covered_aim_band, covered_edge_margins, decide_next_gap, gop_sample_lead_frames,
 };
-use crate::types::FrameId;
+use crate::types::{FrameId, FrameRun};
 
 use super::Shared;
 
@@ -120,7 +120,10 @@ pub(super) fn next_gap_unbanned(
     let dir = shared.scrub_dir.get();
     let step: i64 = if dir < 0 { -1 } else { 1 };
     // Bound the unban walk to aim±Covered margin — extent±margin grew forever.
-    let (walk_lo, walk_hi) = covered_aim_band(playhead, last);
+    let FrameRun {
+        lo: walk_lo,
+        hi: walk_hi,
+    } = covered_aim_band(playhead, last);
     let max_dist = walk_hi.saturating_sub(walk_lo).saturating_add(1).max(1) as i64;
     for dist in 1i64..=max_dist {
         for sign in [step, -step] {

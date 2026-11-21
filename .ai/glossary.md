@@ -15,6 +15,10 @@ When a term’s meaning changes in code, **edit or delete** the entry here in th
 
 Primary timeline position: a **presentation** frame index, 0-based. Type `FrameId` = `u32` everywhere (width rule: `architecture.md` § Ownership & types). Not `time × fps`. Seek, step, scrub aim, strip paint, and densify gaps all speak FrameId. Demux may also track decode order; presentation order is what the user means by “frame N”.
 
+### FrameRun
+
+Inclusive presentation-frame span `[lo, hi]` (`hi >= lo`; one frame = `lo == hi`). Strip runs, Covered / Exact / Fetch marks and residency extents. Not the half-open `[in, out)` of [`LoopZone`](#loopzone).
+
 ### Aim
 
 The FrameId the engine is currently focused on for eviction, gap pick, and Exact settle — usually the playhead under the finger, after seek, or after Pause. Residency windows (`AimWindow`) evict **farthest from aim**.

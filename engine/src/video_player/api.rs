@@ -4,7 +4,7 @@
 
 pub use crate::decode::webcodecs::PlayWaits;
 use crate::policy::GopProfile;
-use crate::types::{FrameId, Timestamp};
+use crate::types::{FrameId, FrameRun, Timestamp};
 
 use super::PRESENTATION_QUEUE_CAP;
 
@@ -51,11 +51,19 @@ pub struct ReadyFrameMark {
 }
 
 impl ReadyFrameMark {
-    pub fn run(lo: FrameId, hi: FrameId, kind: ReadyFrameKind) -> Self {
+    pub fn run(run: FrameRun, kind: ReadyFrameKind) -> Self {
         Self {
-            frame: lo,
-            end: hi.max(lo),
+            frame: run.lo,
+            end: run.hi,
             kind,
+        }
+    }
+
+    /// The inclusive span this mark covers.
+    pub const fn span(&self) -> FrameRun {
+        FrameRun {
+            lo: self.frame,
+            hi: self.end,
         }
     }
 }
@@ -121,7 +129,7 @@ pub struct PipelineStats {
     /// Playable presentation runs (per FetchMap byte window → min..max FrameId).
     /// HTMLMediaElement `buffered`-like; not decode Covered/Exact. Soft-merge
     /// for paint is host-side. **no equivalent** (strip local).
-    pub fetch_playable_runs: Vec<(FrameId, FrameId)>,
+    pub fetch_playable_runs: Vec<FrameRun>,
     /// Play iterator wait meters (last ~1 s); `None` outside a play session.
     pub play_waits: Option<PlayWaits>,
 }

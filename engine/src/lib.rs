@@ -120,7 +120,8 @@ pub use source::{
 };
 pub use types::{
     AudioCodec, AudioCodecConfig, AudioMetadata, CodecConfig, EncodedAudioSample, EncodedSample,
-    FrameId, Timestamp, VideoCodec, VideoMetadata, build_aac_asc, coalesce_frame_runs,
+    FrameId, FrameRun, Timestamp, VideoCodec, VideoMetadata, build_aac_asc, coalesce_frame_runs,
+    merge_frame_runs,
 };
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]

@@ -14,7 +14,7 @@
 )]
 
 use crate::policy::{COVERED_EDGE_MARGIN_FRAMES, SettlePolicy};
-use crate::types::FrameId;
+use crate::types::{FrameId, FrameRun};
 
 /// Result of [`decide_next_gap`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,17 +37,16 @@ pub fn covered_edge_margins() -> (FrameId, FrameId) {
 /// Hard densify band for Covered-only / unban walk: aim ± [`COVERED_EDGE_MARGIN_FRAMES`].
 ///
 /// Do **not** expand from Covered extent — that grows with the island forever.
-pub fn covered_aim_band(aim: FrameId, last: FrameId) -> (FrameId, FrameId) {
+pub fn covered_aim_band(aim: FrameId, last: FrameId) -> FrameRun {
     let m = COVERED_EDGE_MARGIN_FRAMES.max(1);
     let lo = aim.saturating_sub(m);
     let hi = aim.saturating_add(m).min(last);
-    (lo, hi)
+    FrameRun::new(lo, hi)
 }
 
 /// Whether a Covered-only densify target sits in the fixed aim band.
 pub fn covered_gap_in_band(gap: FrameId, aim: FrameId, last: FrameId) -> bool {
-    let (lo, hi) = covered_aim_band(aim, last);
-    gap >= lo && gap <= hi
+    covered_aim_band(aim, last).contains(gap)
 }
 
 /// Pick the next densify gap after blit/marker queries.
@@ -255,8 +254,11 @@ mod tests {
     fn covered_aim_band_is_aim_plus_minus_margin() {
         let m = COVERED_EDGE_MARGIN_FRAMES;
         let aim = m + 50;
-        assert_eq!(covered_aim_band(aim, 10_000), (aim - m, aim + m));
-        assert_eq!(covered_aim_band(5, 10_000), (0, 5 + m));
+        assert_eq!(
+            covered_aim_band(aim, 10_000),
+            FrameRun::new(aim - m, aim + m)
+        );
+        assert_eq!(covered_aim_band(5, 10_000), FrameRun::new(0, 5 + m));
         assert!(covered_gap_in_band(aim + m, aim, 10_000));
         assert!(!covered_gap_in_band(aim + m + 1, aim, 10_000));
     }

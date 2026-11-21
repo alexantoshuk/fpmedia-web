@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use fpmedia_web::FrameId;
+use fpmedia_web::{FrameId, FrameRun};
 use web_sys::ImageBitmap;
 
 use super::ExactLedger;
@@ -55,15 +55,15 @@ pub fn note_covered_from_video_ref(
 /// Note slot playable Fetch runs into the ledger (global FrameIds). Returns if union grew.
 pub fn note_fetch_from_locals(
     ledger: &mut TimelineExactLedger,
-    local_runs: impl IntoIterator<Item = (FrameId, FrameId)>,
+    local_runs: impl IntoIterator<Item = FrameRun>,
     local_to_global: impl Fn(FrameId) -> Option<FrameId>,
 ) -> bool {
     let mut changed = false;
-    for (lo, hi) in local_runs {
-        let Some(glo) = local_to_global(lo) else {
+    for run in local_runs {
+        let Some(glo) = local_to_global(run.lo) else {
             continue;
         };
-        let Some(ghi) = local_to_global(hi) else {
+        let Some(ghi) = local_to_global(run.hi) else {
             continue;
         };
         changed |= ledger.note_fetch_run(glo, ghi);

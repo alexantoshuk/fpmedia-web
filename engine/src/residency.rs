@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use crate::policy::{nearer_gap_with_dir, scrub_gap_fill_armed, scrub_preview_neighbor};
-use crate::types::FrameId;
+use crate::types::{FrameId, FrameRun};
 
 /// Resident densify marker in [`ScrubChunkStore`].
 ///
@@ -121,10 +121,10 @@ impl<V> AimWindow<V> {
         std::mem::take(&mut self.items)
     }
 
-    pub fn extent(&self) -> Option<(FrameId, FrameId)> {
+    pub fn extent(&self) -> Option<FrameRun> {
         let lo = *self.items.keys().next()?;
         let hi = *self.items.keys().next_back()?;
-        Some((lo, hi))
+        Some(FrameRun::new(lo, hi))
     }
 
     /// Closest resident to `target` (floor / ceil by `|id − target|`, tie → floor).
@@ -189,12 +189,15 @@ impl<V> AimWindow<V> {
             return Some(playhead);
         }
         let at_cap = self.items.len() >= self.max;
-        let (run_lo, run_hi) = walk_run_bounds(&self.items, playhead);
+        let FrameRun {
+            lo: run_lo,
+            hi: run_hi,
+        } = walk_run_bounds(&self.items, playhead);
         let solid_len = run_hi.saturating_sub(run_lo).saturating_add(1);
         let solid_at_cap =
             at_cap && (solid_len as usize >= self.max || solid_len == self.items.len() as FrameId);
         if solid_at_cap {
-            let extent = Some((run_lo, run_hi));
+            let extent = Some(FrameRun::new(run_lo, run_hi));
             if !scrub_gap_fill_armed(true, playhead, extent, last, margin_left, margin_right) {
                 return None;
             }
@@ -205,7 +208,7 @@ impl<V> AimWindow<V> {
             return Some(gap);
         }
         let extent = self.extent();
-        let no_gaps = extent.is_some_and(|(lo, hi)| {
+        let no_gaps = extent.is_some_and(|FrameRun { lo, hi }| {
             hi.saturating_sub(lo)
                 .saturating_add(1)
                 .eq(&(self.items.len() as FrameId))
@@ -242,7 +245,7 @@ impl<V> AimWindow<V> {
 /// Does not own frames — only the optional cached run around the cache aim.
 pub struct FrameRunIndex {
     /// Inclusive run containing the dense-cache aim, when known.
-    playhead_run: Cell<Option<(FrameId, FrameId)>>,
+    playhead_run: Cell<Option<FrameRun>>,
 }
 
 impl Default for FrameRunIndex {
@@ -264,7 +267,7 @@ impl FrameRunIndex {
 
     /// Aim moved: keep the cache only if the new aim stays inside the run.
     pub fn on_aim_change(&self, new_aim: FrameId) {
-        if let Some((lo, hi)) = self.playhead_run.get()
+        if let Some(FrameRun { lo, hi }) = self.playhead_run.get()
             && (new_aim < lo || new_aim > hi)
         {
             self.playhead_run.set(None);
@@ -273,7 +276,7 @@ impl FrameRunIndex {
 
     /// After a successful insert into `frames`.
     pub fn note_insert<V>(&self, frames: &BTreeMap<FrameId, V>, aim: FrameId, frame: FrameId) {
-        let Some((lo, hi)) = self.playhead_run.get() else {
+        let Some(FrameRun { lo, hi }) = self.playhead_run.get() else {
             return;
         };
         if !frames.contains_key(&aim) {
@@ -285,13 +288,13 @@ impl FrameRunIndex {
             while new_lo > 0 && frames.contains_key(&(new_lo - 1)) {
                 new_lo -= 1;
             }
-            self.playhead_run.set(Some((new_lo, hi)));
+            self.playhead_run.set(Some(FrameRun::new(new_lo, hi)));
         } else if frame == hi + 1 {
             let mut new_hi = frame;
             while frames.contains_key(&(new_hi + 1)) {
                 new_hi += 1;
             }
-            self.playhead_run.set(Some((lo, new_hi)));
+            self.playhead_run.set(Some(FrameRun::new(lo, new_hi)));
         }
         // Outside this run / already covered — leave cache as-is.
     }
@@ -302,7 +305,7 @@ impl FrameRunIndex {
     /// and tests that still shrink capped windows.
     #[allow(dead_code)]
     pub fn note_remove(&self, aim: FrameId, frame: FrameId) {
-        let Some((lo, hi)) = self.playhead_run.get() else {
+        let Some(FrameRun { lo, hi }) = self.playhead_run.get() else {
             return;
         };
         if frame < lo || frame > hi {
@@ -316,20 +319,20 @@ impl FrameRunIndex {
             if lo == hi {
                 self.playhead_run.set(None);
             } else {
-                self.playhead_run.set(Some((lo + 1, hi)));
+                self.playhead_run.set(Some(FrameRun::new(lo + 1, hi)));
             }
         } else if frame == hi {
             if lo == hi {
                 self.playhead_run.set(None);
             } else {
-                self.playhead_run.set(Some((lo, hi - 1)));
+                self.playhead_run.set(Some(FrameRun::new(lo, hi - 1)));
             }
         }
     }
 
     /// Whole key set is a single solid run `[lo, hi]` (and `aim` is inside it).
-    pub fn set_solid_run(&self, lo: FrameId, hi: FrameId) {
-        self.playhead_run.set(Some((lo, hi)));
+    pub fn set_solid_run(&self, run: FrameRun) {
+        self.playhead_run.set(Some(run));
     }
 
     /// Nearest missing id to `playhead` within `[0, last]`.
@@ -344,7 +347,7 @@ impl FrameRunIndex {
         playhead: FrameId,
         last: FrameId,
         no_gaps: bool,
-        extent: Option<(FrameId, FrameId)>,
+        extent: Option<FrameRun>,
         dir: i8,
     ) -> Option<FrameId> {
         if last == 0 && !frames.contains_key(&0) {
@@ -368,13 +371,19 @@ impl FrameRunIndex {
             return nearer_gap_with_dir(playhead, behind_adj, ahead_adj, dir);
         }
         if behind_adj.is_some() || ahead_adj.is_some() {
-            let (run_lo, run_hi) = self.run_bounds(frames, aim, playhead);
+            let FrameRun {
+                lo: run_lo,
+                hi: run_hi,
+            } = self.run_bounds(frames, aim, playhead);
             let behind = behind_adj.or_else(|| run_lo.checked_sub(1));
             let ahead = ahead_adj.or_else(|| (run_hi < last).then_some(run_hi + 1));
             return nearer_gap_with_dir(playhead, behind, ahead, dir);
         }
 
-        let (run_lo, run_hi) = self.run_bounds(frames, aim, playhead);
+        let FrameRun {
+            lo: run_lo,
+            hi: run_hi,
+        } = self.run_bounds(frames, aim, playhead);
         let behind = run_lo.checked_sub(1);
         let ahead = (run_hi < last).then_some(run_hi + 1);
         nearer_gap_with_dir(playhead, behind, ahead, dir)
@@ -385,23 +394,23 @@ impl FrameRunIndex {
         frames: &BTreeMap<FrameId, V>,
         aim: FrameId,
         playhead: FrameId,
-    ) -> (FrameId, FrameId) {
+    ) -> FrameRun {
         if playhead == aim
-            && let Some((lo, hi)) = self.playhead_run.get()
+            && let Some(FrameRun { lo, hi }) = self.playhead_run.get()
             && playhead >= lo
             && playhead <= hi
         {
-            return (lo, hi);
+            return FrameRun::new(lo, hi);
         }
-        let (lo, hi) = walk_run_bounds(frames, playhead);
+        let FrameRun { lo, hi } = walk_run_bounds(frames, playhead);
         if playhead == aim {
-            self.playhead_run.set(Some((lo, hi)));
+            self.playhead_run.set(Some(FrameRun::new(lo, hi)));
         }
-        (lo, hi)
+        FrameRun::new(lo, hi)
     }
 }
 
-fn walk_run_bounds<V>(frames: &BTreeMap<FrameId, V>, playhead: FrameId) -> (FrameId, FrameId) {
+fn walk_run_bounds<V>(frames: &BTreeMap<FrameId, V>, playhead: FrameId) -> FrameRun {
     let mut run_lo = playhead;
     for &id in frames.range(..playhead).rev().map(|(k, _)| k) {
         if id + 1 == run_lo {
@@ -421,16 +430,16 @@ fn walk_run_bounds<V>(frames: &BTreeMap<FrameId, V>, playhead: FrameId) -> (Fram
             break;
         }
     }
-    (run_lo, run_hi)
+    FrameRun::new(run_lo, run_hi)
 }
 
 fn next_gap_outside_extent(
     playhead: FrameId,
     last: FrameId,
-    extent: Option<(FrameId, FrameId)>,
+    extent: Option<FrameRun>,
     dir: i8,
 ) -> Option<FrameId> {
-    let (lo, hi) = extent?;
+    let FrameRun { lo, hi } = extent?;
     let behind = lo.checked_sub(1);
     let ahead = hi.checked_add(1).filter(|&a| a <= last);
     nearer_gap_with_dir(playhead, behind, ahead, dir)
@@ -521,7 +530,7 @@ impl ScrubChunkStore {
         self.window.keys().collect()
     }
 
-    pub fn extent(&self) -> Option<(FrameId, FrameId)> {
+    pub fn extent(&self) -> Option<FrameRun> {
         self.window.extent()
     }
 
@@ -596,13 +605,13 @@ impl ScrubChunkStore {
 
     fn refresh_no_gaps(&mut self) {
         self.no_gaps = match self.extent() {
-            Some((lo, hi)) => {
+            Some(FrameRun { lo, hi }) => {
                 let solid = hi
                     .checked_sub(lo)
                     .and_then(|d| d.checked_add(1))
                     .is_some_and(|n| n == self.window.len() as FrameId);
                 if solid && self.window.contains(self.playhead()) {
-                    self.runs.set_solid_run(lo, hi);
+                    self.runs.set_solid_run(FrameRun { lo, hi });
                 }
                 solid
             }

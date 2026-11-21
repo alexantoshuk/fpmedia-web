@@ -516,7 +516,7 @@ fn pipeline_stats_json(stats: Option<PipelineStats>) -> String {
     let playable = s
         .fetch_playable_runs
         .iter()
-        .map(|(lo, hi)| format!("[{lo},{hi}]"))
+        .map(|r| format!("[{},{}]", r.lo, r.hi))
         .collect::<Vec<_>>()
         .join(",");
     let ready = s
