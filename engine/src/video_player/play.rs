@@ -77,7 +77,6 @@ impl VideoPlayer {
         self.shared.loop_origin_warm_started.set(false);
         self.shared.seam_audio_warm.set(false);
         self.shared.seam_hold_frame.set(None);
-        self.shared.seam_release_no_skip.set(false);
         self.shared.seam_release_aim.set(None);
         // Keep `loop_origin_stash` — playlist idle prewarm must survive pause of
         // the outgoing clip / soft holds; PlayPrime@0 and LoopSeam consume it.
@@ -181,21 +180,19 @@ impl VideoPlayer {
         self.kick_update_next_frame();
         // Clear no-skip after natural advance past aim; snap once (not every rAF —
         // per-tick glue pinned media_time at aim forever → stall at Host join).
-        if self.shared.seam_release_no_skip.get() {
-            let aim = self.shared.seam_release_aim.get().unwrap_or(0);
-            if self.state().frame > aim {
-                let aac_master = self
-                    .shared
-                    .audio
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|a| a.is_playing());
-                if !aac_master {
-                    self.snap_playing_clock_to_playhead();
-                }
-                self.shared.seam_release_no_skip.set(false);
-                self.shared.seam_release_aim.set(None);
+        if let Some(aim) = self.shared.seam_release_aim.get()
+            && self.state().frame > aim
+        {
+            let aac_master = self
+                .shared
+                .audio
+                .borrow()
+                .as_ref()
+                .is_some_and(|a| a.is_playing());
+            if !aac_master {
+                self.snap_playing_clock_to_playhead();
             }
+            self.shared.seam_release_aim.set(None);
         }
         Ok(tick)
     }
@@ -321,7 +318,7 @@ impl VideoPlayer {
             // mediabunny: updateNextFrame overdue draw; gates local.
             let can_skip = self.shared.play_phase.get() == PlayPhase::Live
                 && !self.shared.pending_silent_clock.get()
-                && !self.shared.seam_release_no_skip.get();
+                && self.shared.seam_release_aim.get().is_none();
             if ts <= t && can_skip {
                 if !self.is_shuttle() && overdue >= 1 {
                     let slot = self.copy_to_play_pool(id, video.as_web_sys())?;
@@ -1433,7 +1430,6 @@ impl VideoPlayer {
         }
         self.shared.seam_hold_frame.set(None);
         self.shared.seam_release_aim.set(Some(aim));
-        self.shared.seam_release_no_skip.set(true);
         self.hard_reset_timeline_to(t0);
         self.shared.held_media_origin.set(Some(t0));
         // No `arm_underrun_catchup_grace` — warm→Live grace helped skip storms.

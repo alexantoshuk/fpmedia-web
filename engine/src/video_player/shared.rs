@@ -156,11 +156,9 @@ pub(super) struct Shared {
     pub(super) seam_hold_arm: SingleFlight,
     /// Aim frame for an armed / arming [`crate::PlayPhase::SeamHold`] (playlist Host).
     pub(super) seam_hold_frame: Cell<Option<FrameId>>,
-    /// After SeamHold release: block overdue skip until playhead advances past
-    /// [`Self::seam_release_aim`] (warm iter must not skip-catch past Host wall).
-    /// **no equivalent**.
-    pub(super) seam_release_no_skip: Cell<bool>,
-    /// Aim latched at SeamHold release while [`Self::seam_release_no_skip`].
+    /// After SeamHold release: `Some(aim)` = no-skip active — block overdue skip
+    /// until the playhead advances past `aim` (warm iter must not skip-catch
+    /// past Host wall). `None` = inactive. **no equivalent**.
     pub(super) seam_release_aim: Cell<Option<FrameId>>,
     /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).
     pub(super) scrub_gesture: Cell<bool>,

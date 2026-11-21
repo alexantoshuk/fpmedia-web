@@ -1,5 +1,5 @@
 rc_dyn_fn=15
 arc=80
 mutex=12
-shared_cells=42
+shared_cells=41
 frame_casts=30

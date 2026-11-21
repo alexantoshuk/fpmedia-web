@@ -205,7 +205,6 @@ impl VideoPlayer {
             seam_audio_warm: Cell::new(false),
             seam_hold_arm: crate::SingleFlight::new(),
             seam_hold_frame: Cell::new(None),
-            seam_release_no_skip: Cell::new(false),
             seam_release_aim: Cell::new(None),
             scrub_gesture: Cell::new(false),
             drag_aim: Cell::new(0),

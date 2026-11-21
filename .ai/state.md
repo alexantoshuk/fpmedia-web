@@ -38,7 +38,6 @@ Rules: `architecture.md` § Ownership & types. Each item leaves this list in the
 1. **Engine guards.**
    - **1b `PlayIter` guard (last):** ~20 `iter.finish()` sites (`play.rs`, `play_iter.rs`) each hand the main decoder back to `decoder_slot`. Design pass first: table of exit paths (cancel, EOF, error, seek-restart, `LoopPlayWarm` adopt, clip switch, player Drop) → who gets the decoder; `Drop` is sync (`try_borrow`). Cite `mediabunny: src/media-sink.ts` `mediaSamplesInRange` / `iterator.return()`. Then drop the item (`closes: Ownership debt - Engine helpers`).
 2. **`Shared` grouping** (`engine/src/video_player/shared.rs`, ~59 `Cell`; lower `shared_cells` baseline in the same commit). Sub-commits:
-   - **`SeamRelease`:** `seam_release_no_skip` + `seam_release_aim` → one `Cell<Option<FrameId>>` (`Some` = no-skip active); verify the invariant at `play.rs` 80 / 184–197 / 324 / 1435.
    - **`ScrubDir`** enum `{Behind, Neutral, Ahead}` for `scrub_dir: Cell<i8>` + `prev_scrub_aim`; `dir: i8` threads ~20 signatures (`residency.rs`, `policy/clip.rs`, components `densify_plan`, `thumb_cache::nearest` — its `dir` is unused, delete) and public `VideoRef::scrub_dir()`; engine + components in one commit.
    - **`UnderrunStats`:** `frames_skipped`, `last_behind_ms`, `underrun_holds`, `underrun_hold_ms`, `underrun_hold_since_ms`, `underrun_catchup_until_ms` → one `Cell<Copy struct>` (read by `PipelineStats`).
    - **`LoopSpec { looping, loop_in, loop_out }`** with `zone(count) -> LoopZone` (replaces manual `LoopZone::normalize` in `shared.rs`).
