@@ -23,10 +23,9 @@ use crate::bitstream::{
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::error::MediaError;
 use crate::types::{EncodedSample, FrameId, VideoMetadata};
+use crate::waiters::Waiters;
 
-use super::pump::{
-    is_chromium, promise_race, sleep_promise_ms, ticks_to_micros, wake_waiters_deferred,
-};
+use super::pump::{is_chromium, promise_race, sleep_promise_ms, ticks_to_micros};
 
 /// Restores [`DecoderCore::prune_floor_us`] when a consumer decode returns
 /// (including cancel / early Ok).
@@ -254,13 +253,13 @@ pub(super) struct DecoderCore {
     pub(super) frames: Rc<RefCell<Vec<OwnedVideoFrame>>>,
     pub(super) error: Rc<RefCell<Option<String>>>,
     /// Resolvers waiting for the next `output` callback (mediabunny-style).
-    pub(super) output_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
+    pub(super) output_waiters: Waiters,
     /// Resolvers waiting for `dequeue` (decodeQueueSize decreased).
-    pub(super) dequeue_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
+    pub(super) dequeue_waiters: Waiters,
     /// Resolvers waiting for `held` to gain a remapped frame
     /// (mediabunny `onQueueNotEmpty`) — the pump can fill `held` while the
     /// consumer waits, and only this wakes it.
-    pub(super) not_empty_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
+    pub(super) not_empty_waiters: Waiters,
     pub(super) fed_through_order: Option<usize>,
     pub(super) key_order: Option<usize>,
     /// Sorted PTS (µs) of fed chunks — shifted onto outputs in presentation order.
@@ -295,16 +294,15 @@ impl DecoderCore {
         let generation = Rc::new(Cell::new(0));
         let frames: Rc<RefCell<Vec<OwnedVideoFrame>>> = Rc::new(RefCell::new(Vec::new()));
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-        let output_waiters: Rc<RefCell<Vec<js_sys::Function>>> = Rc::new(RefCell::new(Vec::new()));
-        let dequeue_waiters: Rc<RefCell<Vec<js_sys::Function>>> = Rc::new(RefCell::new(Vec::new()));
-        let not_empty_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
-            Rc::new(RefCell::new(Vec::new()));
+        let output_waiters = Waiters::new();
+        let dequeue_waiters = Waiters::new();
+        let not_empty_waiters = Waiters::new();
 
         let gen_cb = Rc::clone(&generation);
         let my_gen = gen_cb.get();
         let frames_cb = Rc::clone(&frames);
-        let waiters_cb = Rc::clone(&output_waiters);
-        let dequeue_on_output = Rc::clone(&dequeue_waiters);
+        let waiters_cb = output_waiters.clone();
+        let dequeue_on_output = dequeue_waiters.clone();
         let on_output = Closure::wrap(Box::new(move |value: JsValue| {
             if gen_cb.get() != my_gen {
                 if let Ok(frame) = value.dyn_into::<VideoFrame>() {
@@ -315,15 +313,13 @@ impl DecoderCore {
             if let Ok(frame) = value.dyn_into::<VideoFrame>() {
                 frames_cb.borrow_mut().push(OwnedVideoFrame::new(frame));
             }
-            let waiting = std::mem::take(&mut *waiters_cb.borrow_mut());
             // Defer resolves — sync wake from inside this Closure re-enters Rust
             // (decode → recreate → drop Closure) and panics with
             // "closure invoked recursively or after being dropped".
-            wake_waiters_deferred(waiting);
+            waiters_cb.wake_deferred();
             // mediabunny: `onQueueDequeue()` on every decoder output (even when
             // the sample will be closed) so the encode pump unblocks.
-            let waiting = std::mem::take(&mut *dequeue_on_output.borrow_mut());
-            wake_waiters_deferred(waiting);
+            dequeue_on_output.wake_deferred();
         }) as Box<dyn FnMut(JsValue)>);
 
         let gen_err = Rc::clone(&generation);
@@ -346,13 +342,12 @@ impl DecoderCore {
 
         let gen_dq = Rc::clone(&generation);
         let my_gen_dq = gen_dq.get();
-        let dequeue_cb = Rc::clone(&dequeue_waiters);
+        let dequeue_cb = dequeue_waiters.clone();
         let on_dequeue = Closure::wrap(Box::new(move |_value: JsValue| {
             if gen_dq.get() != my_gen_dq {
                 return;
             }
-            let waiting = std::mem::take(&mut *dequeue_cb.borrow_mut());
-            wake_waiters_deferred(waiting);
+            dequeue_cb.wake_deferred();
         }) as Box<dyn FnMut(JsValue)>);
 
         let init = VideoDecoderInit::new(
@@ -427,12 +422,9 @@ impl DecoderCore {
         self.input_timestamps.clear();
         self.packets_fed = 0;
         self.rasl_skipped = false;
-        let waiting = std::mem::take(&mut *self.output_waiters.borrow_mut());
-        wake_waiters_deferred(waiting);
-        let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
-        wake_waiters_deferred(waiting);
-        let waiting = std::mem::take(&mut *self.not_empty_waiters.borrow_mut());
-        wake_waiters_deferred(waiting);
+        self.output_waiters.wake_deferred();
+        self.dequeue_waiters.wake_deferred();
+        self.not_empty_waiters.wake_deferred();
         *self.error.borrow_mut() = None;
     }
 
@@ -530,14 +522,12 @@ impl DecoderCore {
 
     /// mediabunny `onQueueDequeue` after consumer take / early sample close.
     pub(super) fn wake_dequeue_waiters(&self) {
-        let waiting = std::mem::take(&mut *self.dequeue_waiters.borrow_mut());
-        wake_waiters_deferred(waiting);
+        self.dequeue_waiters.wake_deferred();
     }
 
     /// mediabunny `onQueueNotEmpty` — `held` gained a presentation-order frame.
     pub(super) fn wake_not_empty_waiters(&self) {
-        let waiting = std::mem::take(&mut *self.not_empty_waiters.borrow_mut());
-        wake_waiters_deferred(waiting);
+        self.not_empty_waiters.wake_deferred();
     }
 
     fn push_input_timestamp(&mut self, pts_us: i64) {

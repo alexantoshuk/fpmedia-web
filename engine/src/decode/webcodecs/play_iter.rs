@@ -287,9 +287,9 @@ async fn wait_progress(core: &Rc<RefCell<DecoderCore>>) {
         let c = core.borrow();
         (
             Rc::clone(&c.frames),
-            Rc::clone(&c.output_waiters),
-            Rc::clone(&c.dequeue_waiters),
-            Rc::clone(&c.not_empty_waiters),
+            c.output_waiters.clone(),
+            c.dequeue_waiters.clone(),
+            c.not_empty_waiters.clone(),
         )
     };
     let output = js_sys::Promise::new(&mut |resolve, _reject| {
@@ -297,13 +297,13 @@ async fn wait_progress(core: &Rc<RefCell<DecoderCore>>) {
             let _ = resolve.call0(&JsValue::NULL);
             return;
         }
-        output_w.borrow_mut().push(resolve);
+        output_w.register(resolve);
     });
     let dequeue = js_sys::Promise::new(&mut |resolve, _reject| {
-        dequeue_w.borrow_mut().push(resolve);
+        dequeue_w.register(resolve);
     });
     let not_empty = js_sys::Promise::new(&mut |resolve, _reject| {
-        not_empty_w.borrow_mut().push(resolve);
+        not_empty_w.register(resolve);
     });
     let lost_wake = sleep_promise_ms(LOST_WAKE_MS);
     let all = js_sys::Array::of4(&output, &dequeue, &not_empty, &lost_wake);

@@ -8,7 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use wasm_bindgen::JsValue;
-use wasm_bindgen_futures::{JsFuture, spawn_local};
+use wasm_bindgen_futures::JsFuture;
 
 use crate::decode::owned_video_frame::OwnedVideoFrame;
 use crate::demux::Mp4VideoTrack;
@@ -640,14 +640,14 @@ pub(super) async fn await_outputs_if_pending(
 async fn poll_output_or_macrotask(core: &Rc<RefCell<DecoderCore>>) {
     let (frames, output_waiters) = {
         let c = core.borrow();
-        (Rc::clone(&c.frames), Rc::clone(&c.output_waiters))
+        (Rc::clone(&c.frames), c.output_waiters.clone())
     };
     let output = js_sys::Promise::new(&mut |resolve, _reject| {
         if !frames.borrow().is_empty() {
             let _ = resolve.call0(&JsValue::NULL);
             return;
         }
-        output_waiters.borrow_mut().push(resolve);
+        output_waiters.register(resolve);
     });
     // Macrotask — HW decode often will not finish in a microtask-only spin
     // (that path forced `flush` on long-GOP frame 0 and broke Play).
@@ -662,13 +662,13 @@ async fn poll_output_or_macrotask(core: &Rc<RefCell<DecoderCore>>) {
 async fn wait_for_capacity_progress(core: &Rc<RefCell<DecoderCore>>) {
     let (output_waiters, dequeue_waiters) = {
         let c = core.borrow();
-        (Rc::clone(&c.output_waiters), Rc::clone(&c.dequeue_waiters))
+        (c.output_waiters.clone(), c.dequeue_waiters.clone())
     };
     let output = js_sys::Promise::new(&mut |resolve, _reject| {
-        output_waiters.borrow_mut().push(resolve);
+        output_waiters.register(resolve);
     });
     let dequeue = js_sys::Promise::new(&mut |resolve, _reject| {
-        dequeue_waiters.borrow_mut().push(resolve);
+        dequeue_waiters.register(resolve);
     });
     let tick = sleep_promise_ms(0);
     let _ = JsFuture::from(js_sys::Promise::race(&js_sys::Array::of3(
@@ -684,8 +684,8 @@ pub(super) async fn wait_for_frame_progress(core: &Rc<RefCell<DecoderCore>>) {
         let c = core.borrow();
         (
             Rc::clone(&c.frames),
-            Rc::clone(&c.output_waiters),
-            Rc::clone(&c.not_empty_waiters),
+            c.output_waiters.clone(),
+            c.not_empty_waiters.clone(),
         )
     };
     let output = js_sys::Promise::new(&mut |resolve, _reject| {
@@ -693,30 +693,16 @@ pub(super) async fn wait_for_frame_progress(core: &Rc<RefCell<DecoderCore>>) {
             let _ = resolve.call0(&JsValue::NULL);
             return;
         }
-        output_waiters.borrow_mut().push(resolve);
+        output_waiters.register(resolve);
     });
     let not_empty = js_sys::Promise::new(&mut |resolve, _reject| {
-        not_empty_waiters.borrow_mut().push(resolve);
+        not_empty_waiters.register(resolve);
     });
     let tick = sleep_promise_ms(0);
     let _ = JsFuture::from(js_sys::Promise::race(&js_sys::Array::of3(
         &output, &not_empty, &tick,
     )))
     .await;
-}
-
-pub(super) fn wake_waiters_deferred(waiting: Vec<js_sys::Function>) {
-    if waiting.is_empty() {
-        return;
-    }
-    // Leave the WebCodecs Closure stack before waking Rust waiters (reentrancy).
-    // `spawn_local` is reliable; raw `queueMicrotask(promiseResolve)` can fail to
-    // run and leave `open` / decode stuck with `busy=true` and no error.
-    for resolve in waiting {
-        spawn_local(async move {
-            let _ = resolve.call0(&JsValue::NULL);
-        });
-    }
 }
 
 pub(super) fn ticks_to_micros(ticks: i64, timescale: u64) -> i64 {

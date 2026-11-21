@@ -33,6 +33,7 @@ use crate::audio::pcm::slice_planar_for_stretch;
 use crate::error::MediaError;
 use crate::normalize_playback_rate;
 use crate::types::AudioMetadata;
+use crate::waiters::Waiters;
 
 /// How far ahead of media time to keep scheduling before yielding (seconds).
 /// `mediabunny: examples/media-player runAudioIterator` — throttle at ≥ 1 s.
@@ -94,9 +95,9 @@ pub struct AudioOutput {
     queued: Rc<RefCell<Vec<AudioBufferSourceNode>>>,
     pending: Rc<RefCell<VecDeque<PendingSample>>>,
     /// Pump parked on decoder output / dequeue (`onQueueDequeue`).
-    progress_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
+    progress_waiters: Waiters,
     /// `throttle_ahead` waiters — woken by node `onended` or [`Self::set_tab_hidden`].
-    ahead_waiters: Rc<RefCell<Vec<js_sys::Function>>>,
+    ahead_waiters: Waiters,
     /// Document hidden — deeper ahead + no schedule-slice yields (timer throttle).
     tab_hidden: Cell<bool>,
     error: Rc<RefCell<Option<String>>>,
@@ -136,13 +137,12 @@ impl AudioOutput {
 
         let pending: Rc<RefCell<VecDeque<PendingSample>>> = Rc::new(RefCell::new(VecDeque::new()));
         let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-        let progress_waiters: Rc<RefCell<Vec<js_sys::Function>>> =
-            Rc::new(RefCell::new(Vec::new()));
+        let progress_waiters = Waiters::new();
         let queued: Rc<RefCell<Vec<AudioBufferSourceNode>>> = Rc::new(RefCell::new(Vec::new()));
-        let ahead_waiters: Rc<RefCell<Vec<js_sys::Function>>> = Rc::new(RefCell::new(Vec::new()));
+        let ahead_waiters = Waiters::new();
 
         let pending_out = Rc::clone(&pending);
-        let waiters_out = Rc::clone(&progress_waiters);
+        let waiters_out = progress_waiters.clone();
         let on_output = Closure::wrap(Box::new(move |value: JsValue| {
             let Ok(data) = value.dyn_into::<AudioData>() else {
                 return;
@@ -153,16 +153,16 @@ impl AudioOutput {
                 timestamp_secs,
                 payload: PendingPayload::Decoded(owned),
             });
-            wake_waiters_deferred(std::mem::take(&mut *waiters_out.borrow_mut()));
+            waiters_out.wake_deferred();
         }) as Box<dyn FnMut(JsValue)>);
 
-        let waiters_dq = Rc::clone(&progress_waiters);
+        let waiters_dq = progress_waiters.clone();
         let on_dequeue = Closure::wrap(Box::new(move |_value: JsValue| {
-            wake_waiters_deferred(std::mem::take(&mut *waiters_dq.borrow_mut()));
+            waiters_dq.wake_deferred();
         }) as Box<dyn FnMut(JsValue)>);
 
         let queued_end = Rc::clone(&queued);
-        let ahead_end = Rc::clone(&ahead_waiters);
+        let ahead_end = ahead_waiters.clone();
         let on_ended = Closure::wrap(Box::new(move |event: JsValue| {
             let Ok(target) = js_sys::Reflect::get(&event, &"target".into()) else {
                 return;
@@ -173,7 +173,7 @@ impl AudioOutput {
             // Audio-thread edge — still fires when the tab is hidden (unlike
             // throttled `setTimeout`). Lets `throttle_ahead` refill without
             // waiting for the ~1 Hz background timer budget.
-            wake_waiters_deferred(std::mem::take(&mut *ahead_end.borrow_mut()));
+            ahead_end.wake_deferred();
         }) as Box<dyn FnMut(JsValue)>);
 
         let error_out = Rc::clone(&error);
@@ -243,7 +243,7 @@ impl AudioOutput {
         if self.tab_hidden.replace(hidden) == hidden {
             return;
         }
-        wake_waiters_deferred(std::mem::take(&mut *self.ahead_waiters.borrow_mut()));
+        self.ahead_waiters.wake_deferred();
         if hidden {
             web_sys::console::log_1(
                 &format!("fpmedia-web: audio ahead → {AHEAD_SECS_HIDDEN}s (tab hidden)").into(),
@@ -711,9 +711,9 @@ impl AudioOutput {
 
     /// Park until a scheduled node ends, tab-hidden flips, or a short poll.
     async fn wait_ahead_slack(&self) {
-        let waiters = Rc::clone(&self.ahead_waiters);
+        let waiters = self.ahead_waiters.clone();
         let progress = js_sys::Promise::new(&mut |resolve, _reject| {
-            waiters.borrow_mut().push(resolve);
+            waiters.register(resolve);
         });
         // Visible: 50 ms like before. Hidden: poll is throttled anyway; onended
         // is the real wake — keep a backup so we never hang if nodes are empty.
@@ -722,7 +722,7 @@ impl AudioOutput {
         let race = js_sys::Promise::race(&js_sys::Array::of2(&progress, &poll));
         let _ = JsFuture::from(race).await;
         // Timeout path: drop unused resolvers (progress Promise abandoned).
-        waiters.borrow_mut().clear();
+        waiters.clear();
     }
 
     fn decode_queue_size(&self) -> usize {
@@ -737,13 +737,13 @@ impl AudioOutput {
     /// lost-wake timer.
     async fn wait_decoder_progress(&self) {
         let pending = Rc::clone(&self.pending);
-        let waiters = Rc::clone(&self.progress_waiters);
+        let waiters = self.progress_waiters.clone();
         let progress = js_sys::Promise::new(&mut |resolve, _reject| {
             if !pending.borrow().is_empty() {
                 let _ = resolve.call0(&JsValue::NULL);
                 return;
             }
-            waiters.borrow_mut().push(resolve);
+            waiters.register(resolve);
         });
         let lost_wake = crate::timer::timeout_promise(LOST_WAKE_MS, || JsValue::UNDEFINED);
         let race = js_sys::Promise::race(&js_sys::Array::of2(&progress, &lost_wake));
@@ -1032,16 +1032,6 @@ impl Drop for AudioOutput {
             let _ = dec.close();
         }
         let _ = self.context.close();
-    }
-}
-
-/// Leave the WebCodecs callback stack before waking the feeder (reentrancy —
-/// `skills/media.md` Closures).
-fn wake_waiters_deferred(waiting: Vec<js_sys::Function>) {
-    for resolve in waiting {
-        wasm_bindgen_futures::spawn_local(async move {
-            let _ = resolve.call0(&JsValue::NULL);
-        });
     }
 }
 

@@ -29,6 +29,8 @@ mod video_player;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub mod timer;
+#[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
+mod waiters;
 
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]
 pub use audio::{AudioOutput, OwnedAudioData};
