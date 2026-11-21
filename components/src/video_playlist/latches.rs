@@ -43,7 +43,10 @@ impl HostLatches {
 /// Not `Copy` — read one field via `with_value`, write via `update_value`
 /// (`get_value()` would clone every collection on the Effect hot path).
 #[derive(Debug, Default)]
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg_attr(
+    any(not(target_arch = "wasm32"), not(feature = "thumbs")),
+    allow(dead_code)
+)]
 pub(crate) struct ThumbFillState {
     /// Per-clip sync FrameIds (local) for VT thumb progressive — survives idle rebind.
     pub(crate) sync_keys: HashMap<u32, Vec<FrameId>>,

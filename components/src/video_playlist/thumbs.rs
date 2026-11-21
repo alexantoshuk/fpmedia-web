@@ -7,19 +7,24 @@
 //! Decode: `mediabunny:` CanvasSink.
 
 use leptos::prelude::*;
+#[cfg(feature = "thumbs")]
 use wasm_bindgen_futures::spawn_local;
 
+#[cfg(feature = "thumbs")]
 use crate::frame_axis::GlobalFrame;
+#[cfg(feature = "thumbs")]
 use crate::virtual_timeline::{
     ThumbFillPlanInput, merge_global_sync_keys, plan_next_thumb_fill, rank_for_global_key,
     resolve_thumb_fill_playlist,
 };
+#[cfg(feature = "thumbs")]
 use fpmedia_web::FrameId;
 
 use super::latches::ThumbFillState;
 use super::video_playlist_ref::VideoPlaylistRef;
 
 /// Host thumb decode box (API [`VideoPlaylistRef::thumb_max_size`]).
+#[cfg(feature = "thumbs")]
 fn thumb_box(pl: VideoPlaylistRef) -> (u32, u32) {
     pl.thumb_max_size()
 }
@@ -28,11 +33,13 @@ fn fill_inflight(pl: VideoPlaylistRef) -> bool {
     pl.thumb_fill.with_value(|s| s.inflight)
 }
 
+#[cfg(feature = "thumbs")]
 fn set_fill_inflight(pl: VideoPlaylistRef, inflight: bool) {
     pl.thumb_fill.update_value(|s| s.inflight = inflight);
 }
 
 /// Refresh per-clip sync key cache from open live/idle **and** producer clip.
+#[cfg(feature = "thumbs")]
 pub(crate) fn refresh_thumb_sync_keys(pl: VideoPlaylistRef) {
     let mut cache = pl.thumb_fill.with_value(|s| s.sync_keys.clone());
     let live_clip = pl.live_clip.get_untracked();
@@ -81,7 +88,6 @@ pub(crate) fn kick_vt_thumb_fill(pl: VideoPlaylistRef) {
     #[cfg(not(feature = "thumbs"))]
     {
         let _ = pl;
-        return;
     }
     #[cfg(feature = "thumbs")]
     {
@@ -243,6 +249,7 @@ async fn fill_one(args: FillOne) -> bool {
     )
 }
 
+#[cfg(feature = "thumbs")]
 fn video_for_clip(pl: VideoPlaylistRef, clip_index: u32) -> Option<crate::VideoRef> {
     if pl.live_clip.get_untracked() == clip_index {
         return Some(pl.live_video());

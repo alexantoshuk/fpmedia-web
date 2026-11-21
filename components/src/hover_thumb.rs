@@ -13,10 +13,12 @@ use std::rc::Rc;
 
 use leptos::html::{Canvas, Div};
 use leptos::prelude::*;
+#[cfg(feature = "thumbs")]
 use web_sys::HtmlCanvasElement;
 
 use crate::TimelineRef;
 use crate::VideoRef;
+#[cfg(feature = "thumbs")]
 use crate::helpers::{hover_thumb_left, hover_thumb_transform_css};
 use crate::local_epoch::LocalEpoch;
 use crate::scrubber::{HoverThumbApi, ScrubberCtx};
@@ -27,6 +29,7 @@ pub const DEFAULT_HOVER_THUMB_MAX_H: u32 = fpmedia_web::DEFAULT_THUMB_MAX_H;
 
 /// Coalesce window before deferred Exact `paint_hover_thumb` (ms). This is the
 /// dwell delay — engine has no second global aim floor (that left Exact stuck).
+#[cfg(feature = "thumbs")]
 const DEFER_HOVER_PAINT_MS: f64 = 150.0;
 
 /// Signals for host chrome under [`HoverThumb`] (`use_context`).
@@ -123,7 +126,6 @@ pub fn HoverThumb(
             #[cfg(not(feature = "thumbs"))]
             {
                 let _ = (x, track_width, aim, &timeline, &hide, root_ref);
-                return;
             }
             #[cfg(feature = "thumbs")]
             {

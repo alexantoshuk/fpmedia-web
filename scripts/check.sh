@@ -22,6 +22,9 @@ cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-demo-player -- -D wa
 echo "check: clippy (components wasm)"
 cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-components -- -D warnings
 
+echo "check: clippy (components wasm, no default features)"
+cargo clippy --target wasm32-unknown-unknown -p fpmedia-web-components --no-default-features -- -D warnings
+
 echo "check: clippy (components native)"
 cargo clippy -p fpmedia-web-components --all-targets -- -D warnings
 

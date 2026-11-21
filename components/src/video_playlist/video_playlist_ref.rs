@@ -656,26 +656,26 @@ impl VideoPlaylistRef {
             return;
         };
         // On-slot Pause: slot Exact refine, then import into VT.
-        if let Some(video) = self.video_for_clip(pos.clip_index) {
-            video.paint_hover_thumb(pos.frame.source(), dest, max_w, max_h);
+        let Some(video) = self.video_for_clip(pos.clip_index) else {
+            // Off-slot: producer fill (Pause only) — never steal play idle.
             #[cfg(feature = "thumbs")]
-            if let Some(bmp) = video.clone_thumb_bitmap(pos.frame.source(), max_w, max_h)
-                && let Some(cache) = self.thumb_cache.get_value()
-            {
-                let tw = bmp.width().max(1);
-                let th = bmp.height().max(1);
-                if cache
-                    .borrow_mut()
-                    .put(GlobalFrame::new(global_frame), bmp, tw, th, u16::MAX)
-                {
-                    self.bump_thumb_residency();
-                }
-            }
+            super::thumbs::kick_hover_fill(self, global_frame, max_w, max_h);
             return;
-        }
-        // Off-slot: producer fill (Pause only) — never steal play idle.
+        };
+        video.paint_hover_thumb(pos.frame.source(), dest, max_w, max_h);
         #[cfg(feature = "thumbs")]
-        super::thumbs::kick_hover_fill(self, global_frame, max_w, max_h);
+        if let Some(bmp) = video.clone_thumb_bitmap(pos.frame.source(), max_w, max_h)
+            && let Some(cache) = self.thumb_cache.get_value()
+        {
+            let tw = bmp.width().max(1);
+            let th = bmp.height().max(1);
+            if cache
+                .borrow_mut()
+                .put(GlobalFrame::new(global_frame), bmp, tw, th, u16::MAX)
+            {
+                self.bump_thumb_residency();
+            }
+        }
     }
 
     pub(crate) fn try_paint_hover_thumb(
