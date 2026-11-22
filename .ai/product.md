@@ -40,7 +40,7 @@ Headless / paint-inside components in `fpmedia-web-components` (compose in demo;
 | `<Scrubber>` | Gesture + track container + context. Owns pointer → playhead + `scrub_pointer_*` / transport / scrub phases. Takes `timeline=` and/or `video=`. Host: children + CSS; may observe `scrubbing`. Does **not** remount on playlist live swap; does **not** ship progress fill, ticks, or strip layout. |
 | `<TimelineMeta kind>` | One timeline meta strip (`Fetch` / `Keyframes` / `Covered` / `Exact`). Domain from parent `TimelineRef`; remaps live `pipeline` into that grid; re-leases interest when strip video identity changes. Host: `class` / color + DOM placement. |
 | `<HoverThumb>` | Hover preview: canvas **inside**; optional props `width` / `height` seed host `set_thumb_max_size` once; canvas attrs follow timeline thumb max signals; `class` / `children` = chrome. Position (`transform`) from scrubber `update(x, track_w, frame)`. Auto-wire under `<Scrubber>`; manual API escape hatch OK. |
-| **`<VideoPlaylist>`** / `VideoPlaylistRef` | Ordered files/URLs as **one** review timeline. Composition over **2×** `<Video>` (live + idle); `as_timeline()` = global frames; seek/scrub/step rebind across clips. Model: `PlaylistModel` / `PlaylistPos`. Demo: multi-file / `;`-separated URLs → playlist; `[i]` readout/go-to. Design: `architecture.md` § Playlist composition; steps: `state.md`. |
+| **`<VideoPlaylist>`** / `VideoPlaylistRef` | Ordered files/URLs as **one** review timeline. Composition over **2×** `<Video>` (live + idle); `as_timeline()` = global frames; seek/scrub/step rebind across clips. Model: `PlaylistModel` / `PlaylistPos`. Demo: multi-file / `;`-separated URLs → playlist; `[i]` readout/go-to. Design: `architecture.md` § Playlist composition; open work: `state.md`. |
 
 `video.pipeline` may remain for a **debug** panel — not required for scrubber UI. Math helpers (`playhead_width_*`, `scrub_frame_from_x`, `strip::*`) stay for custom chrome. Phases design: `architecture.md` § Scrub phases.
 
@@ -67,7 +67,7 @@ Headless / paint-inside components in `fpmedia-web-components` (compose in demo;
 - **Playback rate:** review slider `0.25…1.75` (demo); API up to **8×**. Demo **JKL** (forward only): `1, 2, 4, 8` — **J** slower, **L** faster, **K** → **1×** + play/pause (**Space** toggles without resetting rate). Fixed-pitch audio through **4×**; **8×** silent. Reverse playback removed (open work: `state.md` Later if revisited).
 - **Play at last frame (agreed):** Play while on the last frame restarts from frame 0 — **loop on or off** (same gesture). Do not arm the clock on the last sample (½ s audio blip then End). Matches mediabunny media-player at `endTimestamp`.
 - **Loop zone (agreed):** Independent half-open wrap range when `looping` is on. Default = full file (single) or full playlist. Single: source FrameIds; playlist: scrub **global frames** (may span clips; slots non-looping). **Goto** / Next / Prev stop Play and **ignore** the zone (full axis). Paused scrub ignores the zone (aim as released). Scrub-while-play resume is **Play** — if aim is outside `[in, out)`, wrap to `loop_in`. Only Play + wall wrap. Vocab: `glossary.md` § LoopZone / Goto vs Seek. Design: `architecture.md` § LoopZone.
-- **Cut window (Later):** half-open source `[cut_in, cut_out)` — after LoopZone. Playlist per-clip cut — Later. Steps: `state.md`.
+- **Cut window (Later):** half-open source `[cut_in, cut_out)` — after LoopZone. Playlist per-clip cut — Later. See `state.md` Later.
 
 ---
 

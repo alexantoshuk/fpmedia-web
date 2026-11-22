@@ -372,7 +372,6 @@ pub(crate) fn classify_gop_profile(lengths: &[u32], frame_count: usize) -> GopPr
         return GopProfile::AllIntra;
     }
     // Short-IP: max ≤ cap. Scene cuts shrink some GOPs (large spread) — still Short.
-    // Was: spread ≤ 2 → false Long on ShotGrid-like GOP≈30 with cuts.
     if max <= SHORT_GOP_MAX_LEN {
         return GopProfile::ShortFixed { len: max };
     }

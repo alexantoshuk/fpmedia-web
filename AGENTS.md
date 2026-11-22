@@ -234,7 +234,7 @@ Do **not** only “append to `media.md`” without choosing a canonical slot. Do
 
 **When the user asks to commit:**
 
-1. Ensure the tree is ready for a commit (same-diff `.ai/` / state drop / fix hygiene — see below and **[`CONTRIBUTING.md`](CONTRIBUTING.md)**).
+1. **Drop the finished state bullet (hard):** if this commit completes a bullet in `.ai/state.md` (In progress, Next up, or Later), delete that bullet before committing and include the updated `state.md` in the same commit. `closes:` names the bullet. Do not commit the work while that bullet is still in the file. Leave unrelated Later / Handoff lines. Other same-diff `.ai/` and fix hygiene: **[`CONTRIBUTING.md`](CONTRIBUTING.md)**.
 2. Run **[`scripts/check.sh`](scripts/check.sh)** (fmt + Clippy `-D warnings` + tests). Fix failures before committing. Do not commit while gates are red.
 3. Read `git status` / `git diff` / recent `git log` (read-only) and draft the commit message per **CONTRIBUTING** (subject + body; `closes:` when dropping a `state.md` item).
 4. Stage only the files that belong in this commit (`git add` paths — never blanket secrets / `.env`).

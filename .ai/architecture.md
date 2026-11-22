@@ -75,7 +75,7 @@ Engine module map (file triage): `.ai/skills/media.md`.
 | Component API like HTML media | Elements: open/play/seek/rate/volume + `<Scrubber>` / `<TimelineMeta>` / `<HoverThumb>`. Strip math: `fpmedia_web_components::strip` (engine keeps only `coalesce_frame_runs`). Demo owns chrome + JKL/Space/arrows. Host scrub UI must not require reading `PipelineStats` |
 | Domain schedulers, not one global async OS | Byte IO → **shipped** `ReadOrchestrator` + open-ended `UrlSource` workers. Host ops → `OpQueue`. Decode → dual decoder + Play/Scrub modes. Shared **`WorkloadMode`** knobs — **not** one priority queue for every `spawn_local`. |
 | Prefer explicit state machines over flag soup | Enum + `reduce` / coalesce table per domain. See [State machines over flags](#state-machines-over-flags). Host: `fpmedia_web::transport` + `ScrubRelease { then_play }` + `VideoRef::scrub_pointer_*`. |
-| Playlist = 2× `<Video>` composition (agreed) | Review playlist without N decoders / NLE in engine. See [Playlist composition](#playlist-composition-agreed). UX: `product.md`. Steps: `state.md`. |
+| Playlist = 2× `<Video>` composition (agreed) | Review playlist without N decoders / NLE in engine. See [Playlist composition](#playlist-composition-agreed). UX: `product.md`. Open work: `state.md`. |
 | Virtual Timeline policy over Single + Playlist | One Exact/scrub/thumbs/LoopZone-wall axis (Host wrap exec = playlist `loop_seam_exec`; Engine = live `LoopSeam`); backends decode-only. See [Virtual Timeline](#virtual-timeline-agreed). |
 
 ---
@@ -146,8 +146,6 @@ Host chrome / demo
 | Play@clip-last (Host, inside zone) | VT `plan_play_at_clip_last` + `plan_seam_next_clip` | PromoteSeek@0 / HostWrap (mid-in parity with EOF) |
 
 Soft cancel ≠ sticky UI error. User goto stays on ref (`goto_*` → `stop_play_for_goto` + seek). Internal `seek_*` does not stop Play. Traps: `skills/leptos.md`.
-
-Docs trim / leftover smoke: `state.md` § Playlist.
 
 ---
 
@@ -290,7 +288,7 @@ flowchart TD
 | Navigation | **Goto** / Next / Prev / paused scrub **ignore** the zone (full axis; goto/step stop Play). Scrub-while-play resume = Play (outside → `loop_in`). LoopZone only Play + wall wrap. Vocab: `glossary.md` § Goto vs Seek. |
 | Full axis | Same as pre-zone last→0 / last-clip→0 seam. |
 | Demo | `[` / `]` set in/out from playhead (same spot toggles reset in→0 / out→full), arm loop if off; scrubber dim outside zone. |
-| Not in this pass | CutWindow (`state.md`). |
+| Later | CutWindow (`state.md`). |
 
 ##### LoopSeam vs host promote
 

@@ -8,30 +8,27 @@
 
 ### Handoff
 
-- **Branch:** `main` — Covered + Fetch + thumb markers sole on VT; Exact bitmaps = slot; **playlist thumb bitmaps = VT `VtThumbCache` + 1 `ThumbProducer`** (not idle ensure); idle = nearest cut; Pause cut-join Exact@join warm; VT LoopZone + SeamPhase FSM; Host wrap exec = `loop_seam_exec`; thumb max box = `set_thumb_max_size` (default 160²); ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB.
-- **Shipped (do not re-open):** `919322d` idle_neighbor_near_cut + reverse-cut Exact harden; `36d0e09` Covered sole on VT; cut-join PresentHit warm; Fetch strip = playable (buffered-like); Fetch sole on VT; VT LoopZone wall + wrap/EOF/seam-next + SeamPhase/`zone_owner_from_spans`; Host LoopSeam adapter (`loop_seam_exec`); VT thumb wallet + producer (`60d955d`).
-- **OK in browser (prior):** Pause Exact grow; scrub Up densify; cut-join Pause scrub 1↔2 / reverse; Covered + Fetch gray survive clip leave. Pages demo live (`alexantoshuk.github.io/fpmedia-web`).
-- **Archive (reference only — do not merge):** `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.
-- **Open (unchanged):** mobile LoopPlayWarm unverified. Residual light mobile pause on Host mid-zone LoopZone seam — later.
-- **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional (unrelated).
-- **Do not land:** `b8206d1`; `39d20a4`; cut-warm v1 (playhead×ensure thrash).
-- **Parked:** Pause densify pin-holes.
+- **Branch:** `main` @ `abd7787`, clean, matches `origin/main`. Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types.
+- **Open:** mobile `LoopPlayWarm` unverified. Residual light mobile pause on a Host mid-zone LoopZone seam — Later.
+- **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional, unrelated.
+- **Do not merge:**
+  - `archive/playlist-exact-cut-hold` — SoftPark/cut-hold anti-pattern.
+  - `backup/residual-densify-doors` (`39d20a4`) — residual densify via `BeginExact{rearm}` + `ScrubCacheOff`.
+  - `backup/host-loopzone-18649c8` — earlier seam-mirror skip; the fix on main is `ce17420`.
+  - `exp/thumb-grid` — Exact-first 4×4 thumb packs; parked experiment.
+  - cut-warm v1 (playhead×ensure thrash).
+- **Parked:** Pause densify pin-holes (Later).
 
 ---
 
 ## Next up
 
-### Playlist — Virtual Timeline
+No engine slice in flight. Playlist successor is **CutWindow** — not current (Later).
 
-1. **VT Play · LoopZone:** shipped (VT law + SeamPhase; Host exec = `loop_seam_exec` / `start_host_wrap`). **Next:** CutWindow (after seam machine). Thumbs progressive already on VT.
+### E2E
 
-Also later: LoopPlayWarm on mobile / Engine zone; cut markers / clip name in `[i]`.
+Browser e2e (`skills/media.md` Triage) before engine playback / ownership refactors. `trunk serve` dev build loads (8 MiB wasm stack in `.cargo/config.toml`). No known red spec.
 
-**Out of v1:** compare dual-visible.
-
-### E2E known state
-
-Browser e2e (`skills/media.md` Triage) — run before committing engine playback / ownership refactors; `trunk serve` dev build works (wasm stack size is set in `.cargo/config.toml`).
 ### Publish crates (`0.1.0-alpha`)
 
 Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. Demo `demo-player` stays `publish = false`.
@@ -48,7 +45,7 @@ Layout/packages: `architecture.md` § Layout. Repo: `alexantoshuk/fpmedia-web`. 
 ## Later
 
 - **Supplied open meta (unified)** — host/DB timing with media for both `<Video>` and `<VideoPlaylist>` (same shape; playlist = per-clip). Skip probe when meta present; `open_blob`/`open_url` / playlist probe stay fallback. Not current — do not land playlist-only `open_entries` first.
-- **CutWindow** — half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut. After LoopZone (shipped — `architecture.md` § LoopZone). Prefer after host seam machine (§2), else seams grow more flag soup. The Clip↔Source seam is already typed (`ClipFrame::source()` — `architecture.md` § Ownership & types); `cut_in` lands there. Not current priority.
+- **CutWindow** — half-open `[cut_in, cut_out)` source FrameIds; playlist per-clip cut. LoopZone and the host seam machine are shipped (`architecture.md` § LoopZone). The Clip↔Source seam is already typed (`ClipFrame::source()` — `architecture.md` § Ownership & types); `cut_in` lands there. Not current priority.
 - Optional: harden Pause densify pin-holes on slow PreferSoftware (salvage + skip-bridge `put_chunk`; no Exact wipe) — only if strip cosmetics stop being acceptable (`product.md`).
 - Revisit seek Exact follow **without** wiping Exact on settle (densify yield / unbanned walk only — prove scrub still paints).
 - Optional: unthrottle play `sync_ui` for truer e2e playhead sampling (host only; not an engine judder fix).
