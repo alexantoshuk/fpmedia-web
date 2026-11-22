@@ -150,16 +150,11 @@ pub(super) struct Shared {
     pub(super) loop_origin_stash: RefCell<Option<LoopOriginStash>>,
     /// Second HW PlayIter @ `loop_in` (slice B) — adopt on LoopSeam.
     pub(super) loop_play_warm: RefCell<Option<LoopPlayWarm>>,
-    /// Playlist `SeamHold` primed AAC via muted start→hold (release = warm resume).
-    pub(super) seam_audio_warm: Cell<bool>,
     /// Idle Play-ready arm flight — near-EOF kick + promote join (`arm_playlist_seam_hold_at`).
     pub(super) seam_hold_arm: SingleFlight,
-    /// Aim frame for an armed / arming [`crate::PlayPhase::SeamHold`] (playlist Host).
-    pub(super) seam_hold_frame: Cell<Option<FrameId>>,
-    /// After SeamHold release: `Some(aim)` = no-skip active — block overdue skip
-    /// until the playhead advances past `aim` (warm iter must not skip-catch
-    /// past Host wall). `None` = inactive. **no equivalent**.
-    pub(super) seam_release_aim: Cell<Option<FrameId>>,
+    /// Playlist Host seam data ([`crate::SeamLatch`]) — Holding / Released only;
+    /// cleared on session End. **no equivalent**.
+    pub(super) seam_latch: Cell<crate::SeamLatch>,
     /// Finger on scrubber (`note_scrub_frame`) — throttle gray fill (hover-like).
     pub(super) scrub_gesture: Cell<bool>,
     /// Latest soft-drag aim (updated sync on every pointer sample). In-flight

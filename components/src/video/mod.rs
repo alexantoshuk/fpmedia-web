@@ -20,7 +20,7 @@ pub use fpmedia_web::{
 };
 pub use pipeline_interest::{PipelineInterestLease, PipelinePlane};
 
-use fpmedia_web::{FrameRun, ScrubDir};
+use fpmedia_web::FrameRun;
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
@@ -174,7 +174,7 @@ impl VideoRef {
     }
 
     /// Next SeamHold → Live release restarts PlayIter (Host mid-zone only).
-    pub fn set_seam_hold_restart_on_release(&self, yes: bool) {
+    pub(crate) fn set_seam_hold_restart_on_release(&self, yes: bool) {
         self.seam_hold_restart_on_release.set_value(yes);
     }
 
@@ -365,7 +365,7 @@ impl VideoRef {
     }
 
     /// Cold stop without densify (playlist LoopZone wall / seam). Not Pause button.
-    pub fn pause_hard_no_densify(&self) {
+    pub(crate) fn pause_hard_no_densify(&self) {
         self.playing.set(false);
         self.ended.set(false);
         if let Some(host) = self.host() {
@@ -482,7 +482,7 @@ impl VideoRef {
 
     /// VT backend demote / idle: abort densify, keep Exact + Covered.
     /// User Scrub Off still uses [`Self::set_scrub_cache_policy`].
-    pub fn park_scrub_cache(&self) {
+    pub(crate) fn park_scrub_cache(&self) {
         if let Some(host) = self.host() {
             host.park_scrub_cache();
         }
@@ -501,14 +501,14 @@ impl VideoRef {
     }
 
     /// Arm densify after Exact present (VT PresentHit settle).
-    pub fn arm_scrub_densify_after_exact(&self, frame: u32) {
+    pub(crate) fn arm_scrub_densify_after_exact(&self, frame: u32) {
         if let Some(host) = self.host() {
             host.arm_scrub_densify_after_exact(frame);
         }
     }
 
     /// Clear ExactHold without arming densify (playlist PresentHit settle).
-    pub fn clear_densify_hold(&self) {
+    pub(crate) fn clear_densify_hold(&self) {
         if let Some(host) = self.host() {
             host.clear_densify_hold();
         }
@@ -529,7 +529,7 @@ impl VideoRef {
     }
 
     /// VT Pause progressive thumbs on/off (playlist host planner).
-    pub fn set_vt_thumb_authority(&self, on: bool) {
+    pub(crate) fn set_vt_thumb_authority(&self, on: bool) {
         if let Some(host) = self.host() {
             host.set_vt_thumb_authority(on);
         }
@@ -572,38 +572,8 @@ impl VideoRef {
         }
     }
 
-    pub fn scrub_dir(&self) -> ScrubDir {
-        self.host().map(|host| host.scrub_dir()).unwrap_or_default()
-    }
-
-    pub fn densify_inflight(&self) -> bool {
-        self.host().is_some_and(|host| host.densify_inflight())
-    }
-
-    /// Fire-and-forget frame-0 byte + PreferSoftware stash warm (playlist
-    /// near-EOF idle; joins PlayPrime origin stash hit).
-    pub fn kick_warm_play_origin(&self) {
-        if let Some(host) = self.host() {
-            spawn_local(async move {
-                host.warm_play_origin().await;
-            });
-        }
-    }
-
-    /// Await frame-0 byte + origin stash warm (playlist seam before PlayPrime).
-    pub async fn warm_play_origin(&self) {
-        if let Some(host) = self.host() {
-            host.warm_play_origin().await;
-        }
-    }
-
-    /// Paint origin on this (idle) slot before playlist promote.
-    pub async fn prepare_seam_origin(&self) -> Result<(), String> {
-        self.prepare_seam_at(0).await
-    }
-
     /// Paint `frame` on this (idle) slot before LoopZone / playlist promote.
-    pub async fn prepare_seam_at(&self, frame: u32) -> Result<(), String> {
+    pub(crate) async fn prepare_seam_at(&self, frame: u32) -> Result<(), String> {
         if let Some(host) = self.host() {
             host.prepare_seam_at(frame).await
         } else {
@@ -611,17 +581,8 @@ impl VideoRef {
         }
     }
 
-    /// Fire-and-forget [`Self::prepare_seam_at`] (near-wall idle warm).
-    pub fn kick_prepare_seam_at(&self, frame: u32) {
-        if let Some(host) = self.host() {
-            spawn_local(async move {
-                let _ = host.prepare_seam_at(frame).await;
-            });
-        }
-    }
-
     /// Idle Play-ready under `SeamHold` (playlist Host near-EOF / promote).
-    pub async fn arm_seam_hold(&self, frame: u32) -> Result<(), String> {
+    pub(crate) async fn arm_seam_hold(&self, frame: u32) -> Result<(), String> {
         if let Some(host) = self.host() {
             host.arm_seam_hold(frame).await
         } else {
@@ -630,7 +591,7 @@ impl VideoRef {
     }
 
     /// Fire-and-forget [`Self::arm_seam_hold`].
-    pub fn kick_arm_seam_hold(&self, frame: u32) {
+    pub(crate) fn kick_arm_seam_hold(&self, frame: u32) {
         if let Some(host) = self.host() {
             spawn_local(async move {
                 let _ = host.arm_seam_hold(frame).await;

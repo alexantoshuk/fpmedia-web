@@ -8,8 +8,8 @@
 use std::rc::Rc;
 
 use fpmedia_web::{
-    BlobSource, FrameRun, MediaSource, OpenPhase, OpenSourceKind, ScrubCachePolicy, ScrubDir,
-    ThumbPolicy, TransportEvent, TransportState,
+    BlobSource, FrameRun, MediaSource, OpenPhase, OpenSourceKind, ScrubCachePolicy, ThumbPolicy,
+    TransportEvent, TransportState,
 };
 use leptos::html::Canvas;
 use leptos::prelude::*;
@@ -404,16 +404,6 @@ impl VideoHost {
             .flatten()
     }
 
-    pub(crate) fn scrub_dir(&self) -> ScrubDir {
-        self.ctx.with_player(|p| p.scrub_dir()).unwrap_or_default()
-    }
-
-    pub(crate) fn densify_inflight(&self) -> bool {
-        self.ctx
-            .with_player(|p| p.densify_inflight())
-            .unwrap_or(false)
-    }
-
     // --- async (clone the player out before `.await`) ---------------------
 
     pub(crate) async fn fill_thumb_key_at(&self, key: u32) {
@@ -421,15 +411,6 @@ impl VideoHost {
             return;
         };
         p.fill_thumb_key_at(key).await;
-    }
-
-    pub(crate) async fn warm_play_origin(&self) {
-        let Some(p) = self.ctx.player.borrow().as_ref().cloned() else {
-            return;
-        };
-        // Bytes + PreferSoftware origin stash (playlist seam / loop cousin).
-        let _ = p.warm_play_origin_bytes().await;
-        let _ = p.warm_play_origin_stash().await;
     }
 
     pub(crate) async fn prepare_seam_at(&self, frame: u32) -> Result<(), String> {

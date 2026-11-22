@@ -50,22 +50,14 @@ pub(super) fn demo_toggle_play(media: MediaRef, playing: bool) {
     }
 }
 
-/// Pause if playing, then step −1 (bar / overflow / ←).
+/// Step −1 (bar / overflow / ←). Stop-Play + ignore LoopZone live on MediaRef.
 pub(super) fn demo_previous_frame(media: MediaRef) {
-    if media.playing.get_untracked() {
-        media.pause();
-    } else {
-        media.previous_frame();
-    }
+    media.previous_frame();
 }
 
-/// Pause if playing, then step +1 (bar / overflow / →).
+/// Step +1 (bar / overflow / →). Stop-Play + ignore LoopZone live on MediaRef.
 pub(super) fn demo_next_frame(media: MediaRef) {
-    if media.playing.get_untracked() {
-        media.pause();
-    } else {
-        media.next_frame();
-    }
+    media.next_frame();
 }
 
 pub(super) fn demo_toggle_loop(media: MediaRef) {

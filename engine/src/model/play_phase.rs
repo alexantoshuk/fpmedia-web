@@ -12,8 +12,13 @@
 //! (local adaptation: the example has no loop).
 //! `SeamHold` — **no equivalent** (playlist Host local): idle slot primes
 //! main PlayIter @ aim under a held clock until promote release.
+//!
+//! Playlist Host seam data lives in [`SeamLatch`] (not loose cells beside
+//! [`PlayPhase`]) — **no equivalent**.
 
 use std::fmt;
+
+use crate::FrameId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PlayPhase {
@@ -54,6 +59,80 @@ impl fmt::Display for PlayPhase {
             Self::SeamHold => "SeamHold",
         };
         f.write_str(s)
+    }
+}
+
+/// Playlist Host seam data bag — illegal while [`PlayPhase::Idle`].
+///
+/// `Holding` arms with [`PlayPhase::SeamHold`]; `Released` is the Live no-skip
+/// window after [`PlayPhaseEvent::ReleaseSeamHold`] until `frame > aim`.
+/// Cleared on session End. **no equivalent** (playlist Host local).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SeamLatch {
+    #[default]
+    Idle,
+    Holding {
+        frame: FrameId,
+        audio_warm: bool,
+    },
+    /// Post-release no-skip aim (phase is [`PlayPhase::Live`]).
+    Released {
+        aim: FrameId,
+    },
+}
+
+impl SeamLatch {
+    pub fn holding_frame(self) -> Option<FrameId> {
+        match self {
+            Self::Holding { frame, .. } => Some(frame),
+            _ => None,
+        }
+    }
+
+    pub fn is_holding_at(self, frame: FrameId) -> bool {
+        matches!(self, Self::Holding { frame: f, .. } if f == frame)
+    }
+
+    pub fn audio_warm(self) -> bool {
+        matches!(
+            self,
+            Self::Holding {
+                audio_warm: true,
+                ..
+            }
+        )
+    }
+
+    pub fn release_aim(self) -> Option<FrameId> {
+        match self {
+            Self::Released { aim } => Some(aim),
+            _ => None,
+        }
+    }
+
+    pub fn arm(frame: FrameId) -> Self {
+        Self::Holding {
+            frame,
+            audio_warm: false,
+        }
+    }
+
+    pub fn with_audio_warm(self, warm: bool) -> Self {
+        match self {
+            Self::Holding { frame, .. } => Self::Holding {
+                frame,
+                audio_warm: warm,
+            },
+            other => other,
+        }
+    }
+
+    /// `Holding` → `Released` + prior `audio_warm`. Other variants → self + false.
+    pub fn release(self) -> (Self, bool) {
+        match self {
+            Self::Holding { frame, audio_warm } => (Self::Released { aim: frame }, audio_warm),
+            other => (other, false),
+        }
     }
 }
 
@@ -123,5 +202,18 @@ mod tests {
         let p = reduce(p, PlayPhaseEvent::ReleaseSeamHold);
         assert_eq!(p, PlayPhase::Live);
         assert!(p.presents());
+    }
+
+    #[test]
+    fn seam_latch_holding_to_released() {
+        let mut latch = SeamLatch::arm(7);
+        assert!(latch.is_holding_at(7));
+        assert!(!latch.audio_warm());
+        latch = latch.with_audio_warm(true);
+        assert!(latch.audio_warm());
+        let (latch, warm) = latch.release();
+        assert!(warm);
+        assert_eq!(latch.release_aim(), Some(7));
+        assert!(latch.holding_frame().is_none());
     }
 }

@@ -78,7 +78,7 @@ pub use model::engine_mode::{
     AudioResume, EngineCmd, EngineEvent, EngineMode, EngineModel, reduce as engine_mode_reduce,
 };
 #[doc(hidden)]
-pub use model::play_phase::{PlayPhase, PlayPhaseEvent, reduce as play_phase_reduce};
+pub use model::play_phase::{PlayPhase, PlayPhaseEvent, SeamLatch, reduce as play_phase_reduce};
 #[doc(hidden)]
 pub use model::session::{SessionEvent, SessionModel, reduce as session_reduce};
 #[doc(hidden)]

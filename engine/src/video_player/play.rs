@@ -12,7 +12,7 @@ use crate::decode::canvas::draw_frame_with_context;
 use crate::decode::webcodecs::{PlayIter, WebCodecsDecoder};
 use crate::epoch::Ticket;
 use crate::error::MediaError;
-use crate::model::play_phase::{PlayPhase, PlayPhaseEvent, reduce as play_phase_reduce};
+use crate::model::play_phase::{PlayPhase, PlayPhaseEvent, SeamLatch, reduce as play_phase_reduce};
 use crate::policy::playback::{
     EofWall, LOOP_ORIGIN_PREWARM_SECS, eof_timeline_end, eof_wall_decision, loop_zone_wall_end,
     should_prewarm_loop_origin,
@@ -79,9 +79,7 @@ impl PlayerInner {
         self.shared.resuming_clock.set(false);
         self.shared.held_media_origin.set(None);
         self.shared.loop_origin_warm_started.set(false);
-        self.shared.seam_audio_warm.set(false);
-        self.shared.seam_hold_frame.set(None);
-        self.shared.seam_release_aim.set(None);
+        self.shared.seam_latch.set(SeamLatch::Idle);
         // Keep `loop_origin_stash` — playlist idle prewarm must survive pause of
         // the outgoing clip / soft holds; PlayPrime@0 and LoopSeam consume it.
         // Seek / open drop via [`Self::drop_origin_stash`].
@@ -185,7 +183,7 @@ impl VideoPlayer {
         self.kick_update_next_frame();
         // Clear no-skip after natural advance past aim; snap once (not every rAF —
         // per-tick glue pinned media_time at aim forever → stall at Host join).
-        if let Some(aim) = self.shared.seam_release_aim.get()
+        if let Some(aim) = self.shared.seam_latch.get().release_aim()
             && self.state().frame > aim
         {
             let aac_master = self
@@ -197,7 +195,7 @@ impl VideoPlayer {
             if !aac_master {
                 self.snap_playing_clock_to_playhead();
             }
-            self.shared.seam_release_aim.set(None);
+            self.shared.seam_latch.set(SeamLatch::Idle);
         }
         Ok(tick)
     }
@@ -329,7 +327,7 @@ impl PlayerInner {
             // mediabunny: updateNextFrame overdue draw; gates local.
             let can_skip = self.shared.play_phase.get() == PlayPhase::Live
                 && !self.shared.pending_silent_clock.get()
-                && self.shared.seam_release_aim.get().is_none();
+                && self.shared.seam_latch.get().release_aim().is_none();
             if ts <= t && can_skip {
                 if !self.is_shuttle() && overdue >= 1 {
                     let slot = self.copy_to_play_pool(id, video.as_web_sys())?;
@@ -554,7 +552,7 @@ impl VideoPlayer {
     /// else densify-free `seek_frame_with` so promote → Play does not wait on
     /// Covered/Exact fill. **no equivalent** (playlist local).
     ///
-    /// `begin_op` before warm so a near-wall `kick_prepare_seam_at` cannot finish
+    /// `begin_op` before warm so a near-wall `kick_arm_seam_hold` cannot finish
     /// `seek_frame_with` after wrap/Play (small Host LoopZone: warm overlaps wall
     /// → late seek clears the play session). **no equivalent**.
     pub async fn prepare_playlist_seam_at(&self, frame: FrameId) -> Result<(), MediaError> {
@@ -1260,7 +1258,7 @@ impl VideoPlayer {
 impl PlayerInner {
     fn seam_hold_ready_at(&self, frame: FrameId) -> bool {
         self.shared.play_phase.get().is_seam_hold()
-            && self.shared.seam_hold_frame.get() == Some(frame)
+            && self.shared.seam_latch.get().is_holding_at(frame)
             && self.shared.play_iter.borrow().is_some()
             && self.is_playing()
     }
@@ -1330,12 +1328,11 @@ impl VideoPlayer {
         if !self.shared.play_phase.get().is_seam_hold() {
             return Err(MediaError::Cancelled);
         }
-        self.shared.seam_hold_frame.set(Some(frame));
+        self.shared.seam_latch.set(SeamLatch::arm(frame));
         // AAC: muted cold begin + soft-hold so release uses `restart_warm` (no
         // reconfigure gap). Host `apply_gain` restores playlist mute on swap.
         // mediabunny: pause keeps audio path warm; playlist dual-present local.
         let t0 = self.frame_timestamp_seconds(frame).unwrap_or(0.0);
-        self.shared.seam_audio_warm.set(false);
         if self.shared.audio.borrow().is_some() {
             self.set_muted(true);
             self.start_media_clock(t0).await?;
@@ -1343,7 +1340,9 @@ impl VideoPlayer {
                 return Err(MediaError::Cancelled);
             }
             let _ = self.hold_media_clock_for_scrub();
-            self.shared.seam_audio_warm.set(true);
+            self.shared
+                .seam_latch
+                .set(self.shared.seam_latch.get().with_audio_warm(true));
         }
         self.shared.held_media_origin.set(Some(t0));
         self.kick_update_next_frame();
@@ -1365,17 +1364,14 @@ impl VideoPlayer {
         if !self.shared.play_phase.get().is_seam_hold() {
             return Err(MediaError::Cancelled);
         }
-        let aim = self
-            .shared
-            .seam_hold_frame
-            .get()
-            .unwrap_or_else(|| self.state().frame);
+        let latch = self.shared.seam_latch.get();
+        let aim = latch.holding_frame().unwrap_or_else(|| self.state().frame);
+        let warm = latch.audio_warm();
         let t0 = self
             .shared
             .held_media_origin
             .get()
             .unwrap_or_else(|| self.state().timestamp.seconds);
-        let warm = self.shared.seam_audio_warm.replace(false);
         if restart_iter {
             // While still SeamHold — drop hold-aged decode queue (skip storm).
             let epoch = self.shared.op_epoch.ticket();
@@ -1388,8 +1384,7 @@ impl VideoPlayer {
         if self.shared.play_phase.get() != PlayPhase::Live {
             return Err(MediaError::Cancelled);
         }
-        self.shared.seam_hold_frame.set(None);
-        self.shared.seam_release_aim.set(Some(aim));
+        self.shared.seam_latch.set(SeamLatch::Released { aim });
         self.hard_reset_timeline_to(t0);
         self.shared.held_media_origin.set(Some(t0));
         // No `arm_underrun_catchup_grace` — warm→Live grace helped skip storms.

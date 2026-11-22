@@ -8,8 +8,8 @@
 
 ### Handoff
 
-- **Branch:** `main` @ `abd7787`, clean, matches `origin/main`. Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types.
-- **Next priority:** **Refactor — simplify ownership / API** (below). CutWindow stays Later.
+- **Branch:** `main` (Slice 1 + 4A landed this commit — playlist protocol `pub(crate)` + `SeamLatch`; demo step → `MediaRef`). Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types. Play session: `PlayPhase` + `SeamLatch`.
+- **Next priority:** **Refactor — simplify ownership / API** — next **Slice 2a**. CutWindow stays Later.
 - **Open:** mobile `LoopPlayWarm` unverified. Residual light mobile pause on a Host mid-zone LoopZone seam — Later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional, unrelated.
 - **Do not merge:**
@@ -32,16 +32,15 @@ Agreed code-review backlog. **Order below is the PR sequence.** Merge only withi
 
 **PR pass order (do this, not “1+2+3 in one diff”):**
 
-1. **Slice 1** — demote playlist protocol + SeamHold bag (± hitch **4A** demo step if tiny).
-2. **Slice 2a** — `play_updating` → `SingleFlight` (mechanical).
-3. **Slice 2b** — play intent inside `EngineModel` (riskier; separate PR from 2a).
-4. **Slice 3A** then **3B** (or reverse) — independent; two PRs preferred; one PR only if both stay mechanical.
-5. **Slice 4B** — typed host errors (± optional `OpQueue` shadow-bool cleanup).
-6. **Slice 5** — after 1–4: **5.1+5.2** one PR; **5.3+5.4** one PR; **5.5** optional alone.
+1. **Slice 2a** — `play_updating` → `SingleFlight` (mechanical).
+2. **Slice 2b** — play intent inside `EngineModel` (riskier; separate PR from 2a).
+3. **Slice 3A** then **3B** (or reverse) — independent; two PRs preferred; one PR only if both stay mechanical.
+4. **Slice 4B** — typed host errors (± optional `OpQueue` shadow-bool cleanup).
+5. **Slice 5** — after 2–4: **5.1+5.2** one PR; **5.3+5.4** one PR; **5.5** optional alone.
 
-**OK to combine in one PR:** 1 demote + SeamHold bag (two commits OK if bag grows); 4A into tail of 1; 5.1 with 5.2; 5.3 with 5.4.
+**OK to combine in one PR:** 5.1 with 5.2; 5.3 with 5.4.
 
-**Do not combine:** 1+2, 2+3, 2a+2b, 4B with any engine FSM slice, 5 before 1–4 land, any of this with CutWindow / crates publish.
+**Do not combine:** 2+3, 2a+2b, 4B with any engine FSM slice, 5 before 2–4 land, any of this with CutWindow / crates publish.
 
 **Global do-not (all slices):**
 
@@ -55,47 +54,6 @@ Agreed code-review backlog. **Order below is the PR sequence.** Merge only withi
 - Media edits: mediabunny cite **or** explicit **no equivalent** (scrub / playlist local) per `AGENTS.md`.
 
 **Verify per PR:** `bash scripts/check.sh`; for ownership / play / scrub / seam changes also `npm run e2e` (`skills/media.md` Triage). Drop finished bullets from this block when they ship (no Done list).
-
----
-
-#### Slice 1 — Hide playlist protocol + one SeamHold data type
-
-**Goal:** Host apps see an HTML-media-like `VideoRef`; playlist dual-slot protocol stays `pub(crate)` inside `fpmedia-web-components`. Seam latches that only make sense while armed live in one typed bag.
-
-**Why:** Today `VideoRef` / `VideoPlayer` expose seam densify / thumb-authority knobs used only by `video_playlist::slots` / `loop_seam_exec`. `Shared` also keeps loose `seam_*` cells that can be set while `PlayPhase` is Idle.
-
-**Touch (expected):**
-
-- `components/src/video/mod.rs` (`VideoRef`) — demote playlist-only methods to `pub(crate)`.
-- `engine/src/video_player/{control,play,scrub,thumb,shared}.rs` — same for engine methods that only the component crate needs; keep element API public.
-- `components/src/video_playlist/{slots,loop_seam_exec,host}.rs` — callers stay; visibility only.
-- New or extended type for seam data (prefer living next to `PlayPhase` / seam helpers, not a free-floating `bool` on `VideoRef`).
-
-**Candidates to demote to `pub(crate)` (audit before change; names as of review):**
-
-- Pause variants used by slots/seam: `pause_hard_no_densify`, `pause_for_scrub`, `pause_warm_idle` (keep one public `pause` that matches product Pause button = warm + densify).
-- Seam: `prepare_seam_at` / `prepare_seam_origin`, `arm_seam_hold`, `kick_arm_seam_hold`, `kick_prepare_seam_at`, `set_seam_hold_restart_on_release` / `take_seam_hold_restart_on_release`.
-- Densify doors: `park_scrub_cache`, `arm_scrub_densify_after_exact`, `clear_densify_hold`, `densify_inflight` (and any sibling only playlist/settle uses).
-- Thumb authority: `set_vt_thumb_authority` / `vt_thumb_authority`.
-- Preview helpers if only VT/playlist call them: `scrub_dir` (confirm no demo use).
-
-**Keep public on `VideoRef` / `MediaRef`:** open/close, play/pause, seek/goto/step, loop + loop zone, volume/mute/rate, scrub_pointer_*, hover thumb paint API, `set_thumb_max_size` / policies hosts actually toggle, `as_media` / `as_timeline`.
-
-**SeamHold data bag (same PR; two commits OK if the bag grows):**
-
-- Today scattered: `Shared.seam_hold_frame`, `seam_audio_warm`, `seam_release_aim`, plus `VideoRef.seam_hold_restart_on_release`.
-- Target: one struct whose fields exist only when phase is `PlayPhase::SeamHold` (or `Option<SeamHoldState>` cleared on `ReleaseSeamHold` / `End`). Illegal: warm/release aim set while Idle.
-- **no equivalent** (playlist Host local) — do not invent a mediabunny scrub cite.
-
-**Optional hitch — Slice 4A (demo step):** if still ~tens of lines, fold into this PR’s tail (`demo-player/.../media_ops.rs` always call `MediaRef::next_frame` / `previous_frame`). Do **not** wait for 4B.
-
-**DoD:**
-
-- External-style use of `VideoRef` / `MediaRef` compiles without seam/densify doors.
-- Playlist still promotes / wraps (`loop_seam_exec`, idle Exact@join).
-- Docs: if public surface or seam ownership table changes → `architecture.md` § Playlist composition / Virtual Timeline (one-line) + drop contradicting comments; else `docs: none` only if pure visibility rename with no behaviour change.
-
-**Do not:** merge `SeamPhase` with `PlayPhase`; change warm/release policy; combine this PR with Slice 2.
 
 ---
 
@@ -164,20 +122,6 @@ Agreed code-review backlog. **Order below is the PR sequence.** Merge only withi
 **DoD:** illegal phase/anchor combos type-checked away; underrun hold e2e green. Docs: `architecture.md` § Audio + media clock if field homes move.
 
 **Do not:** add clock hold on document hidden; combine with 3A unless both stay mechanical.
-
----
-
-#### Slice 4A — Demo step (prefer hitch on Slice 1)
-
-**Goal:** Chrome must not reimplement Goto/step stop-Play law.
-
-- Today: `demo-player/src/player/media_ops.rs` `demo_next_frame` / `demo_previous_frame` do “if playing → pause else step”.
-- Target: always call `MediaRef::next_frame` / `previous_frame` (playlist `plan_step` / single `VideoRef` already own stop-Play + ignore LoopZone).
-- Touch: `media_ops.rs` + any keyboard/bar duplicates.
-
-**DoD:** demo step/keyboard match playlist edge behaviour. Docs: `docs: none`.
-
-If Slice 1 already shipped without 4A, land 4A as its own tiny PR — do **not** block on 4B.
 
 ---
 
