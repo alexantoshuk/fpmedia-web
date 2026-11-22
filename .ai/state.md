@@ -9,6 +9,7 @@
 ### Handoff
 
 - **Branch:** `main` @ `abd7787`, clean, matches `origin/main`. Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types.
+- **Next priority:** **Refactor — simplify ownership / API** (below). CutWindow stays Later.
 - **Open:** mobile `LoopPlayWarm` unverified. Residual light mobile pause on a Host mid-zone LoopZone seam — Later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional, unrelated.
 - **Do not merge:**
@@ -23,7 +24,200 @@
 
 ## Next up
 
-No engine slice in flight. Playlist successor is **CutWindow** — not current (Later).
+### Refactor — simplify ownership / API
+
+Agreed code-review backlog. **Order below is the PR sequence.** Merge only within one axis (same table). Same-diff docs when behaviour / ownership tables change. **Approve-before-edit** still applies per PR.
+
+**Context for a new chat:** product boundary = `product.md` § Element-layer helpers; ownership rules = `architecture.md` § Ownership & types + § State machines over flags. Goal = make illegal states unrepresentable and shrink the public surface — **not** a LOC hunt, **not** removing `Rc`/`dyn MediaSource`.
+
+**PR pass order (do this, not “1+2+3 in one diff”):**
+
+1. **Slice 1** — demote playlist protocol + SeamHold bag (± hitch **4A** demo step if tiny).
+2. **Slice 2a** — `play_updating` → `SingleFlight` (mechanical).
+3. **Slice 2b** — play intent inside `EngineModel` (riskier; separate PR from 2a).
+4. **Slice 3A** then **3B** (or reverse) — independent; two PRs preferred; one PR only if both stay mechanical.
+5. **Slice 4B** — typed host errors (± optional `OpQueue` shadow-bool cleanup).
+6. **Slice 5** — after 1–4: **5.1+5.2** one PR; **5.3+5.4** one PR; **5.5** optional alone.
+
+**OK to combine in one PR:** 1 demote + SeamHold bag (two commits OK if bag grows); 4A into tail of 1; 5.1 with 5.2; 5.3 with 5.4.
+
+**Do not combine:** 1+2, 2+3, 2a+2b, 4B with any engine FSM slice, 5 before 1–4 land, any of this with CutWindow / crates publish.
+
+**Global do-not (all slices):**
+
+- Do **not** replace `Rc` / `Cell` / `RefCell` on `VideoPlayer` / `Shared` with `Arc`/`Mutex` or generics that leak into the public API.
+- Do **not** turn `Rc<dyn MediaSource>` into a closed enum (open set: Blob / Url / Memory / Cached / host sources).
+- Do **not** merge host `OpQueue.async_id` with engine `op_epoch` / `scrub_epoch` (different crates, different awaits).
+- Do **not** merge host `SeamPhase` (`components` VT) with engine `PlayPhase::SeamHold` (different machines: slots vs one decoder).
+- Do **not** rewrite `demux/boxes.rs`, `source/orchestrator.rs`, `source/cache.rs`, `audio/output.rs`, or `policy/clip.rs` “for size”.
+- Do **not** refactor `decode/webcodecs/mod.rs` or `strip.rs` unless a slice needs a real behaviour fix there.
+- Orthogonal env flags stay flags (or a small bag), **not** `EngineMode` variants: `disposed`, `scrub_bg_suspended`, `scrub_densify_blocked`.
+- Media edits: mediabunny cite **or** explicit **no equivalent** (scrub / playlist local) per `AGENTS.md`.
+
+**Verify per PR:** `bash scripts/check.sh`; for ownership / play / scrub / seam changes also `npm run e2e` (`skills/media.md` Triage). Drop finished bullets from this block when they ship (no Done list).
+
+---
+
+#### Slice 1 — Hide playlist protocol + one SeamHold data type
+
+**Goal:** Host apps see an HTML-media-like `VideoRef`; playlist dual-slot protocol stays `pub(crate)` inside `fpmedia-web-components`. Seam latches that only make sense while armed live in one typed bag.
+
+**Why:** Today `VideoRef` / `VideoPlayer` expose seam densify / thumb-authority knobs used only by `video_playlist::slots` / `loop_seam_exec`. `Shared` also keeps loose `seam_*` cells that can be set while `PlayPhase` is Idle.
+
+**Touch (expected):**
+
+- `components/src/video/mod.rs` (`VideoRef`) — demote playlist-only methods to `pub(crate)`.
+- `engine/src/video_player/{control,play,scrub,thumb,shared}.rs` — same for engine methods that only the component crate needs; keep element API public.
+- `components/src/video_playlist/{slots,loop_seam_exec,host}.rs` — callers stay; visibility only.
+- New or extended type for seam data (prefer living next to `PlayPhase` / seam helpers, not a free-floating `bool` on `VideoRef`).
+
+**Candidates to demote to `pub(crate)` (audit before change; names as of review):**
+
+- Pause variants used by slots/seam: `pause_hard_no_densify`, `pause_for_scrub`, `pause_warm_idle` (keep one public `pause` that matches product Pause button = warm + densify).
+- Seam: `prepare_seam_at` / `prepare_seam_origin`, `arm_seam_hold`, `kick_arm_seam_hold`, `kick_prepare_seam_at`, `set_seam_hold_restart_on_release` / `take_seam_hold_restart_on_release`.
+- Densify doors: `park_scrub_cache`, `arm_scrub_densify_after_exact`, `clear_densify_hold`, `densify_inflight` (and any sibling only playlist/settle uses).
+- Thumb authority: `set_vt_thumb_authority` / `vt_thumb_authority`.
+- Preview helpers if only VT/playlist call them: `scrub_dir` (confirm no demo use).
+
+**Keep public on `VideoRef` / `MediaRef`:** open/close, play/pause, seek/goto/step, loop + loop zone, volume/mute/rate, scrub_pointer_*, hover thumb paint API, `set_thumb_max_size` / policies hosts actually toggle, `as_media` / `as_timeline`.
+
+**SeamHold data bag (same PR; two commits OK if the bag grows):**
+
+- Today scattered: `Shared.seam_hold_frame`, `seam_audio_warm`, `seam_release_aim`, plus `VideoRef.seam_hold_restart_on_release`.
+- Target: one struct whose fields exist only when phase is `PlayPhase::SeamHold` (or `Option<SeamHoldState>` cleared on `ReleaseSeamHold` / `End`). Illegal: warm/release aim set while Idle.
+- **no equivalent** (playlist Host local) — do not invent a mediabunny scrub cite.
+
+**Optional hitch — Slice 4A (demo step):** if still ~tens of lines, fold into this PR’s tail (`demo-player/.../media_ops.rs` always call `MediaRef::next_frame` / `previous_frame`). Do **not** wait for 4B.
+
+**DoD:**
+
+- External-style use of `VideoRef` / `MediaRef` compiles without seam/densify doors.
+- Playlist still promotes / wraps (`loop_seam_exec`, idle Exact@join).
+- Docs: if public surface or seam ownership table changes → `architecture.md` § Playlist composition / Virtual Timeline (one-line) + drop contradicting comments; else `docs: none` only if pure visibility rename with no behaviour change.
+
+**Do not:** merge `SeamPhase` with `PlayPhase`; change warm/release policy; combine this PR with Slice 2.
+
+---
+
+#### Slice 2a — `play_updating` → `SingleFlight`
+
+**Goal:** Replace ad-hoc `play_updating: Cell<bool>` with the existing `SingleFlight` pattern (`densify` / `gray_fill` / `seam_hold_arm`).
+
+**Why:** Same busy/pending semantics already exist; mechanical, low risk — **own PR before 2b**.
+
+**Touch:** `engine/src/video_player/shared.rs`, play update / `updateNextFrame` call sites in `play.rs` (and any helper that sets `play_updating`).
+
+**DoD:** no `play_updating` bool; play update uses `SingleFlight` (or a short comment why not). Docs: usually `docs: none`.
+
+**Do not:** change `playing` / `EngineModel` in this PR.
+
+---
+
+#### Slice 2b — Play intent inside `EngineModel`
+
+**Goal:** One engine axis for “host wants play” vs mode (`Play` / `Scrub` / `ExactHold`).
+
+**Why:** `Shared.playing` is intentionally separate from `EngineModel` today but forces every path to check both (`pause_inner`, densify gates).
+
+**Touch:**
+
+- `engine/src/model/engine_mode.rs` — extend model (e.g. play intent field or clearer invariant); keep `reduce` + unit tests.
+- `engine/src/video_player/shared.rs` — remove or derive `playing`.
+- `engine/src/video_player/control.rs` (`pause_inner`, `play`) and play/scrub call sites that read `shared.playing`.
+- Host signals (`VideoRef.playing`, playlist facade) stay; they mirror transport intent (`product.md` § Play chrome) — do not delete UI signals.
+
+**DoD:**
+
+- No `Cell<bool> playing` beside `EngineModel` that can disagree with mode without an explicit documented invariant.
+- Engine mode unit tests updated; scrub-while-play soft-hold + ExactHold mid-play still work.
+- Docs: `architecture.md` § State machines (`EngineMode` row) if the model shape changes.
+
+**Do not:** fold host `TransportState` into the engine; change soft-hold audio policy; land in the same PR as 2a or Slice 3.
+
+---
+
+#### Slice 3A — Loop warm enum
+
+**Goal:** Loop-origin warm cannot hold HW + SW stash as `Some` at once.
+
+- Today: `loop_origin_warm_started` + `play_origin_warm` / `play_origin_decode` flights + `Option<LoopOriginStash>` + `Option<LoopPlayWarm>`.
+- Target enum (names flexible): `Idle | Bytes | Hw(…) | Sw(…)` (or equivalent) so HW and SW stash are mutually exclusive.
+- Touch: `shared.rs`, `play.rs` (`maybe_kick_loop_origin`, `adopt_loop_play_warm`, stash paths), `play_pool.rs` guards.
+- Policy: PreferSoftware stash remains **fallback** when HW warm fails (`architecture.md` § LoopSeam vs host promote).
+- **no equivalent** for playlist Host promote schedule — do not conflate with this engine enum.
+
+**DoD:** illegal dual-stash unrepresentable; loop seam e2e green. Docs: `architecture.md` § LoopSeam table if field homes move.
+
+**Do not:** change WSOLA / rate; combine with 3B unless both stay mechanical; combine with Slice 2.
+
+---
+
+#### Slice 3B — Clock phase + anchors bag
+
+**Goal:** Clock phase and its timers live in one `Copy` bag.
+
+- Today: `ClockState` plus loose `pending_silent_clock`, `resuming_clock`, `held_media_origin`, `underrun_hold_since_ms`, `underrun_catchup_until_ms`.
+- Target: one `Copy` struct (phase + anchors) so “Stopped but holding origin” is unrepresentable or explicit.
+- Touch: `model/clock_state.rs`, `video_player/clock_ctrl.rs`, play underrun paths.
+- Keep tab-hidden = scrub-plane yield only (no clock hold) — product/architecture already say so.
+
+**DoD:** illegal phase/anchor combos type-checked away; underrun hold e2e green. Docs: `architecture.md` § Audio + media clock if field homes move.
+
+**Do not:** add clock hold on document hidden; combine with 3A unless both stay mechanical.
+
+---
+
+#### Slice 4A — Demo step (prefer hitch on Slice 1)
+
+**Goal:** Chrome must not reimplement Goto/step stop-Play law.
+
+- Today: `demo-player/src/player/media_ops.rs` `demo_next_frame` / `demo_previous_frame` do “if playing → pause else step”.
+- Target: always call `MediaRef::next_frame` / `previous_frame` (playlist `plan_step` / single `VideoRef` already own stop-Play + ignore LoopZone).
+- Touch: `media_ops.rs` + any keyboard/bar duplicates.
+
+**DoD:** demo step/keyboard match playlist edge behaviour. Docs: `docs: none`.
+
+If Slice 1 already shipped without 4A, land 4A as its own tiny PR — do **not** block on 4B.
+
+---
+
+#### Slice 4B — Typed errors on the host seam
+
+**Goal:** Host async seams use `MediaError` (or a thin host error enum) until the UI `status` string.
+
+- Today: many `Result<(), String>` in `components` (`open_url`, `loop_seam_exec`, `slots`, `thumb_producer`).
+- Target: propagate `fpmedia_web::MediaError` (or map once); format string only when setting `error` / `status` signals.
+- Do not invent a second parallel error taxonomy.
+
+**Optional same PR if small:** drop `OpQueue` shadow bools if redundant (`scrub_inflight`, `transport_apply::scheduled`) — only when the queue/`HostOp` already answers the question. Do **not** merge epochs with the engine.
+
+**DoD:** no new `String`-only error returns on seam/open paths touched. Docs: usually `docs: none`; skill triage only if a failure mode changes.
+
+**Do not:** combine with engine FSM slices 2–3.
+
+---
+
+#### Slice 5 — API hygiene (after 1–4)
+
+Do when publishing / cleaning the crate surface. Lower urgency than 1–4. **Two (or three) PRs — not one mega-diff.**
+
+**PR 5.1+5.2 (crate surface):**
+
+1. **Open matrix** — collapse engine open paths to two meanings: `open_mp4(source, …)` and `from_tracks` (video required, audio optional). Keep thin wrappers (`open_blob` = `BlobSource` + open; `open_mp4_bytes` = Memory for tests) or make them non-`pub`. Touch: `video_player/open.rs`, `lib.rs` re-exports, component open helpers.
+2. **Root re-exports** — stop exporting bitstream sanitizers / NAL helpers and redundant blit MiB aliases (`DEFAULT_SCRUB_BLIT_MIB_SHORT`/`_LONG` == one constant) from `engine/src/lib.rs` prelude; leave them under `bitstream` / `policy`.
+
+**PR 5.3+5.4 (boundary types):**
+
+3. **Boundary types** — `loop_zone() -> LoopZone` (not `(u32, u32)`); prefer `FrameId` / axis newtypes on signals where Leptos allows without breaking hosts; `zone_owner_from_spans` / `HostOp::Seek` take framed ids not raw `u32` where cheap.
+4. **`MediaRef` boilerplate** — private trait implemented by `VideoRef` + `VideoPlaylistRef` to replace copy-pasted `match` arms (public API stays the enum facade).
+
+**PR 5.5 (optional):**
+
+5. **Demo session** — replace `use_playlist: bool` + always-mounted dual hosts with `Single | Playlist` session enum if it removes dead work; do not rewrite `DemoPlayer` chrome (~popovers) as part of this.
+
+**DoD:** `cargo doc -p fpmedia-web --no-deps` surface readable for an external host; publish checklist in this file still blocked on `re_mp4` crates.io.
+
+---
 
 ### E2E
 
