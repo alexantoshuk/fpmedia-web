@@ -181,8 +181,9 @@ pub(super) struct Shared {
     pub(super) play_next: RefCell<Option<PlayNext>>,
     /// Lazily created on first Play.
     pub(super) play_pool: RefCell<Option<PlayCanvasPool>>,
-    /// `updateNextFrame` single-flight.
-    pub(super) play_updating: Cell<bool>,
+    /// `updateNextFrame` / loop-stash catch-up — one in flight (`try_claim`, no pending).
+    /// mediabunny: one `updateNextFrame` at a time.
+    pub(super) play_update: SingleFlight,
     /// No-AAC: arm silent [`crate::audio::PlaybackClock`] on first present tick.
     /// `mediabunny: media-player play` / `audioContextStartTime`.
     pub(super) pending_silent_clock: Cell<bool>,

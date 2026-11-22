@@ -209,7 +209,7 @@ impl VideoPlayer {
             play_iter: RefCell::new(None),
             play_next: RefCell::new(None),
             play_pool: RefCell::new(None),
-            play_updating: Cell::new(false),
+            play_update: crate::SingleFlight::new(),
             pending_silent_clock: Cell::new(false),
             resuming_clock: Cell::new(false),
             held_media_origin: Cell::new(None),

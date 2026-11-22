@@ -282,8 +282,11 @@ impl PlayerInner {
 
 impl VideoPlayer {
     /// Spawn `updateNextFrame` unless one runs or `nextFrame` already waits.
+    ///
+    /// `try_claim` (not `request`) — no pending re-run; the next present/kick recovers.
+    /// mediabunny: one `updateNextFrame` at a time.
     fn kick_update_next_frame(&self) {
-        if self.shared.play_updating.get() || self.shared.play_next.borrow().is_some() {
+        if self.shared.play_next.borrow().is_some() {
             return;
         }
         let Some(iter) = self.shared.play_iter.borrow().clone() else {
@@ -292,11 +295,13 @@ impl VideoPlayer {
         if iter.exhausted() {
             return;
         }
-        self.shared.play_updating.set(true);
+        let Some(flight) = self.shared.play_update.try_claim() else {
+            return;
+        };
         let player = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
+            let _flight = flight;
             let result = player.update_next_frame(&iter).await;
-            player.shared.play_updating.set(false);
             if let Err(e) = result
                 && !e.is_cancelled()
                 && player.is_current_iter(&iter)
@@ -601,7 +606,7 @@ impl VideoPlayer {
     }
 
     /// Remotion swap path: stash already has origin canvases — paint + seed
-    /// `play_next` sync, then spawn main PlayIter catch-up under `play_updating`
+    /// `play_next` sync, then spawn main PlayIter catch-up under `play_update`
     /// so the seam can resume the clock without awaiting origin decode on main.
     fn start_loop_seam_with_stash(&self, stash: LoopOriginStash, epoch: Ticket) {
         self.end_play_iter();
@@ -641,9 +646,12 @@ impl VideoPlayer {
         }
 
         // Block kick_update until catch-up owns `iter.next` exclusively.
-        self.shared.play_updating.set(true);
+        // Retire any stale kick flight so its late Drop cannot clear this claim.
+        self.shared.play_update.force_release();
+        let flight = self.shared.play_update.begin();
         let player = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
+            let _flight = flight;
             let result = async {
                 let decoder = player.take_decoder(epoch).await?;
                 if !player.is_current(epoch) {
@@ -689,7 +697,7 @@ impl VideoPlayer {
                 Ok(iter)
             }
             .await;
-            player.shared.play_updating.set(false);
+            drop(_flight);
             match result {
                 Ok(iter) => {
                     if player.is_current_iter(&iter) && player.is_playing() {
