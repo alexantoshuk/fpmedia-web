@@ -2,7 +2,7 @@ use super::format::{
     RATE_SLIDER_MAX, RATE_SLIDER_MIN, RATE_TICKS, format_fps_label_precise, format_rate_tick,
     rate_tick_left_pct,
 };
-use super::media_ops::{demo_media, demo_media_untracked, demo_source_fps};
+use super::media_ops::{DemoSession, demo_media, demo_media_untracked, demo_source_fps};
 use fpmedia_web_components::{VideoPlaylistRef, VideoRef};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -54,13 +54,13 @@ pub(super) fn event_target<T: JsCast>(ev: &leptos::ev::Event) -> Option<T> {
 
 /// Shared rate heading + slider + ticks (bar pop + settings overflow).
 ///
-/// Takes video/playlist/`use_playlist` so [`demo_media`] rebinds when mode flips
+/// Takes video/playlist/`session` so [`demo_media`] rebinds when mode flips
 /// (a stale [`MediaRef`] prop would keep the previous backend signals).
 #[component]
 pub(super) fn PlaybackRateTrack(
     video: VideoRef,
     playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
+    session: RwSignal<DemoSession>,
     media_ready: Memo<bool>,
     #[prop(into)] input_testid: String,
 ) -> impl IntoView {
@@ -68,7 +68,7 @@ pub(super) fn PlaybackRateTrack(
         <div class="wm-rate-panel">
             <div class="wm-rate-heading">
                 {move || {
-                    let media = demo_media(video, playlist, use_playlist);
+                    let media = demo_media(video, playlist, session);
                     let r = media.playback_rate.get();
                     match demo_source_fps(media) {
                         Some(fps) => format!(
@@ -89,7 +89,7 @@ pub(super) fn PlaybackRateTrack(
                         max="1.75"
                         step="0.05"
                         prop:value=move || {
-                            let r = demo_media(video, playlist, use_playlist).playback_rate.get();
+                            let r = demo_media(video, playlist, session).playback_rate.get();
                             if r < 0.0 {
                                 "0.25".to_string()
                             } else {
@@ -102,7 +102,7 @@ pub(super) fn PlaybackRateTrack(
                                 return;
                             };
                             if let Ok(v) = input.value().parse::<f64>() {
-                                demo_media_untracked(video, playlist, use_playlist)
+                                demo_media_untracked(video, playlist, session)
                                     .set_playback_rate(v);
                             }
                         }
@@ -118,7 +118,7 @@ pub(super) fn PlaybackRateTrack(
                                     <button
                                         type="button"
                                         class=move || {
-                                            let r = demo_media(video, playlist, use_playlist)
+                                            let r = demo_media(video, playlist, session)
                                                 .playback_rate
                                                 .get()
                                                 .clamp(RATE_SLIDER_MIN, RATE_SLIDER_MAX);
@@ -133,7 +133,7 @@ pub(super) fn PlaybackRateTrack(
                                         prop:title=format!("{}×", format_rate_tick(t))
                                         on:click=move |ev| {
                                             ev.stop_propagation();
-                                            demo_media_untracked(video, playlist, use_playlist)
+                                            demo_media_untracked(video, playlist, session)
                                                 .set_playback_rate(t);
                                         }
                                     >
@@ -157,7 +157,7 @@ pub(super) fn PlaybackRateTrack(
 pub(super) fn VolumeRangeInput(
     video: VideoRef,
     playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
+    session: RwSignal<DemoSession>,
     volume_sliding: RwSignal<bool>,
     no_hover: Signal<bool>,
 ) -> impl IntoView {
@@ -171,7 +171,7 @@ pub(super) fn VolumeRangeInput(
                 max="1"
                 step="0.05"
                 style:--wm-volume-pct=move || {
-                    let media = demo_media(video, playlist, use_playlist);
+                    let media = demo_media(video, playlist, session);
                     let pct = if media.muted.get() {
                         0.0
                     } else {
@@ -182,7 +182,7 @@ pub(super) fn VolumeRangeInput(
                 prop:value=move || {
                     // Mute parks the thumb at 0 without clearing stored volume;
                     // unmute restores playlist/single `volume`.
-                    let media = demo_media(video, playlist, use_playlist);
+                    let media = demo_media(video, playlist, session);
                     if media.muted.get() {
                         "0".to_string()
                     } else {
@@ -190,7 +190,7 @@ pub(super) fn VolumeRangeInput(
                     }
                 }
                 prop:disabled=move || {
-                    let v = demo_media(video, playlist, use_playlist).active_video();
+                    let v = demo_media(video, playlist, session).active_video();
                     !v.ready.get() || !v.has_audio.get()
                 }
                 on:pointerdown=move |ev| {
@@ -229,7 +229,7 @@ pub(super) fn VolumeRangeInput(
                     if let Ok(v) = input.value().parse::<f64>() {
                         // Snap to 0.05 so icon thresholds stay clean.
                         let snapped = (v / 0.05).round() * 0.05;
-                        let media = demo_media_untracked(video, playlist, use_playlist);
+                        let media = demo_media_untracked(video, playlist, session);
                         media.set_volume(snapped.clamp(0.0, 1.0));
                         if media.muted.get_untracked() {
                             media.set_muted(false);

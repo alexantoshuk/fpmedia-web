@@ -1,4 +1,5 @@
 use super::controls::event_target;
+use super::media_ops::DemoSession;
 use fpmedia_web_components::helpers::{
     format_timecode_at_loose, format_timecode_from_fps, last_frame_id, parse_position,
 };
@@ -110,7 +111,7 @@ pub(super) fn playlist_meta_for_clip(
 pub(super) fn PositionDisplay(
     video: VideoRef,
     playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
+    session: RwSignal<DemoSession>,
     open: RwSignal<bool>,
     format: RwSignal<PositionFormat>,
     menu: NodeRef<Div>,
@@ -148,7 +149,7 @@ pub(super) fn PositionDisplay(
             .unwrap_or_else(|| draft.get_untracked());
         editing.set(false);
         open.set(false);
-        if use_playlist.get_untracked() {
+        if session.get_untracked().is_playlist() {
             if !playlist.ready.get_untracked() {
                 return;
             }
@@ -180,7 +181,7 @@ pub(super) fn PositionDisplay(
     };
 
     let start_goto = move || {
-        if use_playlist.get_untracked() {
+        if session.get_untracked().is_playlist() {
             if !playlist.ready.get_untracked() {
                 return;
             }
@@ -278,7 +279,7 @@ pub(super) fn PositionDisplay(
                                 node_ref=trigger
                                 data-testid="position-display"
                                 prop:disabled=move || {
-                                    if use_playlist.get() {
+                                    if session.get().is_playlist() {
                                         !playlist.ready.get()
                                     } else {
                                         !video.ready.get()
@@ -287,7 +288,7 @@ pub(super) fn PositionDisplay(
                                 prop:aria-expanded=move || open.get()
                                 prop:aria-haspopup="menu"
                                 prop:aria-label=move || {
-                                    if use_playlist.get() {
+                                    if session.get().is_playlist() {
                                         playlist_position_label(playlist, format.get())
                                     } else {
                                         let (cur, last) = position_sides(&video, format.get());
@@ -296,7 +297,7 @@ pub(super) fn PositionDisplay(
                                 }
                                 prop:title="Position (format / Go to…)"
                                 on:click=move |_| {
-                                    let ready = if use_playlist.get_untracked() {
+                                    let ready = if session.get_untracked().is_playlist() {
                                         playlist.ready.get_untracked()
                                     } else {
                                         video.ready.get_untracked()
@@ -314,7 +315,7 @@ pub(super) fn PositionDisplay(
                                 }
                             >
                                 <Show
-                                    when=move || use_playlist.get()
+                                    when=move || session.get().is_playlist()
                                     fallback=move || {
                                         view! {
                                             <span class="wm-position-label">

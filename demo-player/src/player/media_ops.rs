@@ -1,13 +1,26 @@
 use fpmedia_web_components::{MediaRef, VideoPlaylistRef, VideoRef};
 use leptos::prelude::*;
 
-/// Active [`MediaRef`] for the current demo mode (reactive on `use_playlist`).
+/// Which media host the demo mounts (`<Show>` — one at a time).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DemoSession {
+    Single,
+    Playlist,
+}
+
+impl DemoSession {
+    pub(super) fn is_playlist(self) -> bool {
+        matches!(self, Self::Playlist)
+    }
+}
+
+/// Active [`MediaRef`] for the current demo session (reactive on `session`).
 pub(super) fn demo_media(
     video: VideoRef,
     playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
+    session: RwSignal<DemoSession>,
 ) -> MediaRef {
-    if use_playlist.get() {
+    if session.get().is_playlist() {
         MediaRef::from_playlist(playlist)
     } else {
         MediaRef::from_video(video)
@@ -17,9 +30,9 @@ pub(super) fn demo_media(
 pub(super) fn demo_media_untracked(
     video: VideoRef,
     playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
+    session: RwSignal<DemoSession>,
 ) -> MediaRef {
-    if use_playlist.get_untracked() {
+    if session.get_untracked().is_playlist() {
         MediaRef::from_playlist(playlist)
     } else {
         MediaRef::from_video(video)

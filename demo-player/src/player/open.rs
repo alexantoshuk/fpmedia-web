@@ -1,6 +1,8 @@
+use super::media_ops::DemoSession;
 use fpmedia_web_components::{VideoPlaylistRef, VideoRef};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 use web_sys::{Blob, window};
 
 /// Must match `demo-player/Trunk.toml` `[[proxy]]` backend (testvideo Release tag).
@@ -33,10 +35,34 @@ pub(super) fn split_demo_urls(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Close the inactive host while it is still mounted, flip `session`, then open.
+///
+/// Mode flips remount via `<Show>` — defer open one rAF so `host()` is registered.
+fn open_with_session(
+    session: RwSignal<DemoSession>,
+    want: DemoSession,
+    close_other: impl FnOnce(),
+    open: impl FnOnce() + 'static,
+) {
+    let same = session.get_untracked() == want;
+    close_other();
+    session.set(want);
+    if same {
+        open();
+        return;
+    }
+    let Some(w) = window() else {
+        open();
+        return;
+    };
+    let cb = Closure::once_into_js(open);
+    let _ = w.request_animation_frame(cb.unchecked_ref());
+}
+
 pub(super) fn open_demo_single_url(
     video: VideoRef,
     playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
+    session: RwSignal<DemoSession>,
     raw: String,
     clip_label: RwSignal<Option<String>>,
 ) {
@@ -47,15 +73,18 @@ pub(super) fn open_demo_single_url(
     } else {
         Some(trimmed)
     });
-    playlist.close();
-    use_playlist.set(false);
-    video.open_url(resolved);
+    open_with_session(
+        session,
+        DemoSession::Single,
+        || playlist.close(),
+        move || video.open_url(resolved),
+    );
 }
 
 pub(super) fn open_demo_urls(
     video: VideoRef,
     playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
+    session: RwSignal<DemoSession>,
     raw: String,
     clip_label: RwSignal<Option<String>>,
 ) {
@@ -67,7 +96,7 @@ pub(super) fn open_demo_urls(
         return;
     }
     if parts.len() == 1 {
-        open_demo_single_url(video, playlist, use_playlist, parts[0].clone(), clip_label);
+        open_demo_single_url(video, playlist, session, parts[0].clone(), clip_label);
         return;
     }
     clip_label.set(Some(parts.join("; ")));
@@ -75,19 +104,22 @@ pub(super) fn open_demo_urls(
     playlist.set_volume(video.volume.get_untracked());
     playlist.set_muted(video.muted.get_untracked());
     playlist.set_playback_rate(video.playback_rate.get_untracked());
-    video.close();
-    use_playlist.set(true);
     let resolved = parts
         .into_iter()
         .map(|u| resolve_demo_open_url(&u))
         .collect::<Vec<_>>();
-    playlist.open_urls(resolved);
+    open_with_session(
+        session,
+        DemoSession::Playlist,
+        || video.close(),
+        move || playlist.open_urls(resolved),
+    );
 }
 
 pub(super) fn open_demo_files(
     video: VideoRef,
     playlist: VideoPlaylistRef,
-    use_playlist: RwSignal<bool>,
+    session: RwSignal<DemoSession>,
     files: web_sys::FileList,
     clip_label: RwSignal<Option<String>>,
 ) {
@@ -102,10 +134,13 @@ pub(super) fn open_demo_files(
         let name = file.name();
         clip_label.set(Some(name.clone()));
         video.status.set(format!("Selected {name}…"));
-        playlist.close();
-        use_playlist.set(false);
         let blob: Blob = file.unchecked_into();
-        video.open_blob(blob);
+        open_with_session(
+            session,
+            DemoSession::Single,
+            || playlist.close(),
+            move || video.open_blob(blob),
+        );
         return;
     }
     let mut blobs = Vec::with_capacity(n as usize);
@@ -124,10 +159,13 @@ pub(super) fn open_demo_files(
     playlist.set_volume(video.volume.get_untracked());
     playlist.set_muted(video.muted.get_untracked());
     playlist.set_playback_rate(video.playback_rate.get_untracked());
-    video.close();
-    use_playlist.set(true);
     playlist
         .status
         .set(format!("Selected {} files…", blobs.len()));
-    playlist.open_blobs(blobs);
+    open_with_session(
+        session,
+        DemoSession::Playlist,
+        || video.close(),
+        move || playlist.open_blobs(blobs),
+    );
 }

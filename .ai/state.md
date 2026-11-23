@@ -8,8 +8,8 @@
 
 ### Handoff
 
-- **Branch:** `main` (Slice 1+4A + 2a + 2b + 3A + 3B + 4B + 5.1+5.2 + **5.3+5.4** landed — `loop_zone() -> LoopZone` + `MediaTransport`; open matrix + crate-root trim; host seams `MediaError`; `ClockModel`; `LoopOriginWarm`; play intent ≡ `EngineMode::Play`; playlist protocol `pub(crate)` + `SeamLatch`; `play_update: SingleFlight`; demo step → `MediaRef`). Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types. Play session: `PlayPhase` + `SeamLatch`.
-- **Next priority:** **Refactor — simplify ownership / API** — optional **Slice 5.5** (demo session), else Later / CutWindow.
+- **Branch:** `main` (Slice 1+4A + 2a + 2b + 3A + 3B + 4B + 5.1–5.5 landed — demo `DemoSession` + single-host `<Show>` mount; `loop_zone() -> LoopZone` + `MediaTransport`; open matrix + crate-root trim; host seams `MediaError`; `ClockModel`; `LoopOriginWarm`; play intent ≡ `EngineMode::Play`; playlist protocol `pub(crate)` + `SeamLatch`; `play_update: SingleFlight`; demo step → `MediaRef`). Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types. Play session: `PlayPhase` + `SeamLatch`.
+- **Next priority:** Later / CutWindow, or **Publish crates** when `re_mp4` unblocks.
 - **Open:** mobile `LoopPlayWarm` unverified. Residual light mobile pause on a Host mid-zone LoopZone seam — Later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional, unrelated.
 - **Do not merge:**
@@ -23,45 +23,6 @@
 ---
 
 ## Next up
-
-### Refactor — simplify ownership / API
-
-Agreed code-review backlog. **Order below is the PR sequence.** Merge only within one axis (same table). Same-diff docs when behaviour / ownership tables change. **Approve-before-edit** still applies per PR.
-
-**Context for a new chat:** product boundary = `product.md` § Element-layer helpers; ownership rules = `architecture.md` § Ownership & types + § State machines over flags. Goal = make illegal states unrepresentable and shrink the public surface — **not** a LOC hunt, **not** removing `Rc`/`dyn MediaSource`.
-
-**PR pass order (do this, not “1+2+3 in one diff”):**
-
-1. **Slice 5** — **5.5** optional alone (demo session).
-
-**Do not combine:** any of this with CutWindow / crates publish.
-
-**Global do-not (all slices):**
-
-- Do **not** replace `Rc` / `Cell` / `RefCell` on `VideoPlayer` / `Shared` with `Arc`/`Mutex` or generics that leak into the public API.
-- Do **not** turn `Rc<dyn MediaSource>` into a closed enum (open set: Blob / Url / Memory / Cached / host sources).
-- Do **not** merge host `OpQueue.async_id` with engine `op_epoch` / `scrub_epoch` (different crates, different awaits).
-- Do **not** merge host `SeamPhase` (`components` VT) with engine `PlayPhase::SeamHold` (different machines: slots vs one decoder).
-- Do **not** rewrite `demux/boxes.rs`, `source/orchestrator.rs`, `source/cache.rs`, `audio/output.rs`, or `policy/clip.rs` “for size”.
-- Do **not** refactor `decode/webcodecs/mod.rs` or `strip.rs` unless a slice needs a real behaviour fix there.
-- Orthogonal env flags stay flags (or a small bag), **not** `EngineMode` variants: `disposed`, `scrub_bg_suspended`, `scrub_densify_blocked`.
-- Media edits: mediabunny cite **or** explicit **no equivalent** (scrub / playlist local) per `AGENTS.md`.
-
-**Verify per PR:** `bash scripts/check.sh`; for ownership / play / scrub / seam changes also `npm run e2e` (`skills/media.md` Triage). Drop finished bullets from this block when they ship (no Done list).
-
----
-
-#### Slice 5 — API hygiene (after 1–4)
-
-Do when publishing / cleaning the crate surface. Lower urgency than 1–4.
-
-**PR 5.5 (optional):**
-
-1. **Demo session** — replace `use_playlist: bool` + always-mounted dual hosts with `Single | Playlist` session enum if it removes dead work; do not rewrite `DemoPlayer` chrome (~popovers) as part of this.
-
-**DoD:** `cargo doc -p fpmedia-web --no-deps` surface readable for an external host; publish checklist in this file still blocked on `re_mp4` crates.io.
-
----
 
 ### E2E
 

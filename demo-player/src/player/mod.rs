@@ -18,8 +18,9 @@ use self::lines::{
     demo_meta_line, demo_pipeline_line, demo_stats_clipboard, demo_status_line, pipeline_stats_json,
 };
 use self::media_ops::{
-    demo_mark_loop_in, demo_mark_loop_out, demo_media, demo_media_untracked, demo_next_frame,
-    demo_previous_frame, demo_reset_loop_zone, demo_source_fps, demo_toggle_loop, demo_toggle_play,
+    DemoSession, demo_mark_loop_in, demo_mark_loop_out, demo_media, demo_media_untracked,
+    demo_next_frame, demo_previous_frame, demo_reset_loop_zone, demo_source_fps, demo_toggle_loop,
+    demo_toggle_play,
 };
 use self::open::{open_demo_files, open_demo_urls};
 use self::position::{PositionDisplay, PositionFormat};
@@ -45,11 +46,14 @@ use web_sys::{Element, HtmlElement, HtmlInputElement, window};
 pub fn DemoPlayer() -> impl IntoView {
     let video = VideoRef::new();
     let playlist = VideoPlaylistRef::new();
-    // `true` when the last open used ≥2 files/URLs (`VideoPlaylist`).
-    let use_playlist = RwSignal::new(false);
-    // Debug pipeline line + `pipeline-json` e2e — request meter plane only while demo lives.
-    let meters_lease = video.lease_pipeline_plane(PipelinePlane::Meters);
-    on_cleanup(move || drop(meters_lease));
+    // Last open: single clip vs ≥2 files/URLs — mounts one host via `<Show>`.
+    let session = RwSignal::new(DemoSession::Single);
+    // Debug pipeline line + `pipeline-json` e2e — lease meters on the live paint slot.
+    Effect::new(move |_| {
+        let active = demo_media(video, playlist, session).active_video();
+        let lease = active.lease_pipeline_plane(PipelinePlane::Meters);
+        on_cleanup(move || drop(lease));
+    });
     let player_root = NodeRef::<Div>::new();
     let fullscreen = RwSignal::new(false);
     // Fullscreen auto-hide of the control surface (not Google Chrome).
@@ -88,10 +92,10 @@ pub fn DemoPlayer() -> impl IntoView {
         ..
     } = use_clipboard();
 
-    let media_ready = Memo::new(move |_| demo_media(video, playlist, use_playlist).ready.get());
+    let media_ready = Memo::new(move |_| demo_media(video, playlist, session).ready.get());
     // Playlist: facade intent — not live slot (Host seam hard-stop gap flashes Play).
-    let media_playing = Memo::new(move |_| demo_media(video, playlist, use_playlist).playing.get());
-    let media_looping = Memo::new(move |_| demo_media(video, playlist, use_playlist).looping.get());
+    let media_playing = Memo::new(move |_| demo_media(video, playlist, session).playing.get());
+    let media_looping = Memo::new(move |_| demo_media(video, playlist, session).looping.get());
 
     Effect::new(move |_| {
         let policy = if scrubber_on.get() {
@@ -99,7 +103,7 @@ pub fn DemoPlayer() -> impl IntoView {
         } else {
             ScrubCachePolicy::Off
         };
-        if use_playlist.get() {
+        if session.get().is_playlist() {
             let _ = playlist.live_is_a.get();
             // Playlist owns VT Covered — Off wipes session markers (not live slot ledger).
             playlist.set_scrub_cache_policy(policy);
@@ -114,7 +118,7 @@ pub fn DemoPlayer() -> impl IntoView {
         } else {
             ThumbPolicy::Off
         };
-        if use_playlist.get() {
+        if session.get().is_playlist() {
             // Both slots: idle keeps ThumbSink for neighbor / hover across cuts.
             playlist.slot_a.set_thumb_policy(policy);
             playlist.slot_b.set_thumb_policy(policy);
@@ -125,7 +129,7 @@ pub fn DemoPlayer() -> impl IntoView {
     // Active media follows the debug size select (re-applies when single↔playlist flips).
     Effect::new(move |_| {
         let n = thumb_box.get();
-        demo_media(video, playlist, use_playlist).set_thumb_max_size(n, n);
+        demo_media(video, playlist, session).set_thumb_max_size(n, n);
     });
 
     let UseTimeoutFnReturn {
@@ -204,7 +208,7 @@ pub fn DemoPlayer() -> impl IntoView {
             return;
         }
         let playing = media_playing.get_untracked();
-        let media = demo_media_untracked(video, playlist, use_playlist);
+        let media = demo_media_untracked(video, playlist, session);
         match ev.key().as_str() {
             "ArrowLeft" => {
                 ev.prevent_default();
@@ -375,7 +379,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 return;
                             };
                             let Some(files) = input.files() else { return };
-                            open_demo_files(video, playlist, use_playlist, files, clip_label);
+                            open_demo_files(video, playlist, session, files, clip_label);
                         }
                     />
                 </label>
@@ -393,7 +397,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         if let Some(input) = url_input.get_untracked() {
                             input.set_value(&raw);
                         }
-                        open_demo_urls(video, playlist, use_playlist, raw, clip_label);
+                        open_demo_urls(video, playlist, session, raw, clip_label);
                     }
                 >
                     "Load remote URL"
@@ -420,7 +424,7 @@ pub fn DemoPlayer() -> impl IntoView {
                     data-testid="btn-open-url"
                     on:click=move |_| {
                         let Some(input) = url_input.get() else { return };
-                        open_demo_urls(video, playlist, use_playlist, input.value(), clip_label);
+                        open_demo_urls(video, playlist, session, input.value(), clip_label);
                     }
                 >
                     "Open URL"
@@ -446,7 +450,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         if !media_ready.get_untracked() {
                             return;
                         }
-                        let media = demo_media_untracked(video, playlist, use_playlist);
+                        let media = demo_media_untracked(video, playlist, session);
                         if media_playing.get_untracked() {
                             media.pause();
                         } else {
@@ -454,17 +458,13 @@ pub fn DemoPlayer() -> impl IntoView {
                         }
                     }
                 >
-                    // Keep both mounted so open ops stay registered across mode flips.
-                    <div style:display=move || {
-                        if use_playlist.get() { "none" } else { "contents" }
-                    }>
-                        <Video video=video/>
-                    </div>
-                    <div style:display=move || {
-                        if use_playlist.get() { "contents" } else { "none" }
-                    }>
+                    // One host at a time — open.rs closes the other then remounts before open.
+                    <Show
+                        when=move || session.get().is_playlist()
+                        fallback=move || view! { <Video video=video/> }
+                    >
                         <VideoPlaylist playlist=playlist/>
-                    </div>
+                    </Show>
                 </div>
                 <div
                     class="wm-player-ui flex flex-col"
@@ -483,7 +483,7 @@ pub fn DemoPlayer() -> impl IntoView {
                 >
                     <Show when=move || scrubber_on.get()>
                         <Show
-                            when=move || use_playlist.get()
+                            when=move || session.get().is_playlist()
                             fallback=move || {
                                 view! {
                                     <DemoScrubber
@@ -527,7 +527,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             }
                             on:click=move |_| {
                                 demo_toggle_play(
-                                    demo_media_untracked(video, playlist, use_playlist),
+                                    demo_media_untracked(video, playlist, session),
                                     media_playing.get_untracked(),
                                 );
                             }
@@ -554,7 +554,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 if media_looping.get() { "Loop on" } else { "Loop off" }
                             }
                             on:click=move |_| {
-                                demo_toggle_loop(demo_media_untracked(video, playlist, use_playlist));
+                                demo_toggle_loop(demo_media_untracked(video, playlist, session));
                             }
                         >
                             <icon::Loop class="wm-icon wm-icon-loop"/>
@@ -567,7 +567,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             prop:aria-label="Previous frame"
                             prop:title="Previous frame"
                             on:click=move |_| {
-                                demo_previous_frame(demo_media_untracked(video, playlist, use_playlist));
+                                demo_previous_frame(demo_media_untracked(video, playlist, session));
                             }
                         >
                             <icon::NextFrame class="wm-icon wm-icon-prev -scale-x-100"/>
@@ -580,7 +580,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             prop:aria-label="Next frame"
                             prop:title="Next frame"
                             on:click=move |_| {
-                                demo_next_frame(demo_media_untracked(video, playlist, use_playlist));
+                                demo_next_frame(demo_media_untracked(video, playlist, session));
                             }
                         >
                             <icon::NextFrame class="wm-icon wm-icon-next"/>
@@ -590,7 +590,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             <PositionDisplay
                                 video=video
                                 playlist=playlist
-                                use_playlist=use_playlist
+                                session=session
                                 open=position_open
                                 format=position_format
                                 menu=position_menu
@@ -630,21 +630,21 @@ pub fn DemoPlayer() -> impl IntoView {
                                 class=btn_icon
                                 data-testid="btn-mute"
                                 prop:disabled=move || {
-                                    let v = demo_media(video, playlist, use_playlist).active_video();
+                                    let v = demo_media(video, playlist, session).active_video();
                                     !media_ready.get() || !v.has_audio.get()
                                 }
                                 prop:aria-pressed=move || {
-                                    demo_media(video, playlist, use_playlist).muted.get()
+                                    demo_media(video, playlist, session).muted.get()
                                 }
                                 prop:aria-label=move || {
-                                    if demo_media(video, playlist, use_playlist).muted.get() {
+                                    if demo_media(video, playlist, session).muted.get() {
                                         "Unmute"
                                     } else {
                                         "Mute"
                                     }
                                 }
                                 prop:title=move || {
-                                    if demo_media(video, playlist, use_playlist).muted.get() {
+                                    if demo_media(video, playlist, session).muted.get() {
                                         "Unmute"
                                     } else {
                                         "Mute"
@@ -659,7 +659,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                         return;
                                     }
                                     let media =
-                                        demo_media_untracked(video, playlist, use_playlist);
+                                        demo_media_untracked(video, playlist, session);
                                     let vol = media.volume.get_untracked();
                                     // Volume already 0: mute toggle is a no-op visually — unmute + max.
                                     if vol <= 0.0 {
@@ -671,8 +671,8 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                             >
                                 {move || {
-                                    let muted = demo_media(video, playlist, use_playlist).muted.get();
-                                    let vol = demo_media(video, playlist, use_playlist).volume.get();
+                                    let muted = demo_media(video, playlist, session).muted.get();
+                                    let vol = demo_media(video, playlist, session).volume.get();
                                     if muted || vol <= 0.0 {
                                         EitherOf3::A(view! { <icon::Volume0 class="wm-icon"/> })
                                     } else if vol < 0.5 {
@@ -690,7 +690,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 <VolumeRangeInput
                                     video=video
                                     playlist=playlist
-                                    use_playlist=use_playlist
+                                    session=session
                                     volume_sliding=volume_sliding
                                     no_hover=no_hover
                                 />
@@ -708,7 +708,7 @@ pub fn DemoPlayer() -> impl IntoView {
                             <button
                                 type="button"
                                 class=move || {
-                                    let r = demo_media(video, playlist, use_playlist).playback_rate.get();
+                                    let r = demo_media(video, playlist, session).playback_rate.get();
                                     if rate_is_unity(r) {
                                         btn_rate.to_string()
                                     } else {
@@ -729,15 +729,15 @@ pub fn DemoPlayer() -> impl IntoView {
                                 }
                                 on:dblclick=move |ev| {
                                     ev.prevent_default();
-                                    demo_media_untracked(video, playlist, use_playlist).set_playback_rate(1.0);
+                                    demo_media_untracked(video, playlist, session).set_playback_rate(1.0);
                                     rate_open.set(false);
                                 }
                             >
                                 {move || {
-                                    let r = demo_media(video, playlist, use_playlist).playback_rate.get();
+                                    let r = demo_media(video, playlist, session).playback_rate.get();
                                     if rate_is_unity(r)
                                         && let Some(fps) =
-                                            demo_source_fps(demo_media(video, playlist, use_playlist))
+                                            demo_source_fps(demo_media(video, playlist, session))
                                     {
                                         return format_fps_label(fps);
                                     }
@@ -752,7 +752,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                 <PlaybackRateTrack
                                     video=video
                                     playlist=playlist
-                                    use_playlist=use_playlist
+                                    session=session
                                     media_ready=media_ready
                                     input_testid="playback-rate-input"
                                 />
@@ -807,7 +807,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                     data-testid="btn-loop-in"
                                     prop:disabled=move || !media_ready.get()
                                     on:click=move |_| {
-                                        demo_mark_loop_in(demo_media_untracked(video, playlist, use_playlist));
+                                        demo_mark_loop_in(demo_media_untracked(video, playlist, session));
                                         settings_open.set(false);
                                     }
                                 >
@@ -821,7 +821,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                     data-testid="btn-loop-out"
                                     prop:disabled=move || !media_ready.get()
                                     on:click=move |_| {
-                                        demo_mark_loop_out(demo_media_untracked(video, playlist, use_playlist));
+                                        demo_mark_loop_out(demo_media_untracked(video, playlist, session));
                                         settings_open.set(false);
                                     }
                                 >
@@ -835,7 +835,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                     data-testid="btn-loop-zone-reset"
                                     prop:disabled=move || !media_ready.get()
                                     on:click=move |_| {
-                                        demo_reset_loop_zone(demo_media_untracked(video, playlist, use_playlist));
+                                        demo_reset_loop_zone(demo_media_untracked(video, playlist, session));
                                         settings_open.set(false);
                                     }
                                 >
@@ -851,7 +851,7 @@ pub fn DemoPlayer() -> impl IntoView {
                                         <PlaybackRateTrack
                                             video=video
                                             playlist=playlist
-                                            use_playlist=use_playlist
+                                            session=session
                                             media_ready=media_ready
                                             input_testid="playback-rate-input-menu"
                                         />
@@ -976,8 +976,8 @@ pub fn DemoPlayer() -> impl IntoView {
                     <div class="flex min-w-0 flex-1 flex-col gap-0 text-sm leading-5 tabular-nums text-zinc-400">
                         <p class="wm-meta m-0 min-h-5" data-testid="meta">
                             {move || {
-                                let v = demo_media(video, playlist, use_playlist).active_video();
-                                let label = if use_playlist.get() {
+                                let v = demo_media(video, playlist, session).active_video();
+                                let label = if session.get().is_playlist() {
                                     clip_label.get().map(|s| {
                                         format!(
                                             "playlist · clip {}/{} · {s}",
@@ -993,12 +993,12 @@ pub fn DemoPlayer() -> impl IntoView {
                         </p>
                         <p class="wm-status m-0 min-h-5" data-testid="status">
                             {move || {
-                                if use_playlist.get() && (playlist.busy.get() || !playlist.ready.get())
+                                if session.get().is_playlist() && (playlist.busy.get() || !playlist.ready.get())
                                 {
                                     return playlist.status.get();
                                 }
                                 demo_status_line(
-                                    &demo_media(video, playlist, use_playlist).active_video(),
+                                    &demo_media(video, playlist, session).active_video(),
                                 )
                             }}
                         </p>
@@ -1008,7 +1008,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         >
                             {move || {
                                 demo_pipeline_line(
-                                    demo_media(video, playlist, use_playlist).active_video()
+                                    demo_media(video, playlist, session).active_video()
                                         .pipeline
                                         .get(),
                                 )
@@ -1038,7 +1038,7 @@ pub fn DemoPlayer() -> impl IntoView {
                         on:click={
                             let copy_stats = copy_stats.clone();
                             move |_| {
-                                let v = demo_media(video, playlist, use_playlist).active_video();
+                                let v = demo_media(video, playlist, session).active_video();
                                 let text = demo_stats_clipboard(&v, clip_label.get());
                                 copy_stats(&text);
                             }
@@ -1058,7 +1058,7 @@ pub fn DemoPlayer() -> impl IntoView {
             >
                 {move || {
                     pipeline_stats_json(
-                        demo_media(video, playlist, use_playlist).active_video()
+                        demo_media(video, playlist, session).active_video()
                             .pipeline
                             .get(),
                     )
@@ -1069,12 +1069,12 @@ pub fn DemoPlayer() -> impl IntoView {
                 data-testid="error"
             >
                 {move || {
-                    if use_playlist.get() {
+                    if session.get().is_playlist() {
                         playlist
                             .error
                             .get()
                             .or_else(|| {
-                                demo_media(video, playlist, use_playlist).active_video().error.get()
+                                demo_media(video, playlist, session).active_video().error.get()
                             })
                             .unwrap_or_default()
                     } else {
