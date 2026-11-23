@@ -38,6 +38,7 @@
 | Playlist volume / rate jump / Play↔Pause icon flash / Pause icon after goto | Facade `VideoPlaylistRef` `volume`/`muted`/`playback_rate`/`playing` (intent) + `apply_gain_to_slots`; demo binds facade (`media_playing`), not live slot. Slot EOF/`pause_hard` clears slot only; facade clears on pause / terminal end / seam error. Edge Next/Prev → `GotoPos` → `goto_*` → `stop_play_for_goto`; internal `seek_*` does not stop intent. **no equivalent** |
 | Playlist scrub stuck at cut on drag | never remount `<Scrubber>`; Meta re-leases via `strip_video_key` — `architecture.md` § Playlist composition |
 | Playlist click-hold on another clip keeps the old picture | `kick_ensure_idle` → `scrub_hold_from_idle` (promote + `scrub_pointer_down`, same as a later Move). **no equivalent** |
+| First playlist goto to an unvisited clip updates the readout and leaves the old picture | `seek_paint_clip` while `seek_to_pos` paints idle: join warm must not `prepare_seam_at` / park (both `begin_op`). In-flight open of that clip is waited, not closed. **no equivalent** |
 | Effect side-effect runs on mount | `Effect::watch(deps, handler, false)` — handler skips initial; `Effect::new` runs once after mount |
 | Zebra / tip / strip drift | continuous `f/n` (float canvas + tip `calc`); no CSS gradient tiles / integer tip snap |
 | Zebra subpixel mush on narrow resize | Host-div `use_resize_observer` + `Show` unmount; gate `FRAME_ZEBRA_MIN_SLOT_PX` (2); never RO the canvas after `set_width` |
@@ -50,7 +51,7 @@
 | Thumbs On again after every open | `HostCtx.thumb_policy` + `run_open` re-apply (mirror scrub cache) |
 | `RefCell already borrowed` (tachys / Loop) | no borrow across await; scrub → `scrub_pointer_*` sync (Move throttled in `<Video>`); no demo TLS |
 | Start stutter / Play lag after scrub | `prepare_play_from_scrub` + clock after prime; no `seek_frame` from `VideoRef::play`; engine: `skills/media.md` scrub→play |
-| Scrub bar lags / pointer jank / hold jumps | sync playhead on move; no sync Exact present on move (ScrubDrag owns canvas); dwell ~100 ms on blit miss; paused rAF `sync_ui` ≤10 Hz while `Scrubbing`; engine: `skills/media.md` soft-drag |
+| Scrub bar lags / pointer jank / hold jumps | sync playhead on move; no sync Exact present on move (ScrubDrag owns canvas); dwell ~100 ms; paused rAF `sync_ui` ≤10 Hz while `Scrubbing`; engine: `skills/media.md` soft-drag |
 | Touch playhead jitter on long clips | `<Scrubber>` touch sticky: `|Δx|≥4px` + `|Δframe|≥ceil(n/w)`; mouse/pen 1:1 — `scrub_touch_move_accepts` |
 | EOF: tip/stats on end−1/−2, canvas last frame | `stop_playback` snap when `leaving_play \|\| ended` — `Ended` clears `playing` before snap |
 | Play on last frame → ½ s audio blip / instant End | `run_play_prime` snap playhead→0 before clock; loop on/off same. `mediabunny: media-player play` endTimestamp→first |

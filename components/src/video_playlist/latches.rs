@@ -23,6 +23,9 @@ pub(crate) struct HostLatches {
     pub(crate) cut_join_warm_for: Option<(u32, u32)>,
     /// Cross-clip scrub: outgoing hard-paused once per gesture (not every Move).
     pub(crate) scrub_cross_paused: bool,
+    /// Clip `seek_to_pos` is painting on idle (pause goto / cross-clip seek).
+    /// Cut-join warm must not `prepare_seam_at` or park this slot.
+    pub(crate) seek_paint_clip: Option<u32>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -35,6 +38,7 @@ impl HostLatches {
         self.ensure_idle_for = None;
         self.cut_join_warm_for = None;
         self.scrub_cross_paused = false;
+        self.seek_paint_clip = None;
     }
 }
 
@@ -69,6 +73,7 @@ mod tests {
             ensure_idle_for: Some(1),
             cut_join_warm_for: Some((1, 40)),
             scrub_cross_paused: true,
+            seek_paint_clip: Some(3),
         };
         l.reset_for_new_gen();
         assert_eq!(
@@ -87,6 +92,7 @@ mod tests {
         assert_eq!(l.ensure_idle_for, None);
         assert_eq!(l.cut_join_warm_for, None);
         assert!(!l.scrub_cross_paused);
+        assert_eq!(l.seek_paint_clip, None);
         let t = ThumbFillState::default();
         assert!(!t.inflight);
         assert!(t.sync_keys.is_empty() && t.skip.is_empty() && t.clips_done.is_empty());

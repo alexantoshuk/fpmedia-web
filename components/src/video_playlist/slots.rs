@@ -106,6 +106,11 @@ pub(crate) fn kick_cut_join_exact_warm(pl: VideoPlaylistRef) {
     if !idle.ready.get_untracked() || idle.has_scrub_exact_blit(join) {
         return;
     }
+    // Goto/seek is about to prepare this same idle player. A second
+    // prepare_seam_at begin_op cancels it, and the warm's park lands after.
+    if pl.latches.get_value().seek_paint_clip == Some(idle_i) {
+        return;
+    }
     if pl.latches.get_value().cut_join_warm_for == Some((idle_i, join)) {
         return;
     }
@@ -143,9 +148,16 @@ async fn warm_cut_join_exact(
     if !idle.ready.get_untracked() || idle.has_scrub_exact_blit(join) {
         return Ok(());
     }
+    if pl.latches.get_value().seek_paint_clip == Some(idle_i) {
+        return Ok(());
+    }
     // Off parks block Exact ingest — On for one densify-free Exact, then park.
     idle.set_scrub_cache_policy(ScrubCachePolicy::On);
     let prepared = idle.prepare_seam_at(join).await;
+    // Seek took the slot while we were in prepare — do not park over it.
+    if pl.latches.get_value().seek_paint_clip == Some(idle_i) {
+        return Ok(());
+    }
     if let Some(r) = finish_if_opening_became_live(pl, opening_is_a, idle_i) {
         return r;
     }
@@ -237,10 +249,25 @@ pub(crate) async fn ensure_clip_on_idle(
         pl.apply_gain_to_slots();
         return Ok(());
     }
-    if pl.idle_clip.get_untracked() == Some(clip_index) && pl.idle_video().ready.get_untracked() {
-        kick_cut_join_exact_warm(pl);
-        pl.scrub_hold_from_idle(clip_index);
-        return Ok(());
+    if pl.idle_clip.get_untracked() == Some(clip_index) {
+        if !pl.idle_video().ready.get_untracked() {
+            // Playlist open (or a preload) already targets this clip. Closing
+            // it starts a second open and the goto never promotes.
+            wait_ready(pl.idle_video(), epoch, pl.open_gen).await?;
+            if !pl.open_gen.is_current(epoch) {
+                return Err(MediaError::Cancelled);
+            }
+        }
+        if ensure_live_on(pl, clip_index) {
+            pl.apply_gain_to_slots();
+            return Ok(());
+        }
+        if pl.idle_clip.get_untracked() == Some(clip_index) && pl.idle_video().ready.get_untracked()
+        {
+            kick_cut_join_exact_warm(pl);
+            pl.scrub_hold_from_idle(clip_index);
+            return Ok(());
+        }
     }
     // Coalesce Move stampede (2→1 reverse cut) — in-flight same clip: wait for ready.
     if pl.latches.get_value().ensure_idle_for == Some(clip_index) {
@@ -456,6 +483,12 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     pl.scrub_hold_from_idle(i);
 }
 
+fn clear_seek_paint(pl: VideoPlaylistRef, clip: u32) {
+    if pl.latches.get_value().seek_paint_clip == Some(clip) {
+        pl.latches.update_value(|l| l.seek_paint_clip = None);
+    }
+}
+
 /// Make `aim.clip_index` live (swap or open) at `aim.frame.source()`.
 ///
 /// Cross-clip: paint on idle → swap. `then_play`: SeamHold (`PromoteLead`) →
@@ -482,31 +515,48 @@ pub(crate) async fn seek_to_pos(
     let _ = global; // playhead already set above
 
     if pl.live_clip.get_untracked() != aim.clip_index {
-        ensure_clip_on_idle(pl, aim.clip_index, epoch).await?;
+        let clip = aim.clip_index;
+        // Own the idle player until promote. Cut-join warm also prepare_seam_at's
+        // it; the second begin_op cancels this goto and the warm then parks.
+        // **no equivalent** (playlist local).
+        pl.latches.update_value(|l| l.seek_paint_clip = Some(clip));
+        if let Err(e) = ensure_clip_on_idle(pl, clip, epoch).await {
+            clear_seek_paint(pl, clip);
+            return Err(e);
+        }
         if !pl.open_gen.is_current(epoch) {
+            clear_seek_paint(pl, clip);
             return Ok(());
         }
         // Stop outgoing Play before idle Exact / SeamHold (goto / scrub Up).
         stop_live_for_host_seam(pl);
         let idle = pl.idle_video();
         let slot_exact_hit = !then_play && idle.has_scrub_exact_blit(aim.frame.source());
-        if then_play {
+        let prepared = if then_play {
             // Play join: idle main SeamHold → promote → PlayPrime release.
             PromoteLead::for_local(aim.frame.source())
                 .prepare(idle)
-                .await?;
+                .await
         } else if !slot_exact_hit {
             // Paused miss: On so prepare Exact ingest works (Off gates blit).
             // Never leave SeamHold. **no equivalent** (playlist scrub local).
             idle.set_scrub_cache_policy(ScrubCachePolicy::On);
-            idle.prepare_seam_at(aim.frame.source()).await?;
+            idle.prepare_seam_at(aim.frame.source()).await
+        } else {
+            Ok(())
+        };
+        if let Err(e) = prepared {
+            clear_seek_paint(pl, clip);
+            return Err(e);
         }
         if !pl.open_gen.is_current(epoch) {
+            clear_seek_paint(pl, clip);
             return Ok(());
         }
         if pl.live_clip.get_untracked() != aim.clip_index && !try_promote_idle(pl, aim.clip_index) {
             swap_live_idle(pl, aim.clip_index);
         }
+        clear_seek_paint(pl, clip);
         // Aim local before neighbor preload — mirror must not see new live +
         // stale idle local. **no equivalent**.
         pl.live_video().playhead.set(aim.frame.source());
