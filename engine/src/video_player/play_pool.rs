@@ -208,3 +208,82 @@ impl LoopOriginStash {
         })
     }
 }
+
+/// Loop-origin lap residency — Hw and Sw are mutually exclusive.
+///
+/// Replaces `loop_origin_warm_started` + dual `Option` bags. Byte/decode
+/// [`crate::SingleFlight`]s stay separate (shared with PlayPrime@0 / playlist
+/// idle). **no equivalent** (MB no loop); Remotion `prewarmIteratorForLooping`.
+#[derive(Default)]
+pub(super) enum LoopOriginWarm {
+    #[default]
+    Idle,
+    /// Kick latched this lap; bytes/decode may still be in flight.
+    Bytes,
+    Hw(LoopPlayWarm),
+    Sw(LoopOriginStash),
+}
+
+impl LoopOriginWarm {
+    /// Kick already latched or a payload is ready (skip re-kick).
+    pub(super) fn is_started_or_ready(&self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+
+    pub(super) fn has_hw(&self) -> bool {
+        matches!(self, Self::Hw(_))
+    }
+
+    pub(super) fn has_sw(&self) -> bool {
+        matches!(self, Self::Sw(_))
+    }
+
+    /// HW warm at `origin`, if present.
+    pub(super) fn hw_at(&self, origin: FrameId) -> bool {
+        matches!(self, Self::Hw(w) if w.first == origin)
+    }
+
+    /// Install HW warm (drops any prior Bytes/Sw/Hw).
+    pub(super) fn set_hw(&mut self, warm: LoopPlayWarm) {
+        *self = Self::Hw(warm);
+    }
+
+    /// Install SW stash only when not already Hw (PreferSoftware fallback).
+    pub(super) fn try_set_sw(&mut self, stash: LoopOriginStash) {
+        if matches!(self, Self::Hw(_)) {
+            return;
+        }
+        *self = Self::Sw(stash);
+    }
+
+    /// Take whatever ready payload is present (seam adopt).
+    pub(super) fn take_ready(&mut self) -> Self {
+        match self {
+            Self::Hw(_) | Self::Sw(_) => std::mem::replace(self, Self::Idle),
+            _ => Self::Idle,
+        }
+    }
+
+    pub(super) fn take_sw(&mut self) -> Option<LoopOriginStash> {
+        match std::mem::replace(self, Self::Idle) {
+            Self::Sw(s) => Some(s),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+
+    /// Pause / clear_play_session: keep Sw, drop Hw, clear Bytes → Idle.
+    pub(super) fn keep_sw_drop_hw(&mut self) {
+        match std::mem::replace(self, Self::Idle) {
+            Self::Sw(s) => *self = Self::Sw(s),
+            Self::Hw(w) => drop(w),
+            Self::Bytes | Self::Idle => {}
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        *self = Self::Idle;
+    }
+}

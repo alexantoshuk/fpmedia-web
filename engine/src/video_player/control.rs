@@ -278,9 +278,7 @@ impl PlayerInner {
         let spec = self.shared.loop_spec.get().with_zone(zone, count);
         self.shared.loop_spec.set(spec);
         if prev.in_frame != zone.in_frame {
-            self.shared.loop_origin_stash.borrow_mut().take();
-            self.drop_loop_play_warm();
-            self.shared.loop_origin_warm_started.set(false);
+            self.drop_origin_stash();
         }
     }
 
