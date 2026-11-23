@@ -2,7 +2,7 @@
  * Canonical e2e media: [testvideo](https://github.com/alexantoshuk/testvideo) Release assets.
  *
  * Do not point probes at Downloads / ad-hoc local paths. In-repo tiny fixtures
- * (`demo-player/public/`, `engine/tests/fixtures/`) remain for smoke + Rust unit demux only.
+ * (`fixtures/`) remain for smoke + Rust unit demux only.
  *
  * Local e2e opens same-origin `/media/<stem>.mp4` — files in `demo-player/public/media/`
  * (`npm run media:fetch`). Override download base: `TESTVIDEO_BASE=https://…/download/vX.Y.Z`.

@@ -24,6 +24,10 @@
 
 ## Next up
 
+### Scenario catalog
+
+`.ai/scenarios.md` — e2e coverage and layer review. Fill `E2e` `—` rows and resolve `Review` (`unify` / move) before new player specs.
+
 ### E2E
 
 Browser e2e (`skills/media.md` Triage) before engine playback / ownership refactors. `trunk serve` dev build loads (8 MiB wasm stack in `.cargo/config.toml`). No known red spec.

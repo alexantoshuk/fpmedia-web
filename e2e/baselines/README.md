@@ -15,7 +15,7 @@ Opened via demo URL field as same-origin `/media/<stem>.mp4` (static files from
 Override download base with `TESTVIDEO_BASE`.
 
 **Do not** point baselines at Downloads / ad-hoc local movies. In-repo tiny
-fixtures (`demo-player/public/`, `engine/tests/fixtures/`) are for smoke + Rust unit only.
+fixtures (`fixtures/`) are for smoke + Rust unit only.
 
 ## Scenarios (fixed)
 

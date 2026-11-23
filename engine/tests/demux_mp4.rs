@@ -24,7 +24,7 @@ async fn open_video_source(
 
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+        .join("../fixtures")
         .join(name)
 }
 

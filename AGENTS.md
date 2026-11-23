@@ -19,7 +19,8 @@ Canonical project knowledge lives in **`AGENTS.md`** + **`.ai/`** (+ **`CONTRIBU
 4. Scan `.ai/skills/` filenames.
 5. **Read the relevant skill before touching code that imports its topic** — start with its **Triage** table, then the sections it points to (read the full skill when the change is broad).
 6. **Do not** preload [`.ai/glossary.md`](.ai/glossary.md) every session. Open it only when a term is unfamiliar or when adding/changing vocabulary (see [Glossary hygiene](#glossary-hygiene)). Prefer product / architecture / skill triage first.
-7. **Media work (mandatory):** see [Mediabunny-first](#mediabunny-first) below.
+7. **Do not** preload [`.ai/scenarios.md`](.ai/scenarios.md) every session. Open it when adding a player scenario, an e2e spec, or moving a user-facing behavior across layers (see [Scenario hygiene](#scenario-hygiene)).
+8. **Media work (mandatory):** see [Mediabunny-first](#mediabunny-first) below.
 
 All `.ai/` documentation is English.
 
@@ -105,7 +106,7 @@ If a plan adds an `Rc` / `Cell` / `RefCell` / `StoredValue` field, `dyn`, `Arc` 
 | `.ai/skills/leptos.md` | Leptos UI / `<Video>` / CSR mount / resources / host OpQueue |
 
 New trap → follow [Documentation write gate](#documentation-write-gate--hard-stop) (usually triage row + tight gotcha). Add a skills-index row only if a **new** skill file is created.
-Do **not** create extra doc types (`history.md`, `decisions.md`, session logs) — extend the table above only when a new skill topic is real and recurring. **`.ai/glossary.md` is allowed** — see [Glossary hygiene](#glossary-hygiene).
+Do **not** create extra doc types (`history.md`, `decisions.md`, session logs) — extend the table above only when a new skill topic is real and recurring. **`.ai/glossary.md`** and **`.ai/scenarios.md`** are allowed — see [Glossary hygiene](#glossary-hygiene) and [Scenario hygiene](#scenario-hygiene).
 
 ## Documentation (`.ai/`)
 
@@ -114,6 +115,7 @@ Do **not** create extra doc types (`history.md`, `decisions.md`, session logs) �
 | **`product.md`** | Domain or UX decision stabilises | Model, surfaces, business invariants. One row/paragraph per decision — no session notes, no store/policy knobs unless the user sees them. |
 | **`architecture.md`** | Stack, layers, or policy stabilises | Layout, layer rules, code conventions, ADRs, design tables (caches / Play·Scrub·Settle policy). Point to skills for failure modes. **No backlog / Still-open lists** — those live in `state.md`. |
 | **`glossary.md`** | New stable project term, or an existing term’s meaning changes / dies | Shared **vocabulary** (what a word means). Not UX decisions, ADRs, backlog, or trap recipes — those stay in product / architecture / state / skills. English only. |
+| **`scenarios.md`** | New or changed user scenario, its e2e spec, or which layer owns it | Scenario contract only (id, surface, action, expect, owner, review, spec). UX prose stays in `product.md`; shipped design in `architecture.md`. |
 | **`state.md`** | End of session; **chat handoff**; before commit if priorities shifted | **In progress** + **Next up** (+ optional **Later**) only (no Done list). Drop finished specs; don’t duplicate product/architecture. |
 | **`skills/*.md`** | Reusable trap or API mismatch fixed in code | Triage + tight gotchas (+ optional one-crate module map). Not backlog, design essays, Dev commands, or session history. |
 
@@ -124,6 +126,7 @@ Before editing **any** `.ai/` file (or restating project knowledge in `AGENTS.md
 | Kind of fact | Canonical file |
 | ------------ | -------------- |
 | UX / product invariant | `product.md` |
+| Business scenario → observable, layer owner, e2e spec | `scenarios.md` |
 | Stack, layers, ADR, policy/design table, FSM domain | `architecture.md` |
 | Shared term / vocabulary (“what does X mean?”) | `glossary.md` |
 | Backlog / parked / “later” / next-up | `state.md` |
@@ -162,6 +165,7 @@ Comments that state **who owns decode**, HW vs PreferSoftware, densify on/off, m
 | Doc write gate / skill budgets / same-diff freshness / policy comments | `AGENTS.md` | Do not restate — `CONTRIBUTING.md`: one-line pointer only |
 | Portable-docs / no `.cursor` | `AGENTS.md` | Do not restate |
 | Product / UX invariants | `product.md` | Do not restate essays in skills |
+| Business scenario contract (e2e + layer owner) | `scenarios.md` | `product.md` / `architecture.md`: one-line pointer only — do not copy the row |
 | Term definitions (settle, densify, Exact, …) | `glossary.md` | One-line pointer only — do not fork definitions in skills/chat docs |
 | Glossary maintenance rules | `AGENTS.md` § Glossary hygiene | Do not restate |
 | Crate layout, layers, ADRs, cache/policy design | `architecture.md` | Skills: module map + traps only; pointer to design sections |
@@ -197,12 +201,22 @@ Comments that state **who owns decode**, HW vs PreferSoftware, densify on/off, m
 5. **Not for** — UX invariants (product), design tables/FSMs (architecture), backlog (state), failure recipes (skills). Glossary may **point** at those files; it must not restate their essays.
 6. **Elsewhere** — skills/product/architecture use the term and, if needed, a one-line pointer (`see glossary.md § …`). Do not paste a second full definition.
 
+### Scenario hygiene
+
+`.ai/scenarios.md` is the only home for the business-scenario contract (what we assert, which layer owns the gesture, which spec covers it). Not a start-of-session must-read.
+
+1. **Row** — one user scenario. **Expect** is one observable line. When the rule is already a product invariant, point at `product.md` § …; do not restate the paragraph.
+2. **Owner now** — the current layer (`demo`, a `components` symbol, or `engine`). **Review** — empty, or `unify` / `split` / `move→components` / `move→engine` / `demo-only`. Clearing **Review** updates `architecture.md` in the same change.
+3. **E2e** — spec path when that spec asserts the id; `partial: path` when a smoke or probe only touches it; `—` when uncovered. New specs take the id as their name. Do not paste the row into the test comment.
+4. **Not here** — FSM, densify, decoder policy (`architecture.md`); failure recipes (skills); backlog prose (`state.md` — one pointer to this file is enough).
+
 ### After-fix / after-design doc update
 
 Not only “skill-worthy traps”. **Any** shipped behaviour or design change must pick a canonical slot in the plan/`docs:` line and land it in the **same** diff ([Same-diff freshness](#documentation-write-gate--hard-stop)):
 
 - durable design / ownership / policy table → `architecture.md` (and contradicting comments), and/or
 - UX decision → `product.md`, and/or
+- scenario expect / owner / e2e coverage → `scenarios.md`, and/or
 - new/changed/retired vocabulary → `glossary.md`, and/or
 - reusable trap → skill triage row and/or tight gotcha (not a new essay), and/or
 - finished backlog item → drop from `state.md`

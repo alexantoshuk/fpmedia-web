@@ -41,7 +41,7 @@ Thumbs.db
 .DS_Store
 
 # Local / large media — never commit camera dumps or long clips.
-# Trackable exception: tiny plates named `fixture_*.mp4` (engine + demo-player/public).
+# Trackable exception: tiny plates named `fixture_*.mp4` (repo-root `fixtures/`).
 *.mp4
 *.mov
 *.webm

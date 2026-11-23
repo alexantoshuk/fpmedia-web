@@ -189,7 +189,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 
 | Kind | Where |
 | ---- | ----- |
-| Tiny unit/smoke MP4s | `fixture_*.mp4` under `engine/tests/fixtures/` + `demo-player/public/` (gitignore allows that prefix only) |
+| Tiny unit/smoke MP4s | `fixtures/fixture_*.mp4` at the repo root (gitignore allows that prefix only) |
 | FullHD A/V sync plates | **[testvideo](https://github.com/alexantoshuk/testvideo)** Releases — catalog `e2e/helpers/testvideo.ts` |
 
 Do **not** wire probes to Downloads / third-party hosts. In skills prefer meta (fps, GOP, resolution, bf); asset names = testvideo stems.
