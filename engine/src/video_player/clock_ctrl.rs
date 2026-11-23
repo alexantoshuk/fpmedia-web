@@ -243,7 +243,7 @@ impl PlayerInner {
 
     /// Sync-arm silent [`PlaybackClock`] / wall on the first play rAF (no AAC).
     ///
-    /// PlayPrime sets `pending_silent_clock`; [`Self::play_raf_tick`] calls
+    /// PlayPrime sets `ClockModel::pending_silent`; [`Self::play_raf_tick`] calls
     /// [`Self::finish_silent_play_prime`] so the first canvas present lands
     /// **before** the driver runs (mediabunny `startVideoIterator` draw then
     /// `play` / `audioContextStartTime`).
@@ -269,8 +269,9 @@ impl PlayerInner {
     pub fn finish_silent_play_prime(&self) -> f64 {
         let origin = self
             .shared
-            .held_media_origin
+            .clock_model
             .get()
+            .held_origin
             .unwrap_or_else(|| self.state().timestamp.seconds);
         self.arm_silent_play_clock(origin);
         origin
@@ -370,7 +371,9 @@ impl PlayerInner {
         };
         self.shared.wall_origin.set(None);
         self.shared.clock.borrow_mut().snap(t);
-        self.shared.held_media_origin.set(Some(t));
+        let mut m = self.shared.clock_model.get();
+        m.held_origin = Some(t);
+        self.shared.clock_model.set(m);
         t
     }
 
@@ -378,11 +381,14 @@ impl PlayerInner {
     pub async fn resume_after_hold(&self) -> Result<(), MediaError> {
         let t = self
             .shared
-            .held_media_origin
+            .clock_model
             .get()
+            .held_origin
             .unwrap_or_else(|| self.state().timestamp.seconds);
         self.resume_media_clock(t).await?;
-        self.shared.held_media_origin.set(None);
+        let mut m = self.shared.clock_model.get();
+        m.held_origin = None;
+        self.shared.clock_model.set(m);
         Ok(())
     }
 
@@ -437,31 +443,45 @@ impl PlayerInner {
     }
 
     pub(super) fn apply_clock_event(&self, event: ClockEvent) {
-        let (next, cmds) = clock_reduce(self.shared.clock_state.get(), event);
-        self.shared.clock_state.set(next);
+        let mut model = self.shared.clock_model.get();
+        let (next, cmds) = clock_reduce(model.phase, event);
+        model.phase = next;
+        self.shared.clock_model.set(model);
         for cmd in cmds {
             match cmd {
                 ClockCmd::NoteUnderrunHoldStart => self.note_underrun_hold_start(),
                 ClockCmd::FinishUnderrunTimer => self.finish_underrun_hold_timer(),
                 ClockCmd::AbandonUnderrunTimer => {
-                    let _ = self.shared.underrun_hold_since_ms.take();
+                    let mut m = self.shared.clock_model.get();
+                    m.underrun_since_ms = None;
+                    self.shared.clock_model.set(m);
                 }
             }
         }
+        if matches!(event, ClockEvent::Stop | ClockEvent::ResetForPlay) {
+            let mut m = self.shared.clock_model.get();
+            m.clear_session_anchors();
+            self.shared.clock_model.set(m);
+        }
     }
+
     fn note_underrun_hold_start(&self) {
-        if self.shared.underrun_hold_since_ms.get().is_some() {
+        let mut m = self.shared.clock_model.get();
+        if m.underrun_since_ms.is_some() {
             return;
         }
         self.shared
             .update_underrun(|u| u.holds = u.holds.saturating_add(1));
-        self.shared.underrun_hold_since_ms.set(now_ms());
+        m.underrun_since_ms = now_ms();
+        self.shared.clock_model.set(m);
     }
 
     fn finish_underrun_hold_timer(&self) {
-        let Some(since) = self.shared.underrun_hold_since_ms.take() else {
+        let mut m = self.shared.clock_model.get();
+        let Some(since) = m.underrun_since_ms.take() else {
             return;
         };
+        self.shared.clock_model.set(m);
         if let Some(now) = now_ms() {
             let dt = (now - since).max(0.0);
             self.shared.update_underrun(|u| u.hold_ms += dt);
@@ -471,7 +491,8 @@ impl PlayerInner {
     /// Hold stats including an in-progress freeze (for live pipeline UI).
     pub(super) fn underrun_hold_ms_now(&self) -> f64 {
         let mut total = self.shared.underrun.get().hold_ms;
-        if let (Some(since), Some(now)) = (self.shared.underrun_hold_since_ms.get(), now_ms()) {
+        let since = self.shared.clock_model.get().underrun_since_ms;
+        if let (Some(since), Some(now)) = (since, now_ms()) {
             total += (now - since).max(0.0);
         }
         total

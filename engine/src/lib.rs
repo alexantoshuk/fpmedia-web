@@ -67,7 +67,9 @@ pub use host::open_phase::{OpenPhase, OpenSourceKind};
 #[doc(hidden)]
 pub use model::bg_task::{FlightGuard, SingleFlight};
 #[doc(hidden)]
-pub use model::clock_state::{ClockCmd, ClockEvent, ClockState, reduce as clock_state_reduce};
+pub use model::clock_state::{
+    ClockCmd, ClockEvent, ClockModel, ClockState, reduce as clock_state_reduce,
+};
 #[doc(hidden)]
 pub use model::decoder_slot::{
     DecoderSlotCmd, DecoderSlotEvent, DecoderSlotModel, DecoderSlotPhase,

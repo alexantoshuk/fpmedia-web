@@ -17,7 +17,7 @@ use crate::decode::scrub_blit::BlitCanvasSlot;
 use crate::decode::webcodecs::WebCodecsDecoder;
 use crate::epoch::Epoch;
 use crate::error::MediaError;
-use crate::model::clock_state::ClockState;
+use crate::model::clock_state::ClockModel;
 use crate::model::decoder_slot::DecoderSlotModel;
 use crate::model::engine_mode::EngineModel;
 use crate::model::session::SessionModel;
@@ -187,7 +187,6 @@ impl VideoPlayer {
             vt_thumb_authority: Cell::new(false),
             gray_fill: crate::SingleFlight::new(),
             scrub_bg_suspended: Cell::new(false),
-            underrun_catchup_until_ms: Cell::new(None),
             play_origin_warm: crate::SingleFlight::new(),
             play_origin_decode: crate::SingleFlight::new(),
             loop_origin: RefCell::new(super::play_pool::LoopOriginWarm::Idle),
@@ -199,17 +198,13 @@ impl VideoPlayer {
             canvas,
             ctx,
             underrun: Cell::new(Default::default()),
-            underrun_hold_since_ms: Cell::new(None),
-            clock_state: Cell::new(ClockState::Stopped),
+            clock_model: Cell::new(ClockModel::default()),
             session: Cell::new(SessionModel::new()),
             play_phase: Cell::new(crate::PlayPhase::Idle),
             play_iter: RefCell::new(None),
             play_next: RefCell::new(None),
             play_pool: RefCell::new(None),
             play_update: crate::SingleFlight::new(),
-            pending_silent_clock: Cell::new(false),
-            resuming_clock: Cell::new(false),
-            held_media_origin: Cell::new(None),
             play_driver_error: RefCell::new(None),
             op_epoch: Epoch::new(),
             decoder_slot: Cell::new(DecoderSlotModel::new()),

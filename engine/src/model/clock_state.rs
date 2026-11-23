@@ -1,8 +1,8 @@
-//! Media-timeline phase (run / stop / underrun hold / scrub hold).
+//! Media-timeline phase (run / stop / underrun hold / scrub hold) + anchors bag.
 //!
-//! Replaces free-form `hold_*` / `resume_*` / `start_*` ordering inferred only from
-//! `MediaClock.playing` + `underrun_hold_since_ms`. See `.ai/architecture.md`
-//! § State machines over flags.
+//! [`ClockModel`] packs phase with hold/resume/silent/catch-up anchors so
+//! Stopped + held origin is cleared on Stop / ResetForPlay (not a parallel cell
+//! soup). See `.ai/architecture.md` § State machines over flags.
 //!
 //! mediabunny: `examples/media-player/media-player.ts` — `getPlaybackTime`, `play`,
 //! `pause`, `seekToTime` (pause → snap → play). Path match: audio/`AudioContext`
@@ -76,8 +76,44 @@ pub enum ClockEvent {
     /// Leave play for timeline scrub (soft audio).
     HoldScrub,
     /// New [`crate::VideoPlayer::play`] — drop in-progress underrun timer without
-    /// accumulating (same as clearing `underrun_hold_since_ms`).
+    /// accumulating (same as clearing [`ClockModel::underrun_since_ms`]).
     ResetForPlay,
+}
+
+/// Phase + soft-hold / underrun / PlayPrime anchors (`Copy` bag).
+///
+/// After [`ClockEvent::Stop`] / [`ClockEvent::ResetForPlay`], session anchors
+/// ([`Self::held_origin`], [`Self::resuming`], [`Self::pending_silent`],
+/// [`Self::underrun_since_ms`]) are cleared. Catch-up grace may outlive a brief
+/// phase flip (same as pre-bag behaviour).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ClockModel {
+    pub phase: ClockState,
+    /// Soft-hold / underrun / seam snap origin (secs).
+    pub held_origin: Option<f64>,
+    /// Wall stamp while `phase == HoldUnderrun`.
+    pub underrun_since_ms: Option<f64>,
+    /// PlayPrime: arm silent Start on next present tick.
+    pub pending_silent: bool,
+    /// `resume_media_clock` in flight — do not stack.
+    pub resuming: bool,
+    /// Tab-visible / PlayPrime catch-up grace (no clock hold on document hidden).
+    pub catchup_until_ms: Option<f64>,
+}
+
+impl ClockModel {
+    pub fn phase(self) -> ClockState {
+        self.phase
+    }
+
+    /// Clear hold/resume/silent/underrun-stamp anchors (Stop / ResetForPlay /
+    /// play-session end). Leaves [`Self::catchup_until_ms`] alone.
+    pub fn clear_session_anchors(&mut self) {
+        self.held_origin = None;
+        self.underrun_since_ms = None;
+        self.pending_silent = false;
+        self.resuming = false;
+    }
 }
 
 /// Side effects for [`crate::VideoPlayer`] underrun stats.
@@ -205,5 +241,23 @@ mod tests {
         let (next, cmds) = reduce(ClockState::HoldUnderrun, ClockEvent::ResetForPlay);
         assert_eq!(next, ClockState::Stopped);
         assert_eq!(cmds, vec![ClockCmd::AbandonUnderrunTimer]);
+    }
+
+    #[test]
+    fn clear_session_anchors_leaves_catchup() {
+        let mut m = ClockModel {
+            phase: ClockState::HoldScrub,
+            held_origin: Some(1.5),
+            underrun_since_ms: Some(99.0),
+            pending_silent: true,
+            resuming: true,
+            catchup_until_ms: Some(1000.0),
+        };
+        m.clear_session_anchors();
+        assert_eq!(m.held_origin, None);
+        assert_eq!(m.underrun_since_ms, None);
+        assert!(!m.pending_silent);
+        assert!(!m.resuming);
+        assert_eq!(m.catchup_until_ms, Some(1000.0));
     }
 }

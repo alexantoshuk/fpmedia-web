@@ -8,8 +8,8 @@
 
 ### Handoff
 
-- **Branch:** `main` (Slice 1+4A + 2a + 2b + **3A** landed — `LoopOriginWarm` Idle/Bytes/Hw/Sw; engine play intent ≡ `EngineMode::Play`; playlist protocol `pub(crate)` + `SeamLatch`; `play_update: SingleFlight`; demo step → `MediaRef`). Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types. Play session: `PlayPhase` + `SeamLatch`.
-- **Next priority:** **Refactor — simplify ownership / API** — next **Slice 3B**. CutWindow stays Later.
+- **Branch:** `main` (Slice 1+4A + 2a + 2b + 3A + **3B** landed — `ClockModel` phase+anchors; `LoopOriginWarm`; engine play intent ≡ `EngineMode::Play`; playlist protocol `pub(crate)` + `SeamLatch`; `play_update: SingleFlight`; demo step → `MediaRef`). Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types. Play session: `PlayPhase` + `SeamLatch`.
+- **Next priority:** **Refactor — simplify ownership / API** — next **Slice 4B**. CutWindow stays Later.
 - **Open:** mobile `LoopPlayWarm` unverified. Residual light mobile pause on a Host mid-zone LoopZone seam — Later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional, unrelated.
 - **Do not merge:**
@@ -32,13 +32,12 @@ Agreed code-review backlog. **Order below is the PR sequence.** Merge only withi
 
 **PR pass order (do this, not “1+2+3 in one diff”):**
 
-1. **Slice 3B** — clock phase + anchors bag.
-2. **Slice 4B** — typed host errors (± optional `OpQueue` shadow-bool cleanup).
-3. **Slice 5** — after 3B–4: **5.1+5.2** one PR; **5.3+5.4** one PR; **5.5** optional alone.
+1. **Slice 4B** — typed host errors (± optional `OpQueue` shadow-bool cleanup).
+2. **Slice 5** — after 4B: **5.1+5.2** one PR; **5.3+5.4** one PR; **5.5** optional alone.
 
 **OK to combine in one PR:** 5.1 with 5.2; 5.3 with 5.4.
 
-**Do not combine:** 4B with any engine FSM slice; 5 before 3B–4 land; any of this with CutWindow / crates publish.
+**Do not combine:** 4B with any engine FSM slice; 5 before 4B lands; any of this with CutWindow / crates publish.
 
 **Global do-not (all slices):**
 
@@ -52,21 +51,6 @@ Agreed code-review backlog. **Order below is the PR sequence.** Merge only withi
 - Media edits: mediabunny cite **or** explicit **no equivalent** (scrub / playlist local) per `AGENTS.md`.
 
 **Verify per PR:** `bash scripts/check.sh`; for ownership / play / scrub / seam changes also `npm run e2e` (`skills/media.md` Triage). Drop finished bullets from this block when they ship (no Done list).
-
----
-
-#### Slice 3B — Clock phase + anchors bag
-
-**Goal:** Clock phase and its timers live in one `Copy` bag.
-
-- Today: `ClockState` plus loose `pending_silent_clock`, `resuming_clock`, `held_media_origin`, `underrun_hold_since_ms`, `underrun_catchup_until_ms`.
-- Target: one `Copy` struct (phase + anchors) so “Stopped but holding origin” is unrepresentable or explicit.
-- Touch: `model/clock_state.rs`, `video_player/clock_ctrl.rs`, play underrun paths.
-- Keep tab-hidden = scrub-plane yield only (no clock hold) — product/architecture already say so.
-
-**DoD:** illegal phase/anchor combos type-checked away; underrun hold e2e green. Docs: `architecture.md` § Audio + media clock if field homes move.
-
-**Do not:** add clock hold on document hidden; combine with 3A unless both stay mechanical.
 
 ---
 

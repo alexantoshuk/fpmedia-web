@@ -93,10 +93,8 @@ impl VideoPlayer {
         }
         // Already silenced for video underrun — restart now; do not wait for
         // `nextFrame` (may stay empty while rAF is throttled).
-        if self.shared.clock_state.get().underrun_holding()
-            && self.is_playing()
-            && !self.shared.resuming_clock.get()
-        {
+        let cm = self.shared.clock_model.get();
+        if cm.phase.underrun_holding() && self.is_playing() && !cm.resuming {
             self.spawn_resume_after_underrun_hold();
         }
     }

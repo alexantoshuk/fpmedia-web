@@ -21,7 +21,7 @@ use crate::demux::Mp4VideoTrack;
 use crate::epoch::Epoch;
 use crate::error::MediaError;
 use crate::model::bg_task::SingleFlight;
-use crate::model::clock_state::ClockState;
+use crate::model::clock_state::ClockModel;
 use crate::model::decoder_slot::DecoderSlotModel;
 use crate::model::engine_mode::EngineModel;
 use crate::model::play_phase::PlayPhase;
@@ -53,9 +53,8 @@ pub(super) const STEP_BEHIND_CAP_PLAY: usize = 0;
 pub(super) const PLAY_EXACT_VRAM_VF_SLACK: usize = 4;
 
 /// Play underrun / lateness counters (read by [`super::PipelineStats`]), reset
-/// together on `play()`. Not here on purpose: the hold *timer*
-/// (`underrun_hold_since_ms`, clock FSM) and the tab-visible catch-up gate
-/// (`underrun_catchup_until_ms`) are not reset by `play()`.
+/// together on `play()`. Not here on purpose: the hold *timer* and catch-up
+/// grace live on [`ClockModel`] and are not reset by `play()`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct UnderrunStats {
     /// Frames dropped by multi-frame overdue catch-up.
@@ -131,9 +130,6 @@ pub(super) struct Shared {
     /// Document hidden — yield densify / gray / thumbs; Play clock keeps running.
     /// `mediabunny: examples/media-player` — no visibility hold; local scrub-plane gate.
     pub(super) scrub_bg_suspended: Cell<bool>,
-    /// After tab visible: `performance.now` until which video catch-up must not
-    /// [`super::VideoPlayer::hold_media_clock_for_underrun`] (micro audio pause).
-    pub(super) underrun_catchup_until_ms: Cell<Option<f64>>,
     /// Origin (frame 0) byte warm — loop prewarm, playlist idle near-EOF, and
     /// PlayPrime at head 0 share one flight so kick + prime do not double-read.
     pub(super) play_origin_warm: SingleFlight,
@@ -160,10 +156,9 @@ pub(super) struct Shared {
     pub(super) ctx: CanvasRenderingContext2d,
     /// Play underrun counters; mutate via [`Self::update_underrun`].
     pub(super) underrun: Cell<UnderrunStats>,
-    /// `performance.now` when the current underrun hold started (`None` = not holding).
-    pub(super) underrun_hold_since_ms: Cell<Option<f64>>,
-    /// Timeline phase ([`ClockState`]) — run / stop / underrun / scrub hold.
-    pub(super) clock_state: Cell<ClockState>,
+    /// Timeline phase + soft-hold / underrun / PlayPrime anchors ([`ClockModel`]).
+    /// Named `clock_model` — `clock` is the [`MediaClock`] timeline below.
+    pub(super) clock_model: Cell<ClockModel>,
     /// Seek / scrub restart latch ([`SessionModel`]).
     pub(super) session: Cell<SessionModel>,
     /// Play session lifetime + loop seam ([`PlayPhase`]).
@@ -177,13 +172,6 @@ pub(super) struct Shared {
     /// `updateNextFrame` / loop-stash catch-up — one in flight (`try_claim`, no pending).
     /// mediabunny: one `updateNextFrame` at a time.
     pub(super) play_update: SingleFlight,
-    /// No-AAC: arm silent [`crate::audio::PlaybackClock`] on first present tick.
-    /// `mediabunny: media-player play` / `audioContextStartTime`.
-    pub(super) pending_silent_clock: Cell<bool>,
-    /// Warm clock resume in flight — do not stack.
-    pub(super) resuming_clock: Cell<bool>,
-    /// Media time snapped at underrun hold for warm resume.
-    pub(super) held_media_origin: Cell<Option<f64>>,
     /// Iterator / loop async failure for the next [`super::VideoPlayer::play_raf_tick`].
     pub(super) play_driver_error: RefCell<Option<String>>,
     /// Bumped to cancel in-flight decode (mediabunny dispose / asyncId).
@@ -220,7 +208,7 @@ impl Shared {
             self.engine.get().mode,
             self.session.get().is_restarting(),
             // Underrun / scrub soft-hold only (tab-hidden yields scrub planes, not clock).
-            self.clock_state.get().blocks_bg_sync_verify(),
+            self.clock_model.get().phase.blocks_bg_sync_verify(),
             self.densify.is_busy(),
         )
     }

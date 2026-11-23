@@ -51,9 +51,11 @@ impl VideoPlayer {
     /// `mediabunny: examples/media-player` `play` after `startVideoIterator`.
     pub fn begin_play_session(&self, pending_silent_clock: bool) {
         self.apply_play_phase(PlayPhaseEvent::Begin);
-        self.shared.pending_silent_clock.set(pending_silent_clock);
-        self.shared.resuming_clock.set(false);
-        self.shared.held_media_origin.set(None);
+        let mut m = self.shared.clock_model.get();
+        m.pending_silent = pending_silent_clock;
+        m.resuming = false;
+        m.held_origin = None;
+        self.shared.clock_model.set(m);
         *self.shared.play_driver_error.borrow_mut() = None;
         // A warm clock can sit slightly ahead of the fresh PlayIter — suppress
         // underrun→audio hold while video catches up (same grace as tab return).
@@ -75,9 +77,11 @@ impl PlayerInner {
 
     pub(super) fn clear_play_session(&self) {
         self.apply_play_phase(PlayPhaseEvent::End);
-        self.shared.pending_silent_clock.set(false);
-        self.shared.resuming_clock.set(false);
-        self.shared.held_media_origin.set(None);
+        {
+            let mut m = self.shared.clock_model.get();
+            m.clear_session_anchors();
+            self.shared.clock_model.set(m);
+        }
         self.shared.seam_latch.set(SeamLatch::Idle);
         // Keep Sw stash — playlist idle prewarm must survive pause; PlayPrime@0
         // and LoopSeam consume it. Drop Hw (2nd decoder). Clear Bytes → Idle.
@@ -160,8 +164,10 @@ impl VideoPlayer {
             return Ok(PlayTick::Skipped);
         }
 
-        if self.shared.pending_silent_clock.get() {
-            self.shared.pending_silent_clock.set(false);
+        if self.shared.clock_model.get().pending_silent {
+            let mut m = self.shared.clock_model.get();
+            m.pending_silent = false;
+            self.shared.clock_model.set(m);
             self.finish_silent_play_prime();
         }
 
@@ -334,7 +340,7 @@ impl PlayerInner {
             // overdue-skip past a Host LoopZone wall. Non-shuttle: ≤1 overdue/kick.
             // mediabunny: updateNextFrame overdue draw; gates local.
             let can_skip = self.shared.play_phase.get() == PlayPhase::Live
-                && !self.shared.pending_silent_clock.get()
+                && !self.shared.clock_model.get().pending_silent
                 && self.shared.seam_latch.get().release_aim().is_none();
             if ts <= t && can_skip {
                 if !self.is_shuttle() && overdue >= 1 {
@@ -399,7 +405,9 @@ impl VideoPlayer {
         // pollute holds — abandon first.
         self.apply_clock_event(crate::ClockEvent::ResetForPlay);
         let t = self.hold_media_clock_for_scrub();
-        self.shared.held_media_origin.set(Some(t));
+        let mut m = self.shared.clock_model.get();
+        m.held_origin = Some(t);
+        self.shared.clock_model.set(m);
         let player = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let epoch = player.shared.op_epoch.ticket();
@@ -446,7 +454,9 @@ impl VideoPlayer {
                     {
                         *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
                     }
-                    player.shared.held_media_origin.set(None);
+                    let mut m = player.shared.clock_model.get();
+                    m.held_origin = None;
+                    player.shared.clock_model.set(m);
                 }
                 Err(e) if e.is_cancelled() => {}
                 Err(e) => {
@@ -795,12 +805,14 @@ impl PlayerInner {
         if self.shared.scrub_bg_suspended() {
             return true;
         }
-        let Some(until) = self.shared.underrun_catchup_until_ms.get() else {
+        let Some(until) = self.shared.clock_model.get().catchup_until_ms else {
             return false;
         };
         let now = now_ms().unwrap_or(0.0);
         if now >= until {
-            self.shared.underrun_catchup_until_ms.set(None);
+            let mut m = self.shared.clock_model.get();
+            m.catchup_until_ms = None;
+            self.shared.clock_model.set(m);
             return false;
         }
         true
@@ -811,9 +823,9 @@ impl PlayerInner {
         // Long enough for rAF/iterator to repark after a hidden-tab lag; time-only
         // (not cleared on first `play_next` — that raced hold in the same tick).
         if let Some(now) = now_ms() {
-            self.shared
-                .underrun_catchup_until_ms
-                .set(Some(now + UNDERRUN_CATCHUP_GRACE_MS));
+            let mut m = self.shared.clock_model.get();
+            m.catchup_until_ms = Some(now + UNDERRUN_CATCHUP_GRACE_MS);
+            self.shared.clock_model.set(m);
         }
     }
 }
@@ -824,26 +836,28 @@ impl VideoPlayer {
         // Leave any in-flight HoldUnderrun even without `nextFrame`.
         // `mediabunny: media-player` — no video-underrun → audio hold.
         if self.suppress_underrun_for_video_catchup() {
-            if self.shared.clock_state.get().underrun_holding() && !self.shared.resuming_clock.get()
-            {
+            let m = self.shared.clock_model.get();
+            if m.phase.underrun_holding() && !m.resuming {
                 self.spawn_resume_after_underrun_hold();
             }
             return;
         }
 
         if self.play_underrun_hold() {
-            let cs = self.shared.clock_state.get();
-            if cs.underrun_holding() || self.shared.resuming_clock.get() {
+            let m = self.shared.clock_model.get();
+            if m.phase.underrun_holding() || m.resuming {
                 return;
             }
             let t = self.hold_media_clock_for_underrun();
-            self.shared.held_media_origin.set(Some(t));
+            let mut m = self.shared.clock_model.get();
+            m.held_origin = Some(t);
+            self.shared.clock_model.set(m);
             return;
         }
 
-        let should_resume = self.shared.clock_state.get().underrun_holding()
-            && !self.shared.resuming_clock.get()
-            && self.shared.play_next.borrow().is_some();
+        let m = self.shared.clock_model.get();
+        let should_resume =
+            m.phase.underrun_holding() && !m.resuming && self.shared.play_next.borrow().is_some();
         if !should_resume {
             return;
         }
@@ -851,20 +865,30 @@ impl VideoPlayer {
     }
 
     pub(super) fn spawn_resume_after_underrun_hold(&self) {
-        self.shared.resuming_clock.set(true);
+        let mut m = self.shared.clock_model.get();
+        m.resuming = true;
+        self.shared.clock_model.set(m);
         let player = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let t = player
                 .shared
-                .held_media_origin
+                .clock_model
                 .get()
+                .held_origin
                 .unwrap_or_else(|| player.state().timestamp.seconds);
             let result = player.resume_media_clock(t).await;
-            player.shared.resuming_clock.set(false);
+            let mut m = player.shared.clock_model.get();
+            m.resuming = false;
             match result {
-                Ok(()) => player.shared.held_media_origin.set(None),
-                Err(e) if e.is_cancelled() => {}
+                Ok(()) => {
+                    m.held_origin = None;
+                    player.shared.clock_model.set(m);
+                }
+                Err(e) if e.is_cancelled() => {
+                    player.shared.clock_model.set(m);
+                }
                 Err(e) => {
+                    player.shared.clock_model.set(m);
                     *player.shared.play_driver_error.borrow_mut() = Some(e.to_string());
                 }
             }
@@ -1344,7 +1368,11 @@ impl VideoPlayer {
                 .seam_latch
                 .set(self.shared.seam_latch.get().with_audio_warm(true));
         }
-        self.shared.held_media_origin.set(Some(t0));
+        {
+            let mut m = self.shared.clock_model.get();
+            m.held_origin = Some(t0);
+            self.shared.clock_model.set(m);
+        }
         self.kick_update_next_frame();
         web_sys::console::log_1(
             &format!("fpmedia-web: playlist seam hold armed frame={frame}").into(),
@@ -1369,8 +1397,9 @@ impl VideoPlayer {
         let warm = latch.audio_warm();
         let t0 = self
             .shared
-            .held_media_origin
+            .clock_model
             .get()
+            .held_origin
             .unwrap_or_else(|| self.state().timestamp.seconds);
         if restart_iter {
             // While still SeamHold — drop hold-aged decode queue (skip storm).
@@ -1386,17 +1415,27 @@ impl VideoPlayer {
         }
         self.shared.seam_latch.set(SeamLatch::Released { aim });
         self.hard_reset_timeline_to(t0);
-        self.shared.held_media_origin.set(Some(t0));
+        {
+            let mut m = self.shared.clock_model.get();
+            m.held_origin = Some(t0);
+            self.shared.clock_model.set(m);
+        }
         // No `arm_underrun_catchup_grace` — warm→Live grace helped skip storms.
         if warm {
             let _ = self.take_audio_warm_resume();
             self.resume_media_clock(t0).await?;
-            self.shared.held_media_origin.set(None);
+            let mut m = self.shared.clock_model.get();
+            m.held_origin = None;
+            self.shared.clock_model.set(m);
         } else if self.shared.audio.borrow().is_some() {
             self.start_media_clock(t0).await?;
-            self.shared.held_media_origin.set(None);
+            let mut m = self.shared.clock_model.get();
+            m.held_origin = None;
+            self.shared.clock_model.set(m);
         } else {
-            self.shared.pending_silent_clock.set(true);
+            let mut m = self.shared.clock_model.get();
+            m.pending_silent = true;
+            self.shared.clock_model.set(m);
         }
         web_sys::console::log_1(
             &format!(

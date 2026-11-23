@@ -166,7 +166,7 @@ Event-loop races (pointer → microtask → `OpQueue` → rAF) are **not** fixed
 | WorkloadMode | `fpmedia_web::workload` (Play > Seek > Open > Bg) |
 | Byte IO | `ReadOrchestrator` + `UrlSource` / `BlobSource` stream workers |
 | Open / backfill | `fpmedia_web::open_phase` (`OpenPhase::label`) |
-| Media clock | `fpmedia_web::clock_state` |
+| Media clock | `fpmedia_web::clock_state` — `ClockModel` (`phase` + held/underrun/silent/resuming/catch-up anchors); Stop/ResetForPlay clears session anchors |
 | Play session | `fpmedia_web::PlayPhase` (`Idle` / `Live` / `LoopSeam` / `SeamHold`) + playlist Host data bag `SeamLatch` (`Idle` / `Holding` / `Released`) — not loose `seam_*` cells; host `SeamPhase` stays separate |
 | rAF restart | `fpmedia_web::session` (`restarting`) |
 | Playlist host | `LoopOwner` + `SeamPhase` (VT reduce + playlist signals) + facade `playing` + **`plan_*` in `video_playlist::plan`**. Derive owner via `zone_owner_from_spans`; never probe slot `Video.looping` / slot `playing` for chrome. Table: [Playlist host plans](#playlist-host-plans-slices-af) |
@@ -406,7 +406,7 @@ flowchart TD
   RATE["Rate ≤4×: WSOLA TimeStretcher<br/>>4×: wall + mute — product.md"] --> AO
 ```
 
-PCM sample-entry bodies are not in `re_mp4`’s `Unknown` payload — walk raw `moov` (same pattern as `tmcd`). Codec map + decode: mediabunny `isobmff-demuxer` FourCC map + `media-sink.ts` `PcmAudioDecoderWrapper`. Hosts never open `AudioContext` as a disposable clock. Soft-hold on scrub/Pause keeps the graph; underrun holds audio without tearing the decoder down. mediabunny has no rate API equivalent — WSOLA is local. UX rates: `product.md`.
+PCM sample-entry bodies are not in `re_mp4`’s `Unknown` payload — walk raw `moov` (same pattern as `tmcd`). Codec map + decode: mediabunny `isobmff-demuxer` FourCC map + `media-sink.ts` `PcmAudioDecoderWrapper`. Hosts never open `AudioContext` as a disposable clock. Soft-hold on scrub/Pause keeps the graph; underrun holds audio without tearing the decoder down. Timeline phase + hold/resume/silent/catch-up anchors = `ClockModel` (`Shared.clock_model`; `MediaClock` stays the advancing timeline). mediabunny has no rate API equivalent — WSOLA is local. UX rates: `product.md`.
 
 ---
 

@@ -130,7 +130,7 @@ impl PlayerInner {
         }
         // Play intent = `EnterPlay` → `EngineMode::Play` (no parallel playing cell).
         self.apply_clock_event(ClockEvent::ResetForPlay);
-        // Counters only — `underrun_hold_since_ms` / catch-up gate are not reset here.
+        // Counters only — ClockModel underrun stamp / catch-up grace are not reset here.
         self.shared.underrun.set(Default::default());
         // Do **not** schedule_thumb_key_fill here — Play: no thumb generation.
         // Progressive Pause fill resumes on Pause / scrub / hover leave.
