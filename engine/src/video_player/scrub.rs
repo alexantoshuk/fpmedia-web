@@ -215,6 +215,25 @@ impl PlayerInner {
         self.shared.scrub_dir.set(dir);
     }
 
+    /// Paused release when Exact for `frame` is already in the blit.
+    ///
+    /// Do **not** [`Self::prepare_scrub_settle`]: `clear_step_ring` re-ingests
+    /// `displayed` with replace and the following PresentHit redraws the blit.
+    /// The held picture is the honest Exact — release must not swap it.
+    /// **no equivalent** (scrub local).
+    pub fn release_scrub_keep_exact(&self, frame: FrameId) {
+        self.shared.scrub_gesture.set(false);
+        // Drop a late drag paint. Does not abort densify (`cancel_ops` vs
+        // `cancel_ops_and_scrub_fill`).
+        self.cancel_ops();
+        if self.shared.engine.get().holds_exact() {
+            self.apply_engine_event(EngineEvent::EndExact { densify: false });
+        }
+        self.clear_scrub_direction();
+        self.aim_scrub_cache(frame);
+        self.enter_scrub_cache_pipeline(frame);
+    }
+
     /// Pointer-up settle entry from the UI host — before the async op runs.
     ///
     /// Must not call [`Self::note_scrub_frame`] / densify kick: that starved exact

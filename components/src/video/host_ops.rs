@@ -203,30 +203,36 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
             target,
             then_play: false,
         } => {
-            // Exact in slot blit — PresentHit or scrub_to settle. **no equivalent**.
-            use crate::virtual_timeline::{ExactSettlePlan, plan_exact_settle};
-            let local = target;
-            let plan = plan_exact_settle(p.has_scrub_exact_blit(local));
-            let r = match plan {
-                ExactSettlePlan::PresentHit => {
-                    if p.try_present_scrub_exact(local) {
-                        // `prepare_scrub_settle` latched ExactHold; skipping
-                        // `scrub_to` would leave hold stuck → densify exits /
-                        // latch-only and Pause strip stops growing. EndExact
-                        // before arm (dwell cache-hit never BeginExact).
-                        // **no equivalent** (scrub local).
-                        p.clear_densify_hold();
-                        Ok(())
-                    } else {
-                        p.scrub_to(local, true).await
+            // Exact already on this aim: enqueue skipped prepare/redraw.
+            // **no equivalent** (scrub local).
+            if p.has_scrub_exact_blit(target) {
+                Ok(())
+            } else {
+                // Exact in slot blit — PresentHit or scrub_to settle. **no equivalent**.
+                use crate::virtual_timeline::{ExactSettlePlan, plan_exact_settle};
+                let local = target;
+                let plan = plan_exact_settle(p.has_scrub_exact_blit(local));
+                let r = match plan {
+                    ExactSettlePlan::PresentHit => {
+                        if p.try_present_scrub_exact(local) {
+                            // `prepare_scrub_settle` latched ExactHold; skipping
+                            // `scrub_to` would leave hold stuck → densify exits /
+                            // latch-only and Pause strip stops growing. EndExact
+                            // before arm (dwell cache-hit never BeginExact).
+                            // **no equivalent** (scrub local).
+                            p.clear_densify_hold();
+                            Ok(())
+                        } else {
+                            p.scrub_to(local, true).await
+                        }
                     }
+                    ExactSettlePlan::DecodeExact => p.scrub_to(local, true).await,
+                };
+                if r.is_ok() && queue.is_current(id) && !queue.has_pending_play() {
+                    p.arm_scrub_densify_after_exact(local);
                 }
-                ExactSettlePlan::DecodeExact => p.scrub_to(local, true).await,
-            };
-            if r.is_ok() && queue.is_current(id) && !queue.has_pending_play() {
-                p.arm_scrub_densify_after_exact(local);
+                r
             }
-            r
         }
         SeekOrStep::Step(true) => p.next_frame().await,
         SeekOrStep::Step(false) => p.previous_frame().await,
@@ -255,7 +261,20 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
     // leaving eng≠ph makes waitExactSettle spin and PlayPrime `seek_frame` the
     // cold aim (long hang). Step already snapped for hold-repeat.
     // Dwell keeps the finger aim on the tip — do not snap playhead under the pointer.
-    if (is_step || (!is_dwell && scrub_settle))
+    // Exact blit already showed this aim — do not snap the tip onto a
+    // different committed frame (that was the 1–2 frame release jump).
+    let kept_exact = !is_dwell
+        && scrub_settle
+        && player
+            .try_borrow()
+            .ok()
+            .and_then(|b| {
+                b.as_ref()
+                    .map(|p| p.has_scrub_exact_blit(playhead.get_untracked()))
+            })
+            .unwrap_or(false);
+    if !kept_exact
+        && (is_step || (!is_dwell && scrub_settle))
         && let Ok(borrow) = player.try_borrow()
         && let Some(p) = borrow.as_ref()
     {

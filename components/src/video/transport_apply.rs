@@ -237,7 +237,13 @@ fn enqueue_scrub_release(
     let Some(p) = leave_play_for_scrub(ctx) else {
         return;
     };
-    p.prepare_scrub_settle(frame);
+    // Exact already covers this aim — do not clear the step ring or redraw.
+    // **no equivalent** (scrub local).
+    if !then_play && p.has_scrub_exact_blit(frame) {
+        p.release_scrub_keep_exact(frame);
+    } else {
+        p.prepare_scrub_settle(frame);
+    }
     if ctx.queue.enqueue(HostOp::ScrubRelease {
         frame,
         then_play,
