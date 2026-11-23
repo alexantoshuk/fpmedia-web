@@ -87,11 +87,12 @@ pub fn VideoPlaylist(
                 .map(GlobalFrame::get)
             {
                 let cur = playhead.get_untracked();
-                let (zone_in, zone_out) = playlist.loop_zone();
-                let zone_last = zone_out.saturating_sub(1);
+                let zone = playlist.loop_zone();
+                let zone_last = zone.out_frame.saturating_sub(1);
                 if would != cur {
                     seam_trace(&format!(
-                        "mirror blocked busy cur={cur} would={would} zone_in={zone_in} local={local} aim={aim} frame={committed}"
+                        "mirror blocked busy cur={cur} would={would} zone_in={} local={local} aim={aim} frame={committed}",
+                        zone.in_frame
                     ));
                 }
                 if would >= zone_last {
@@ -109,8 +110,7 @@ pub fn VideoPlaylist(
             .map(GlobalFrame::get)
         {
             let cur = playhead.get_untracked();
-            let (_, zone_out) = playlist.loop_zone();
-            let zone_last = zone_out.saturating_sub(1);
+            let zone_last = playlist.loop_zone().out_frame.saturating_sub(1);
             let jump = cur.abs_diff(g);
             if g != cur && (g >= zone_last || jump > 1) {
                 seam_trace(&format!(
@@ -136,7 +136,9 @@ pub fn VideoPlaylist(
         let _ = playlist.loop_out.get();
         let owner = loop_owner(playlist);
         let g = playhead.get();
-        let (zone_in, zone_out) = playlist.loop_zone();
+        let zone = playlist.loop_zone();
+        let zone_in = zone.in_frame;
+        let zone_out = zone.out_frame;
         let total = frame_count.get_untracked();
 
         // Host LoopZone outside while Playing → wrap (`plan_host_outside`).

@@ -20,7 +20,7 @@ pub use fpmedia_web::{
 };
 pub use pipeline_interest::{PipelineInterestLease, PipelinePlane};
 
-use fpmedia_web::FrameRun;
+use fpmedia_web::{FrameRun, LoopZone};
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
@@ -374,7 +374,7 @@ impl VideoRef {
     }
 
     /// Resolved half-open LoopZone (`out` follows `frame_count` when unset).
-    pub fn loop_zone(&self) -> (u32, u32) {
+    pub fn loop_zone(&self) -> LoopZone {
         resolve_zone(
             self.frame_count.get_untracked(),
             self.loop_in.get_untracked(),

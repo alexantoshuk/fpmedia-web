@@ -36,14 +36,14 @@ pub(crate) fn loop_owner(pl: VideoPlaylistRef) -> LoopOwner {
     }
     let model = pl.model.get_untracked();
     let live_i = pl.live_clip.get_untracked();
-    let (zone_in, zone_out) = pl.loop_zone();
+    let zone = pl.loop_zone();
     let Some(clip_start) = model.clip_start_frame(live_i).map(GlobalFrame::get) else {
         return LoopOwner::Host;
     };
     let Some(clip_end) = model.clip_end_frame(live_i).map(GlobalFrame::get) else {
         return LoopOwner::Host;
     };
-    zone_owner_from_spans(true, zone_in, zone_out, clip_start, clip_end)
+    zone_owner_from_spans(true, zone, clip_start, clip_end)
 }
 
 pub(crate) fn seam_phase(pl: VideoPlaylistRef) -> SeamPhase {
@@ -78,8 +78,7 @@ pub(crate) fn ensure_seam_preparing(pl: VideoPlaylistRef) -> bool {
 
 pub(crate) fn end_seam(pl: VideoPlaylistRef) {
     let g = pl.playhead.get_untracked();
-    let (_, zone_out) = pl.loop_zone();
-    let zone_last = zone_out.saturating_sub(1);
+    let zone_last = pl.loop_zone().out_frame.saturating_sub(1);
     seam_trace(&format!(
         "end_seam was={:?} playhead={g} zone_last={zone_last}",
         seam_phase(pl)

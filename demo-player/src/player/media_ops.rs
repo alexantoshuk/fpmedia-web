@@ -70,11 +70,11 @@ pub(super) fn demo_mark_loop_in(media: MediaRef) {
         media.set_loop(true);
     }
     let ph = media.playhead.get_untracked();
-    let (inn, out) = media.loop_zone();
-    if inn == ph {
-        media.set_loop_zone(0, out);
+    let zone = media.loop_zone();
+    if zone.in_frame == ph {
+        media.set_loop_zone(0, zone.out_frame);
     } else {
-        media.set_loop_zone(ph, out.max(ph.saturating_add(1)));
+        media.set_loop_zone(ph, zone.out_frame.max(ph.saturating_add(1)));
     }
 }
 
@@ -84,13 +84,13 @@ pub(super) fn demo_mark_loop_out(media: MediaRef) {
         media.set_loop(true);
     }
     let ph = media.playhead.get_untracked();
-    let (inn, out) = media.loop_zone();
+    let zone = media.loop_zone();
     let want_out = ph.saturating_add(1);
     let count = media.frame_count.get_untracked();
-    if out == want_out {
-        media.set_loop_zone(inn, count.max(inn.saturating_add(1)));
+    if zone.out_frame == want_out {
+        media.set_loop_zone(zone.in_frame, count.max(zone.in_frame.saturating_add(1)));
     } else {
-        let inn = inn.min(want_out.saturating_sub(1));
+        let inn = zone.in_frame.min(want_out.saturating_sub(1));
         media.set_loop_zone(inn, want_out.max(inn.saturating_add(1)));
     }
 }

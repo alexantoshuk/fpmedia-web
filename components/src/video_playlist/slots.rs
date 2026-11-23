@@ -349,13 +349,13 @@ pub(crate) fn sync_live_loop_from_playlist(pl: VideoPlaylistRef) {
         LoopOwner::Engine => {
             let model = pl.model.get_untracked();
             let live_i = pl.live_clip.get_untracked();
-            let (zone_in, zone_out) = pl.loop_zone();
+            let zone = pl.loop_zone();
             let Some(clip_start) = model.clip_start_frame(live_i).map(GlobalFrame::get) else {
                 live.set_loop(false);
                 return;
             };
-            let local_in = zone_in - clip_start;
-            let local_out = zone_out - clip_start;
+            let local_in = zone.in_frame - clip_start;
+            let local_out = zone.out_frame - clip_start;
             live.set_loop_zone(local_in, local_out);
             live.set_loop(true);
         }
@@ -500,12 +500,13 @@ pub(crate) async fn seek_to_pos(
         // Aim local before neighbor preload — mirror must not see new live +
         // stale idle local. **no equivalent**.
         pl.live_video().playhead.set(aim.frame.source());
+        let zone = pl.loop_zone();
         let neighbor = idle_neighbor_for_zone(
             &pl.model.get_untracked(),
             aim.clip_index,
             pl.looping.get_untracked(),
-            pl.loop_zone().0,
-            pl.loop_zone().1,
+            zone.in_frame,
+            zone.out_frame,
         );
         preload_idle(pl, neighbor, epoch).await;
         if !pl.open_gen.is_current(epoch) {
@@ -655,15 +656,15 @@ pub(crate) fn resume_live_if_playlist_playing(pl: VideoPlaylistRef) {
 pub(crate) fn seam_next_clip(pl: VideoPlaylistRef, cur: u32) -> Option<u32> {
     let model = pl.model.get_untracked();
     let looping = pl.looping.get_untracked();
-    let (zone_in, zone_out) = pl.loop_zone();
+    let zone = pl.loop_zone();
     let total = model.total_frame_count();
-    let zone_full = zone_in == 0 && zone_out == total;
+    let zone_full = zone.is_full(total);
     let next_clip = model.next_clip_index(cur);
     let next_start = next_clip
         .and_then(|n| model.clip_start_frame(n).map(GlobalFrame::get))
         .unwrap_or(0);
     let zone_in_clip = model
-        .at_global_frame(GlobalFrame::new(zone_in))
+        .at_global_frame(GlobalFrame::new(zone.in_frame))
         .map(|p| p.clip_index);
     plan_seam_next_clip(SeamNextCtx {
         cur,
@@ -672,7 +673,7 @@ pub(crate) fn seam_next_clip(pl: VideoPlaylistRef, cur: u32) -> Option<u32> {
         zone_in_clip,
         looping,
         zone_full,
-        zone_out,
+        zone_out: zone.out_frame,
         clip_count: model.len() as u32,
     })
 }
@@ -695,9 +696,11 @@ fn seam_warm_schedule(pl: VideoPlaylistRef) -> Option<SeamWarmTarget> {
     let cur = pl.live_clip.get_untracked();
     let clip = model.clip(cur as usize)?;
     let t = live.timestamp.get_untracked();
-    let (zone_in, zone_out) = pl.loop_zone();
+    let zone = pl.loop_zone();
+    let zone_in = zone.in_frame;
+    let zone_out = zone.out_frame;
     let total = model.total_frame_count();
-    let zone_full = zone_in == 0 && zone_out == total;
+    let zone_full = zone.is_full(total);
     let looping = pl.looping.get_untracked();
     let owner = loop_owner(pl);
 

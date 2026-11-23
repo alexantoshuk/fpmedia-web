@@ -11,24 +11,26 @@
 
 use std::collections::VecDeque;
 
+use crate::types::FrameId;
+
 /// Host media op. `O` = open arguments (source + canvas in the host; `()` in tests).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostOp<O> {
     Open(O),
     /// Exact presentation frame.
-    Seek(u32),
+    Seek(FrameId),
     /// Nearest sync at/before frame.
-    SeekKeyframe(u32),
+    SeekKeyframe(FrameId),
     /// Timeline drag — cancelable; latest target wins. Pointer-up uses
     /// [`HostOp::ScrubRelease`].
-    ScrubDrag(u32),
+    ScrubDrag(FrameId),
     /// Soft-drag stillness (~200 ms): Exact aim while finger still down.
     /// Does **not** end the scrub gesture (no transport Settling). Move /
     /// [`HostOp::ScrubRelease`] supersede. **no equivalent** (scrub local).
-    ScrubDwellExact(u32),
+    ScrubDwellExact(FrameId),
     /// Atomic pointer-up: exact settle, then optional play-prime in the same op.
     ScrubRelease {
-        frame: u32,
+        frame: FrameId,
         then_play: bool,
         /// Transport settle generation — late Done must match.
         settle_gen: u64,

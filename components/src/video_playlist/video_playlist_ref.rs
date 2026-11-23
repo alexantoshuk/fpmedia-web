@@ -8,6 +8,7 @@ use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::local_epoch::LocalEpoch;
 use crate::video_playlist::{PlaylistModel, PlaylistPos};
 use crate::virtual_timeline::{resolve_zone, store_zone};
+use fpmedia_web::LoopZone;
 
 use super::host::PlaylistHost;
 use super::latches::{HostLatches, ThumbFillState};
@@ -243,7 +244,7 @@ impl VideoPlaylistRef {
     }
 
     /// Resolved half-open LoopZone in global frames.
-    pub fn loop_zone(self) -> (u32, u32) {
+    pub fn loop_zone(self) -> LoopZone {
         resolve_zone(
             self.frame_count.get_untracked(),
             self.loop_in.get_untracked(),
@@ -273,8 +274,9 @@ impl VideoPlaylistRef {
     fn repreload_idle_for_loop(self) {
         let model = self.model.get_untracked();
         let live = self.live_clip.get_untracked();
-        let (zone_in, zone_out) = self.loop_zone();
-        let want = super::slots::idle_neighbor_for_zone(&model, live, true, zone_in, zone_out);
+        let zone = self.loop_zone();
+        let want =
+            super::slots::idle_neighbor_for_zone(&model, live, true, zone.in_frame, zone.out_frame);
         if let Some(want) = want
             && self.idle_clip.get_untracked() != Some(want)
         {
@@ -568,15 +570,15 @@ impl VideoPlaylistRef {
         aim_on_live: bool,
         aim: PlaylistPos,
     ) {
-        let (zone_in, zone_out) = self.loop_zone();
+        let zone = self.loop_zone();
         let plan = plan_scrub_up(ScrubUpCtx {
             global: global_frame,
             resume,
             aim_on_live,
             owner: loop_owner(self),
             looping: self.looping.get_untracked(),
-            zone_in,
-            zone_out,
+            zone_in: zone.in_frame,
+            zone_out: zone.out_frame,
             total_frames: self.frame_count.get_untracked(),
             seam_busy: seam_busy(self),
         });

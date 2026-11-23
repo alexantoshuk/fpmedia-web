@@ -248,7 +248,9 @@ impl PlaylistHost {
         // Host keeps slot `looping=false` — bare `live.play()` at clip/zone end
         // snaps PlayPrime → local 0. Outside → `plan_host_outside`. **no equivalent**.
         if looping.get_untracked() {
-            let (zone_in, zone_out) = playlist.loop_zone();
+            let zone = playlist.loop_zone();
+            let zone_in = zone.in_frame;
+            let zone_out = zone.out_frame;
             let g = playhead.get_untracked();
             let total = frame_count.get_untracked();
             match plan_host_outside(HostOutsideCtx {
@@ -279,7 +281,7 @@ impl PlaylistHost {
                 // Still inside zone but clip last — same next/mid-in law as EOF.
                 let cur = live_clip.get_untracked();
                 let model = playlist.model.get_untracked();
-                let zone_full = zone_in == 0 && zone_out == total;
+                let zone_full = zone.is_full(total);
                 let next_clip = model.next_clip_index(cur);
                 let next_start = next_clip
                     .and_then(|n| model.clip_start_frame(n).map(GlobalFrame::get))

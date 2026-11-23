@@ -6,11 +6,145 @@
 //! concrete refs.
 //! Design: `.ai/architecture.md` § Virtual Timeline; UX: `.ai/product.md`.
 
+use fpmedia_web::LoopZone;
 use leptos::prelude::*;
 
 use crate::TimelineRef;
 use crate::VideoPlaylistRef;
 use crate::VideoRef;
+
+/// Shared transport ops implemented by [`VideoRef`] and [`VideoPlaylistRef`].
+///
+/// Keeps [`MediaRef`] forwards signature-aligned; public API stays the enum facade.
+pub(crate) trait MediaTransport: Copy {
+    fn play(self);
+    fn pause(self);
+    fn close(self);
+    fn seek_frame(self, frame: u32);
+    fn goto_frame(self, frame: u32);
+    fn next_frame(self);
+    fn previous_frame(self);
+    fn set_loop(self, on: bool);
+    fn loop_zone(self) -> LoopZone;
+    fn set_loop_zone(self, in_frame: u32, out_frame: u32);
+    fn set_volume(self, volume: f64);
+    fn set_muted(self, muted: bool);
+    fn set_playback_rate(self, rate: f64);
+    fn thumb_max_size(self) -> (u32, u32);
+    fn set_thumb_max_size(self, max_w: u32, max_h: u32);
+}
+
+impl MediaTransport for VideoRef {
+    fn play(self) {
+        VideoRef::play(&self);
+    }
+    fn pause(self) {
+        VideoRef::pause(&self);
+    }
+    fn close(self) {
+        VideoRef::close(&self);
+    }
+    fn seek_frame(self, frame: u32) {
+        VideoRef::seek_frame(&self, frame);
+    }
+    fn goto_frame(self, frame: u32) {
+        VideoRef::goto_frame(&self, frame);
+    }
+    fn next_frame(self) {
+        VideoRef::next_frame(&self);
+    }
+    fn previous_frame(self) {
+        VideoRef::previous_frame(&self);
+    }
+    fn set_loop(self, on: bool) {
+        VideoRef::set_loop(&self, on);
+    }
+    fn loop_zone(self) -> LoopZone {
+        VideoRef::loop_zone(&self)
+    }
+    fn set_loop_zone(self, in_frame: u32, out_frame: u32) {
+        VideoRef::set_loop_zone(&self, in_frame, out_frame);
+    }
+    fn set_volume(self, volume: f64) {
+        VideoRef::set_volume(&self, volume);
+    }
+    fn set_muted(self, muted: bool) {
+        VideoRef::set_muted(&self, muted);
+    }
+    fn set_playback_rate(self, rate: f64) {
+        VideoRef::set_playback_rate(&self, rate);
+    }
+    fn thumb_max_size(self) -> (u32, u32) {
+        VideoRef::thumb_max_size(&self)
+    }
+    fn set_thumb_max_size(self, max_w: u32, max_h: u32) {
+        VideoRef::set_thumb_max_size(&self, max_w, max_h);
+    }
+}
+
+impl MediaTransport for VideoPlaylistRef {
+    fn play(self) {
+        VideoPlaylistRef::play(self);
+    }
+    fn pause(self) {
+        VideoPlaylistRef::pause(self);
+    }
+    fn close(self) {
+        VideoPlaylistRef::close(self);
+    }
+    fn seek_frame(self, frame: u32) {
+        VideoPlaylistRef::seek_frame(self, frame);
+    }
+    fn goto_frame(self, frame: u32) {
+        VideoPlaylistRef::goto_frame(self, frame);
+    }
+    fn next_frame(self) {
+        VideoPlaylistRef::next_frame(self);
+    }
+    fn previous_frame(self) {
+        VideoPlaylistRef::previous_frame(self);
+    }
+    fn set_loop(self, on: bool) {
+        VideoPlaylistRef::set_loop(self, on);
+    }
+    fn loop_zone(self) -> LoopZone {
+        VideoPlaylistRef::loop_zone(self)
+    }
+    fn set_loop_zone(self, in_frame: u32, out_frame: u32) {
+        VideoPlaylistRef::set_loop_zone(self, in_frame, out_frame);
+    }
+    fn set_volume(self, volume: f64) {
+        VideoPlaylistRef::set_volume(self, volume);
+    }
+    fn set_muted(self, muted: bool) {
+        VideoPlaylistRef::set_muted(self, muted);
+    }
+    fn set_playback_rate(self, rate: f64) {
+        VideoPlaylistRef::set_playback_rate(self, rate);
+    }
+    fn thumb_max_size(self) -> (u32, u32) {
+        VideoPlaylistRef::thumb_max_size(self)
+    }
+    fn set_thumb_max_size(self, max_w: u32, max_h: u32) {
+        VideoPlaylistRef::set_thumb_max_size(self, max_w, max_h);
+    }
+}
+
+/// Expand `MediaRef` transport methods as one `match` + [`MediaTransport`] call.
+macro_rules! media_fwd {
+    ($(
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident(self $(, $arg:ident: $ty:ty)*) $(-> $ret:ty)?;
+    )+) => {$(
+        $(#[$meta])*
+        $vis fn $name(self $(, $arg: $ty)*) $(-> $ret)? {
+            match self.inner {
+                MediaInner::Video(v) => MediaTransport::$name(v $(, $arg)*),
+                MediaInner::Playlist(p) => MediaTransport::$name(p $(, $arg)*),
+            }
+        }
+    )+};
+}
 
 /// Transport-domain handle over a mounted [`VideoRef`] or [`VideoPlaylistRef`].
 ///
@@ -122,115 +256,28 @@ impl MediaRef {
         }
     }
 
-    pub fn play(self) {
-        match self.inner {
-            MediaInner::Video(v) => v.play(),
-            MediaInner::Playlist(p) => p.play(),
-        }
-    }
-
-    pub fn pause(self) {
-        match self.inner {
-            MediaInner::Video(v) => v.pause(),
-            MediaInner::Playlist(p) => p.pause(),
-        }
-    }
-
-    pub fn close(self) {
-        match self.inner {
-            MediaInner::Video(v) => v.close(),
-            MediaInner::Playlist(p) => p.close(),
-        }
-    }
-
-    /// Relocate on the timeline FrameId axis (internal). Prefer [`Self::goto_frame`] for UI.
-    pub fn seek_frame(self, frame: u32) {
-        match self.inner {
-            MediaInner::Video(v) => v.seek_frame(frame),
-            MediaInner::Playlist(p) => p.seek_frame(frame),
-        }
-    }
-
-    /// User goto (timeline FrameId): stop Play intent, ignore LoopZone.
-    pub fn goto_frame(self, frame: u32) {
-        match self.inner {
-            MediaInner::Video(v) => v.goto_frame(frame),
-            MediaInner::Playlist(p) => p.goto_frame(frame),
-        }
-    }
-
-    pub fn next_frame(self) {
-        match self.inner {
-            MediaInner::Video(v) => v.next_frame(),
-            MediaInner::Playlist(p) => p.next_frame(),
-        }
-    }
-
-    pub fn previous_frame(self) {
-        match self.inner {
-            MediaInner::Video(v) => v.previous_frame(),
-            MediaInner::Playlist(p) => p.previous_frame(),
-        }
-    }
-
-    pub fn set_loop(self, on: bool) {
-        match self.inner {
-            MediaInner::Video(v) => v.set_loop(on),
-            MediaInner::Playlist(p) => p.set_loop(on),
-        }
-    }
-
-    /// Resolved half-open LoopZone in timeline frames.
-    pub fn loop_zone(self) -> (u32, u32) {
-        match self.inner {
-            MediaInner::Video(v) => v.loop_zone(),
-            MediaInner::Playlist(p) => p.loop_zone(),
-        }
-    }
-
-    /// Set half-open `[in, out)` in timeline FrameIds.
-    pub fn set_loop_zone(self, in_frame: u32, out_frame: u32) {
-        match self.inner {
-            MediaInner::Video(v) => v.set_loop_zone(in_frame, out_frame),
-            MediaInner::Playlist(p) => p.set_loop_zone(in_frame, out_frame),
-        }
-    }
-
-    pub fn set_volume(self, volume: f64) {
-        match self.inner {
-            MediaInner::Video(v) => v.set_volume(volume),
-            MediaInner::Playlist(p) => p.set_volume(volume),
-        }
-    }
-
-    pub fn set_muted(self, muted: bool) {
-        match self.inner {
-            MediaInner::Video(v) => v.set_muted(muted),
-            MediaInner::Playlist(p) => p.set_muted(muted),
-        }
-    }
-
-    pub fn set_playback_rate(self, rate: f64) {
-        match self.inner {
-            MediaInner::Video(v) => v.set_playback_rate(rate),
-            MediaInner::Playlist(p) => p.set_playback_rate(rate),
-        }
-    }
-
-    /// Thumb decode max box — see [`crate::VideoRef::thumb_max_size`].
-    pub fn thumb_max_size(self) -> (u32, u32) {
-        match self.inner {
-            MediaInner::Video(v) => v.thumb_max_size(),
-            MediaInner::Playlist(p) => p.thumb_max_size(),
-        }
-    }
-
-    /// Set thumb decode max box (hover + Pause progressive). Clears thumb caches.
-    pub fn set_thumb_max_size(self, max_w: u32, max_h: u32) {
-        match self.inner {
-            MediaInner::Video(v) => v.set_thumb_max_size(max_w, max_h),
-            MediaInner::Playlist(p) => p.set_thumb_max_size(max_w, max_h),
-        }
+    media_fwd! {
+        pub fn play(self);
+        pub fn pause(self);
+        pub fn close(self);
+        /// Relocate on the timeline FrameId axis (internal). Prefer [`Self::goto_frame`] for UI.
+        pub fn seek_frame(self, frame: u32);
+        /// User goto (timeline FrameId): stop Play intent, ignore LoopZone.
+        pub fn goto_frame(self, frame: u32);
+        pub fn next_frame(self);
+        pub fn previous_frame(self);
+        pub fn set_loop(self, on: bool);
+        /// Resolved half-open LoopZone in timeline frames.
+        pub fn loop_zone(self) -> LoopZone;
+        /// Set half-open `[in, out)` in timeline FrameIds.
+        pub fn set_loop_zone(self, in_frame: u32, out_frame: u32);
+        pub fn set_volume(self, volume: f64);
+        pub fn set_muted(self, muted: bool);
+        pub fn set_playback_rate(self, rate: f64);
+        /// Thumb decode max box — see [`crate::VideoRef::thumb_max_size`].
+        pub fn thumb_max_size(self) -> (u32, u32);
+        /// Set thumb decode max box (hover + Pause progressive). Clears thumb caches.
+        pub fn set_thumb_max_size(self, max_w: u32, max_h: u32);
     }
 }
 

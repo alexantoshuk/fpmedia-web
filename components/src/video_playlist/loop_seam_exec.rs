@@ -28,7 +28,7 @@ use super::video_playlist_ref::VideoPlaylistRef;
 
 /// Snap playlist global aim to `zone_in` so wall cannot re-fire on stale `g`.
 fn reassert_zone_in_playhead(pl: VideoPlaylistRef) {
-    let (zone_in, _) = pl.loop_zone();
+    let zone_in = pl.loop_zone().in_frame;
     let model = pl.model.get_untracked();
     let Some(aim) = model.at_global_frame(GlobalFrame::new(zone_in)) else {
         return;
@@ -99,9 +99,9 @@ async fn promote_idle_at(
     pl.playing.set(true);
     // Host mid-zone: release restarts PlayIter (prepare-only refresh re-snapped
     // to loop_in). Full-axis keeps hold iter. **no equivalent** (playlist local).
-    let (zone_in, zone_out) = pl.loop_zone();
+    let zone = pl.loop_zone();
     let total = pl.model.get_untracked().total_frame_count();
-    let zone_full = zone_in == 0 && zone_out == total;
+    let zone_full = zone.is_full(total);
     let restart =
         pl.looping.get_untracked() && matches!(loop_owner(pl), LoopOwner::Host) && !zone_full;
     live.set_seam_hold_restart_on_release(restart);
@@ -125,14 +125,16 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: Ticket) -> Resu
     // Freeze live immediately so Play cannot overrun `zone_last` during prepare
     // (mirror gated → scrubber stuck while canvas runs past the loop).
     stop_live_for_host_seam(pl);
-    let (zone_in_log, _) = pl.loop_zone();
+    let zone_in_log = pl.loop_zone().in_frame;
     seam_trace(&format!(
         "wrap enter epoch={epoch:?} zone_in={zone_in_log} live_clip={}",
         pl.live_clip.get_untracked()
     ));
     let mut neighbor_after: Option<u32> = None;
     let result: Result<(), MediaError> = async {
-        let (zone_in, zone_out) = pl.loop_zone();
+        let zone = pl.loop_zone();
+        let zone_in = zone.in_frame;
+        let zone_out = zone.out_frame;
         let model = pl.model.get_untracked();
         let Some(aim) = model.at_global_frame(GlobalFrame::new(zone_in)) else {
             resume_live_if_playlist_playing(pl);
@@ -169,7 +171,7 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: Ticket) -> Resu
             set_seam_phase(pl, SeamPhase::Playing);
             pl.playing.set(true);
             let total = model.total_frame_count();
-            let zone_full = zone_in == 0 && zone_out == total;
+            let zone_full = zone.is_full(total);
             let restart = pl.looping.get_untracked()
                 && matches!(loop_owner(pl), LoopOwner::Host)
                 && !zone_full;
@@ -290,9 +292,11 @@ pub(crate) async fn advance_after_ended(
     }
     let result = async {
         let model = pl.model.get_untracked();
-        let (zone_in, zone_out) = pl.loop_zone();
+        let zone = pl.loop_zone();
+        let zone_in = zone.in_frame;
+        let zone_out = zone.out_frame;
         let total = model.total_frame_count();
-        let zone_full = zone_in == 0 && zone_out == total;
+        let zone_full = zone.is_full(total);
         let zone_in_aim = model
             .at_global_frame(GlobalFrame::new(zone_in))
             .map(|p| (p.clip_index, p.frame.source()));

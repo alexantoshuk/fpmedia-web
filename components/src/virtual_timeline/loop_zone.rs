@@ -41,15 +41,14 @@ impl SeamPhase {
 /// Does not read slot `Video.looping` — that is a sync side-effect on the host.
 pub fn zone_owner_from_spans(
     looping: bool,
-    zone_in: u32,
-    zone_out: u32,
-    clip_start: u32,
-    clip_end: u32,
+    zone: LoopZone,
+    clip_start: FrameId,
+    clip_end: FrameId,
 ) -> ZoneOwner {
     if !looping {
         return ZoneOwner::Off;
     }
-    if zone_in >= clip_start && zone_out <= clip_end && zone_out > zone_in {
+    if zone.in_frame >= clip_start && zone.out_frame <= clip_end && zone.out_frame > zone.in_frame {
         ZoneOwner::Engine
     } else {
         ZoneOwner::Host
@@ -388,13 +387,8 @@ pub fn store_zone(count: u32, in_frame: u32, out_frame: u32) -> StoredZone {
 }
 
 /// Resolve stored signals (`loop_out` unset = `count`) to a half-open zone.
-pub fn resolve_zone(
-    count: FrameId,
-    loop_in: FrameId,
-    loop_out: Option<FrameId>,
-) -> (FrameId, FrameId) {
-    let z = LoopZone::normalize(loop_in, loop_out.unwrap_or(count), count);
-    (z.in_frame, z.out_frame)
+pub fn resolve_zone(count: FrameId, loop_in: FrameId, loop_out: Option<FrameId>) -> LoopZone {
+    LoopZone::normalize(loop_in, loop_out.unwrap_or(count), count)
 }
 #[cfg(test)]
 mod tests {
@@ -404,17 +398,32 @@ mod tests {
     fn zone_owner_from_spans_table() {
         // Zone ⊆ live [0, 200) → Engine.
         assert_eq!(
-            zone_owner_from_spans(true, 10, 100, 0, 200),
+            zone_owner_from_spans(true, LoopZone::normalize(10, 100, 200), 0, 200),
             ZoneOwner::Engine
         );
         // Cross-clip / wider than live → Host.
-        assert_eq!(zone_owner_from_spans(true, 0, 500, 0, 200), ZoneOwner::Host);
         assert_eq!(
-            zone_owner_from_spans(false, 10, 100, 0, 200),
+            zone_owner_from_spans(true, LoopZone::normalize(0, 500, 500), 0, 200),
+            ZoneOwner::Host
+        );
+        assert_eq!(
+            zone_owner_from_spans(false, LoopZone::normalize(10, 100, 200), 0, 200),
             ZoneOwner::Off
         );
-        // Empty / inverted zone → Host (not Engine).
-        assert_eq!(zone_owner_from_spans(true, 50, 50, 0, 200), ZoneOwner::Host);
+        // Empty / inverted zone → Host (not Engine). Bypass normalize — callers
+        // normally pass a resolved zone; this guards the `out > in` branch.
+        assert_eq!(
+            zone_owner_from_spans(
+                true,
+                LoopZone {
+                    in_frame: 50,
+                    out_frame: 50,
+                },
+                0,
+                200
+            ),
+            ZoneOwner::Host
+        );
     }
 
     #[test]
@@ -789,9 +798,9 @@ mod zone_store_tests {
 
     #[test]
     fn resolve_zone_defaults_out_to_count() {
-        assert_eq!(resolve_zone(10, 0, None), (0, 10));
-        assert_eq!(resolve_zone(10, 3, Some(6)), (3, 6));
-        assert_eq!(resolve_zone(0, 3, None), (0, 0));
-        assert_eq!(resolve_zone(1, 0, None), (0, 1));
+        assert_eq!(resolve_zone(10, 0, None), LoopZone::normalize(0, 10, 10));
+        assert_eq!(resolve_zone(10, 3, Some(6)), LoopZone::normalize(3, 6, 10));
+        assert_eq!(resolve_zone(0, 3, None), LoopZone::full(0));
+        assert_eq!(resolve_zone(1, 0, None), LoopZone::normalize(0, 1, 1));
     }
 }

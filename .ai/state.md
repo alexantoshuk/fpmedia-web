@@ -8,8 +8,8 @@
 
 ### Handoff
 
-- **Branch:** `main` (Slice 1+4A + 2a + 2b + 3A + 3B + 4B + **5.1+5.2** landed — open matrix + crate-root trim; host seams `MediaError`; `ClockModel`; `LoopOriginWarm`; play intent ≡ `EngineMode::Play`; playlist protocol `pub(crate)` + `SeamLatch`; `play_update: SingleFlight`; demo step → `MediaRef`). Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types. Play session: `PlayPhase` + `SeamLatch`.
-- **Next priority:** **Refactor — simplify ownership / API** — next **Slice 5.3+5.4**. CutWindow stays Later.
+- **Branch:** `main` (Slice 1+4A + 2a + 2b + 3A + 3B + 4B + 5.1+5.2 + **5.3+5.4** landed — `loop_zone() -> LoopZone` + `MediaTransport`; open matrix + crate-root trim; host seams `MediaError`; `ClockModel`; `LoopOriginWarm`; play intent ≡ `EngineMode::Play`; playlist protocol `pub(crate)` + `SeamLatch`; `play_update: SingleFlight`; demo step → `MediaRef`). Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types. Play session: `PlayPhase` + `SeamLatch`.
+- **Next priority:** **Refactor — simplify ownership / API** — optional **Slice 5.5** (demo session), else Later / CutWindow.
 - **Open:** mobile `LoopPlayWarm` unverified. Residual light mobile pause on a Host mid-zone LoopZone seam — Later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional, unrelated.
 - **Do not merge:**
@@ -32,9 +32,7 @@ Agreed code-review backlog. **Order below is the PR sequence.** Merge only withi
 
 **PR pass order (do this, not “1+2+3 in one diff”):**
 
-1. **Slice 5** — **5.3+5.4** one PR; **5.5** optional alone.
-
-**OK to combine in one PR:** 5.3 with 5.4.
+1. **Slice 5** — **5.5** optional alone (demo session).
 
 **Do not combine:** any of this with CutWindow / crates publish.
 
@@ -55,16 +53,11 @@ Agreed code-review backlog. **Order below is the PR sequence.** Merge only withi
 
 #### Slice 5 — API hygiene (after 1–4)
 
-Do when publishing / cleaning the crate surface. Lower urgency than 1–4. **Remaining PRs — not one mega-diff.**
-
-**PR 5.3+5.4 (boundary types):**
-
-1. **Boundary types** — `loop_zone() -> LoopZone` (not `(u32, u32)`); prefer `FrameId` / axis newtypes on signals where Leptos allows without breaking hosts; `zone_owner_from_spans` / `HostOp::Seek` take framed ids not raw `u32` where cheap.
-2. **`MediaRef` boilerplate** — private trait implemented by `VideoRef` + `VideoPlaylistRef` to replace copy-pasted `match` arms (public API stays the enum facade).
+Do when publishing / cleaning the crate surface. Lower urgency than 1–4.
 
 **PR 5.5 (optional):**
 
-3. **Demo session** — replace `use_playlist: bool` + always-mounted dual hosts with `Single | Playlist` session enum if it removes dead work; do not rewrite `DemoPlayer` chrome (~popovers) as part of this.
+1. **Demo session** — replace `use_playlist: bool` + always-mounted dual hosts with `Single | Playlist` session enum if it removes dead work; do not rewrite `DemoPlayer` chrome (~popovers) as part of this.
 
 **DoD:** `cargo doc -p fpmedia-web --no-deps` surface readable for an external host; publish checklist in this file still blocked on `re_mp4` crates.io.
 
