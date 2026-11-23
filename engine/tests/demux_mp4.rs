@@ -5,14 +5,14 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+use fpmedia_web::bitstream::{PacketType, avc_nal_length_size, determine_avc_packet_type};
 use fpmedia_web::{
     GopProfile, MediaSource, MemorySource, Mp4VideoTrack, OpenMp4Options, OpenPhase, OpenedMp4,
-    PacketType, ReadFuture, VideoCodec, avc_nal_length_size, determine_avc_packet_type, open_mp4,
-    open_mp4_bytes, open_mp4_path,
+    ReadFuture, VideoCodec, open_mp4, open_mp4_bytes, open_mp4_path,
 };
 
 #[cfg(feature = "hevc")]
-use fpmedia_web::{determine_hevc_packet_type, hevc_nal_length_size};
+use fpmedia_web::bitstream::{determine_hevc_packet_type, hevc_nal_length_size};
 
 /// Progressive cached open, video only.
 async fn open_video_source(

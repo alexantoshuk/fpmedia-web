@@ -9,7 +9,7 @@
 //! timestamps are derived from the sample table, not `time * fps`.
 
 mod audio;
-mod bitstream;
+pub mod bitstream;
 mod clock;
 mod demux;
 mod epoch;
@@ -37,11 +37,6 @@ mod waiters;
 pub use audio::{AudioOutput, OwnedAudioData};
 pub use audio::{AudioSampleEntry, AudioSampleId, Mp4AudioTrack, PcmFormat, TimeStretcher};
 
-pub use bitstream::{
-    PacketType, accept_avc_recovery_point_sei, avc_nal_length_size, determine_avc_packet_type,
-    determine_avc_packet_type_with, determine_hevc_packet_type, has_hevc_rasl_picture,
-    hevc_nal_length_size, sanitize_avc_packet_for_chromium, sanitize_hevc_packet_for_chromium,
-};
 pub use clock::{
     MediaClock, PLAYBACK_RATE_AUDIO_MAX, PLAYBACK_RATE_MAX, PLAYBACK_RATE_MIN,
     PLAYBACK_RATE_REVIEW_MAX, PLAYBACK_RATE_SHUTTLE_MIN, PLAYBACK_RATE_STEP, is_shuttle_rate,
@@ -100,23 +95,23 @@ pub use policy::workload::{
     fragment_backfill_should_idle_yield,
 };
 pub use policy::{
-    COVERED_EDGE_MARGIN_FRAMES, DEFAULT_SCRUB_BLIT_MIB, DEFAULT_SCRUB_BLIT_MIB_LONG,
-    DEFAULT_SCRUB_BLIT_MIB_SHORT, DEFAULT_SCRUB_CACHE_MIB, DEFAULT_THUMB_CACHE_MIB,
-    EDGE_MARGIN_LEFT_MAX, EDGE_MARGIN_LEFT_MIN, EDGE_MARGIN_RIGHT_MIN, GopProfile,
-    MAX_SCRUB_BLIT_FRAMES, MAX_SCRUB_CACHE_FRAMES, MAX_THUMB_CACHE_FRAMES, MIN_SCRUB_BLIT_FRAMES,
-    MIN_SCRUB_CACHE_FRAMES, MIN_THUMB_CACHE_FRAMES, PLAY_PRESENTATION_CAP_HD,
-    PLAY_PRESENTATION_CAP_UHD, PLAY_WARM_AHEAD_HD, PLAY_WARM_AHEAD_UHD, PlayPolicy,
-    ResolutionClass, SCRUB_BLIT_LRU, SCRUB_DIR_BIAS_MAX_LAG_FRAMES, SETTLE_DENSIFY_YIELD_MS,
-    SETTLE_DENSIFY_YIELD_RETRY_MS, SETTLE_GOP_SAMPLE_LEAD_MAX, SETTLE_GOP_SAMPLE_LEAD_MIN,
-    SETTLE_PLAY_INDEX_AWAIT_BATCH, SETTLE_PLAY_INDEX_LEAD, SETTLE_TAKE_DECODER_WAIT_MS,
-    SHORT_GOP_MAX_LEN, ScrubCachePolicy, ScrubDir, ScrubPolicy, SettlePolicy, ThumbPolicy,
-    UHD_MIN_HEIGHT, estimated_decoded_frame_bytes, exact_frames_to_free_for_play_vram,
-    hover_preview_choice, hover_thumb_dims, nearer_gap_with_dir, next_missing_sync_key,
-    next_progressive_sync_key, scrub_blit_cap_during_play, scrub_blit_frame_budget,
-    scrub_cache_frame_budget, scrub_drag_key_advances, scrub_drag_stage_choice,
-    scrub_drag_stage_near_aim, scrub_edge_margins, scrub_gap_fill_armed, scrub_merge_dir_cached,
-    scrub_preview_choice, scrub_preview_choice_with_dir, scrub_preview_neighbor,
-    thumb_cache_frame_budget, thumb_progressive_coarse_count, thumb_progressive_rank,
+    COVERED_EDGE_MARGIN_FRAMES, DEFAULT_SCRUB_BLIT_MIB, DEFAULT_SCRUB_CACHE_MIB,
+    DEFAULT_THUMB_CACHE_MIB, EDGE_MARGIN_LEFT_MAX, EDGE_MARGIN_LEFT_MIN, EDGE_MARGIN_RIGHT_MIN,
+    GopProfile, MAX_SCRUB_BLIT_FRAMES, MAX_SCRUB_CACHE_FRAMES, MAX_THUMB_CACHE_FRAMES,
+    MIN_SCRUB_BLIT_FRAMES, MIN_SCRUB_CACHE_FRAMES, MIN_THUMB_CACHE_FRAMES,
+    PLAY_PRESENTATION_CAP_HD, PLAY_PRESENTATION_CAP_UHD, PLAY_WARM_AHEAD_HD, PLAY_WARM_AHEAD_UHD,
+    PlayPolicy, ResolutionClass, SCRUB_BLIT_LRU, SCRUB_DIR_BIAS_MAX_LAG_FRAMES,
+    SETTLE_DENSIFY_YIELD_MS, SETTLE_DENSIFY_YIELD_RETRY_MS, SETTLE_GOP_SAMPLE_LEAD_MAX,
+    SETTLE_GOP_SAMPLE_LEAD_MIN, SETTLE_PLAY_INDEX_AWAIT_BATCH, SETTLE_PLAY_INDEX_LEAD,
+    SETTLE_TAKE_DECODER_WAIT_MS, SHORT_GOP_MAX_LEN, ScrubCachePolicy, ScrubDir, ScrubPolicy,
+    SettlePolicy, ThumbPolicy, UHD_MIN_HEIGHT, estimated_decoded_frame_bytes,
+    exact_frames_to_free_for_play_vram, hover_preview_choice, hover_thumb_dims,
+    nearer_gap_with_dir, next_missing_sync_key, next_progressive_sync_key,
+    scrub_blit_cap_during_play, scrub_blit_frame_budget, scrub_cache_frame_budget,
+    scrub_drag_key_advances, scrub_drag_stage_choice, scrub_drag_stage_near_aim,
+    scrub_edge_margins, scrub_gap_fill_armed, scrub_merge_dir_cached, scrub_preview_choice,
+    scrub_preview_choice_with_dir, scrub_preview_neighbor, thumb_cache_frame_budget,
+    thumb_progressive_coarse_count, thumb_progressive_rank,
 };
 pub use residency::AimWindow;
 #[cfg(all(target_arch = "wasm32", feature = "webcodecs"))]

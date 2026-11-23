@@ -17,10 +17,6 @@ pub const SCRUB_BLIT_LRU: usize = 96;
 /// One Exact VRAM wallet for Short **and** Long (canvas → frame count). Tune down if GPU dies.
 /// All-Intra: densify off — blit still sized for soft-drag interim. **no equivalent** (scrub local).
 pub const DEFAULT_SCRUB_BLIT_MIB: usize = 512;
-/// Alias of [`DEFAULT_SCRUB_BLIT_MIB`] (GOP no longer splits MiB).
-pub const DEFAULT_SCRUB_BLIT_MIB_SHORT: usize = DEFAULT_SCRUB_BLIT_MIB;
-/// Alias of [`DEFAULT_SCRUB_BLIT_MIB`].
-pub const DEFAULT_SCRUB_BLIT_MIB_LONG: usize = DEFAULT_SCRUB_BLIT_MIB;
 /// Assumed bytes per pixel for a live densify `ImageBitmap` (RGBA GPU texture).
 pub const BLIT_BYTES_PER_PIXEL: u64 = 4;
 /// Floor so tiny viewports / tiny budgets still keep a usable blit ring.

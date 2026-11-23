@@ -33,6 +33,8 @@ use super::shared::Shared;
 use super::{PlayerInner, VideoPlayer, sleep_ms};
 
 impl VideoPlayer {
+    /// Thin: demux [`crate::open_mp4_bytes`] → [`Self::from_tracks_with_fetch`].
+    /// Prefer demux `open_mp4` + `from_tracks*` when the host owns progress UI.
     pub async fn open_mp4_bytes(
         bytes: Vec<u8>,
         canvas: HtmlCanvasElement,
@@ -42,7 +44,8 @@ impl VideoPlayer {
         Self::from_tracks_with_fetch(video, opened.audio, canvas, opened.fetch_map).await
     }
 
-    /// Progressive open from a ranged [`crate::MediaSource`] (Blob / memory).
+    /// Thin: demux [`crate::open_mp4`] → [`Self::from_tracks_with_fetch`].
+    /// Progressive open from a ranged [`crate::MediaSource`] (Blob / memory / URL).
     pub async fn open_mp4_source(
         source: std::rc::Rc<dyn crate::MediaSource>,
         canvas: HtmlCanvasElement,
@@ -60,7 +63,7 @@ impl VideoPlayer {
         Self::from_tracks_with_fetch(video, opened.audio, canvas, opened.fetch_map).await
     }
 
-    /// Progressive open from a browser [`web_sys::Blob`] / `File`.
+    /// Thin: [`crate::BlobSource`] + [`Self::open_mp4_source`].
     pub async fn open_blob(
         blob: web_sys::Blob,
         canvas: HtmlCanvasElement,
@@ -70,15 +73,7 @@ impl VideoPlayer {
         Self::open_mp4_source(source, canvas).await
     }
 
-    /// Build a player around an already-demuxed track (host can show stage status).
-    pub async fn from_track(
-        track: crate::demux::Mp4VideoTrack,
-        canvas: HtmlCanvasElement,
-    ) -> Result<Self, MediaError> {
-        Self::from_tracks(track, None, canvas).await
-    }
-
-    /// Video track plus optional audio (same container).
+    /// Construct from already-demuxed tracks (video required, audio optional).
     pub async fn from_tracks(
         track: crate::demux::Mp4VideoTrack,
         audio: Option<crate::audio::Mp4AudioTrack>,
