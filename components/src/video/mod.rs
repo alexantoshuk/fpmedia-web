@@ -573,20 +573,20 @@ impl VideoRef {
     }
 
     /// Paint `frame` on this (idle) slot before LoopZone / playlist promote.
-    pub(crate) async fn prepare_seam_at(&self, frame: u32) -> Result<(), String> {
+    pub(crate) async fn prepare_seam_at(&self, frame: u32) -> Result<(), fpmedia_web::MediaError> {
         if let Some(host) = self.host() {
             host.prepare_seam_at(frame).await
         } else {
-            Err("Video not mounted".into())
+            Err(fpmedia_web::MediaError::Source("Video not mounted".into()))
         }
     }
 
     /// Idle Play-ready under `SeamHold` (playlist Host near-EOF / promote).
-    pub(crate) async fn arm_seam_hold(&self, frame: u32) -> Result<(), String> {
+    pub(crate) async fn arm_seam_hold(&self, frame: u32) -> Result<(), fpmedia_web::MediaError> {
         if let Some(host) = self.host() {
             host.arm_seam_hold(frame).await
         } else {
-            Err("Video not mounted".into())
+            Err(fpmedia_web::MediaError::Source("Video not mounted".into()))
         }
     }
 

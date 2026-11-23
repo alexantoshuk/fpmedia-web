@@ -143,7 +143,7 @@ impl PlaylistHost {
                         }
                         busy.set(false);
                         ready.set(false);
-                        error.set(Some(e.clone()));
+                        error.set(Some(e.to_string()));
                         status.set(format!("Probe failed at clip {}.", i + 1));
                         slot_a.close();
                         return;
@@ -209,7 +209,7 @@ impl PlaylistHost {
                     }
                     busy.set(false);
                     ready.set(false);
-                    error.set(Some(e));
+                    error.set(Some(e.to_string()));
                     status.set("Live open failed.".into());
                 }
             }
@@ -350,10 +350,10 @@ impl PlaylistHost {
                     return;
                 }
                 // Promote/ensure race cancel — not a sticky UI fault.
-                if is_soft_seam_cancel(&e) {
+                if e.is_cancelled() || is_soft_seam_cancel(&e.to_string()) {
                     return;
                 }
-                pl.error.set(Some(e));
+                pl.error.set(Some(e.to_string()));
                 pl.status.set("Seek failed.".into());
             }
         });
@@ -370,10 +370,10 @@ impl PlaylistHost {
                 if !pl.open_gen.is_current(epoch) {
                     return;
                 }
-                if is_soft_seam_cancel(&e) {
+                if e.is_cancelled() || is_soft_seam_cancel(&e.to_string()) {
                     return;
                 }
-                pl.error.set(Some(e));
+                pl.error.set(Some(e.to_string()));
                 pl.status.set("Seek failed.".into());
             }
         });

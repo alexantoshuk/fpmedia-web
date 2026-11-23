@@ -11,12 +11,16 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{HtmlCanvasElement, Response};
 
+fn source_err(msg: impl Into<String>) -> MediaError {
+    MediaError::Source(msg.into())
+}
+
 /// Resolve `https:` via [`UrlSource`] (HTTP Range); `blob:` / no-Range hosts via
 /// full fetch → [`BlobSource`]. Status line only — no confirm dialogs.
 pub(super) async fn resolve_url_source(
     url: &str,
     on_status: impl Fn(OpenPhase),
-) -> Result<std::rc::Rc<dyn MediaSource>, String> {
+) -> Result<std::rc::Rc<dyn MediaSource>, MediaError> {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("blob:") {
         on_status(OpenPhase::ProbingSource(OpenSourceKind::Blob));
@@ -24,9 +28,9 @@ pub(super) async fn resolve_url_source(
         return Ok(std::rc::Rc::new(BlobSource::new(blob)));
     }
     if !(lower.starts_with("https:") || lower.starts_with("http:")) {
-        return Err(format!(
+        return Err(source_err(format!(
             "unsupported URL scheme (need https:, http:, or blob:): {url}"
-        ));
+        )));
     }
 
     on_status(OpenPhase::ProbingHttpRange);
@@ -74,7 +78,7 @@ pub(super) async fn resolve_url_source(
             }));
             Ok(std::rc::Rc::new(BlobSource::new(blob)))
         }
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(e),
     }
 }
 
@@ -99,26 +103,26 @@ fn format_byte_size(bytes: u64) -> String {
 }
 
 /// Full-resource fetch → [`web_sys::Blob`] (`blob:` / no-Range fallback).
-async fn fetch_url_as_blob(url: &str) -> Result<web_sys::Blob, String> {
-    let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
+async fn fetch_url_as_blob(url: &str) -> Result<web_sys::Blob, MediaError> {
+    let window = web_sys::window().ok_or_else(|| source_err("no window"))?;
     let resp_val = JsFuture::from(window.fetch_with_str(url))
         .await
-        .map_err(|e| format_js_error("fetch", &e))?;
+        .map_err(|e| source_err(format_js_error("fetch", &e)))?;
     let resp: Response = resp_val
         .dyn_into()
-        .map_err(|_| "fetch did not return a Response".to_string())?;
+        .map_err(|_| source_err("fetch did not return a Response"))?;
     if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
+        return Err(source_err(format!("HTTP {}", resp.status())));
     }
     let blob_promise = resp
         .blob()
-        .map_err(|e| format_js_error("response.blob", &e))?;
+        .map_err(|e| source_err(format_js_error("response.blob", &e)))?;
     let blob_val = JsFuture::from(blob_promise)
         .await
-        .map_err(|e| format_js_error("blob", &e))?;
+        .map_err(|e| source_err(format_js_error("blob", &e)))?;
     blob_val
         .dyn_into::<web_sys::Blob>()
-        .map_err(|_| "response body is not a Blob".to_string())
+        .map_err(|_| source_err("response body is not a Blob"))
 }
 
 fn format_js_error(what: &str, err: &wasm_bindgen::JsValue) -> String {
@@ -132,7 +136,7 @@ pub(super) async fn open_source_staged(
     source: std::rc::Rc<dyn MediaSource>,
     canvas: HtmlCanvasElement,
     on_status: impl Fn(OpenPhase),
-) -> Result<VideoPlayer, String> {
+) -> Result<VideoPlayer, MediaError> {
     on_status(OpenPhase::StartingDemux);
     web_sys::console::log_1(&"fpmedia-web: demux start".into());
     let opened = open_mp4(
@@ -145,9 +149,8 @@ pub(super) async fn open_source_staged(
         },
         &on_status,
     )
-    .await
-    .map_err(|e| e.to_string())?;
-    let video = opened.video.ok_or_else(|| "no video track".to_string())?;
+    .await?;
+    let video = opened.video.ok_or(MediaError::NoVideoTrack)?;
     let audio = opened.audio;
     web_sys::console::log_1(
         &format!(
@@ -161,7 +164,5 @@ pub(super) async fn open_source_staged(
         frames: video.frame_count(),
         has_audio: audio.is_some(),
     });
-    VideoPlayer::from_tracks_with_fetch(video, audio, canvas, opened.fetch_map)
-        .await
-        .map_err(|e| e.to_string())
+    VideoPlayer::from_tracks_with_fetch(video, audio, canvas, opened.fetch_map).await
 }

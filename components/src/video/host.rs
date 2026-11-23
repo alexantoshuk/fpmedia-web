@@ -129,10 +129,11 @@ impl VideoHost {
                 Err(e) => {
                     queue.sync_busy();
                     ready.set(false);
-                    error.set(Some(e.clone()));
+                    let msg = e.to_string();
+                    error.set(Some(msg.clone()));
                     status.set("Open URL failed.".into());
                     #[cfg(target_arch = "wasm32")]
-                    web_sys::console::error_1(&e.into());
+                    web_sys::console::error_1(&msg.into());
                 }
             }
         });
@@ -413,21 +414,17 @@ impl VideoHost {
         p.fill_thumb_key_at(key).await;
     }
 
-    pub(crate) async fn prepare_seam_at(&self, frame: u32) -> Result<(), String> {
+    pub(crate) async fn prepare_seam_at(&self, frame: u32) -> Result<(), fpmedia_web::MediaError> {
         let Some(p) = self.ctx.player.borrow().as_ref().cloned() else {
-            return Err("no player".into());
+            return Err(fpmedia_web::MediaError::Source("no player".into()));
         };
-        p.prepare_playlist_seam_at(frame)
-            .await
-            .map_err(|e| e.to_string())
+        p.prepare_playlist_seam_at(frame).await
     }
 
-    pub(crate) async fn arm_seam_hold(&self, frame: u32) -> Result<(), String> {
+    pub(crate) async fn arm_seam_hold(&self, frame: u32) -> Result<(), fpmedia_web::MediaError> {
         let Some(p) = self.ctx.player.borrow().as_ref().cloned() else {
-            return Err("no player".into());
+            return Err(fpmedia_web::MediaError::Source("no player".into()));
         };
-        p.arm_playlist_seam_hold_at(frame)
-            .await
-            .map_err(|e| e.to_string())
+        p.arm_playlist_seam_hold_at(frame).await
     }
 }

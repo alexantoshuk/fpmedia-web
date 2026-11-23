@@ -8,9 +8,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use fpmedia_web::{
-    BlobSource, Epoch, FrameId, MediaSource, OpenMp4Options, ThumbSink, ThumbSinkOptions,
-    UrlSource, hover_thumb_dims, open_mp4, paint_thumb_canvas, thumb_progressive_coarse_count,
-    thumb_progressive_rank,
+    BlobSource, Epoch, FrameId, MediaError, MediaSource, OpenMp4Options, ThumbSink,
+    ThumbSinkOptions, UrlSource, hover_thumb_dims, open_mp4, paint_thumb_canvas,
+    thumb_progressive_coarse_count, thumb_progressive_rank,
 };
 use leptos::prelude::*;
 use web_sys::{HtmlCanvasElement, ImageBitmap};
@@ -75,7 +75,7 @@ impl ThumbProducer {
         &self,
         pl: VideoPlaylistRef,
         clip_index: u32,
-    ) -> Result<Rc<ThumbSink>, String> {
+    ) -> Result<Rc<ThumbSink>, MediaError> {
         if self.clip.get() == Some(clip_index)
             && let Ok(slot) = self.sink.try_borrow()
             && slot.is_some()
@@ -89,19 +89,19 @@ impl ThumbProducer {
             .sources
             .try_with_value(|s| s.get(clip_index as usize).cloned())
             .flatten()
-            .ok_or_else(|| format!("missing source for clip {}", clip_index + 1))?;
+            .ok_or_else(|| {
+                MediaError::Source(format!("missing source for clip {}", clip_index + 1))
+            })?;
 
         let media: Rc<dyn MediaSource> = match &src {
             PlaylistSource::Blob(blob) => Rc::new(BlobSource::new(blob.clone())),
             PlaylistSource::Url(url) => {
-                let u = UrlSource::connect(url.clone())
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let u = UrlSource::connect(url.clone()).await?;
                 Rc::new(u)
             }
         };
         if !self.epoch.is_current(epoch) {
-            return Err("cancelled".into());
+            return Err(MediaError::Cancelled);
         }
         let opened = open_mp4(
             media,
@@ -111,12 +111,11 @@ impl ThumbProducer {
             },
             |_| {},
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
         if !self.epoch.is_current(epoch) {
-            return Err("cancelled".into());
+            return Err(MediaError::Cancelled);
         }
-        let track = opened.require_video().map_err(|e| e.to_string())?;
+        let track = opened.require_video()?;
         let (max_w, max_h) = pl.thumb_max_size();
         let sink = Rc::new(ThumbSink::new(
             Rc::new(track),
@@ -136,14 +135,14 @@ impl ThumbProducer {
         max_w: u32,
         max_h: u32,
         rank: u16,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, MediaError> {
         let sink = {
             let Ok(slot) = self.sink.try_borrow() else {
-                return Err("borrow".into());
+                return Err(MediaError::Source("borrow".into()));
             };
             slot.as_ref()
                 .cloned()
-                .ok_or_else(|| "no sink".to_string())?
+                .ok_or_else(|| MediaError::Source("no sink".into()))?
         };
         let epoch = self.epoch.ticket();
         let cancel = move || !self.epoch.is_current(epoch);
@@ -151,10 +150,10 @@ impl ThumbProducer {
         match sink.get(local, &cancel).await {
             Ok(Some(_)) => {}
             Ok(None) => return Ok(false),
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(e),
         }
         if cancel() {
-            return Err("cancelled".into());
+            return Err(MediaError::Cancelled);
         }
         let meta = sink.track().metadata();
         let (tw, th) = hover_thumb_dims(meta.width, meta.height, max_w, max_h);

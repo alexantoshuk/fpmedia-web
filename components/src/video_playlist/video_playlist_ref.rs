@@ -624,10 +624,12 @@ impl VideoPlaylistRef {
                             if !self.open_gen.is_current(epoch) {
                                 return;
                             }
-                            if super::host_zone::is_soft_seam_cancel(&e) {
+                            if e.is_cancelled()
+                                || super::host_zone::is_soft_seam_cancel(&e.to_string())
+                            {
                                 return;
                             }
-                            self.error.set(Some(e));
+                            self.error.set(Some(e.to_string()));
                             self.status.set("Seek failed.".into());
                         }
                     });

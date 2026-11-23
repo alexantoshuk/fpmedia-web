@@ -4,7 +4,8 @@
 
 use fpmedia_web::timer::sleep_ms;
 use fpmedia_web::{
-    LOOP_ORIGIN_PREWARM_SECS, ScrubCachePolicy, VideoMetadata, should_prewarm_loop_origin,
+    LOOP_ORIGIN_PREWARM_SECS, MediaError, ScrubCachePolicy, VideoMetadata,
+    should_prewarm_loop_origin,
 };
 use leptos::prelude::*;
 
@@ -26,14 +27,14 @@ pub(crate) async fn wait_ready(
     video: VideoRef,
     epoch: Ticket,
     open_gen: LocalEpoch,
-) -> Result<VideoMetadata, String> {
+) -> Result<VideoMetadata, MediaError> {
     let start = fpmedia_web::timer::now_ms().unwrap_or(0.0);
     loop {
         if !open_gen.is_current(epoch) {
-            return Err("cancelled".into());
+            return Err(MediaError::Cancelled);
         }
         if let Some(err) = video.error.get_untracked() {
-            return Err(err);
+            return Err(MediaError::Source(err));
         }
         if video.ready.get_untracked()
             && let Some(meta) = video.metadata.get_untracked()
@@ -42,7 +43,7 @@ pub(crate) async fn wait_ready(
         }
         let now = fpmedia_web::timer::now_ms().unwrap_or(start);
         if now - start > PROBE_TIMEOUT_MS {
-            return Err("open timed out".into());
+            return Err(MediaError::Source("open timed out".into()));
         }
         sleep_ms(PROBE_POLL_MS).await;
     }
@@ -120,7 +121,7 @@ async fn warm_cut_join_exact(
     idle_i: u32,
     join: u32,
     epoch: Ticket,
-) -> Result<(), String> {
+) -> Result<(), MediaError> {
     if !pl.open_gen.is_current(epoch) {
         return Ok(());
     }
@@ -197,7 +198,7 @@ fn finish_if_opening_became_live(
     pl: VideoPlaylistRef,
     opening_is_a: bool,
     clip_index: u32,
-) -> Option<Result<(), String>> {
+) -> Option<Result<(), MediaError>> {
     if opening_still_idle(pl, opening_is_a) {
         return None;
     }
@@ -208,7 +209,7 @@ fn finish_if_opening_became_live(
         pl.apply_gain_to_slots();
         return Some(Ok(()));
     }
-    Some(Err("cancelled".into()))
+    Some(Err(MediaError::Cancelled))
 }
 
 fn ensure_live_on(pl: VideoPlaylistRef, clip_index: u32) -> bool {
@@ -224,9 +225,9 @@ pub(crate) async fn ensure_clip_on_idle(
     pl: VideoPlaylistRef,
     clip_index: u32,
     epoch: Ticket,
-) -> Result<(), String> {
+) -> Result<(), MediaError> {
     if !pl.open_gen.is_current(epoch) {
-        return Err("cancelled".into());
+        return Err(MediaError::Cancelled);
     }
     if ensure_live_on(pl, clip_index) {
         pl.apply_gain_to_slots();
@@ -240,7 +241,7 @@ pub(crate) async fn ensure_clip_on_idle(
     if pl.latches.get_value().ensure_idle_for == Some(clip_index) {
         loop {
             if !pl.open_gen.is_current(epoch) {
-                return Err("cancelled".into());
+                return Err(MediaError::Cancelled);
             }
             if ensure_live_on(pl, clip_index) {
                 pl.apply_gain_to_slots();
@@ -271,7 +272,7 @@ pub(crate) async fn ensure_clip_on_idle(
         .sources
         .try_with_value(|s| s.get(clip_index as usize).cloned())
         .flatten()
-        .ok_or_else(|| format!("missing source for clip {}", clip_index + 1))?;
+        .ok_or_else(|| MediaError::Source(format!("missing source for clip {}", clip_index + 1)))?;
     let opening_is_a = !pl.live_is_a.get_untracked();
     let idle = slot_is_a(pl, opening_is_a);
     pl.latches
@@ -289,7 +290,7 @@ pub(crate) async fn ensure_clip_on_idle(
     };
     if !pl.open_gen.is_current(epoch) {
         clear_flight(pl, clip_index);
-        return Err("cancelled".into());
+        return Err(MediaError::Cancelled);
     }
     if let Some(r) = finish_if_opening_became_live(pl, opening_is_a, clip_index) {
         clear_flight(pl, clip_index);
@@ -302,7 +303,7 @@ pub(crate) async fn ensure_clip_on_idle(
     }
     if !opening_still_idle(pl, opening_is_a) {
         clear_flight(pl, clip_index);
-        return Err("cancelled".into());
+        return Err(MediaError::Cancelled);
     }
     src.open_on(idle);
     pl.idle_clip.set(Some(clip_index));
@@ -455,7 +456,7 @@ pub(crate) async fn seek_to_pos(
     aim: crate::video_playlist::PlaylistPos,
     epoch: Ticket,
     then_play: bool,
-) -> Result<(), String> {
+) -> Result<(), MediaError> {
     if !pl.open_gen.is_current(epoch) {
         return Ok(());
     }
@@ -595,16 +596,17 @@ impl PromoteLead {
     /// Idle Play-ready before swap (`SeamHold` on main HW). Paint-only
     /// `prepare_seam_at` = arm-fail fallback **and** paused `seek_to_pos`
     /// (never leave SeamHold without Exact densify). Soft-cancel → retry arm once.
-    pub(crate) async fn prepare(self, video: VideoRef) -> Result<(), String> {
+    pub(crate) async fn prepare(self, video: VideoRef) -> Result<(), MediaError> {
         let local = self.local();
         seam_trace(&format!("prepare lead={self:?} local={local} (seam hold)"));
+        let soft = |e: &MediaError| e.is_cancelled() || is_soft_seam_cancel(&e.to_string());
         match video.arm_seam_hold(local).await {
             Ok(()) => Ok(()),
-            Err(e) if is_soft_seam_cancel(&e) => {
+            Err(e) if soft(&e) => {
                 seam_trace("arm soft-cancel retry");
                 match video.arm_seam_hold(local).await {
                     Ok(()) => Ok(()),
-                    Err(e2) if is_soft_seam_cancel(&e2) => {
+                    Err(e2) if soft(&e2) => {
                         seam_trace("arm soft-cancel → paint fallback");
                         video.prepare_seam_at(local).await
                     }

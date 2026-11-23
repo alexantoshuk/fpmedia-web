@@ -10,7 +10,7 @@ use leptos::prelude::*;
 
 use crate::frame_axis::{ClipFrame, GlobalFrame};
 use crate::video_playlist::PlaylistPos;
-use fpmedia_web::Ticket;
+use fpmedia_web::{MediaError, Ticket};
 
 use super::loop_seam::{
     LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, seam_trace,
@@ -49,7 +49,7 @@ async fn promote_idle_at(
     clip_index: u32,
     local_frame: u32,
     expect_live: Option<u32>,
-) -> Result<(), String> {
+) -> Result<(), MediaError> {
     let lead = PromoteLead::for_local(local_frame);
     let local = lead.local();
     ensure_clip_on_idle(pl, clip_index, epoch).await?;
@@ -112,7 +112,7 @@ async fn promote_idle_at(
 /// Host LoopZone wrap → `promote_idle_at` at `zone_in` (or same-clip paint).
 /// Used when [`LoopOwner::Host`]. Intra-clip → engine `LoopSeam` instead.
 /// **no equivalent** (playlist local).
-pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: Ticket) -> Result<(), String> {
+pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: Ticket) -> Result<(), MediaError> {
     if !pl.open_gen.is_current(epoch) {
         end_seam(pl);
         return Ok(());
@@ -131,12 +131,15 @@ pub(crate) async fn wrap_to_loop_in(pl: VideoPlaylistRef, epoch: Ticket) -> Resu
         pl.live_clip.get_untracked()
     ));
     let mut neighbor_after: Option<u32> = None;
-    let result: Result<(), String> = async {
+    let result: Result<(), MediaError> = async {
         let (zone_in, zone_out) = pl.loop_zone();
         let model = pl.model.get_untracked();
         let Some(aim) = model.at_global_frame(GlobalFrame::new(zone_in)) else {
             resume_live_if_playlist_playing(pl);
-            return Err("LoopZone in out of range".into());
+            return Err(MediaError::FrameOutOfRange(
+                zone_in,
+                model.total_frame_count(),
+            ));
         };
         pl.status.set(format!("LoopZone → frame {zone_in}…"));
         pl.latches.update_value(|l| l.seam_warm_for = None);
@@ -232,13 +235,15 @@ pub(crate) fn start_host_wrap(pl: VideoPlaylistRef, seam_already_busy: bool) {
 pub(crate) fn run_wrap_done(
     pl: VideoPlaylistRef,
     epoch: Ticket,
-    result: Result<(), String>,
+    result: Result<(), MediaError>,
     status: &str,
 ) {
     let epoch_ok = pl.open_gen.is_current(epoch);
-    let plan = match &result {
-        Ok(()) => plan_wrap_done(Ok(()), epoch_ok),
-        Err(e) => plan_wrap_done(Err(e.as_str()), epoch_ok),
+    let err_msg = result.as_ref().err().map(ToString::to_string);
+    let plan = match (result.is_ok(), err_msg.as_deref()) {
+        (true, _) => plan_wrap_done(Ok(()), epoch_ok),
+        (false, Some(e)) => plan_wrap_done(Err(e), epoch_ok),
+        (false, None) => WrapDonePlan::HardFail,
     };
     match plan {
         WrapDonePlan::Ok | WrapDonePlan::Ignore => {}
@@ -247,7 +252,7 @@ pub(crate) fn run_wrap_done(
             resume_live_if_playlist_playing(pl);
         }
         WrapDonePlan::HardFail => {
-            let Err(err) = result else {
+            let Some(err) = err_msg else {
                 return;
             };
             seam_trace(&format!("wrap_done hard: {err}"));
@@ -259,7 +264,12 @@ pub(crate) fn run_wrap_done(
 }
 
 /// Host seam / wrap failed after live was already stopped — [`run_wrap_done`].
-pub(crate) fn note_host_seam_err(pl: VideoPlaylistRef, epoch: Ticket, err: String, status: &str) {
+pub(crate) fn note_host_seam_err(
+    pl: VideoPlaylistRef,
+    epoch: Ticket,
+    err: MediaError,
+    status: &str,
+) {
     run_wrap_done(pl, epoch, Err(err), status);
 }
 
@@ -270,7 +280,7 @@ pub(crate) async fn advance_after_ended(
     pl: VideoPlaylistRef,
     epoch: Ticket,
     from_clip: u32,
-) -> Result<(), String> {
+) -> Result<(), MediaError> {
     if !pl.open_gen.is_current(epoch) {
         end_seam(pl);
         return Ok(());
@@ -310,7 +320,10 @@ pub(crate) async fn advance_after_ended(
                     return Ok(());
                 }
                 if pl.live_clip.get_untracked() != next_i {
-                    return Err(format!("seam promote did not land on clip {}", next_i + 1));
+                    return Err(MediaError::Source(format!(
+                        "seam promote did not land on clip {}",
+                        next_i + 1
+                    )));
                 }
                 pl.ended.set(false);
                 pl.status

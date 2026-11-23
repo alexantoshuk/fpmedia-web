@@ -125,9 +125,10 @@ pub(super) async fn run_open(ctx: &HostCtx, id: u64, OpenArgs { source, canvas }
         Err(e) => {
             ready.set(false);
             metadata.set(None);
-            error.set(Some(e.clone()));
+            let msg = e.to_string();
+            error.set(Some(msg.clone()));
             status.set(OpenPhase::Failed.label());
-            web_sys::console::error_1(&e.clone().into());
+            web_sys::console::error_1(&msg.into());
         }
     }
 }
