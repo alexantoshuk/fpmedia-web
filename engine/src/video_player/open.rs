@@ -166,7 +166,6 @@ impl VideoPlayer {
         let shared = Rc::new(Shared {
             track,
             frame: Cell::new(0),
-            playing: Cell::new(false),
             loop_spec: Cell::new(crate::policy::playback::LoopSpec::default()),
             presentation: RefCell::new(VecDeque::new()),
             displayed: RefCell::new(None),

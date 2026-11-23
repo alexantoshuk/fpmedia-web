@@ -87,9 +87,6 @@ pub(super) struct Shared {
     pub(super) track: Rc<Mp4VideoTrack>,
     /// Committed playhead (last presented / settled frame).
     pub(super) frame: Cell<FrameId>,
-    /// Host-visible play flag. Not derived from [`EngineModel`] — mode can be
-    /// `ExactHold` / `Scrub` mid-play.
-    pub(super) playing: Cell<bool>,
     /// `<video loop>` flag + stored loop zone edges; resolve via [`Self::loop_zone`].
     pub(super) loop_spec: Cell<LoopSpec>,
     /// Ahead of playhead (presentation order). Cap [`PRESENTATION_QUEUE_CAP`].
@@ -271,7 +268,8 @@ impl Shared {
         PlayerState {
             frame,
             timestamp,
-            playing: self.playing.get(),
+            // Engine play intent ≡ `EngineMode::Play` (see `engine_mode` module docs).
+            playing: self.engine.get().is_play(),
             looping: self.loop_spec.get().looping,
             frame_count: self.track.frame_count(),
         }
@@ -283,7 +281,7 @@ impl Shared {
     }
 
     /// Commit the playhead to `frame` (after a successful decode / present).
-    /// Does not touch [`Self::playing`] — the play loop relies on that.
+    /// Does not touch [`EngineModel`] play intent (`mode == Play`).
     pub(super) fn commit_frame(&self, frame: FrameId) -> Result<(), MediaError> {
         let count = self.track.frame_count();
         if frame >= count {

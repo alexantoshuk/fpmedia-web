@@ -193,7 +193,6 @@ pub(super) fn schedule_fetchmap_gap_fill(shared: &Rc<Shared>) {
         || shared.scrub_bg_suspended()
         || shared.scrub_cache_off()
         || shared.engine.get().is_play()
-        || shared.playing.get()
         || shared.file_size == 0
     {
         return;
@@ -216,7 +215,6 @@ async fn fetchmap_gap_fill_task(shared: Rc<Shared>, _flight: crate::FlightGuard)
         && !shared.scrub_bg_suspended()
         && !shared.scrub_cache_off()
         && !shared.engine.get().is_play()
-        && !shared.playing.get()
     {
         if !kick_fetchmap_gap_fill(&shared) {
             break;

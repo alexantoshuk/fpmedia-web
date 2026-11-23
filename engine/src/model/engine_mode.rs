@@ -3,6 +3,12 @@
 //! Replaces `CacheFillMode` + `hold_densify_for_exact` + `audio_warm_resume` latches.
 //! See `.ai/architecture.md` § State machines over flags.
 //!
+//! **Play intent:** host-visible engine playing ≡ [`EngineMode::Play`]
+//! ([`EngineModel::is_play`]). Set only by [`EngineEvent::EnterPlay`]; cleared by
+//! any leave-Play transition (`EnterScrub` / `BeginExact`). No parallel
+//! `Shared.playing` cell. Host chrome intent (scrub-while-play resume) stays in
+//! `TransportState` / facade signals — not this model.
+//!
 //! mediabunny: `examples/media-player/media-player.ts` `seekToTime` → `pause` then
 //! `play` without recreating `AudioContext` (iterator `.return()` only). Path match:
 //! Play = sequential sink (`canvases` / samples); Scrub + ExactHold = sparse access
@@ -14,7 +20,7 @@ use std::fmt;
 /// Play vs scrub densify vs exact-settle (HW owned by key→N).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineMode {
-    /// Presentation queue; densify cancelled.
+    /// Presentation queue; densify cancelled. Engine play intent is armed.
     Play,
     /// Paused / drag: gap-fill densify allowed (if [`crate::ScrubPolicy::densify`]).
     Scrub,
@@ -239,6 +245,26 @@ mod tests {
         assert!(next.is_play());
         assert!(!next.allows_densify());
         assert_eq!(cmds, vec![EngineCmd::AbortDensify { rearm: false }]);
+    }
+
+    #[test]
+    fn play_intent_is_mode_play_only() {
+        let (play, _) = reduce(EngineModel::new(), EngineEvent::EnterPlay);
+        assert!(play.is_play());
+
+        let (scrub, _) = reduce(
+            play,
+            EngineEvent::EnterScrub {
+                soft_audio: true,
+                densify: false,
+                from_play: true,
+            },
+        );
+        assert!(!scrub.is_play());
+
+        let (hold, _) = reduce(play, EngineEvent::BeginExact);
+        assert!(!hold.is_play());
+        assert!(hold.holds_exact());
     }
 
     #[test]

@@ -356,7 +356,7 @@ impl PlayerInner {
             0.0
         };
         let result = async {
-            self.shared.playing.set(false);
+            // Settle: BeginExact left Play. Drag: mode forced to Scrub above.
             self.clear_play_session();
 
             if settle {
@@ -580,7 +580,6 @@ impl PlayerInner {
     pub fn prepare_play_from_scrub(&self, frame: FrameId) -> Result<FrameId, MediaError> {
         let _ = self.begin_op();
         let frame = frame.min(self.indexed_frame_count().saturating_sub(1));
-        self.shared.playing.set(false);
         self.clear_play_session();
         self.clear_scrub_direction();
         self.clear_step_ring();
@@ -775,7 +774,6 @@ impl PlayerInner {
             || self.shared.scrub_bg_suspended()
             || self.shared.scrub_cache_off()
             || self.shared.engine.get().is_play()
-            || self.is_playing()
             || !self.scrub_policy().densify
             || self.shared.scrub_densify_blocked.get()
             || self.shared.scrub_gesture.get()
@@ -794,7 +792,6 @@ impl PlayerInner {
             || self.shared.scrub_bg_suspended()
             || self.shared.scrub_cache_off()
             || self.shared.engine.get().is_play()
-            || self.is_playing()
             || !self.scrub_policy().densify
             || self.shared.scrub_densify_blocked.get()
             || self.shared.scrub_gesture.get()
@@ -843,7 +840,6 @@ pub(super) async fn scrub_cache_fill_task(
             if shared.scrub_bg_suspended()
                 || shared.scrub_cache_off()
                 || shared.engine.get().is_play()
-                || shared.playing.get()
                 || !shared.track.metadata_ref().scrub_policy().densify
                 || shared.scrub_densify_blocked.get()
                 // Drag owns the pointer — PreferSoftware densify under finger
@@ -866,7 +862,6 @@ pub(super) async fn scrub_cache_fill_task(
             if !shared.scrub_epoch.is_current(scrub_epoch) {
                 if shared.is_disposed()
                     || shared.engine.get().is_play()
-                    || shared.playing.get()
                     || !shared.engine.get().allows_densify()
                     || !shared.densify.is_pending()
                 {
@@ -965,10 +960,7 @@ pub(super) async fn scrub_cache_fill_task(
                         shared.densify.latch_pending();
                         return Ok(());
                     }
-                    if shared.engine.get().is_play()
-                        || shared.playing.get()
-                        || !shared.densify.is_pending()
-                    {
+                    if shared.engine.get().is_play() || !shared.densify.is_pending() {
                         return Ok(());
                     }
                     idle_passes = 0;
@@ -1012,7 +1004,7 @@ pub(super) async fn scrub_cache_fill_task(
     let want_again = was_pending
         && !shared.scrub_cache_off()
         && shared.engine.get().allows_densify()
-        && !shared.playing.get()
+        && !shared.engine.get().is_play()
         && !shared.scrub_gesture.get()
         && next_gap_target(&shared).is_some(); // banned set dies with the task
 
@@ -1160,7 +1152,6 @@ pub(super) async fn fill_one_gap(
         shared.is_disposed()
             || !shared.scrub_epoch.is_current(scrub_epoch)
             || shared.engine.get().is_play()
-            || shared.playing.get()
             || shared.engine.get().holds_exact()
     };
     if cancelled() {

@@ -28,7 +28,7 @@ impl PlayerInner {
         self.apply_engine_event(EngineEvent::BeginExact);
         self.apply_session_event(crate::SessionEvent::BeginRestart);
         let result = async {
-            self.shared.playing.set(false);
+            // BeginExact left Play — play intent is already clear.
             self.clear_play_session();
             self.drop_origin_stash();
             self.clear_step_ring();
@@ -142,7 +142,11 @@ impl PlayerInner {
     }
 
     pub async fn next_frame(&self) -> Result<(), MediaError> {
-        self.shared.playing.set(false);
+        // Step stops Play via EnterScrub (play intent ≡ mode); already-paused
+        // densify must not abort (pause_hard_no_densify → from_play false).
+        if self.shared.engine.get().is_play() {
+            self.pause_hard_no_densify();
+        }
         let next = self.state().frame.saturating_add(1);
         if next >= self.state().frame_count {
             return Err(MediaError::FrameOutOfRange(next, self.state().frame_count));
@@ -178,7 +182,9 @@ impl PlayerInner {
     }
 
     pub async fn previous_frame(&self) -> Result<(), MediaError> {
-        self.shared.playing.set(false);
+        if self.shared.engine.get().is_play() {
+            self.pause_hard_no_densify();
+        }
         let cur = self.state().frame;
         if cur == 0 {
             return Err(MediaError::FrameOutOfRange(0, self.state().frame_count));

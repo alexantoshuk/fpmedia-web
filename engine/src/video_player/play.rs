@@ -1541,7 +1541,7 @@ impl PlayerInner {
             self.shared.wall_origin.set(None);
             let shared = Rc::clone(&self.shared);
             wasm_bindgen_futures::spawn_local(async move {
-                if shared.is_disposed() || !shared.playing.get() {
+                if shared.is_disposed() || !shared.engine.get().is_play() {
                     return;
                 }
                 let audio = shared.audio.borrow().clone();
@@ -1573,7 +1573,8 @@ impl PlayerInner {
 
         let count = self.state().frame_count;
         if count == 0 {
-            self.shared.playing.set(false);
+            // Leave Play so intent ≡ mode; host stop_playback also pause_hard.
+            self.pause_hard_no_densify();
             return Ok(DuePresent::Ended);
         }
 
@@ -1596,8 +1597,8 @@ impl PlayerInner {
                 EofWall::DrainRemaining => {}
                 EofWall::NeedsLoop => return Ok(DuePresent::NeedsLoop),
                 EofWall::Ended => {
-                    self.shared.playing.set(false);
-                    self.end_play_iter();
+                    // Leave Play (intent ≡ mode); end_play_iter via clear_play_session.
+                    self.pause_hard_no_densify();
                     return Ok(DuePresent::Ended);
                 }
             }

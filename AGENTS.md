@@ -263,5 +263,6 @@ cargo check --target wasm32-unknown-unknown -p fpmedia-web --features webcodecs 
 # `fpmedia-web-components` feature `hevc` (e.g. default = ["thumbs", "hevc"] while testing)
 npm install && npm run e2e:install                      # once: Playwright (+ Chromium if CDN ok)
 npm run e2e                                             # browser smoke (`trunk serve` on :3000; Win uses system Chrome)
+# After agent-started e2e / trunk for tests: kill that trunk so :3000 is free (do not leave it listening).
 # Scrub perf probes: e2e/perf.scrub.*.spec.ts — listed in skills/media.md Triage
 ```

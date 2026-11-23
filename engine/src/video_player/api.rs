@@ -13,6 +13,7 @@ use super::PRESENTATION_QUEUE_CAP;
 pub struct PlayerState {
     pub frame: FrameId,
     pub timestamp: Timestamp,
+    /// Engine play intent — true iff [`crate::EngineMode::Play`].
     pub playing: bool,
     /// When true, playback wraps to [`crate::LoopZone::in_frame`] at zone end
     /// (HTML `<video loop>` + optional LoopZone).

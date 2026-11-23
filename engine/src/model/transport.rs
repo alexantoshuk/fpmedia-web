@@ -66,7 +66,7 @@ impl TransportState {
     /// and resume-[`Self::Settling`] always (Pause through drag + Up settle; soft-hold
     /// clears the session so do **not** gate resume-settle on `play_session_live`).
     /// [`Self::PlayPriming`] only when the engine session is already live (rAF before
-    /// `PlayPrimeDone`). Distinct from engine `Shared.playing`.
+    /// `PlayPrimeDone`). Distinct from engine play intent (`EngineMode::Play`).
     /// UX: `.ai/product.md` § Play chrome. **no equivalent**.
     pub fn ui_playing(self, play_session_live: bool) -> bool {
         match self {

@@ -8,8 +8,8 @@
 
 ### Handoff
 
-- **Branch:** `main` (Slice 1+4A + 2a landed — playlist protocol `pub(crate)` + `SeamLatch`; `play_update: SingleFlight`; demo step → `MediaRef`). Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types. Play session: `PlayPhase` + `SeamLatch`.
-- **Next priority:** **Refactor — simplify ownership / API** — next **Slice 2b**. CutWindow stays Later.
+- **Branch:** `main` (Slice 1+4A + 2a + **2b** landed — engine play intent ≡ `EngineMode::Play`, no `Shared.playing`; playlist protocol `pub(crate)` + `SeamLatch`; `play_update: SingleFlight`; demo step → `MediaRef`). Policy: `architecture.md` § Virtual Timeline (Covered + Fetch + thumb markers on VT; Exact bitmaps = slot; playlist thumbs = `VtThumbCache` + 1 `ThumbProducer`; idle = nearest cut; Pause cut-join Exact@join; LoopZone + `SeamPhase`; Host wrap = `loop_seam_exec`; thumb max box = `set_thumb_max_size`, default 160²; ImageBitmap cap = `thumb_cache_frame_budget` @ 128 MiB). Types: `architecture.md` § Ownership & types. Play session: `PlayPhase` + `SeamLatch`.
+- **Next priority:** **Refactor — simplify ownership / API** — next **Slice 3A**. CutWindow stays Later.
 - **Open:** mobile `LoopPlayWarm` unverified. Residual light mobile pause on a Host mid-zone LoopZone seam — Later.
 - **Stash:** `stash@{0}` densify-free `clear_pending` after `EndExact` — optional, unrelated.
 - **Do not merge:**
@@ -32,14 +32,13 @@ Agreed code-review backlog. **Order below is the PR sequence.** Merge only withi
 
 **PR pass order (do this, not “1+2+3 in one diff”):**
 
-1. **Slice 2b** — play intent inside `EngineModel` (riskier; separate PR from 2a).
-2. **Slice 3A** then **3B** (or reverse) — independent; two PRs preferred; one PR only if both stay mechanical.
-3. **Slice 4B** — typed host errors (± optional `OpQueue` shadow-bool cleanup).
-4. **Slice 5** — after 2b–4: **5.1+5.2** one PR; **5.3+5.4** one PR; **5.5** optional alone.
+1. **Slice 3A** then **3B** (or reverse) — independent; two PRs preferred; one PR only if both stay mechanical.
+2. **Slice 4B** — typed host errors (± optional `OpQueue` shadow-bool cleanup).
+3. **Slice 5** — after 3–4: **5.1+5.2** one PR; **5.3+5.4** one PR; **5.5** optional alone.
 
 **OK to combine in one PR:** 5.1 with 5.2; 5.3 with 5.4.
 
-**Do not combine:** 2b+3, 4B with any engine FSM slice, 5 before 2b–4 land, any of this with CutWindow / crates publish.
+**Do not combine:** 3A+3B unless both stay mechanical; 4B with any engine FSM slice; 5 before 3–4 land; any of this with CutWindow / crates publish.
 
 **Global do-not (all slices):**
 
@@ -53,29 +52,6 @@ Agreed code-review backlog. **Order below is the PR sequence.** Merge only withi
 - Media edits: mediabunny cite **or** explicit **no equivalent** (scrub / playlist local) per `AGENTS.md`.
 
 **Verify per PR:** `bash scripts/check.sh`; for ownership / play / scrub / seam changes also `npm run e2e` (`skills/media.md` Triage). Drop finished bullets from this block when they ship (no Done list).
-
----
-
-#### Slice 2b — Play intent inside `EngineModel`
-
-**Goal:** One engine axis for “host wants play” vs mode (`Play` / `Scrub` / `ExactHold`).
-
-**Why:** `Shared.playing` is intentionally separate from `EngineModel` today but forces every path to check both (`pause_inner`, densify gates).
-
-**Touch:**
-
-- `engine/src/model/engine_mode.rs` — extend model (e.g. play intent field or clearer invariant); keep `reduce` + unit tests.
-- `engine/src/video_player/shared.rs` — remove or derive `playing`.
-- `engine/src/video_player/control.rs` (`pause_inner`, `play`) and play/scrub call sites that read `shared.playing`.
-- Host signals (`VideoRef.playing`, playlist facade) stay; they mirror transport intent (`product.md` § Play chrome) — do not delete UI signals.
-
-**DoD:**
-
-- No `Cell<bool> playing` beside `EngineModel` that can disagree with mode without an explicit documented invariant.
-- Engine mode unit tests updated; scrub-while-play soft-hold + ExactHold mid-play still work.
-- Docs: `architecture.md` § State machines (`EngineMode` row) if the model shape changes.
-
-**Do not:** fold host `TransportState` into the engine; change soft-hold audio policy; land in the same PR as 2a or Slice 3.
 
 ---
 

@@ -128,7 +128,7 @@ impl PlayerInner {
             // (mfra backfill does not fetch sample bytes).
             track.prefetch_samples_ahead(head, 120);
         }
-        self.shared.playing.set(true);
+        // Play intent = `EnterPlay` → `EngineMode::Play` (no parallel playing cell).
         self.apply_clock_event(ClockEvent::ResetForPlay);
         // Counters only — `underrun_hold_since_ms` / catch-up gate are not reset here.
         self.shared.underrun.set(Default::default());
@@ -168,14 +168,14 @@ impl PlayerInner {
         // Leaving play: bump decode epoch; densify abort/arm only via
         // `EnterScrub` → `AbortDensify` / `ScheduleDensify` (no side-door fill abort).
         // Already paused: do not bump scrub_epoch (UI steps call pause every time).
-        let was_playing = self.shared.playing.get();
+        // Play intent = `EngineMode::Play` before `EnterScrub` clears it.
+        let was_playing = self.shared.engine.get().is_play();
         if was_playing {
             self.cancel_ops();
             self.clear_scrub_direction();
         }
-        // Flip playing before ScheduleDensify — `schedule_scrub_cache_fill` refuses
-        // while playing. Clock cmds still gated by `was_playing`.
-        self.shared.playing.set(false);
+        // `EnterScrub` leaves Play before ScheduleDensify runs — densify gates
+        // see `!is_play()`. Clock cmds still gated by `was_playing`.
         self.clear_play_session();
         self.apply_engine_event_gated(
             EngineEvent::EnterScrub {
@@ -209,7 +209,6 @@ impl PlayerInner {
                 if shared.is_disposed()
                     || shared.engine.get().holds_exact()
                     || shared.engine.get().is_play()
-                    || shared.playing.get()
                     || !shared.track.metadata_ref().scrub_policy().densify
                 {
                     return;

@@ -102,7 +102,7 @@ impl PlayerInner {
                         // Host may have paused after rate snap (K: pause then 1×,
                         // or rate→pause race). Do not restart audio into a stop.
                         if shared.is_disposed()
-                            || !shared.playing.get()
+                            || !shared.engine.get().is_play()
                             || crate::is_wall_clock_rate(shared.clock.borrow().playback_rate())
                         {
                             return;
