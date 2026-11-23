@@ -65,6 +65,9 @@ pub(crate) fn idle_neighbor(model: &PlaylistModel, live_clip: u32, looping: bool
 /// Open `want` on idle when missing (coalesced). Scrub cut-proximity warm.
 pub(crate) fn kick_ensure_idle(pl: VideoPlaylistRef, want: u32) {
     if pl.idle_clip.get_untracked() == Some(want) && pl.idle_video().ready.get_untracked() {
+        // Click has no later Move. If the finger is still on this clip, present
+        // the same way a promoting drag step does. **no equivalent** (playlist scrub local).
+        pl.scrub_hold_from_idle(want);
         kick_cut_join_exact_warm(pl);
         return;
     }
@@ -74,6 +77,7 @@ pub(crate) fn kick_ensure_idle(pl: VideoPlaylistRef, want: u32) {
     let epoch = pl.open_gen.ticket();
     wasm_bindgen_futures::spawn_local(async move {
         let _ = ensure_clip_on_idle(pl, want, epoch).await;
+        pl.scrub_hold_from_idle(want);
         kick_cut_join_exact_warm(pl);
     });
 }
@@ -235,6 +239,7 @@ pub(crate) async fn ensure_clip_on_idle(
     }
     if pl.idle_clip.get_untracked() == Some(clip_index) && pl.idle_video().ready.get_untracked() {
         kick_cut_join_exact_warm(pl);
+        pl.scrub_hold_from_idle(clip_index);
         return Ok(());
     }
     // Coalesce Move stampede (2→1 reverse cut) — in-flight same clip: wait for ready.
@@ -251,6 +256,7 @@ pub(crate) async fn ensure_clip_on_idle(
                 && pl.idle_video().ready.get_untracked()
             {
                 kick_cut_join_exact_warm(pl);
+                pl.scrub_hold_from_idle(clip_index);
                 return Ok(());
             }
             if pl.latches.get_value().ensure_idle_for != Some(clip_index) {
@@ -265,6 +271,7 @@ pub(crate) async fn ensure_clip_on_idle(
         if pl.idle_clip.get_untracked() == Some(clip_index) && pl.idle_video().ready.get_untracked()
         {
             kick_cut_join_exact_warm(pl);
+            pl.scrub_hold_from_idle(clip_index);
             return Ok(());
         }
     }
@@ -329,6 +336,7 @@ pub(crate) async fn ensure_clip_on_idle(
     // Open resets engine A/V — re-apply playlist-wide volume/mute/rate.
     pl.apply_gain_to_slots();
     kick_cut_join_exact_warm(pl);
+    pl.scrub_hold_from_idle(clip_index);
     Ok(())
 }
 
@@ -414,6 +422,7 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
         return;
     }
     if pl.idle_clip.get_untracked() == Some(i) && pl.idle_video().ready.get_untracked() {
+        pl.scrub_hold_from_idle(i);
         return;
     }
     let Some(src) = pl
@@ -444,6 +453,7 @@ pub(crate) async fn preload_idle(pl: VideoPlaylistRef, clip_index: Option<u32>, 
     }
     pl.apply_gain_to_slots();
     kick_cut_join_exact_warm(pl);
+    pl.scrub_hold_from_idle(i);
 }
 
 /// Make `aim.clip_index` live (swap or open) at `aim.frame.source()`.

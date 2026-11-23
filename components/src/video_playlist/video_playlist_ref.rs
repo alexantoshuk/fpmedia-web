@@ -463,6 +463,36 @@ impl VideoPlaylistRef {
         )
     }
 
+    /// After a sync promote: scrub slot On, and preload the other side of the nearest cut.
+    /// **no equivalent** (playlist scrub local).
+    fn arm_promoted_scrub(self, aim: PlaylistPos) {
+        let live = self.live_video();
+        live.set_scrub_cache_policy(fpmedia_web::ScrubCachePolicy::On);
+        if let Some(want) = self.cut_idle_want(aim) {
+            let epoch = self.open_gen.ticket();
+            spawn_local(async move {
+                preload_idle(self, Some(want), epoch).await;
+            });
+        }
+    }
+
+    /// Finger still down on `clip` after idle open — same present as drag's promoting Move.
+    /// **no equivalent** (playlist scrub local).
+    pub(crate) fn scrub_hold_from_idle(self, clip: u32) {
+        if !self.scrubbing.get_untracked() {
+            return;
+        }
+        let aim = self.pos.get_untracked();
+        if aim.clip_index != clip || self.live_clip.get_untracked() == clip {
+            return;
+        }
+        if !try_promote_idle(self, clip) {
+            return;
+        }
+        self.arm_promoted_scrub(aim);
+        self.live_video().scrub_pointer_down(aim.frame.source());
+    }
+
     /// Timeline scrub units (global frames). Promotes idle when it already holds
     /// the aim clip; settle (`Up`) async-seeks if the clip still needs open/rebind.
     pub(crate) fn scrub_timeline(self, global_frame: u32, phase: ScrubPhase) {
@@ -514,16 +544,7 @@ impl VideoPlaylistRef {
             }
             promoted = try_promote_idle(self, aim.clip_index);
             if promoted {
-                // ensure park leaves Host Off until swap On — re-assert after promote.
-                let live = self.live_video();
-                live.set_scrub_cache_policy(fpmedia_web::ScrubCachePolicy::On);
-                // Keep the other clip of the nearest cut in idle (1|2 or 2|3).
-                if let Some(want) = self.cut_idle_want(aim) {
-                    let epoch = self.open_gen.ticket();
-                    spawn_local(async move {
-                        preload_idle(self, Some(want), epoch).await;
-                    });
-                }
+                self.arm_promoted_scrub(aim);
             } else if matches!(phase, ScrubPhase::Down | ScrubPhase::Move)
                 && self.idle_clip.get_untracked() != Some(aim.clip_index)
             {
@@ -543,6 +564,7 @@ impl VideoPlaylistRef {
             match phase {
                 ScrubPhase::Down => live.scrub_pointer_down(aim.frame.source()),
                 // After promote the new live never saw PointerDown — Move alone is a no-op.
+                // Click-hold uses the same call once idle opens (`scrub_hold_from_idle`).
                 ScrubPhase::Move if promoted => live.scrub_pointer_down(aim.frame.source()),
                 ScrubPhase::Move => live.scrub_pointer_move(aim.frame.source()),
                 ScrubPhase::Up => {
