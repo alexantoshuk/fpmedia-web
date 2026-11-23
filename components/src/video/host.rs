@@ -410,16 +410,21 @@ impl VideoHost {
         p.fill_thumb_key_at(key).await;
     }
 
+    pub(crate) fn has_player(&self) -> bool {
+        self.ctx.player.borrow().is_some()
+    }
+
     pub(crate) async fn prepare_seam_at(&self, frame: u32) -> Result<(), fpmedia_web::MediaError> {
         let Some(p) = self.ctx.player.borrow().as_ref().cloned() else {
-            return Err(fpmedia_web::MediaError::Source("no player".into()));
+            // Slot was retired under a newer open. Soft-cancel, not a source fault.
+            return Err(fpmedia_web::MediaError::Cancelled);
         };
         p.prepare_playlist_seam_at(frame).await
     }
 
     pub(crate) async fn arm_seam_hold(&self, frame: u32) -> Result<(), fpmedia_web::MediaError> {
         let Some(p) = self.ctx.player.borrow().as_ref().cloned() else {
-            return Err(fpmedia_web::MediaError::Source("no player".into()));
+            return Err(fpmedia_web::MediaError::Cancelled);
         };
         p.arm_playlist_seam_hold_at(frame).await
     }

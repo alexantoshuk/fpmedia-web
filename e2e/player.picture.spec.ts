@@ -278,14 +278,21 @@ test.describe("stage picture (fixture burn-in)", () => {
     await expectHeld(page, player, refs, "playlist resume drag");
     await releaseResume(page, player, "playlist resume drag");
 
-    for (const fraction of [0.2, 0.7]) {
+    for (const fraction of [0.15, 0.5, 0.85]) {
       await clickAt(page, player, fraction);
     }
     await expect
-      .poll(async () => (await player.readStatus()).playing, {
-        timeout: 4_000,
-        message: "playlist quick clicks did not resume play",
-      })
-      .toBe(true);
+      .poll(
+        async () => {
+          const playing = (await player.readStatus()).playing;
+          const err = (await player.error.innerText()).trim();
+          return `${playing}:${err}`;
+        },
+        {
+          timeout: 8_000,
+          message: "playlist rapid taps dropped play or left media source: no player",
+        },
+      )
+      .toBe("true:");
   });
 });

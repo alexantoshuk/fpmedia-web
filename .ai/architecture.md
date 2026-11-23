@@ -138,6 +138,7 @@ Host chrome / demo
 | ----- | --------- | ----------- |
 | Scrub Up resume + Host outside | VT `play_outside_zone` / `plan_scrub_up` | preempt scrub → `start_host_wrap` (no Exact@outside) |
 | Scrub Up else | on live / cross-clip | `LiveSettle` / `CrossClipSeek` (± then_play) |
+| Cross-clip after ensure | `plan_idle_prepare` | live+player → stay on live (no idle prepare); idle+player → SeamHold/Exact then swap; else `Cancelled` (`retire_clip` clears `ready` before `player.take` — missing player is not a sticky error) |
 | PlayPressed outside | VT `plan_host_outside` (past-out **without** wall-on-live gate) | Host → `start_host_wrap`; Engine → slot `play`; else clip-EOF / bare play |
 | Wall Effect outside while Playing | same VT plan with `past_out_needs_wall_on_live` | HostWrap only when `zone_last` on live; else EOF advance owns join |
 | WrapDone / seam Err | VT `plan_wrap_done` (`is_soft_seam_cancel`) | soft → `ResumeLiveKeepPlay`; hard → clear Play + error; epoch mismatch → Ignore |

@@ -17,7 +17,9 @@ use fpmedia_web::Ticket;
 
 use super::host_zone::is_soft_seam_cancel;
 use super::loop_seam::{LoopOwner, loop_owner, seam_busy, seam_trace};
-use super::plan::{SeamNextCtx, plan_seam_next_clip};
+use super::plan::{
+    IdlePrepareCtx, IdlePreparePlan, SeamNextCtx, plan_idle_prepare, plan_seam_next_clip,
+};
 use super::video_playlist_ref::VideoPlaylistRef;
 
 pub(crate) const PROBE_TIMEOUT_MS: f64 = 120_000.0;
@@ -237,6 +239,19 @@ fn ensure_live_on(pl: VideoPlaylistRef, clip_index: u32) -> bool {
     true
 }
 
+/// Residency after an ensure await. Callers prepare idle only on [`IdlePreparePlan::Idle`].
+pub(crate) fn idle_prepare_plan(pl: VideoPlaylistRef, aim: u32) -> IdlePreparePlan {
+    plan_idle_prepare(IdlePrepareCtx {
+        live_clip: pl.live_clip.get_untracked(),
+        live_ready: pl.live_video().ready.get_untracked(),
+        live_has_player: pl.live_video().has_player(),
+        idle_clip: pl.idle_clip.get_untracked(),
+        idle_ready: pl.idle_video().ready.get_untracked(),
+        idle_has_player: pl.idle_video().has_player(),
+        aim_clip: aim,
+    })
+}
+
 pub(crate) async fn ensure_clip_on_idle(
     pl: VideoPlaylistRef,
     clip_index: u32,
@@ -362,9 +377,16 @@ pub(crate) async fn ensure_clip_on_idle(
     clear_flight(pl, clip_index);
     // Open resets engine A/V — re-apply playlist-wide volume/mute/rate.
     pl.apply_gain_to_slots();
-    kick_cut_join_exact_warm(pl);
-    pl.scrub_hold_from_idle(clip_index);
-    Ok(())
+    // `wait_ready` can succeed on a newer open of a different clip. That is
+    // not "aim is idle". **no equivalent** (playlist local).
+    match idle_prepare_plan(pl, clip_index) {
+        IdlePreparePlan::Superseded => Err(MediaError::Cancelled),
+        IdlePreparePlan::Live | IdlePreparePlan::Idle => {
+            kick_cut_join_exact_warm(pl);
+            pl.scrub_hold_from_idle(clip_index);
+            Ok(())
+        }
+    }
 }
 
 /// Map playlist global LoopZone onto the live slot from [`loop_owner`].
@@ -528,61 +550,83 @@ pub(crate) async fn seek_to_pos(
             clear_seek_paint(pl, clip);
             return Ok(());
         }
-        // Stop outgoing Play before idle Exact / SeamHold (goto / scrub Up).
-        stop_live_for_host_seam(pl);
-        let idle = pl.idle_video();
-        let slot_exact_hit = !then_play && idle.has_scrub_exact_blit(aim.frame.source());
-        let prepared = if then_play {
-            // Play join: idle main SeamHold → promote → PlayPrime release.
-            PromoteLead::for_local(aim.frame.source())
-                .prepare(idle)
-                .await
-        } else if !slot_exact_hit {
-            // Paused miss: On so prepare Exact ingest works (Off gates blit).
-            // Never leave SeamHold. **no equivalent** (playlist scrub local).
-            idle.set_scrub_cache_policy(ScrubCachePolicy::On);
-            idle.prepare_seam_at(aim.frame.source()).await
-        } else {
-            Ok(())
-        };
-        if let Err(e) = prepared {
-            clear_seek_paint(pl, clip);
-            return Err(e);
+        match idle_prepare_plan(pl, clip) {
+            // Newer tap retired the idle player. Soft-cancel — no sticky banner.
+            IdlePreparePlan::Superseded => {
+                clear_seek_paint(pl, clip);
+                return Err(MediaError::Cancelled);
+            }
+            // Promote landed the aim on live while we awaited. Do not prepare idle.
+            IdlePreparePlan::Live => {
+                clear_seek_paint(pl, clip);
+            }
+            IdlePreparePlan::Idle => {
+                // Stop outgoing Play before idle Exact / SeamHold (goto / scrub Up).
+                stop_live_for_host_seam(pl);
+                let idle = pl.idle_video();
+                let slot_exact_hit = !then_play && idle.has_scrub_exact_blit(aim.frame.source());
+                let prepared = if then_play {
+                    // Play join: idle main SeamHold → promote → PlayPrime release.
+                    PromoteLead::for_local(aim.frame.source())
+                        .prepare(idle)
+                        .await
+                } else if !slot_exact_hit {
+                    // Paused miss: On so prepare Exact ingest works (Off gates blit).
+                    // Never leave SeamHold. **no equivalent** (playlist scrub local).
+                    idle.set_scrub_cache_policy(ScrubCachePolicy::On);
+                    idle.prepare_seam_at(aim.frame.source()).await
+                } else {
+                    Ok(())
+                };
+                if let Err(e) = prepared {
+                    clear_seek_paint(pl, clip);
+                    if e.is_cancelled() || is_soft_seam_cancel(&e.to_string()) {
+                        // `stop_live_for_host_seam` already halted the outgoing slot.
+                        if then_play {
+                            resume_live_if_playlist_playing(pl);
+                        }
+                        return Err(MediaError::Cancelled);
+                    }
+                    return Err(e);
+                }
+                if !pl.open_gen.is_current(epoch) {
+                    clear_seek_paint(pl, clip);
+                    return Ok(());
+                }
+                if pl.live_clip.get_untracked() != aim.clip_index
+                    && !try_promote_idle(pl, aim.clip_index)
+                {
+                    swap_live_idle(pl, aim.clip_index);
+                }
+                clear_seek_paint(pl, clip);
+                // Aim local before neighbor preload — mirror must not see new live +
+                // stale idle local. **no equivalent**.
+                pl.live_video().playhead.set(aim.frame.source());
+                let zone = pl.loop_zone();
+                let neighbor = idle_neighbor_for_zone(
+                    &pl.model.get_untracked(),
+                    aim.clip_index,
+                    pl.looping.get_untracked(),
+                    zone.in_frame,
+                    zone.out_frame,
+                );
+                preload_idle(pl, neighbor, epoch).await;
+                if !pl.open_gen.is_current(epoch) {
+                    return Ok(());
+                }
+                sync_live_loop_from_playlist(pl);
+                let live = pl.live_video();
+                live.ended.set(false);
+                live.playhead.set(aim.frame.source());
+                if then_play {
+                    // SeamHold already painted — PlayPrime, no second Exact flash.
+                    pl.play();
+                } else {
+                    settle_playlist_pause_exact(pl, live, aim.frame.source(), slot_exact_hit);
+                }
+                return Ok(());
+            }
         }
-        if !pl.open_gen.is_current(epoch) {
-            clear_seek_paint(pl, clip);
-            return Ok(());
-        }
-        if pl.live_clip.get_untracked() != aim.clip_index && !try_promote_idle(pl, aim.clip_index) {
-            swap_live_idle(pl, aim.clip_index);
-        }
-        clear_seek_paint(pl, clip);
-        // Aim local before neighbor preload — mirror must not see new live +
-        // stale idle local. **no equivalent**.
-        pl.live_video().playhead.set(aim.frame.source());
-        let zone = pl.loop_zone();
-        let neighbor = idle_neighbor_for_zone(
-            &pl.model.get_untracked(),
-            aim.clip_index,
-            pl.looping.get_untracked(),
-            zone.in_frame,
-            zone.out_frame,
-        );
-        preload_idle(pl, neighbor, epoch).await;
-        if !pl.open_gen.is_current(epoch) {
-            return Ok(());
-        }
-        sync_live_loop_from_playlist(pl);
-        let live = pl.live_video();
-        live.ended.set(false);
-        live.playhead.set(aim.frame.source());
-        if then_play {
-            // SeamHold already painted — PlayPrime, no second Exact flash.
-            pl.play();
-        } else {
-            settle_playlist_pause_exact(pl, live, aim.frame.source(), slot_exact_hit);
-        }
-        return Ok(());
     }
 
     if !pl.open_gen.is_current(epoch) {

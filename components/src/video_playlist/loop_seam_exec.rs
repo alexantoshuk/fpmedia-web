@@ -16,11 +16,12 @@ use super::loop_seam::{
     LoopOwner, SeamPhase, end_seam, ensure_seam_preparing, loop_owner, seam_busy, seam_trace,
     set_seam_phase, try_begin_seam,
 };
+use super::plan::IdlePreparePlan;
 use super::plan::{
     AdvanceEndedCtx, AdvanceEndedPlan, WrapDonePlan, plan_advance_ended, plan_wrap_done,
 };
 use super::slots::{
-    PromoteLead, ensure_clip_on_idle, idle_neighbor_for_zone, preload_idle,
+    PromoteLead, ensure_clip_on_idle, idle_neighbor_for_zone, idle_prepare_plan, preload_idle,
     resume_live_if_playlist_playing, seam_next_clip, stop_live_for_host_seam, swap_live_idle,
     sync_live_loop_from_playlist,
 };
@@ -59,25 +60,37 @@ async fn promote_idle_at(
     if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
         return Ok(());
     }
-    // Stop live **before** idle prepare (not only at swap) — Host wall overrun.
-    stop_live_for_host_seam(pl);
-    lead.prepare(pl.idle_video()).await?;
-    if !pl.open_gen.is_current(epoch) {
-        // New open supersedes — do not resume stale slot.
-        return Ok(());
+    match idle_prepare_plan(pl, clip_index) {
+        // Idle was closed by a newer open — not a sticky seam fault.
+        IdlePreparePlan::Superseded => return Err(MediaError::Cancelled),
+        IdlePreparePlan::Live => {
+            seam_trace(&format!(
+                "promote already live clip={clip_index} local={local} lead={lead:?}"
+            ));
+            pl.latches.update_value(|l| l.seam_warm_for = None);
+        }
+        IdlePreparePlan::Idle => {
+            // Stop live **before** idle prepare (not only at swap) — Host wall overrun.
+            stop_live_for_host_seam(pl);
+            lead.prepare(pl.idle_video()).await?;
+            if !pl.open_gen.is_current(epoch) {
+                // New open supersedes — do not resume stale slot.
+                return Ok(());
+            }
+            if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
+                resume_live_if_playlist_playing(pl);
+                return Ok(());
+            }
+            // swap_live_idle also hard-stops outgoing if still marked playing.
+            // Keep playlist `playing` intent true across hard-stop → PlayPrime gap.
+            seam_trace(&format!(
+                "promote swap→play clip={clip_index} local={local} lead={lead:?}"
+            ));
+            set_seam_phase(pl, SeamPhase::Swapping);
+            swap_live_idle(pl, clip_index);
+            pl.latches.update_value(|l| l.seam_warm_for = None);
+        }
     }
-    if expect_live.is_some_and(|from| pl.live_clip.get_untracked() != from) {
-        resume_live_if_playlist_playing(pl);
-        return Ok(());
-    }
-    // swap_live_idle also hard-stops outgoing if still marked playing.
-    // Keep playlist `playing` intent true across hard-stop → PlayPrime gap.
-    seam_trace(&format!(
-        "promote swap→play clip={clip_index} local={local} lead={lead:?}"
-    ));
-    set_seam_phase(pl, SeamPhase::Swapping);
-    swap_live_idle(pl, clip_index);
-    pl.latches.update_value(|l| l.seam_warm_for = None);
     // Facade must match new live — else mirror `pos.clip ≠ live` skip (tip-jump
     // guard) freezes the progress bar while Play continues. **no equivalent**.
     let facade = PlaylistPos::new(clip_index, ClipFrame::from_source(local));

@@ -51,6 +51,47 @@ pub(crate) enum StepPlan {
     ClearPlayIntent,
 }
 
+/// Where a cross-clip seek / promote may arm a seam after `ensure_clip_on_idle`.
+///
+/// A newer tap `close()`s the idle slot before its player exists. Preparing
+/// that slot surfaces sticky `media source: no player`. **no equivalent**.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) enum IdlePreparePlan {
+    /// Aim clip is on the live slot and that slot is ready. Do not prepare idle.
+    Live,
+    /// Aim clip is on the idle slot and that slot is ready. SeamHold / Exact, then swap.
+    Idle,
+    /// Aim is on neither ready slot — superseded open. `Cancelled`, no banner.
+    Superseded,
+}
+
+/// Slot residency after `ensure_clip_on_idle` (signals, not the captured `VideoRef`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) struct IdlePrepareCtx {
+    pub live_clip: u32,
+    pub live_ready: bool,
+    /// `ready` can stay true for a tick after `retire_clip` takes the player.
+    pub live_has_player: bool,
+    pub idle_clip: Option<u32>,
+    pub idle_ready: bool,
+    pub idle_has_player: bool,
+    pub aim_clip: u32,
+}
+
+/// Live+player wins over idle so a promote during ensure does not arm the closed slot.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn plan_idle_prepare(ctx: IdlePrepareCtx) -> IdlePreparePlan {
+    if ctx.live_clip == ctx.aim_clip && ctx.live_ready && ctx.live_has_player {
+        IdlePreparePlan::Live
+    } else if ctx.idle_clip == Some(ctx.aim_clip) && ctx.idle_ready && ctx.idle_has_player {
+        IdlePreparePlan::Idle
+    } else {
+        IdlePreparePlan::Superseded
+    }
+}
+
 /// Shared law for Next/Prev chrome. Does not consult LoopZone.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) fn plan_step(ctx: StepCtx) -> StepPlan {
@@ -165,6 +206,58 @@ mod tests {
         assert_eq!(
             plan_step(step_prev(0, 0, 2, false, 0)),
             StepPlan::ClearPlayIntent
+        );
+    }
+
+    fn prep(
+        live_clip: u32,
+        live_ready: bool,
+        live_has_player: bool,
+        idle_clip: Option<u32>,
+        idle_ready: bool,
+        idle_has_player: bool,
+        aim_clip: u32,
+    ) -> IdlePrepareCtx {
+        IdlePrepareCtx {
+            live_clip,
+            live_ready,
+            live_has_player,
+            idle_clip,
+            idle_ready,
+            idle_has_player,
+            aim_clip,
+        }
+    }
+
+    #[test]
+    fn idle_prepare_live_idle_or_superseded() {
+        assert_eq!(
+            plan_idle_prepare(prep(0, true, true, Some(1), true, true, 0)),
+            IdlePreparePlan::Live
+        );
+        assert_eq!(
+            plan_idle_prepare(prep(0, true, true, Some(1), true, true, 1)),
+            IdlePreparePlan::Idle
+        );
+        // Closed idle (rapid next tap) must not look ready.
+        assert_eq!(
+            plan_idle_prepare(prep(0, true, true, Some(1), false, false, 1)),
+            IdlePreparePlan::Superseded
+        );
+        // `ready` still true after the player was taken.
+        assert_eq!(
+            plan_idle_prepare(prep(0, true, true, Some(1), true, false, 1)),
+            IdlePreparePlan::Superseded
+        );
+        // Idle holds a different clip than the aim.
+        assert_eq!(
+            plan_idle_prepare(prep(0, true, true, Some(2), true, true, 1)),
+            IdlePreparePlan::Superseded
+        );
+        // Aim became live, but that slot was retired — not a prepare target.
+        assert_eq!(
+            plan_idle_prepare(prep(1, false, false, None, false, false, 1)),
+            IdlePreparePlan::Superseded
         );
     }
 }

@@ -121,6 +121,10 @@ impl HostCtx {
         let v = self.video;
         note_transport(self, TransportEvent::Closed);
         self.queue.cancel_all();
+        // Clear ready before taking the player. `pause` / drop can re-enter
+        // the host synchronously; a still-ready slot with no player made
+        // playlist seam prep return sticky `media source: no player`.
+        v.ready.set(false);
         // Drop *before* zeroing frame_count — paused rAF sync_ui treats
         // count 0→N as a new clip and would restore the old playhead.
         let retiring = self.player.borrow_mut().take();
@@ -135,7 +139,6 @@ impl HostCtx {
         // `ready=false` also hides HoverThumbPreview (Effect on ready).
         self.fps_meter.borrow_mut().reset();
         v.reset_exact_ledger();
-        v.ready.set(false);
         v.ended.set(false);
         v.error.set(None);
         v.fps.set(None);

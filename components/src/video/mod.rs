@@ -572,6 +572,10 @@ impl VideoRef {
         }
     }
 
+    pub(crate) fn has_player(&self) -> bool {
+        self.host().is_some_and(|host| host.has_player())
+    }
+
     /// Paint `frame` on this (idle) slot before LoopZone / playlist promote.
     pub(crate) async fn prepare_seam_at(&self, frame: u32) -> Result<(), fpmedia_web::MediaError> {
         if let Some(host) = self.host() {
