@@ -217,18 +217,14 @@ impl VideoHost {
         (self.dwell_start)();
     }
 
-    /// Pointer-move: never sync-present Exact — that raced throttled ScrubDrag on
-    /// Exact-strip R→L (flicker + key стоп-кадр). Canvas = ScrubDrag; dwell Exact
-    /// only after stillness when blit miss. **no equivalent** (scrub local).
+    /// Pointer-move: do not sync-present Exact on every sample — that raced
+    /// throttled ScrubDrag. After the finger stops, dwell presents Exact of the
+    /// current aim even when the blit is already resident (otherwise the stage
+    /// stays on the 1–2 frame neighbor and release is a no-op).
+    /// **no equivalent** (scrub local).
     pub(crate) fn scrub_pointer_move(&self, target: u32) {
         (self.dwell_stop)();
-        let has = self
-            .ctx
-            .with_player(|p| p.has_scrub_exact_blit(target))
-            .unwrap_or(false);
-        if !has {
-            (self.dwell_start)();
-        }
+        (self.dwell_start)();
         (self.move_throttled)(target);
     }
 
