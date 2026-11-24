@@ -34,6 +34,9 @@ pub struct PlaybackClock {
     media_at_start: Cell<f64>,
     rate: Cell<f64>,
     running: Cell<bool>,
+    /// `close` and [`Drop`] both run on clip switch. A second
+    /// `AudioContext.close` rejects `InvalidStateError`.
+    closed: Cell<bool>,
 }
 
 impl PlaybackClock {
@@ -59,6 +62,7 @@ impl PlaybackClock {
             media_at_start: Cell::new(0.0),
             rate: Cell::new(1.0),
             running: Cell::new(false),
+            closed: Cell::new(false),
         })
     }
 
@@ -126,14 +130,17 @@ impl PlaybackClock {
     }
 
     /// Eager teardown (clip switch) — Chrome caps concurrent `AudioContext`s.
-    /// Idempotent; [`Drop`] also closes.
+    /// Idempotent: [`Drop`] also closes, and a second `close` rejects.
     pub fn close(&self) {
+        if self.closed.replace(true) {
+            return;
+        }
         let _ = self.context.close();
     }
 }
 
 impl Drop for PlaybackClock {
     fn drop(&mut self) {
-        let _ = self.context.close();
+        self.close();
     }
 }

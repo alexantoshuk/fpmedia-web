@@ -53,7 +53,7 @@ async fn promote_idle_at(
 ) -> Result<(), MediaError> {
     let lead = PromoteLead::for_local(local_frame);
     let local = lead.local();
-    ensure_clip_on_idle(pl, clip_index, epoch).await?;
+    ensure_clip_on_idle(pl, clip_index, epoch, None).await?;
     if !pl.open_gen.is_current(epoch) {
         return Ok(());
     }

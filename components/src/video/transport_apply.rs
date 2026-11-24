@@ -276,6 +276,27 @@ pub(super) fn enqueue_scrub_dwell_exact(ctx: &HostCtx, kick_drain: &KickDrain, f
     }
 }
 
+/// Open finished on the drain loop. Play was requested while the slot had no
+/// player — enqueue prime without kicking a second drain.
+pub(super) fn resume_play_after_open(ctx: &HostCtx) {
+    let cmds = {
+        let mut inner = ctx.transport.inner.borrow_mut();
+        let (next, cmds) = transport_reduce(inner.model, TransportEvent::PlayPressed);
+        inner.model = next;
+        cmds
+    };
+    for cmd in cmds {
+        match cmd {
+            TransportCmd::ClearEnded => ctx.video.ended.set(false),
+            TransportCmd::EnqueuePlayPrime => {
+                let _ = ctx.queue.enqueue(HostOp::PlayPrime);
+            }
+            _ => {}
+        }
+    }
+    sync_playing_from_transport(ctx);
+}
+
 /// Notify FSM after an async op completes (should not emit engine cmds).
 pub(super) fn note_transport(ctx: &HostCtx, event: TransportEvent) {
     {

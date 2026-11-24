@@ -12,6 +12,7 @@ Isolated crate: MP4 demux + frame index + player API; WebCodecs on `wasm32` (`we
 | Scrub flicker + Play dead (HEVC) | `create_scrub` | densify PreferSoftware; `scrub_densify_blocked` |
 | After scrub: blink / hang + `Unsupported configuration` | `HwAccel` / `from_config` | densify/thumb PreferSoftware; main HW recreate → soft fallback |
 | New clip: Play disabled / audio dies | clip dispose | `Closed`+drop player; `Shared.disposed`; UrlSource orch abort |
+| `Cannot close a closed AudioContext` on clip switch | `PlaybackClock::close` | eager close and `Drop` both called `close`; second rejects. Once-flag. MB disposes the context once |
 | URL Range hang / body dies ~180 s after headers | `range_get_open` / `stop_or_fail_aborted` | first-byte timeout must `CancelTimeout` after Response; mid-abort → `fail_worker` (not `signal_worker_stopped_running` clear). `mediabunny: source.ts signalWorkerStoppedRunning` |
 | URL 206 wrong offset / corrupt MP4 cache | `check_partial_content_range` | require Content-Range start == requested open Range. Stricter than MB. Parse: `byte_util::parse_content_range` |
 | ≥4 GiB media early EOF on wasm32 | `byte_util::available_len` | never `(size-offset) as usize` — 2³² boundary → 0 |

@@ -149,6 +149,8 @@ impl VideoHost {
     pub(crate) fn play(&self) {
         let ctx = &self.ctx;
         if !ctx.video.ready.get_untracked() {
+            // Open will dispatch Play when the player exists.
+            ctx.queue.arm_play_after_open();
             web_sys::console::log_1(&"fpmedia-web: play ignored (not ready)".into());
             return;
         }
@@ -177,6 +179,7 @@ impl VideoHost {
             }
         }
         if ctx.player.borrow().as_ref().is_none() {
+            ctx.queue.arm_play_after_open();
             web_sys::console::log_1(&"fpmedia-web: play ignored (no player)".into());
             return;
         }
@@ -184,6 +187,7 @@ impl VideoHost {
     }
 
     pub(crate) fn pause(&self) {
+        self.ctx.queue.clear_play_after_open();
         self.dispatch(TransportEvent::PausePressed);
     }
 

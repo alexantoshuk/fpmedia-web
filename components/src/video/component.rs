@@ -22,6 +22,7 @@ use super::host_ops::{SeekOrStep, run_open, run_play_prime, run_seek_or_step};
 use super::op_queue::{HostOp, OpQueue};
 use super::transport_apply::{
     dispatch_transport, enqueue_scrub_dwell_exact, new_transport, note_transport,
+    resume_play_after_open,
 };
 use fpmedia_web::timer::{next_animation_frame, now_ms};
 
@@ -314,6 +315,11 @@ pub fn Video(
                             run_open(&ctx, id, args).await;
                             if queue.is_current(id) && ready.get_untracked() {
                                 note_transport(&ctx, TransportEvent::OpenReady);
+                                // Play that hit `not ready` / `no player` while this
+                                // open was in flight. **no equivalent** (playlist host).
+                                if queue.take_play_after_open() {
+                                    resume_play_after_open(&ctx);
+                                }
                             }
                         }
                         HostOp::Seek(target) => {

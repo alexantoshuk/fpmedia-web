@@ -52,6 +52,8 @@ pub(crate) struct OpQueue {
     /// mediabunny `asyncId` — bumped to discard in-flight / pending work.
     async_id: Rc<Cell<u64>>,
     busy: RwSignal<bool>,
+    /// Play arrived while this slot had no player. `run_open` consumes it.
+    play_after_open: Rc<Cell<bool>>,
 }
 
 impl OpQueue {
@@ -64,7 +66,21 @@ impl OpQueue {
             })),
             async_id: Rc::new(Cell::new(0)),
             busy,
+            play_after_open: Rc::new(Cell::new(false)),
         }
+    }
+
+    /// Remember Play that could not start (`not ready` / prime superseded by open).
+    pub fn arm_play_after_open(&self) {
+        self.play_after_open.set(true);
+    }
+
+    pub fn take_play_after_open(&self) -> bool {
+        self.play_after_open.replace(false)
+    }
+
+    pub fn clear_play_after_open(&self) {
+        self.play_after_open.set(false);
     }
 
     /// Bump epoch so in-flight work bails after the next await.

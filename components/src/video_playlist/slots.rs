@@ -78,7 +78,7 @@ pub(crate) fn kick_ensure_idle(pl: VideoPlaylistRef, want: u32) {
     }
     let epoch = pl.open_gen.ticket();
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = ensure_clip_on_idle(pl, want, epoch).await;
+        let _ = ensure_clip_on_idle(pl, want, epoch, None).await;
         pl.scrub_hold_from_idle(want);
         kick_cut_join_exact_warm(pl);
     });
@@ -252,10 +252,13 @@ pub(crate) fn idle_prepare_plan(pl: VideoPlaylistRef, aim: u32) -> IdlePreparePl
     })
 }
 
+/// `seek_owner` is the `seek_to_pos` generation. `None` (scrub warm / seam)
+/// aborts the open if a seek bumps `seek_gen` during close.
 pub(crate) async fn ensure_clip_on_idle(
     pl: VideoPlaylistRef,
     clip_index: u32,
     epoch: Ticket,
+    seek_owner: Option<u32>,
 ) -> Result<(), MediaError> {
     if !pl.open_gen.is_current(epoch) {
         return Err(MediaError::Cancelled);
@@ -329,6 +332,10 @@ pub(crate) async fn ensure_clip_on_idle(
     idle.set_loop(false);
     // Teardown wipe old media Exact; after open park (densify off, no wipe).
     // Promote → On. Stale task must not close/park after promote. **no equivalent**.
+    let owner_gen = seek_owner.unwrap_or_else(|| pl.latches.get_value().seek_gen);
+    if seek_owner.is_some() && pl.latches.get_value().seek_gen != owner_gen {
+        return Err(MediaError::Cancelled);
+    }
     idle.set_scrub_cache_policy(ScrubCachePolicy::Off);
     idle.close();
     sleep_ms(0).await;
@@ -351,6 +358,11 @@ pub(crate) async fn ensure_clip_on_idle(
         return Ok(());
     }
     if !opening_still_idle(pl, opening_is_a) {
+        clear_flight(pl, clip_index);
+        return Err(MediaError::Cancelled);
+    }
+    // A newer tap bumped `seek_gen` during close. One open, not two.
+    if pl.latches.get_value().seek_gen != owner_gen {
         clear_flight(pl, clip_index);
         return Err(MediaError::Cancelled);
     }
@@ -527,6 +539,15 @@ pub(crate) async fn seek_to_pos(
     }
     pl.ended.set(false);
     pl.pos.set(aim);
+    let my_seek = {
+        let mut n = 0;
+        pl.latches.update_value(|l| {
+            l.seek_gen = l.seek_gen.wrapping_add(1);
+            n = l.seek_gen;
+        });
+        n
+    };
+    let seek_live = |pl: VideoPlaylistRef, n: u32| pl.latches.get_value().seek_gen == n;
     let global = pl
         .model
         .get_untracked()
@@ -542,7 +563,7 @@ pub(crate) async fn seek_to_pos(
         // it; the second begin_op cancels this goto and the warm then parks.
         // **no equivalent** (playlist local).
         pl.latches.update_value(|l| l.seek_paint_clip = Some(clip));
-        if let Err(e) = ensure_clip_on_idle(pl, clip, epoch).await {
+        if let Err(e) = ensure_clip_on_idle(pl, clip, epoch, Some(my_seek)).await {
             clear_seek_paint(pl, clip);
             return Err(e);
         }
@@ -561,6 +582,10 @@ pub(crate) async fn seek_to_pos(
                 clear_seek_paint(pl, clip);
             }
             IdlePreparePlan::Idle => {
+                if !seek_live(pl, my_seek) {
+                    clear_seek_paint(pl, clip);
+                    return Err(MediaError::Cancelled);
+                }
                 // Stop outgoing Play before idle Exact / SeamHold (goto / scrub Up).
                 stop_live_for_host_seam(pl);
                 let idle = pl.idle_video();
@@ -581,13 +606,15 @@ pub(crate) async fn seek_to_pos(
                 if let Err(e) = prepared {
                     clear_seek_paint(pl, clip);
                     if e.is_cancelled() || is_soft_seam_cancel(&e.to_string()) {
-                        // `stop_live_for_host_seam` already halted the outgoing slot.
-                        if then_play {
-                            resume_live_if_playlist_playing(pl);
-                        }
+                        // Do not `resume_live` here. A newer tap owns Play; resuming
+                        // stacks `play sync seek` on a slot the next open closes.
                         return Err(MediaError::Cancelled);
                     }
                     return Err(e);
+                }
+                if !seek_live(pl, my_seek) {
+                    clear_seek_paint(pl, clip);
+                    return Err(MediaError::Cancelled);
                 }
                 if !pl.open_gen.is_current(epoch) {
                     clear_seek_paint(pl, clip);
@@ -599,6 +626,9 @@ pub(crate) async fn seek_to_pos(
                     swap_live_idle(pl, aim.clip_index);
                 }
                 clear_seek_paint(pl, clip);
+                if !seek_live(pl, my_seek) {
+                    return Err(MediaError::Cancelled);
+                }
                 // Aim local before neighbor preload — mirror must not see new live +
                 // stale idle local. **no equivalent**.
                 pl.live_video().playhead.set(aim.frame.source());
@@ -619,8 +649,10 @@ pub(crate) async fn seek_to_pos(
                 live.ended.set(false);
                 live.playhead.set(aim.frame.source());
                 if then_play {
-                    // SeamHold already painted — PlayPrime, no second Exact flash.
-                    pl.play();
+                    if seek_live(pl, my_seek) {
+                        // SeamHold already painted — PlayPrime, no second Exact flash.
+                        pl.play();
+                    }
                 } else {
                     settle_playlist_pause_exact(pl, live, aim.frame.source(), slot_exact_hit);
                 }
@@ -637,9 +669,9 @@ pub(crate) async fn seek_to_pos(
     live.ended.set(false);
     // Slot playhead is local — PlayPrime reads it (playlist global ≠ slot).
     live.playhead.set(aim.frame.source());
-    if then_play {
+    if then_play && seek_live(pl, my_seek) {
         pl.play();
-    } else {
+    } else if !then_play {
         settle_playlist_pause_exact(pl, live, aim.frame.source(), false);
     }
     Ok(())

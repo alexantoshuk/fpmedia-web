@@ -350,6 +350,12 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
         }
     }
     let still_queued = || queue.is_current(id);
+    // Open retired this slot under the prime. The finishing open replays Play.
+    let arm_if_retired = || {
+        if matches!(ctx.transport.state(), fpmedia_web::TransportState::Closed) {
+            queue.arm_play_after_open();
+        }
+    };
 
     // Consume mid-zone latch even on cold prime (stale promote must not poison
     // a later full-axis SeamHold release).
@@ -372,6 +378,7 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
             }
         };
         if !still_queued() {
+            arm_if_retired();
             return false;
         }
         if release_ok && p.play_session_live() {
@@ -401,13 +408,19 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
         );
         match p.seek_frame(ph).await {
             Ok(()) => {}
-            Err(e) if e.is_cancelled() => return false,
+            Err(e) if e.is_cancelled() => {
+                if !queue.is_current(id) {
+                    arm_if_retired();
+                }
+                return false;
+            }
             Err(e) => {
                 error.set(Some(e.to_string()));
                 return false;
             }
         }
         if !queue.is_current(id) {
+            arm_if_retired();
             return false;
         }
     }
@@ -424,6 +437,7 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
         web_sys::console::warn_1(&format!("fpmedia-web: audio resume: {e}").into());
     }
     if !still_queued() {
+        arm_if_retired();
         if p.is_playing() {
             p.pause();
         }
@@ -456,6 +470,7 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     web_sys::console::log_1(&format!("fpmedia-web: play prime done ok={prime_ok}").into());
 
     if !still_queued() {
+        arm_if_retired();
         if p.is_playing() {
             p.pause();
         }
@@ -495,6 +510,7 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
             return false;
         }
         if !still_queued() {
+            arm_if_retired();
             if p.is_playing() {
                 p.pause();
             }
