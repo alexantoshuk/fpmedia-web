@@ -3,6 +3,9 @@
 //! `AudioDecoder` → `AudioData` → `f32-planar` → `AudioBuffer` →
 //! `AudioBufferSourceNode` at `ctx_origin + (timestamp - media_at_start) / rate`.
 //! Media time = `media_at_start + (context.currentTime - ctx_origin) * rate` while playing.
+//! `ctx_origin` is armed when the prime buffers are scheduled, not when configure
+//! or the first fetch starts (`mediabunny: examples/media-player/media-player.ts`
+//! `play` sets `audioContextStartTime` as `runAudioIterator` starts).
 //!
 //! Rate has **no** mediabunny equivalent — invented on top of `getPlaybackTime` /
 //! `runAudioIterator` (`examples/media-player/media-player.ts`). Review rates
@@ -54,8 +57,9 @@ const LOST_WAKE_MS: i32 = 250;
 /// and every stretched chunk lands late (audible chop). `mediabunny: no
 /// equivalent` (no rate API; its iterator never yields per buffer).
 const SCHEDULE_SLICE_MS: f64 = 8.0;
-/// Seconds of audio to schedule synchronously in [`AudioOutput::restart_warm`]
-/// before returning (loop seam / underrun resume — avoid silent video).
+/// Seconds of audio to decode before arming [`AudioInner::ctx_origin`]
+/// (loop seam / underrun resume — avoid silent video, without baking fetch
+/// latency into media time).
 const WARM_PRIME_SECS: f64 = 0.08;
 /// Max planar frames fed to WSOLA per pending item when rate ≠ 1.
 ///
@@ -221,11 +225,11 @@ impl AudioOutput {
 
         let epoch = self.epoch.ticket();
         let t = media_time_secs.max(0.0);
+        // Clock origin stays unset until prime has decoded the first buffers.
+        // Arming it here made media time run through the cold fetch, and the
+        // clip opening then played at display rate.
         self.media_at_start.set(t);
-        self.ctx_origin.set(Some(self.context.current_time()));
-        self.playing.set(true);
         *self.error.borrow_mut() = None;
-        self.reset_stretch_for_rate();
 
         // Keep the decoder instance; soft reset+configure without repeating
         // `isConfigSupported` (already passed on open). Needed so loop seam
@@ -275,10 +279,12 @@ impl AudioOutput {
     /// Convenience: begin, prime the
     /// first buffers, then spawn the background pump.
     ///
-    /// Must await [`Self::prime_schedule`] before returning — otherwise video
-    /// presents on a running `AudioContext` clock while AAC is still Range-
-    /// fetching (URL: seconds of silent play). Same gate as [`Self::restart_warm`].
-    /// `mediabunny: examples/media-player/media-player.ts` `play` → `runAudioIterator`.
+    /// Must await [`Self::prime_schedule`] before returning — video present
+    /// starts only after the first buffers exist and `ctx_origin` is armed.
+    /// Arming the origin before that fetch made `media_time` run ahead (playlist
+    /// first join: opening plays fast, replay is cached and smooth).
+    /// `mediabunny: examples/media-player/media-player.ts` `play` sets
+    /// `audioContextStartTime` as `runAudioIterator` starts.
     pub async fn start_spawned(&self, media_time_secs: f64) -> Result<(), MediaError> {
         let epoch = self.begin(media_time_secs).await?;
         let start_sample = self.track.sample_at_or_after(media_time_secs).unwrap_or(0);
@@ -621,8 +627,8 @@ impl AudioInner {
         }
     }
 
-    /// Begin playback from `media_time_secs`. Resumes the context and arms origins;
-    /// the decode/schedule pump is started by [`Self::start_spawned`].
+    /// Begin playback from `media_time_secs`. Resumes the context and configures
+    /// the decoder. The clock origin is armed later by [`Self::prime_schedule`].
     ///
     /// Hard path (pause→play / seek): resets + reconfigures the decoder.
     pub async fn begin(&self, media_time_secs: f64) -> Result<Ticket, MediaError> {
@@ -631,10 +637,7 @@ impl AudioInner {
 
         let epoch = self.epoch.ticket();
         self.media_at_start.set(media_time_secs.max(0.0));
-        self.ctx_origin.set(Some(self.context.current_time()));
-        self.playing.set(true);
         *self.error.borrow_mut() = None;
-        self.reset_stretch_for_rate();
 
         if !self.is_pcm() {
             let taken = self.decoder.borrow_mut().take();
@@ -664,15 +667,118 @@ impl AudioInner {
         Ok(epoch)
     }
 
-    /// Decode + schedule until ~[`WARM_PRIME_SECS`] of audio is queued (or EOF).
-    /// Returns the next sample index for the background pump.
+    /// Decode ~[`WARM_PRIME_SECS`] into `pending` (or EOF), then arm `ctx_origin`
+    /// and schedule those buffers. Configure / Range fetch stays outside media
+    /// time. Returns the next sample index for the background pump.
+    /// `mediabunny: examples/media-player/media-player.ts` `play` —
+    /// `audioContextStartTime = currentTime` as `runAudioIterator` starts.
     async fn prime_schedule(&self, epoch: Ticket, sample_idx: u64) -> Result<u64, MediaError> {
-        let prime_until = self.media_at_start.get() + WARM_PRIME_SECS;
-        self.feed_and_schedule(epoch, sample_idx, Some(prime_until))
-            .await
+        let next = self.prime_decode(epoch, sample_idx).await?;
+        if !self.epoch.is_current(epoch) {
+            return Ok(next);
+        }
+        self.publish_primed_clock(epoch)?;
+        Ok(next)
     }
 
-    /// Packet feeder + scheduler shared by prime and the background pump.
+    /// Feed until a decoded sample reaches the prime horizon. Does not schedule
+    /// and does not arm the clock — outputs sit in `pending`.
+    async fn prime_decode(&self, epoch: Ticket, mut sample_idx: u64) -> Result<u64, MediaError> {
+        let prime_until = self.media_at_start.get() + WARM_PRIME_SECS;
+        let mut slice = ScheduleSlice::start();
+        loop {
+            if !self.epoch.is_current(epoch) {
+                return Ok(sample_idx);
+            }
+            if let Some(err) = self.error.borrow().clone() {
+                return Err(MediaError::WebCodecs(err));
+            }
+            if self.pending_reaches(prime_until) {
+                return Ok(sample_idx);
+            }
+            if sample_idx >= self.track.sample_count() {
+                if self.track.expect_more_samples() {
+                    crate::util::yield_now().await;
+                    slice.reset();
+                    continue;
+                }
+                return Ok(sample_idx);
+            }
+            // Hold outputs in `pending` (do not apply the schedule-queue cap).
+            // Park only while the decoder itself is full.
+            if self.decode_queue_size() >= AUDIO_MAX_QUEUE_SIZE {
+                let seen = self.pending.borrow().len();
+                self.wait_pending_grow(seen).await;
+                slice.reset();
+                continue;
+            }
+            let sample = self.track.encoded_sample(sample_idx).await?;
+            if !self.epoch.is_current(epoch) {
+                return Ok(sample_idx);
+            }
+            self.feed_chunk(&sample)?;
+            sample_idx += 1;
+            slice.tick(self.tab_hidden.get()).await;
+        }
+    }
+
+    fn pending_reaches(&self, until: f64) -> bool {
+        self.pending
+            .borrow()
+            .iter()
+            .any(|sample| sample.timestamp_secs >= until)
+    }
+
+    /// Arm `ctx_origin` when prime buffers are scheduled. Configure and the
+    /// first fetch run before this, so they are not media time.
+    fn publish_primed_clock(&self, epoch: Ticket) -> Result<(), MediaError> {
+        if !self.epoch.is_current(epoch) {
+            return Ok(());
+        }
+        self.ctx_origin.set(Some(self.context.current_time()));
+        self.reset_stretch_for_rate();
+        if let Err(e) = self.flush_pending() {
+            self.ctx_origin.set(None);
+            self.playing.set(false);
+            self.stop_queued_nodes();
+            self.clear_stretch();
+            return Err(e);
+        }
+        if !self.epoch.is_current(epoch) {
+            self.ctx_origin.set(None);
+            self.playing.set(false);
+            self.stop_queued_nodes();
+            self.clear_stretch();
+            return Ok(());
+        }
+        self.playing.set(true);
+        web_sys::console::log_1(
+            &format!(
+                "fpmedia-web: audio clock armed t={:.3}s rate={}",
+                self.media_at_start.get(),
+                self.rate.get()
+            )
+            .into(),
+        );
+        Ok(())
+    }
+
+    fn flush_pending(&self) -> Result<(), MediaError> {
+        loop {
+            let next = self.pending.borrow_mut().pop_front();
+            let Some(sample) = next else {
+                break;
+            };
+            self.schedule_pending_sample(sample.timestamp_secs, sample.payload)?;
+        }
+        Ok(())
+    }
+
+    /// Packet feeder + scheduler for the background pump.
+    ///
+    /// Prime does not use this — [`Self::prime_decode`] holds outputs until
+    /// [`Self::publish_primed_clock`]. Scheduling here with no `ctx_origin`
+    /// drops the buffer.
     ///
     /// `mediabunny: media-sink.ts mediaSamplesInRange` — feed while
     /// `queued + decodeQueueSize < MAX_QUEUE_SIZE`, else park on dequeue / output
@@ -788,6 +894,27 @@ impl AudioInner {
             .ok()
             .and_then(|d| d.as_ref().map(|d| d.decode_queue_size() as usize))
             .unwrap_or(0)
+    }
+
+    /// Park until `pending` grows or a lost-wake timer fires.
+    ///
+    /// Prime holds decoded outputs instead of scheduling them, so
+    /// [`Self::wait_decoder_progress`] (which resolves as soon as `pending` is
+    /// non-empty) would spin.
+    async fn wait_pending_grow(&self, seen: usize) {
+        let pending = Rc::clone(&self.pending);
+        let waiters = self.progress_waiters.clone();
+        let progress = js_sys::Promise::new(&mut |resolve, _reject| {
+            if pending.borrow().len() > seen {
+                let _ = resolve.call0(&JsValue::NULL);
+                return;
+            }
+            waiters.register(resolve);
+        });
+        let lost_wake = crate::timer::timeout_promise(LOST_WAKE_MS, || JsValue::UNDEFINED);
+        let race = js_sys::Promise::race(&js_sys::Array::of2(&progress, &lost_wake));
+        let _ = JsFuture::from(race).await;
+        waiters.clear();
     }
 
     /// Park until a decoded output or `dequeue` (`onQueueDequeue`), with a

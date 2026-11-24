@@ -97,7 +97,8 @@ pub struct ClockModel {
     pub pending_silent: bool,
     /// `resume_media_clock` in flight — do not stack.
     pub resuming: bool,
-    /// Tab-visible / PlayPrime catch-up grace (no clock hold on document hidden).
+    /// Tab-visible catch-up grace (no clock hold while the document was hidden).
+    /// PlayPrime does not arm this — a stall would fast-forward overdue frames.
     pub catchup_until_ms: Option<f64>,
 }
 

@@ -57,9 +57,9 @@ impl VideoPlayer {
         m.held_origin = None;
         self.shared.clock_model.set(m);
         *self.shared.play_driver_error.borrow_mut() = None;
-        // A warm clock can sit slightly ahead of the fresh PlayIter — suppress
-        // underrun→audio hold while video catches up (same grace as tab return).
-        self.arm_underrun_catchup_grace();
+        // No catch-up grace here. A stall (scrub across clips, then release)
+        // would let the clock run and overdue frames play at display rate.
+        // Underrun hold keeps 1×. Tab-visible arms grace on its own.
         self.kick_update_next_frame();
     }
 }
