@@ -129,6 +129,10 @@ pub struct AudioInner {
     stretch: RefCell<Option<TimeStretcher>>,
     /// Next context time for a stretched chunk (contiguous wall schedule).
     stretch_next_ctx: Cell<f64>,
+    /// PlayPrime: `prime_decode` done, [`Self::arm_deferred_play_clock`] on first
+    /// present rAF (`epoch` + next sample for the pump). Cleared on cancel/stop.
+    /// `mediabunny: media-player play` arms `audioContextStartTime` with render.
+    deferred_pump: Cell<Option<(Ticket, u64)>>,
     _on_output: Closure<dyn FnMut(JsValue)>,
     _on_error: Closure<dyn FnMut(JsValue)>,
     _on_dequeue: Closure<dyn FnMut(JsValue)>,
@@ -217,17 +221,32 @@ impl AudioOutput {
     }
 
     /// Warm restart after [`Self::hold_underrun`] or loop seam — no decoder
-    /// teardown. Primes the first scheduled buffer(s) before returning so the
-    /// canvas seam is not silent while the pump catches up.
+    /// teardown. Primes + arms the clock before returning (rAF already running).
     pub async fn restart_warm(&self, media_time_secs: f64) -> Result<(), MediaError> {
+        self.restart_warm_inner(media_time_secs, true).await
+    }
+
+    /// PlayPrime: warm prime into `pending` **without** arming `ctx_origin`.
+    ///
+    /// First present rAF calls [`Self::arm_deferred_play_clock`] so media time
+    /// does not run through the PlayPrime→rAF gap (Firefox scrub→Pause→Play
+    /// overdue skip). `mediabunny: media-player play` / `audioContextStartTime`.
+    pub async fn prepare_restart_warm(&self, media_time_secs: f64) -> Result<(), MediaError> {
+        self.restart_warm_inner(media_time_secs, false).await
+    }
+
+    async fn restart_warm_inner(
+        &self,
+        media_time_secs: f64,
+        arm_now: bool,
+    ) -> Result<(), MediaError> {
         let _ = self.cancel_pump_and_silence();
         self.resume_context().await?;
 
         let epoch = self.epoch.ticket();
         let t = media_time_secs.max(0.0);
-        // Clock origin stays unset until prime has decoded the first buffers.
-        // Arming it here made media time run through the cold fetch, and the
-        // clip opening then played at display rate.
+        // Clock origin stays unset until prime has decoded the first buffers
+        // (and, for PlayPrime, until the first present rAF).
         self.media_at_start.set(t);
         *self.error.borrow_mut() = None;
 
@@ -254,7 +273,7 @@ impl AudioOutput {
 
         web_sys::console::log_1(
             &format!(
-                "fpmedia-web: audio restart_warm t={:.3}s rate={}",
+                "fpmedia-web: audio restart_warm t={:.3}s rate={} arm_now={arm_now}",
                 t,
                 self.rate.get()
             )
@@ -262,33 +281,69 @@ impl AudioOutput {
         );
 
         let start_sample = self.track.sample_at_or_after(t).unwrap_or(0);
-        let next = self.prime_schedule(epoch, start_sample).await?;
-        let this = self.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = this.pump(epoch, next).await
-                && !e.is_cancelled()
-            {
-                web_sys::console::warn_1(
-                    &format!("fpmedia-web: audio warm pump error: {e}").into(),
-                );
+        if arm_now {
+            let next = self.prime_schedule(epoch, start_sample).await?;
+            self.spawn_pump(epoch, next);
+        } else {
+            let next = self.prime_decode(epoch, start_sample).await?;
+            if self.epoch.is_current(epoch) {
+                self.deferred_pump.set(Some((epoch, next)));
             }
-        });
+        }
         Ok(())
     }
 
-    /// Convenience: begin, prime the
-    /// first buffers, then spawn the background pump.
+    /// Cold begin + prime + arm (underrun / open paths with rAF already live).
     ///
-    /// Must await [`Self::prime_schedule`] before returning — video present
-    /// starts only after the first buffers exist and `ctx_origin` is armed.
-    /// Arming the origin before that fetch made `media_time` run ahead (playlist
-    /// first join: opening plays fast, replay is cached and smooth).
-    /// `mediabunny: examples/media-player/media-player.ts` `play` sets
-    /// `audioContextStartTime` as `runAudioIterator` starts.
+    /// Arming the origin before the first fetch made `media_time` run ahead
+    /// (playlist first join). PlayPrime uses [`Self::prepare_start_spawned`].
+    /// `mediabunny: examples/media-player/media-player.ts` `play` /
+    /// `audioContextStartTime`.
     pub async fn start_spawned(&self, media_time_secs: f64) -> Result<(), MediaError> {
+        self.start_spawned_inner(media_time_secs, true).await
+    }
+
+    /// PlayPrime cold: begin + `prime_decode` only — arm on first present rAF.
+    pub async fn prepare_start_spawned(&self, media_time_secs: f64) -> Result<(), MediaError> {
+        self.start_spawned_inner(media_time_secs, false).await
+    }
+
+    async fn start_spawned_inner(
+        &self,
+        media_time_secs: f64,
+        arm_now: bool,
+    ) -> Result<(), MediaError> {
         let epoch = self.begin(media_time_secs).await?;
         let start_sample = self.track.sample_at_or_after(media_time_secs).unwrap_or(0);
-        let next = self.prime_schedule(epoch, start_sample).await?;
+        if arm_now {
+            let next = self.prime_schedule(epoch, start_sample).await?;
+            self.spawn_pump(epoch, next);
+        } else {
+            let next = self.prime_decode(epoch, start_sample).await?;
+            if self.epoch.is_current(epoch) {
+                self.deferred_pump.set(Some((epoch, next)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Arm `ctx_origin` + schedule pending + spawn pump after PlayPrime defer.
+    ///
+    /// Returns `Ok(true)` when a deferred prime was armed. `mediabunny:
+    /// media-player play` / `audioContextStartTime` with render already looping.
+    pub fn arm_deferred_play_clock(&self) -> Result<bool, MediaError> {
+        let Some((epoch, next)) = self.deferred_pump.take() else {
+            return Ok(false);
+        };
+        if !self.epoch.is_current(epoch) {
+            return Ok(false);
+        }
+        self.publish_primed_clock(epoch)?;
+        self.spawn_pump(epoch, next);
+        Ok(true)
+    }
+
+    fn spawn_pump(&self, epoch: Ticket, next: u64) {
         let this = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
             if let Err(e) = this.pump(epoch, next).await
@@ -297,7 +352,6 @@ impl AudioOutput {
                 web_sys::console::warn_1(&format!("fpmedia-web: audio pump error: {e}").into());
             }
         });
-        Ok(())
     }
 }
 
@@ -416,6 +470,7 @@ impl AudioInner {
             decoder: RefCell::new(decoder),
             stretch: RefCell::new(None),
             stretch_next_ctx: Cell::new(0.0),
+            deferred_pump: Cell::new(None),
             _on_output: on_output,
             _on_error: on_error,
             _on_dequeue: on_dequeue,
@@ -607,6 +662,7 @@ impl AudioInner {
         self.playing.set(false);
         self.ctx_origin.set(None);
         self.media_at_start.set(t);
+        self.deferred_pump.set(None);
         self.stop_queued_nodes();
         self.clear_stretch();
         if let Ok(mut q) = self.pending.try_borrow_mut() {
@@ -668,8 +724,9 @@ impl AudioInner {
     }
 
     /// Decode ~[`WARM_PRIME_SECS`] into `pending` (or EOF), then arm `ctx_origin`
-    /// and schedule those buffers. Configure / Range fetch stays outside media
-    /// time. Returns the next sample index for the background pump.
+    /// and schedule those buffers. PlayPrime defers this publish to the first
+    /// rAF (`prepare_*` + [`Self::arm_deferred_play_clock`]). Returns the next
+    /// sample index for the background pump.
     /// `mediabunny: examples/media-player/media-player.ts` `play` —
     /// `audioContextStartTime = currentTime` as `runAudioIterator` starts.
     async fn prime_schedule(&self, epoch: Ticket, sample_idx: u64) -> Result<u64, MediaError> {

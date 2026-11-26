@@ -482,45 +482,32 @@ pub(super) async fn run_play_prime(ctx: &HostCtx, id: u64, resume_raf: &impl Fn(
     }
 
     let media_origin = p.state().timestamp.seconds;
-    // No AAC: defer silent PlaybackClock / wall arm to the first present rAF.
-    // Arming here (after long prime on ChG-class masters) lets AudioContext run
-    // ahead of the first present → skip-to-latest storm.
+    // Defer AAC + silent/wall clock arm to the first present rAF. Arming in
+    // PlayPrime (after densify yield / long prime) lets media_time run through
+    // the gap → overdue skip jerk on scrub→Pause→Play (worse on Firefox).
+    // Decode-prime still happens here; only `ctx_origin` / silent Start wait.
     // mediabunny: `play` sets `audioContextStartTime` while `render` already loops.
-    // AAC: still warm/cold start here so schedule has headroom before rAF.
-    let defer_silent_clock = !p.has_audio();
-    let pending_silent = if defer_silent_clock {
-        let _ = p.take_audio_warm_resume();
-        web_sys::console::log_1(&"fpmedia-web: play clock defer silent→first rAF".into());
-        true
-    } else {
-        // Pause button / scrub soft-held the AudioDecoder — warm restart (no
-        // isConfigSupported). Open / EOF / abort-prime stay on cold start_media_clock.
-        // mediabunny: examples/media-player play() → buffers(t) after pause.
-        let clock = if p.take_audio_warm_resume() {
-            web_sys::console::log_1(&"fpmedia-web: play clock warm resume".into());
-            p.resume_media_clock(media_origin).await
-        } else {
-            p.start_media_clock(media_origin).await
-        };
-        if let Err(e) = clock {
-            if still_queued() {
-                error.set(Some(e.to_string()));
-                park_failed_prime();
-            }
-            return false;
+    let warm = p.take_audio_warm_resume();
+    web_sys::console::log_1(
+        &format!("fpmedia-web: play clock prepare defer→first rAF warm={warm}").into(),
+    );
+    if let Err(e) = p.prepare_play_prime_clock(media_origin, warm).await {
+        if still_queued() {
+            error.set(Some(e.to_string()));
+            park_failed_prime();
         }
-        if !still_queued() {
-            arm_if_retired();
-            if p.is_playing() {
-                p.pause();
-            }
-            return false;
+        return false;
+    }
+    if !still_queued() {
+        arm_if_retired();
+        if p.is_playing() {
+            p.pause();
         }
-        false
-    };
+        return false;
+    }
 
-    // Engine owns prefetch / underrun / loop / silent-clock arm from here.
-    p.begin_play_session(pending_silent);
+    // Engine owns prefetch / underrun / loop / first-rAF clock arm from here.
+    p.begin_play_session(true);
     // Arm UI `playing` now (PlayPriming/Settling+session live) so rAF presents
     // before PlayPrimeDone — otherwise the clock runs with no presents → underrun.
     sync_playing_from_transport(ctx);

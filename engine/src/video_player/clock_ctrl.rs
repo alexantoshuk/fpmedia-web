@@ -244,7 +244,7 @@ impl PlayerInner {
     /// Sync-arm silent [`PlaybackClock`] / wall on the first play rAF (no AAC).
     ///
     /// PlayPrime sets `ClockModel::pending_silent`; [`Self::play_raf_tick`] calls
-    /// [`Self::finish_silent_play_prime`] so the first canvas present lands
+    /// [`Self::finish_play_prime_clock`] so the first canvas present lands
     /// **before** the driver runs (mediabunny `startVideoIterator` draw then
     /// `play` / `audioContextStartTime`).
     pub fn arm_silent_play_clock(&self, media_time_secs: f64) {
@@ -263,9 +263,80 @@ impl PlayerInner {
         self.arm_silent_play_driver(media_time_secs);
     }
 
-    /// First present turn for no-AAC PlayPrime: arm the silent clock at the
-    /// frame `startVideoIterator` already drew (mediabunny `play` /
-    /// `audioContextStartTime`). Returns the media origin used for the driver.
+    /// PlayPrime: decode-prime AAC (or snap silent origin) **without** advancing
+    /// media time. First [`Self::play_raf_tick`] → [`Self::finish_play_prime_clock`].
+    ///
+    /// Arming AAC in PlayPrime before rAF let `ctx_origin` run through the gap
+    /// (Firefox scrub→Pause→Play overdue jerk). Silent already deferred; AAC
+    /// matches. `mediabunny: media-player play` / `audioContextStartTime`.
+    pub async fn prepare_play_prime_clock(
+        &self,
+        media_time_secs: f64,
+        warm: bool,
+    ) -> Result<(), MediaError> {
+        if warm {
+            self.apply_clock_event(ClockEvent::Resume);
+        } else {
+            self.apply_clock_event(ClockEvent::Start);
+        }
+        // Frozen until a driver arms (no wall_origin / audio playing yet).
+        self.shared.clock.borrow_mut().start(media_time_secs);
+        self.shared.wall_origin.set(None);
+        if let Some(c) = self.shared.playback_clock.as_ref() {
+            let _ = c.stop();
+        }
+        let audio = self.shared.audio.borrow().clone();
+        if crate::is_wall_clock_rate(self.playback_rate()) {
+            if let Some(a) = audio {
+                let _ = a.stop();
+                a.store_playback_rate(self.playback_rate());
+            }
+            let mut m = self.shared.clock_model.get();
+            m.held_origin = Some(media_time_secs);
+            self.shared.clock_model.set(m);
+            return Ok(());
+        }
+        if let Some(a) = audio {
+            if warm {
+                a.prepare_restart_warm(media_time_secs).await?;
+            } else {
+                a.prepare_start_spawned(media_time_secs).await?;
+            }
+        } else {
+            let mut m = self.shared.clock_model.get();
+            m.held_origin = Some(media_time_secs);
+            self.shared.clock_model.set(m);
+        }
+        Ok(())
+    }
+
+    /// First present rAF after PlayPrime: arm AAC deferred clock or silent/wall.
+    ///
+    /// `mediabunny: examples/media-player/media-player.ts` `play` /
+    /// `audioContextStartTime` while `render` already loops.
+    pub fn finish_play_prime_clock(&self) {
+        if let Some(a) = self.shared.audio.borrow().as_ref() {
+            match a.arm_deferred_play_clock() {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(e) => {
+                    web_sys::console::warn_1(
+                        &format!("fpmedia-web: deferred audio clock arm: {e}").into(),
+                    );
+                }
+            }
+        }
+        let origin = self
+            .shared
+            .clock_model
+            .get()
+            .held_origin
+            .unwrap_or_else(|| self.state().timestamp.seconds);
+        self.arm_silent_play_clock(origin);
+    }
+
+    /// First present turn for no-AAC PlayPrime (legacy name — prefer
+    /// [`Self::finish_play_prime_clock`]).
     pub fn finish_silent_play_prime(&self) -> f64 {
         let origin = self
             .shared

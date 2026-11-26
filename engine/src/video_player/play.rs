@@ -46,15 +46,19 @@ impl PlayerInner {
 }
 
 impl VideoPlayer {
-    /// PlayPrime finished (clock armed or deferred silent) — render may present.
+    /// PlayPrime finished (clock deferred to first rAF) — render may present.
     ///
+    /// `pending_silent_clock`: arm AAC/silent/wall on first [`Self::play_raf_tick`]
+    /// (not in PlayPrime — gap → overdue jerk). Keeps `held_origin` for silent.
     /// `mediabunny: examples/media-player` `play` after `startVideoIterator`.
     pub fn begin_play_session(&self, pending_silent_clock: bool) {
         self.apply_play_phase(PlayPhaseEvent::Begin);
         let mut m = self.shared.clock_model.get();
         m.pending_silent = pending_silent_clock;
         m.resuming = false;
-        m.held_origin = None;
+        if !pending_silent_clock {
+            m.held_origin = None;
+        }
         self.shared.clock_model.set(m);
         *self.shared.play_driver_error.borrow_mut() = None;
         // No catch-up grace here. A stall (scrub across clips, then release)
@@ -149,10 +153,10 @@ impl PlayerInner {
 }
 
 impl VideoPlayer {
-    /// One play rAF: silent-clock arm, render, underrun hold/resume, loop seam.
+    /// One play rAF: deferred PlayPrime clock arm, render, underrun, loop seam.
     ///
-    /// `mediabunny: examples/media-player/media-player.ts` `render` + deferred
-    /// `audioContextStartTime` on no-AAC (`finish_silent_play_prime`).
+    /// `mediabunny: examples/media-player/media-player.ts` `render` +
+    /// `audioContextStartTime` on first present (`finish_play_prime_clock`).
     pub fn play_raf_tick(&self) -> Result<PlayTick, MediaError> {
         if let Some(msg) = self.shared.play_driver_error.borrow_mut().take() {
             return Ok(PlayTick::Failed(msg));
@@ -168,7 +172,7 @@ impl VideoPlayer {
             let mut m = self.shared.clock_model.get();
             m.pending_silent = false;
             self.shared.clock_model.set(m);
-            self.finish_silent_play_prime();
+            self.finish_play_prime_clock();
         }
 
         if let Some(iter) = self.shared.play_iter.borrow().as_ref() {
@@ -1466,6 +1470,21 @@ impl VideoPlayer {
         }
         let epoch = self.shared.op_epoch.ticket();
         let head = self.state().frame;
+        // Scrub→Play hygiene: Exact blit / soft-drag may leave `displayed` on a
+        // key while playhead is aim; Pause→Play already reset via PlayIter::finish.
+        // Drop mismatch + invalidate so Firefox cannot repaint stale VF during
+        // warm awaits. `mediabunny: seekToTime` → `iterator.return()` before play.
+        if self
+            .shared
+            .displayed
+            .borrow()
+            .as_ref()
+            .is_some_and(|q| q.frame != head)
+            && let Some(old) = self.shared.displayed.borrow_mut().take()
+        {
+            drop(old.video);
+        }
+        self.invalidate_decoder();
         let loop_in = self.shared.loop_zone().in_frame;
         // Origin / loop-in: join near-EOF prewarm. Mid-clip: require Playing.
         if head == 0 {

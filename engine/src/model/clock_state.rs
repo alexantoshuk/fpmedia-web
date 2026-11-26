@@ -93,7 +93,7 @@ pub struct ClockModel {
     pub held_origin: Option<f64>,
     /// Wall stamp while `phase == HoldUnderrun`.
     pub underrun_since_ms: Option<f64>,
-    /// PlayPrime: arm silent Start on next present tick.
+    /// PlayPrime: arm AAC/silent/wall clock on next present rAF (not in prime).
     pub pending_silent: bool,
     /// `resume_media_clock` in flight — do not stack.
     pub resuming: bool,

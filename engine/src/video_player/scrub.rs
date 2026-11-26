@@ -312,10 +312,29 @@ impl PlayerInner {
     ///
     /// Returns `true` when the stage was painted. Do **not** call on every
     /// pointermove — fights throttled ScrubDrag (Exact-strip flicker).
-    /// **no equivalent** (scrub local).
+    /// Bitmap-only: drop `displayed` when it is not `frame` — soft-drag key VF
+    /// left behind caused Firefox relayout / PlayPrime to repaint the wrong
+    /// frame over Exact. **no equivalent** (scrub local).
     pub fn try_present_scrub_exact(&self, frame: FrameId) -> bool {
         match self.try_present_warm_blit(frame) {
-            Ok(true) => self.shared.commit_frame(frame).is_ok(),
+            Ok(true) => {
+                if self.shared.commit_frame(frame).is_err() {
+                    return false;
+                }
+                // Blit has no matching VF — stale key in `displayed` must not
+                // win `repaint_after_buffer_resize` last-resort.
+                if self
+                    .shared
+                    .displayed
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|q| q.frame != frame)
+                    && let Some(old) = self.shared.displayed.borrow_mut().take()
+                {
+                    drop(old.video);
+                }
+                true
+            }
             Ok(false) | Err(_) => false,
         }
     }

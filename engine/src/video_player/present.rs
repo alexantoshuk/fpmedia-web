@@ -56,15 +56,9 @@ impl PlayerInner {
         if self.try_present_warm_blit(frame)? {
             return Ok(());
         }
-        // Last resort: whatever VF we still hold (better than black).
-        let disp = self.shared.displayed.borrow();
-        if let Some(q) = disp.as_ref() {
-            return draw_frame_with_context(
-                &self.shared.canvas,
-                &self.shared.ctx,
-                q.video.as_web_sys(),
-            );
-        }
+        // Do **not** paint a mismatched `displayed` (soft-drag key after Exact
+        // blit present) — that flashed the wrong frame on Firefox resize /
+        // PlayPrime. Same-frame VF already handled above; else leave blank.
         Ok(())
     }
     /// Snapshot pipeline planes requested by [`PipelineInterest`] (strips / debug UI).
