@@ -218,9 +218,10 @@ impl PlayerInner {
     /// Paused release when Exact for `frame` is already in the blit.
     ///
     /// Do **not** [`Self::prepare_scrub_settle`]: `clear_step_ring` re-ingests
-    /// `displayed` with replace and the following PresentHit redraws the blit.
-    /// The held picture is the honest Exact — release must not swap it.
-    /// **no equivalent** (scrub local).
+    /// `displayed` with replace and PresentHit then drew that stale VF over the
+    /// honest Exact already on screen (1–2 frame swap). Soft-drag / cancelled
+    /// drag may still leave stage on a key/neighbor while aim sits in blit —
+    /// present Exact when committed playhead ≠ aim. **no equivalent** (scrub local).
     pub fn release_scrub_keep_exact(&self, frame: FrameId) {
         self.shared.scrub_gesture.set(false);
         // Drop a late drag paint. Does not abort densify (`cancel_ops` vs
@@ -230,6 +231,11 @@ impl PlayerInner {
             self.apply_engine_event(EngineEvent::EndExact { densify: false });
         }
         self.clear_scrub_direction();
+        // Blit hit ≠ stage hit: soft-drag key/neighbor, or cancel_ops killed the
+        // drag that was about to paint Exact. Playlist PresentHit already presents.
+        if self.shared.frame.get() != frame {
+            let _ = self.try_present_scrub_exact(frame);
+        }
         self.aim_scrub_cache(frame);
         self.enter_scrub_cache_pipeline(frame);
     }

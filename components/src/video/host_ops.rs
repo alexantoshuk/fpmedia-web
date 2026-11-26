@@ -203,8 +203,8 @@ pub(super) async fn run_seek_or_step(ctx: &HostCtx, id: u64, op: SeekOrStep) -> 
             target,
             then_play: false,
         } => {
-            // Exact already on this aim: enqueue skipped prepare/redraw.
-            // **no equivalent** (scrub local).
+            // Exact already on this aim: enqueue used keep-path (no settle;
+            // present only if stage ≠ aim). **no equivalent** (scrub local).
             if p.has_scrub_exact_blit(target) {
                 Ok(())
             } else {

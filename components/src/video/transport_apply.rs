@@ -237,8 +237,8 @@ fn enqueue_scrub_release(
     let Some(p) = leave_play_for_scrub(ctx) else {
         return;
     };
-    // Exact already covers this aim — do not clear the step ring or redraw.
-    // **no equivalent** (scrub local).
+    // Exact already covers this aim — skip prepare_scrub_settle; keep-path
+    // presents only when stage ≠ aim. **no equivalent** (scrub local).
     if !then_play && p.has_scrub_exact_blit(frame) {
         p.release_scrub_keep_exact(frame);
     } else {
